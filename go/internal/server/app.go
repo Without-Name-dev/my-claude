@@ -62,7 +62,9 @@ func (a *App) Handler() http.Handler {
 		httpx.OK(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("GET /api/v2/health", func(w http.ResponseWriter, r *http.Request) {
-		httpx.OK(w, map[string]any{"status": "ok"})
+		// The iOS client decodes serverTime as a required field, so the health
+		// probe has to carry it too.
+		httpx.OK(w, map[string]any{"status": "ok", "serverTime": timestampNow()})
 	})
 	mux.HandleFunc("GET /api/v2/health/ready", a.handleReady)
 
