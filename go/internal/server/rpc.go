@@ -117,8 +117,30 @@ func (a *App) handleListRuntimes(w http.ResponseWriter, r *http.Request, user st
 	if !ok {
 		return
 	}
-	online := a.connectors.Online(connector.ID)
-	runtime := map[string]any{
+	httpx.OK(w, map[string]any{
+		"connectorId": connector.ID,
+		"runtimes":    []any{a.claudeRuntimeView(connector, a.connectors.Online(connector.ID))},
+		"serverTime":  timestampNow(),
+	})
+}
+
+// handleGetRuntime returns the single runtime the connector exposes.
+func (a *App) handleGetRuntime(w http.ResponseWriter, r *http.Request, user store.User) {
+	connector, ok := a.ownedConnector(w, r, user)
+	if !ok {
+		return
+	}
+	if id := r.PathValue("runtime_id"); id != "claude" {
+		httpx.Fail(w, httpx.NotFound("runtime not found"))
+		return
+	}
+	httpx.OK(w, a.claudeRuntimeView(connector, a.connectors.Online(connector.ID)))
+}
+
+// claudeRuntimeView is the runtime shape both the list and the detail endpoint
+// return. The connector currently exposes exactly one runtime.
+func (a *App) claudeRuntimeView(connector store.Connector, online bool) map[string]any {
+	return map[string]any{
 		"connectorId":      connector.ID,
 		"runtimeId":        "claude",
 		"runtimeType":      "claude",
@@ -144,11 +166,6 @@ func (a *App) handleListRuntimes(w http.ResponseWriter, r *http.Request, user st
 		"createdAt":        isoTime(connector.CreatedAt),
 		"updatedAt":        isoTime(connector.UpdatedAt),
 	}
-	httpx.OK(w, map[string]any{
-		"connectorId": connector.ID,
-		"runtimes":    []any{runtime},
-		"serverTime":  timestampNow(),
-	})
 }
 
 // handleFSList proxies a directory listing from the desktop.
@@ -246,6 +263,52 @@ func (a *App) handleRuntimeState(w http.ResponseWriter, r *http.Request, user st
 	httpx.OK(w, map[string]any{
 		"state":      a.runtimeState(session),
 		"serverTime": timestampNow(),
+	})
+}
+
+// handleModelCatalog returns the models offered for a session. The connector
+// does not publish a catalog yet, so an empty one keeps the picker usable.
+func (a *App) handleModelCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedSession(w, r, user); !ok {
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"catalog": map[string]any{
+			"runtime":  "claude",
+			"revision": 1,
+			"models":   []any{},
+		},
+		"serverTime": timestampNow(),
+	})
+}
+
+// handlePermissionCatalog mirrors the model catalog for permission modes.
+func (a *App) handlePermissionCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedSession(w, r, user); !ok {
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"catalog": map[string]any{
+			"runtime":     "claude",
+			"revision":    1,
+			"permissions": []any{},
+		},
+		"serverTime": timestampNow(),
+	})
+}
+
+// handleUpdateSelections accepts a model or permission change and echoes the
+// current state back.
+func (a *App) handleUpdateSelections(w http.ResponseWriter, r *http.Request, user store.User) {
+	session, ok := a.ownedSession(w, r, user)
+	if !ok {
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"ok":              true,
+		"state":           a.runtimeState(session),
+		"connectorResult": nil,
+		"serverTime":      timestampNow(),
 	})
 }
 

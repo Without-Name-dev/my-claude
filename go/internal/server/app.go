@@ -98,6 +98,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes", a.requireUser(a.handleListRuntimes))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtime-types", a.requireUser(a.handleRuntimeTypes))
 	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/fs/list", a.requireUser(a.handleFSList))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}", a.requireUser(a.handleGetRuntime))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/capabilities", a.requireUser(a.handleRuntimeCapabilities))
 
 	// Projects.
@@ -139,6 +140,9 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/capabilities", a.requireUser(a.handleSessionCapabilities))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/notices", a.requireUser(a.handleSessionNotices))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/sync", a.requireUser(a.handleSessionSync))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/catalogs/model", a.requireUser(a.handleModelCatalog))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/catalogs/permission", a.requireUser(a.handlePermissionCatalog))
+	mux.HandleFunc("PATCH /api/v2/sessions/{session_id}/runtime/selections", a.requireUser(a.handleUpdateSelections))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleListCommands))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleRunCommand))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/notices/{notice_id}/respond", a.requireUser(a.handleNoticeRespond))
