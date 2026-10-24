@@ -38,7 +38,6 @@ jobs:
       connector: ${{ steps.paths.outputs.connector }}
       server: ${{ steps.paths.outputs.server }}
       web: ${{ steps.paths.outputs.web }}
-      desktop: ${{ steps.paths.outputs.desktop }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -51,14 +50,12 @@ jobs:
           connector=false
           server=false
           web=false
-          desktop=false
 
           run_everything() {
             echo "::notice::$1; running every check"
             connector=true
             server=true
             web=true
-            desktop=true
           }
 
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
@@ -79,12 +76,11 @@ jobs:
                 connector/*) connector=true; server=true ;;
                 server/*) server=true ;;
                 web-next/*) web=true ;;
-                desktop-workbench/*) desktop=true ;;
               esac
             done < "$RUNNER_TEMP/changed-paths"
           fi
 
-          for scope in connector server web desktop; do
+          for scope in connector server web; do
             echo "$scope=${!scope}" >> "$GITHUB_OUTPUT"
             echo "$scope: ${!scope}"
           done
@@ -183,30 +179,3 @@ jobs:
           corepack yarn test
           corepack yarn typecheck
           corepack yarn protocol:check
-
-  desktop:
-    name: Desktop headless checks
-    needs: changes
-    if: needs.changes.outputs.desktop == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: desktop-workbench
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Enable Corepack
-        run: corepack enable
-      - name: Install client dependencies
-        run: corepack yarn install
-      - name: Verify Desktop renderer and main process
-        run: |
-          corepack yarn workspace agents-anywhere-desktop-renderer test
-          corepack yarn renderer:typecheck
-          corepack yarn workspace agents-anywhere-desktop-renderer protocol:check
-          corepack yarn test:main

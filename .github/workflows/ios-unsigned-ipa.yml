@@ -3,9 +3,16 @@ name: iOS unsigned IPA
 # Builds the iOS client without code signing and uploads an .ipa artifact.
 # Sign it locally with Sideloadly (free Apple ID) or your own certificate.
 #
-# Run from the Actions tab: "iOS unsigned IPA" -> "Run workflow".
+# Runs automatically when the iOS client or this workflow changes on main, and
+# can also be started from the Actions tab: "iOS unsigned IPA" -> "Run workflow".
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-unsigned-ipa.yml"
   workflow_dispatch:
     inputs:
       runner:
@@ -23,7 +30,8 @@ permissions:
 jobs:
   build:
     # macos-26 ships Xcode 26; pass "macos-latest" if that label is unavailable.
-    runs-on: ${{ inputs.runner }}
+    # Push events have no inputs, so fall back to the same label.
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 30
     steps:
       - name: Checkout
