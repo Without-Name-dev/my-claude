@@ -1,0 +1,86 @@
+name: iOS unsigned IPA
+
+# Builds the iOS client without code signing and uploads an .ipa artifact.
+# Sign it locally with Sideloadly (free Apple ID) or your own certificate.
+#
+# Run from the Actions tab: "iOS unsigned IPA" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner label (macos-26 / macos-latest)"
+        required: false
+        default: "macos-26"
+      deployment_target:
+        description: "Optional IPHONEOS_DEPLOYMENT_TARGET override (e.g. 18.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # macos-26 ships Xcode 26; pass "macos-latest" if that label is unavailable.
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          echo "Installed Xcodes:"
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then sudo xcode-select -s "$NEWEST"; fi
+          xcodebuild -version
+          xcodebuild -showsdks | sed -n '1,40p'
+
+      - name: Resolve packages
+        working-directory: ios
+        run: |
+          xcodebuild -project "Agents Anywhere/Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -resolvePackageDependencies
+
+      - name: Build unsigned archive
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ -n "${{ inputs.deployment_target }}" ]; then
+            EXTRA+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}")
+          fi
+          xcodebuild \
+            -project "Agents Anywhere/Agents Anywhere.xcodeproj" \
+            -scheme "Agents Anywhere" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -archivePath build/App.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            "${EXTRA[@]}" \
+            archive
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP="ios/build/App.xcarchive/Products/Applications/Agents Anywhere.app"
+          test -d "$APP"
+          rm -rf out
+          mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry AgentsAnywhere-unsigned.ipa Payload)
+          ls -lh out/AgentsAnywhere-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentsAnywhere-unsigned-ipa
+          path: out/AgentsAnywhere-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,22 @@
+# Agents Anywhere 文档
+
+选择要完成的任务，查看对应指南。首次使用可从安装客户端、登录和连接工作设备开始。
+
+| 目标 | 文档 |
+| --- | --- |
+| 安装客户端、登录、连接设备 | [安装与首次使用](getting-started.md) |
+| 查看 2.1.0 的接口变化与各端最低版本 | [2.1.0 发布说明](releases/2.1.0.md)；安装包记录见 [2.0.3](releases/2.0.3.md)，历史版本见 [2.0.0](releases/2.0.0.md) |
+| 部署自己的服务 | [Docker](../docker/README.md)、[Server](../server/README.md) |
+| 升级已有部署或从 v1 迁移 | [升级指南](upgrading.md) |
+| 版本号含义与发版规则 | [版本号规则](versioning.md) |
+| 源码运行与 headless 验证 | [开发指南](development.md) |
+| Desktop 开发、打包、签名 | [Desktop Workbench](../desktop-workbench/README.md) |
+| 接入无图形界面的机器 | [Connector](../connector/README.md) |
+| Android 构建 | [Android](../android/README.md) |
+| 架构和 API | [Server 架构](server-architecture.md)、[API](api/README.md) |
+| 长会话流式更新卡顿 | [客户端优化方案与验证](performance/streaming-timeline-83.md) |
+| Runtime 和本机协议 | [Runtime protocol](runtime-protocol/README.md)、[本机协议](../contracts/local-machine/2.0/README.md) |
+
+当前开发版本为 2.1，开发主线为 `main`。API 路径使用 `/api/v2`，数据库修订号独立管理，版本号含义见[版本号规则](versioning.md)。已发布安装包的功能范围见发布说明。
+
+`docs/migrations/main-to-v2/` 保留早期迁移设计与历史基线。其旧版本号、移动端完成度和 Redis 策略不能替代当前升级指南。带 proposal、plan、target、gap 的文档描述设计或特定时间点的差距，使用前应与源码和契约核对。

@@ -1,0 +1,512 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+from conftest import ApiV2TestClient as TestClient
+from sqlalchemy import insert, select, update
+from test_connector_deletion import timeline_input
+from test_runtime_instances_lifecycle import (
+    FakeRuntimeRpc,
+    _auth_headers,
+    _discover_types,
+    _v2_discovery,
+)
+
+from agent_server.app import create_app
+from agent_server.core.models import SessionRuntimeState
+from agent_server.core.utc import utc_now
+from agent_server.infra.connector_rpc import ConnectorRpcError
+from agent_server.infra.db import schema as db
+
+
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    app = create_app()
+    rpc = FakeRuntimeRpc(_v2_discovery())
+    # Keep the production service and its cleanup dependencies wired by create_app.
+    for method in ("is_online", "request", "request_bound", "is_connection_id_current"):
+        monkeypatch.setattr(app.state.rpc, method, getattr(rpc, method))
+    client = TestClient(app)
+    try:
+        headers = _auth_headers(client)
+        response = client.post("/connectors", headers=headers, json={"name": "Device"})
+        assert response.status_code == 200, response.text
+        device = response.json()["connector"]["id"]
+        _discover_types(client, device, headers)
+        runtime = create_runtime(client, headers, device, "Work")
+        yield client, rpc, headers, device, runtime
+    finally:
+        client.close()
+        asyncio.run(app.state.store.close())
+
+
+def create_runtime(client, headers, device, name):
+    response = client.post(
+        f"/connectors/{device}/runtimes",
+        headers=headers,
+        json={
+            "runtimeType": "claude",
+            "name": name,
+            "config": {"home": f"/runtime/{name}"},
+            "active": False,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["runtimeId"]
+
+
+async def add_session(app, device, runtime, name):
+    store = app.state.store
+    session = await store.upsert_connector_session(
+        connector_id=device,
+        session_id=f"sess_{name}",
+        runtime="claude",
+        runtime_id=runtime,
+        external_session_id=name,
+        title=name,
+        cwd="/work/shared",
+    )
+    now = utc_now()
+    owner = (await store.get_connector(device)).userId
+    await store.upsert_timeline_item(
+        session_id=session.id, item=timeline_input(session.id)
+    )
+    async with store.engine.begin() as conn:
+        await conn.execute(
+            insert(db.session_active_runs).values(
+                session_id=session.id,
+                runtime="claude",
+                runtime_id=runtime,
+                status="running",
+                started_at=now,
+                updated_at=now,
+            )
+        )
+        await conn.execute(
+            insert(db.session_shares).values(
+                id=session.id,
+                session_id=session.id,
+                user_id=owner,
+                scope="session",
+                snapshot_json="{}",
+                created_at=now,
+            )
+        )
+        await conn.execute(
+            insert(db.connector_terminal_roots).values(
+                connector_id=device,
+                terminal_id=session.id,
+                session_id=session.id,
+                root="/work/shared",
+                cwd="/work/shared",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await store.save_user_uploaded_file(
+        session_id=session.id, user_id=owner, name="private.txt", data=b"attachment"
+    )
+    await app.state.timeline_write_buffer.accept(
+        session_id=session.id, item=timeline_input(session.id, "pending")
+    )
+    await app.state.session_runtime_state_cache.put(
+        SessionRuntimeState(
+            sessionId=session.id,
+            runtime="claude",
+            updatedSeq=1,
+            createdAt=now,
+            updatedAt=now,
+        )
+    )
+    await app.state.terminal_broker.register(
+        connector_id=device,
+        session_id=session.id,
+        label="Terminal",
+        cwd="/work/shared",
+        shell="/bin/sh",
+        cols=80,
+        rows=24,
+        persistent=True,
+    )
+    return session
+
+
+async def assert_session_data(app, expected_ids):
+    store = app.state.store
+    async with store.engine.connect() as conn:
+        assert (
+            set((await conn.execute(select(db.sessions.c.id))).scalars())
+            == expected_ids
+        )
+        for table in (
+            db.timeline_items,
+            db.session_active_runs,
+            db.session_shares,
+            db.connector_terminal_roots,
+        ):
+            assert (
+                set((await conn.execute(select(table.c.session_id))).scalars())
+                == expected_ids
+            ), table.name
+    for session_id in expected_ids:
+        assert (store.files.root / session_id).exists()
+        assert await app.state.session_runtime_state_cache.get(session_id) is not None
+        assert await app.state.terminal_broker.get_for_session(session_id)
+
+
+def test_runtime_deletion_removes_only_its_sessions_and_related_data(api):
+    client, rpc, headers, device, runtime = api
+    other_runtime = create_runtime(client, headers, device, "Other")
+    created = client.post("/connectors", headers=headers, json={"name": "Other device"})
+    assert created.status_code == 200, created.text
+    other_device = created.json()["connector"]["id"]
+    _discover_types(client, other_device, headers)
+    other_device_runtime = create_runtime(client, headers, other_device, "Work")
+    runtime_url = f"/connectors/{device}/runtimes/{runtime}"
+    activated = client.put(
+        f"{runtime_url}/active", headers=headers, json={"active": True}
+    )
+    assert activated.status_code == 200, activated.text
+
+    async def prepare():
+        # Runtime IDs are scoped to a device: the same ID elsewhere must survive.
+        async with client.app.state.store.engine.begin() as conn:
+            await conn.execute(
+                update(db.device_runtimes)
+                .where(
+                    db.device_runtimes.c.connector_id == other_device,
+                    db.device_runtimes.c.runtime_id == other_device_runtime,
+                )
+                .values(runtime_id=runtime)
+            )
+        deleted = [
+            await add_session(client.app, device, runtime, name)
+            for name in ("active", "archived", "hidden")
+        ]
+        kept = [
+            await add_session(client.app, device, other_runtime, "other_instance"),
+            await add_session(client.app, other_device, runtime, "other_device"),
+        ]
+        store = client.app.state.store
+        await store.set_session_archived(deleted[1].id, True)
+        async with store.engine.begin() as conn:
+            await conn.execute(
+                update(db.sessions)
+                .where(db.sessions.c.id == deleted[2].id)
+                .values(project_id=None, source_state="deleted")
+            )
+        return deleted, kept
+
+    deleted, kept = asyncio.run(prepare())
+    rpc.requests.clear()
+    response = client.delete(f"{runtime_url}/config", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["configured"] is False
+    assert rpc.requests == [
+        (device, "runtime.stop", {"runtime": "claude", "runtimeId": runtime})
+    ]
+    for session in deleted:
+        assert (
+            client.get(f"/sessions/{session.id}/meta", headers=headers).status_code
+            == 404
+        )
+        assert (
+            client.get(f"/sessions/{session.id}/timeline", headers=headers).status_code
+            == 404
+        )
+        assert client.get(f"/public/shares/{session.id}").status_code == 404
+    assert response.json()["runtimeId"] == runtime
+    assert client.get(f"{runtime_url}", headers=headers).status_code == 404
+    listed = client.get(f"/connectors/{device}/runtimes", headers=headers).json()["runtimes"]
+    assert runtime not in {item["runtimeId"] for item in listed}
+    assert (
+        client.get(
+            f"/connectors/{device}/runtimes/{other_runtime}", headers=headers
+        ).json()["configured"]
+        is True
+    )
+
+    async def check():
+        await assert_session_data(client.app, {session.id for session in kept})
+        store = client.app.state.store
+        async with store.engine.connect() as conn:
+            assert set((await conn.execute(select(db.projects.c.id))).scalars()) == {
+                session.projectId for session in kept
+            }
+        for session in deleted:
+            assert not (store.files.root / session.id).exists()
+            assert (
+                await client.app.state.session_runtime_state_cache.get(session.id)
+                is None
+            )
+            assert (
+                await client.app.state.terminal_broker.get_for_session(session.id) == []
+            )
+            assert (
+                session.id
+                not in await client.app.state.timeline_write_buffer.dirty_session_ids()
+            )
+        await client.app.state.timeline_write_buffer.flush_all()
+        for session in deleted:
+            assert await store.timeline.read(session.id) == []
+
+    asyncio.run(check())
+    # A stale retry must not delete the successor, even after it is configured.
+    assert client.delete(f"{runtime_url}/config", headers=headers).status_code == 404
+    asyncio.run(assert_session_data(client.app, {session.id for session in kept}))
+
+
+@pytest.mark.parametrize("failure", ["offline", "stop_failed"])
+def test_running_runtime_deletion_preserves_sessions_when_it_cannot_stop(
+    api, monkeypatch, failure
+):
+    client, rpc, headers, device, runtime = api
+    session = asyncio.run(add_session(client.app, device, runtime, "protected"))
+    runtime_url = f"/connectors/{device}/runtimes/{runtime}"
+    activated = client.put(
+        f"{runtime_url}/active", headers=headers, json={"active": True}
+    )
+    assert activated.status_code == 200, activated.text
+    if failure == "offline":
+        rpc.online = False
+    else:
+        monkeypatch.setattr(
+            client.app.state.rpc,
+            "request",
+            AsyncMock(
+                side_effect=ConnectorRpcError("stop_failed", "runtime is still running")
+            ),
+        )
+    response = client.delete(f"{runtime_url}/config", headers=headers)
+    assert response.status_code == (503 if failure == "offline" else 502), response.text
+    assert client.get(runtime_url, headers=headers).json()["configured"] is True
+    asyncio.run(assert_session_data(client.app, {session.id}))
+    # A failed stop sets status=error and active=False. Retrying must still stop
+    # the possibly running process before it can delete any session data.
+    retried = client.delete(f"{runtime_url}/config", headers=headers)
+    assert retried.status_code == response.status_code, retried.text
+    asyncio.run(assert_session_data(client.app, {session.id}))
+
+
+def test_stopping_runtime_keeps_sessions(api):
+    client, _, headers, device, runtime = api
+    session = asyncio.run(add_session(client.app, device, runtime, "stopped"))
+    active_url = f"/connectors/{device}/runtimes/{runtime}/active"
+    assert (
+        client.put(active_url, headers=headers, json={"active": True}).status_code
+        == 200
+    )
+    assert (
+        client.put(active_url, headers=headers, json={"active": False}).status_code
+        == 200
+    )
+    asyncio.run(assert_session_data(client.app, {session.id}))
+
+
+def test_stopped_runtime_can_be_deleted_while_connector_is_offline(api):
+    client, rpc, headers, device, runtime = api
+    asyncio.run(add_session(client.app, device, runtime, "offline"))
+    rpc.online = False
+    response = client.delete(
+        f"/connectors/{device}/runtimes/{runtime}/config", headers=headers
+    )
+    assert response.status_code == 200, response.text
+    asyncio.run(assert_session_data(client.app, set()))
+
+
+def test_only_manual_delete_retires_identity_and_stale_retries_cannot_touch_new_instance(api):
+    client, rpc, headers, device, runtime = api
+    url = f"/connectors/{device}/runtimes/{runtime}"
+    for active in (True, False, True, False):
+        result = client.put(f"{url}/active", headers=headers, json={"active": active})
+        assert result.status_code == 200, result.text
+        assert result.json()["runtimeId"] == runtime
+    # Reconfiguration and an offline period both keep the configured identity.
+    config = client.get(url, headers=headers).json()["config"]
+    result = client.put(f"{url}/config", headers=headers, json={"config": config})
+    assert result.status_code == 200, result.text
+    assert result.json()["runtimeId"] == runtime
+    rpc.online = False
+    assert client.get(url, headers=headers).json()["runtimeId"] == runtime
+    rpc.online = True
+    removed = client.delete(f"{url}/config", headers=headers)
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["runtimeId"] == runtime
+    assert client.get(url, headers=headers).status_code == 404
+    replacement = create_runtime(client, headers, device, "Work")
+    assert replacement != runtime
+    replacement_url = f"/connectors/{device}/runtimes/{replacement}"
+    assert client.delete(f"{url}/config", headers=headers).status_code == 404
+    assert client.put(f"{url}/config", headers=headers, json={"config": config}).status_code == 404
+    assert client.get(replacement_url, headers=headers).json()["configured"] is True
+    denied = asyncio.run(client.app.state.store.get_unconfigured_runtime_ids(device))
+    assert runtime in denied and replacement not in denied
+
+
+def test_failed_runtime_attachment_cleanup_rolls_back_and_can_retry(api, monkeypatch):
+    client, _, headers, device, runtime = api
+    session = asyncio.run(add_session(client.app, device, runtime, "retry"))
+    runtime_url = f"/connectors/{device}/runtimes/{runtime}"
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            client.app.state.store.files,
+            "delete_session",
+            AsyncMock(side_effect=OSError("storage unavailable")),
+        )
+        with pytest.raises(OSError, match="storage unavailable"):
+            client.delete(f"{runtime_url}/config", headers=headers)
+    assert client.get(runtime_url, headers=headers).json()["configured"] is True
+    asyncio.run(assert_session_data(client.app, {session.id}))
+    assert client.delete(f"{runtime_url}/config", headers=headers).status_code == 200
+    asyncio.run(assert_session_data(client.app, set()))
+
+
+def test_unowned_or_missing_runtime_deletion_preserves_sessions(api):
+    client, _, headers, device, runtime = api
+    session = asyncio.run(add_session(client.app, device, runtime, "owned"))
+    client.patch(
+        "/admin/settings", headers=headers, json={"registrationOpen": True}
+    ).raise_for_status()
+    registered = client.post(
+        "/auth/register",
+        json={
+            "email": "other@example.com",
+            "displayName": "Other",
+            "password": "secret",
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    other_headers = {"Authorization": f"Bearer {registered.json()['accessToken']}"}
+    url = f"/connectors/{device}/runtimes/{runtime}/config"
+    assert client.delete(url).status_code == 401
+    assert client.delete(url, headers=other_headers).status_code == 404
+    assert (
+        client.delete(
+            f"/connectors/{device}/runtimes/missing/config", headers=headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(url.removesuffix("/config"), headers=headers).json()["configured"]
+        is True
+    )
+    asyncio.run(assert_session_data(client.app, {session.id}))
+
+
+@pytest.fixture
+def connector_api(api, monkeypatch):
+    """Use the real Connector registry so a fake RPC cannot hide leaked slots."""
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "connector"))
+    from connector.runtime_protocol import (
+        AgentRuntime,
+        RuntimeConfig,
+        RuntimeHostClient,
+        RuntimeIdentity,
+        RuntimeProvider,
+        RuntimeSupervisor,
+    )
+    from connector.server.runtime_rpc import RuntimeRpcHandler
+
+    class Host(RuntimeHostClient):
+        connector_id = "conn_test"
+
+    class Runtime(AgentRuntime):
+        identity = RuntimeIdentity(runtime="claude", runtime_version="test")
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    class Provider(RuntimeProvider):
+        runtime_type = "claude"
+        display_name = "Claude"
+
+        async def validate_config(self, values):
+            return RuntimeConfig(runtime="claude", revision=1, values=dict(values))
+
+        async def create_runtime(self, config, host):
+            return Runtime()
+
+    client, rpc, headers, device, runtime_id = api
+    rpc.discovery = _v2_discovery(instance_policy="single", max_instances=1)
+    _discover_types(client, device, headers)
+    supervisor = RuntimeSupervisor((Provider(),), Host())
+    handler = RuntimeRpcHandler(supervisor, Host())
+    old_request = rpc.request
+
+    async def request(connector_id, method, params, **kwargs):
+        if method == "runtime.discover":
+            return await old_request(connector_id, method, params, **kwargs)
+        rpc.requests.append((connector_id, method, params))
+        try:
+            return await handler.dispatch(method, params)
+        except Exception as exc:
+            raise ConnectorRpcError(getattr(exc, "code", "runtime_error"), str(exc)) from exc
+
+    monkeypatch.setattr(client.app.state.rpc, "request", request)
+    # Reconstruct the existing configured instance in the long-lived Connector.
+    config = client.get(
+        f"/connectors/{device}/runtimes/{runtime_id}", headers=headers
+    ).json()["config"]
+    configured = client.put(
+        f"/connectors/{device}/runtimes/{runtime_id}/config",
+        headers=headers,
+        json={"config": config},
+    )
+    assert configured.status_code == 200, configured.text
+    yield client, rpc, headers, device, runtime_id, supervisor
+
+
+@pytest.mark.parametrize("state", ["running", "stopped", "offline"])
+def test_deleted_single_instance_can_be_added_again_without_connector_restart(
+    connector_api, state
+):
+    client, rpc, headers, device, runtime_id, supervisor = connector_api
+    for _ in range(2):
+        url = f"/connectors/{device}/runtimes/{runtime_id}"
+        if state == "running":
+            activated = client.put(f"{url}/active", headers=headers, json={"active": True})
+            assert activated.status_code == 200, activated.text
+        rpc.online = state != "offline"
+        removed = client.delete(f"{url}/config", headers=headers)
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["runtimeId"] == runtime_id
+        assert removed.json()["configured"] is False
+        rpc.online = True
+        assert client.get(url, headers=headers).status_code == 404
+        # The deleted instance no longer holds the single slot or its name.
+        replacement = create_runtime(client, headers, device, "Work")
+        assert replacement != runtime_id
+        assert supervisor.entry(runtime_id).runtime is None
+        runtime_id = replacement
+
+
+def test_single_runtime_limit_only_rejects_start_and_releases_after_stop(connector_api):
+    client, rpc, headers, device, first_id, supervisor = connector_api
+    # Server allows two saved configurations; the Connector provider still runs one.
+    rpc.discovery = _v2_discovery(instance_policy="multiple", max_instances=2)
+    _discover_types(client, device, headers)
+    first_url = f"/connectors/{device}/runtimes/{first_id}"
+    first = client.put(f"{first_url}/active", headers=headers, json={"active": True})
+    assert first.status_code == 200, first.text
+
+    second_id = create_runtime(client, headers, device, "Other")
+    second_url = f"/connectors/{device}/runtimes/{second_id}"
+    rejected = client.put(f"{second_url}/active", headers=headers, json={"active": True})
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["detail"]["code"] == "runtime_conflict"
+    assert "running instance" in rejected.json()["detail"]["message"]
+    assert supervisor.entry(first_id).status == "running"
+    assert supervisor.entry(second_id).runtime is None
+
+    stopped = client.put(f"{first_url}/active", headers=headers, json={"active": False})
+    assert stopped.status_code == 200, stopped.text
+    started = client.put(f"{second_url}/active", headers=headers, json={"active": True})
+    assert started.status_code == 200, started.text
+    assert supervisor.entry(second_id).status == "running"
+    assert client.get(first_url, headers=headers).json()["configured"] is True

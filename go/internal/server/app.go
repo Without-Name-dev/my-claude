@@ -1,0 +1,251 @@
+// Package server assembles the HTTP API.
+package server
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/agents-anywhere/agents-anywhere/internal/auth"
+	"github.com/agents-anywhere/agents-anywhere/internal/config"
+	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
+	"github.com/agents-anywhere/agents-anywhere/internal/store"
+)
+
+// VerifyUserToken decodes a bearer into a user id.
+func VerifyUserToken(token string) (string, error) { return auth.VerifyUserAccessToken(token) }
+
+// App holds everything a request may need.
+type App struct {
+	cfg        config.Server
+	db         *store.Store
+	log        *slog.Logger
+	tickets    *TicketManager
+	broker     *Broker
+	connectors *ConnectorHub
+	turns      *turnRegistry
+	approvals  *approveRegistry
+	dashboards *dashboardHub
+	history    *historyLimiter
+	rpc        *rpcClient
+	activity   *activityRegistry
+}
+
+// New wires the application.
+func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
+	return &App{
+		cfg:        cfg,
+		db:         db,
+		log:        log,
+		tickets:    NewTicketManager(),
+		broker:     NewBroker(),
+		connectors: NewConnectorHub(log),
+		turns:      newTurnRegistry(),
+		approvals:  newApproveRegistry(),
+		dashboards: newDashboardHub(),
+		history:    newHistoryLimiter(),
+		rpc:        newRPCClient(),
+		activity:   newActivityRegistry(),
+	}
+}
+
+// Handler returns the root router.
+func (a *App) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		httpx.OK(w, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/v2/health", func(w http.ResponseWriter, r *http.Request) {
+		httpx.OK(w, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/v2/health/ready", a.handleReady)
+
+	// Authentication.
+	mux.HandleFunc("GET /api/v2/auth/config", a.handleAuthConfig)
+	mux.HandleFunc("POST /api/v2/auth/password-salt", a.handlePasswordSalt)
+	mux.HandleFunc("POST /api/v2/auth/register", a.handleRegister)
+	mux.HandleFunc("POST /api/v2/auth/login", a.handleLogin)
+	mux.HandleFunc("GET /api/v2/auth/me", a.requireUser(a.handleMe))
+	mux.HandleFunc("PUT /api/v2/auth/me/profile", a.requireUser(a.handleUpdateProfile))
+	mux.HandleFunc("PUT /api/v2/auth/me/avatar", a.requireUser(a.handleUpdateAvatar))
+	mux.HandleFunc("DELETE /api/v2/auth/me/avatar", a.requireUser(a.handleDeleteAvatar))
+	mux.HandleFunc("POST /api/v2/auth/change-password", a.requireUser(a.handleChangePassword))
+
+	// Websocket tickets.
+	mux.HandleFunc("POST /api/v2/ws-ticket", a.requireUser(a.handleWSTicket))
+
+	// Connectors.
+	mux.HandleFunc("GET /api/v2/connectors", a.requireUser(a.handleListConnectors))
+	mux.HandleFunc("POST /api/v2/connectors", a.requireUser(a.handleCreateConnector))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}", a.requireUser(a.handleGetConnector))
+	mux.HandleFunc("PATCH /api/v2/connectors/{connector_id}", a.requireUser(a.handlePatchConnector))
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/revoke", a.requireUser(a.handleRevokeConnector))
+	mux.HandleFunc("DELETE /api/v2/connectors/{connector_id}", a.requireUser(a.handleDeleteConnector))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes", a.requireUser(a.handleListRuntimes))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtime-types", a.requireUser(a.handleRuntimeTypes))
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/fs/list", a.requireUser(a.handleFSList))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/capabilities", a.requireUser(a.handleRuntimeCapabilities))
+
+	// Projects.
+	mux.HandleFunc("GET /api/v2/projects", a.requireUser(a.handleListProjects))
+	mux.HandleFunc("POST /api/v2/projects", a.requireUser(a.handleCreateProject))
+	mux.HandleFunc("PATCH /api/v2/projects/{project_id}", a.requireUser(a.handlePatchProject))
+	mux.HandleFunc("DELETE /api/v2/projects/{project_id}", a.requireUser(a.handleDeleteProject))
+	mux.HandleFunc("GET /api/v2/projects/{project_id}/sessions", a.requireUser(a.handleProjectSessions))
+
+	// Announcements.
+	mux.HandleFunc("GET /api/v2/announcement", a.handleAnnouncement)
+	a.registerAdminRoutes(mux)
+	a.registerAdminUserEditRoutes(mux)
+
+	// Pairing.
+	mux.HandleFunc("POST /api/v2/pairing/start", a.handlePairingStart)
+	mux.HandleFunc("POST /api/v2/pairing/claim", a.requireUser(a.handlePairingClaim))
+	mux.HandleFunc("POST /api/v2/pairing/poll", a.handlePairingPoll)
+
+	// Sessions.
+	mux.HandleFunc("POST /api/v2/sessions", a.requireUser(a.handleCreateSession))
+	mux.HandleFunc("POST /api/v2/sessions/create-and-start", a.requireUser(a.handleCreateAndStart))
+	mux.HandleFunc("GET /api/v2/sessions", a.requireUser(a.handleListSessions))
+	mux.HandleFunc("GET /api/v2/sessions/list", a.requireUser(a.handleListAllSessions))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/snapshot", a.requireUser(a.handleSnapshot))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/events", a.requireUser(a.handleEvents))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/timeline", a.requireUser(a.handleTimeline))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/meta", a.requireUser(a.handleSessionMeta))
+	mux.HandleFunc("PATCH /api/v2/sessions/{session_id}/meta", a.requireUser(a.handlePatchSession))
+	mux.HandleFunc("POST /api/v2/sessions/archive", a.requireUser(a.handleBulkArchive))
+	mux.HandleFunc("POST /api/v2/sessions/unarchive", a.requireUser(a.handleBulkArchive))
+	mux.HandleFunc("POST /api/v2/sessions/read", a.requireUser(a.handleBulkRead))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleTakeover))
+	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleReleaseTakeover))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/messages", a.requireUser(a.handleSendMessage))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/interrupt", a.requireUser(a.handleInterrupt))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/state", a.requireUser(a.handleRuntimeState))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/activity", a.requireUser(a.handleSessionActivity))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/capabilities", a.requireUser(a.handleSessionCapabilities))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/notices", a.requireUser(a.handleSessionNotices))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/sync", a.requireUser(a.handleSessionSync))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleListCommands))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleRunCommand))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/notices/{notice_id}/respond", a.requireUser(a.handleNoticeRespond))
+
+	// Attachments and file downloads.
+	a.registerAttachmentRoutes(mux)
+	a.registerFileRoutes(mux)
+	a.registerShareRoutes(mux)
+	a.registerTerminalRoutes(mux)
+
+	// Websockets.
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/ws", a.handleSessionWS)
+	mux.HandleFunc("GET /api/v2/connector/ws", a.ServeConnectorWS)
+	mux.HandleFunc("GET /api/v2/dashboard/ws", a.handleDashboardWS)
+
+	// Anything under the API prefix that no route claimed answers in JSON.
+	// A plain-text 404 is what the client shows as "404 page not found".
+	mux.HandleFunc("/api/v2/", func(w http.ResponseWriter, r *http.Request) {
+		httpx.JSON(w, http.StatusNotFound, map[string]string{"detail": "not found"})
+	})
+
+	var handler http.Handler = mux
+	if a.cfg.WebDir != "" {
+		handler = a.withStaticFiles(mux)
+	}
+	return a.withCommon(handler)
+}
+
+// handleReady reports database reachability.
+func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := a.db.Read().PingContext(ctx); err != nil {
+		httpx.JSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unavailable",
+			"detail": "database",
+		})
+		return
+	}
+	httpx.OK(w, map[string]any{"status": "ready"})
+}
+
+// withCommon installs the middleware every route shares.
+func (a *App) withCommon(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && a.originAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Uploads have their own multipart limits; everything else is JSON and
+		// must not be able to make the server read megabytes.
+		if r.Body != nil && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+		}
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		a.log.Debug("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+// originAllowed reports whether a cross-origin browser request may read the
+// response.
+//
+// The web client is served from this same origin, so nothing needs CORS in the
+// default deployment. Reflecting an arbitrary Origin while also allowing
+// credentials would let any site read a signed-in person's data.
+func (a *App) originAllowed(origin string) bool {
+	for _, allowed := range a.cfg.CORSOrigins {
+		if allowed == origin {
+			return true
+		}
+	}
+	return false
+}
+
+// statusRecorder remembers the status for the access log.
+//
+// It must forward Hijack and Flush: a websocket upgrade hijacks the connection,
+// and a wrapper that hides the hijacker turns every upgrade into a 501.
+// maxJSONBodyBytes is the ceiling for a non-multipart request body.
+const maxJSONBodyBytes = 2 << 20
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("connection does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (s *statusRecorder) Flush() {
+	if flusher, ok := s.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}

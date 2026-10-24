@@ -1,0 +1,79 @@
+.DS_Store
+xcuserdata/
+*.xcuserstate
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.next/
+web-next/out/
+.env.local
+.env.*.local
+
+# Dependency lockfiles are intentionally not committed in this repo.
+# Cross-platform package managers rewrite them frequently, creating noise.
+uv.lock
+yarn.lock
+package-lock.json
+pnpm-lock.yaml
+
+# Local Claude tooling (launch.json, transcripts, worktree metadata)
+.claude/
+.codex-run/
+# Local editor/agent project marker (per-machine UUID)
+.freebuff/
+agent-server/*-review.html
+
+# Local runtime state
+.local-dev/
+*.sqlite
+*.sqlite3
+*.db
+agent-server/agent-server.files/
+
+# Downloaded uv binaries and CPython builds bundled into the packaged Desktop apps.
+desktop-workbench/build/uv/
+desktop-workbench/build/python/
+desktop-workbench/.cache/
+desktop-workbench/release/
+desktop-next/build/uv/
+
+# Generated reference-doc caches live under docs/reference locally.
+docs/reference/*
+!docs/reference/README.md
+
+_reference/*
+!_reference/httpx-s3-client/
+!_reference/httpx-s3-client/**
+
+# Node dependencies and static export output
+node_modules/
+out/
+web-next/.next/
+
+# Go build products
+go/bin/
+go/dist/*.exe
+
+# iOS build products
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM
+
+# Local runtime data
+data/
+*.db-wal
+*.db-shm
+*.log
+connector.json
+auth.json
+approval.json
+*.pem
+*.p12
+*.key
+
+# Claude Code plugin lives outside the repo (junction)
+plugin/

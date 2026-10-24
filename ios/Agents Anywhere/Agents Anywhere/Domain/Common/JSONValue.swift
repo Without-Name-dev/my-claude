@@ -1,0 +1,97 @@
+import Foundation
+
+nonisolated enum JSONValue: Codable, Hashable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        // Each failed probe allocates a DecodingError with its coding path, so
+        // probe in the order wire payloads actually use: strings and objects
+        // dominate timeline items, numbers follow, arrays and booleans are rare.
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .bool(try container.decode(Bool.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value):
+            try container.encode(value)
+        case let .number(value):
+            try container.encode(value)
+        case let .bool(value):
+            try container.encode(value)
+        case let .object(value):
+            try container.encode(value)
+        case let .array(value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    nonisolated var stringValue: String? {
+        switch self {
+        case let .string(value):
+            return value
+        case let .number(value):
+            return String(value)
+        case let .bool(value):
+            return String(value)
+        default:
+            return nil
+        }
+    }
+
+    /// Whole numbers only, matching `Decodable` `Int` semantics for wire sequences.
+    nonisolated var intValue: Int? {
+        if case let .number(value) = self { return Int(exactly: value) }
+        return nil
+    }
+
+    nonisolated var displayString: String {
+        switch self {
+        case let .string(value):
+            return value
+        case let .number(value):
+            return String(value)
+        case let .bool(value):
+            return String(value)
+        case let .array(value):
+            return value.map(\.displayString).joined(separator: ", ")
+        case let .object(value):
+            if let detail = value["detail"]?.displayString {
+                return detail
+            }
+            if let message = value["message"]?.displayString {
+                return message
+            }
+            return String(localized: "Request failed")
+        case .null:
+            return String(localized: "Request failed")
+        }
+    }
+
+    nonisolated subscript(key: String) -> JSONValue? {
+        if case let .object(object) = self {
+            return object[key]
+        }
+        return nil
+    }
+}
