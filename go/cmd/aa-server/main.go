@@ -37,6 +37,10 @@ func main() {
 	if *migrateOnly {
 		return
 	}
+	if err := db.EnsureFirstPartyOAuthClients(ctx); err != nil {
+		log.Error("seed oauth clients", "error", err)
+		os.Exit(1)
+	}
 
 	app := server.New(cfg, db, log)
 	srv := &http.Server{

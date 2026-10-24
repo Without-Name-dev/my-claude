@@ -75,6 +75,12 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v2/auth/login", a.handleLogin)
 	mux.HandleFunc("GET /api/v2/auth/me", a.requireUser(a.handleMe))
 	mux.HandleFunc("PUT /api/v2/auth/me/profile", a.requireUser(a.handleUpdateProfile))
+
+	// OAuth: the first-party apps sign in through the web login and redeem a
+	// one-time code for a bearer token.
+	mux.HandleFunc("GET /api/v2/oauth/authorize", a.requireUser(a.handleOAuthAuthorizeRedirect))
+	mux.HandleFunc("POST /api/v2/oauth/authorize", a.requireUser(a.handleOAuthAuthorize))
+	mux.HandleFunc("POST /api/v2/oauth/token", a.handleOAuthToken)
 	mux.HandleFunc("PUT /api/v2/auth/me/avatar", a.requireUser(a.handleUpdateAvatar))
 	mux.HandleFunc("DELETE /api/v2/auth/me/avatar", a.requireUser(a.handleDeleteAvatar))
 	mux.HandleFunc("POST /api/v2/auth/change-password", a.requireUser(a.handleChangePassword))
