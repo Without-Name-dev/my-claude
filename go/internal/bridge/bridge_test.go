@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +111,75 @@ func TestReadOutboxForwardsOnlyReportedState(t *testing.T) {
 	}
 	if box.State["model"] != "opus" {
 		t.Fatalf("model = %v, want opus", box.State["model"])
+	}
+}
+
+func TestToolsDecodeThePluginShape(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"sessionId":"s1","entries":[
+		{"id":"tool-1","tool":"Read","input":{"file_path":"x"},"done":true,"isError":false,"output":"ok"}
+	]}`
+	if err := os.WriteFile(b.ToolsPath(), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := b.Tools("s1")
+	if len(entries) != 1 {
+		t.Fatalf("Tools returned %d entries, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.ID != "tool-1" || !entry.Done || entry.IsError {
+		t.Fatalf("unexpected entry %+v", entry)
+	}
+	if string(entry.Output) != `"ok"` {
+		t.Fatalf("output = %s, want a JSON string", entry.Output)
+	}
+	if entries := b.Tools("another-session"); entries != nil {
+		t.Fatalf("a snapshot from another session was returned: %+v", entries)
+	}
+}
+
+func TestRequestAbortCarriesTheSessionOnTheSecondLine(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := b.RequestAbort("runtime-session"); err != nil {
+		t.Fatalf("RequestAbort: %v", err)
+	}
+	raw, err := os.ReadFile(b.AbortPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("abort file = %q, want a stamp and a session", raw)
+	}
+	if _, err := strconv.ParseInt(lines[0], 10, 64); err != nil {
+		t.Fatalf("first line is not a stamp: %q", lines[0])
+	}
+	if lines[1] != "runtime-session" {
+		t.Fatalf("session = %q, want runtime-session", lines[1])
+	}
+}
+
+func TestSubmitFailsOnAnOutboxItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.OutboxPath(), []byte(`{"turnId":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := b.Submit("s", "", "m", "next", "prompt"); err == nil {
+		t.Fatal("Submit accepted a torn outbox instead of failing")
+	}
+	if entries, err := os.ReadDir(b.QueueDir()); err == nil && len(entries) != 0 {
+		t.Fatalf("a message was queued despite the unreadable outbox: %v", entries)
 	}
 }
 

@@ -37,6 +37,7 @@ final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObje
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        didReadCode = false
         if !session.isRunning {
             DispatchQueue.global(qos: .userInitiated).async { [session] in
                 session.startRunning()

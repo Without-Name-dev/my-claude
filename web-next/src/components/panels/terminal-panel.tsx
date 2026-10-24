@@ -442,11 +442,13 @@ function XtermHost({
   onError: (message: string) => void
 }) {
   const t = useTranslations("dashboard.panels.terminal")
+  const tCommon = useTranslations("common")
   const { resolvedTheme } = useTheme()
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const terminalRef = React.useRef<import("@xterm/xterm").Terminal | null>(null)
+  const retryConnectionRef = React.useRef<(() => void) | null>(null)
   const resolvedThemeRef = React.useRef(resolvedTheme)
-  const [status, setStatus] = React.useState<"connecting" | "open" | "exited">("connecting")
+  const [status, setStatus] = React.useState<"connecting" | "open" | "exited" | "disconnected">("connecting")
 
   React.useEffect(() => {
     resolvedThemeRef.current = resolvedTheme
@@ -463,6 +465,8 @@ function XtermHost({
     let fit: import("@xterm/addon-fit").FitAddon | null = null
     let socket: WebSocket | null = null
     let resizeObserver: ResizeObserver | null = null
+    let reconnectTimer: number | null = null
+    let reconnectAttempts = 0
     let lastSeenSeq = 0
     let lastSentSize: { cols: number; rows: number } | null = null
     let resizeFrame: number | null = null
@@ -538,41 +542,86 @@ function XtermHost({
       })
       resizeObserver.observe(host)
 
-      socket = new WebSocket(connectorTerminalStreamUrl(connectorId, terminal.terminalId, token))
-      socket.onopen = () => {
-        if (cancelled) return
-        setStatus("open")
-        sendResize()
-      }
-      socket.onmessage = (event) => {
-        if (cancelled || !term) return
-        let message: unknown
-        try {
-          message = JSON.parse(String(event.data))
-        } catch {
+      const scheduleReconnect = () => {
+        if (cancelled || exitPrinted) return
+        reconnectAttempts += 1
+        if (reconnectAttempts > MAX_TERMINAL_RECONNECT_ATTEMPTS) {
+          setStatus("disconnected")
+          onError(t("disconnected"))
           return
         }
-        if (!isTerminalStreamMessage(message)) return
-        if (message.type === "replay") {
-          lastSeenSeq = message.seq
-          term.reset()
-          term.write(base64ToBytes(message.data))
-        } else if (message.type === "output") {
-          if (message.seq <= lastSeenSeq) return
-          lastSeenSeq = message.seq
-          term.write(base64ToBytes(message.data))
-        } else if (message.type === "exit") {
-          printExit(message.exitCode)
-        } else if (message.type === "error") {
-          onError(message.message)
+        setStatus("connecting")
+        const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 15_000)
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null
+          connectSocket()
+        }, delay)
+      }
+
+      const connectSocket = () => {
+        if (cancelled) return
+        setStatus("connecting")
+        const next = new WebSocket(
+          connectorTerminalStreamUrl(connectorId, terminal.terminalId, token, lastSeenSeq),
+        )
+        socket = next
+        next.onopen = () => {
+          if (cancelled || socket !== next) return
+          reconnectAttempts = 0
+          lastSentSize = null
+          setStatus("open")
+          sendResize()
+        }
+        next.onmessage = (event) => {
+          if (cancelled || !term || socket !== next) return
+          let message: unknown
+          try {
+            message = JSON.parse(String(event.data))
+          } catch {
+            return
+          }
+          if (!isTerminalStreamMessage(message)) return
+          if (message.type === "replay") {
+            // Reconnects request only the output after lastSeenSeq; resetting
+            // there would erase the scrollback already on screen.
+            if (lastSeenSeq === 0) term.reset()
+            lastSeenSeq = message.seq
+            term.write(base64ToBytes(message.data))
+          } else if (message.type === "output") {
+            if (message.seq <= lastSeenSeq) return
+            lastSeenSeq = message.seq
+            term.write(base64ToBytes(message.data))
+          } else if (message.type === "exit") {
+            printExit(message.exitCode)
+          } else if (message.type === "error") {
+            onError(message.message)
+          }
+        }
+        next.onerror = () => {
+          if (!cancelled && socket === next) onError(t("websocketError"))
+        }
+        next.onclose = () => {
+          if (cancelled || socket !== next) return
+          socket = null
+          if (exitPrinted) return
+          scheduleReconnect()
         }
       }
-      socket.onerror = () => {
-        if (!cancelled) onError(t("websocketError"))
+
+      retryConnectionRef.current = () => {
+        if (cancelled || exitPrinted) return
+        reconnectAttempts = 0
+        if (reconnectTimer !== null) {
+          window.clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        const stale = socket
+        socket = null
+        stale?.close()
+        connectSocket()
       }
-      socket.onclose = () => {
-        if (!cancelled && !exitPrinted) setStatus("connecting")
-      }
+
+      connectSocket()
     })().catch((err) => {
       if (!cancelled) onError(err instanceof Error ? err.message : String(err))
     })
@@ -580,6 +629,8 @@ function XtermHost({
     return () => {
       cancelled = true
       if (resizeFrame != null) cancelAnimationFrame(resizeFrame)
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+      retryConnectionRef.current = null
       resizeObserver?.disconnect()
       socket?.close()
       if (terminalRef.current === term) terminalRef.current = null
@@ -607,6 +658,11 @@ function XtermHost({
       {status !== "open" ? (
         <div className="aa-term-status">
           {status === "connecting" ? t("connecting") : null}
+          {status === "disconnected" ? (
+            <Button type="button" size="xs" variant="secondary" onClick={() => retryConnectionRef.current?.()}>
+              {tCommon("retry")}
+            </Button>
+          ) : null}
           {status === "exited" ? t("exited") : null}
         </div>
       ) : null}
@@ -690,12 +746,19 @@ function isTerminalStreamMessage(value: unknown): value is TerminalStreamMessage
   return false
 }
 
-function connectorTerminalStreamUrl(connectorId: string, terminalId: string, token: string): string {
+const MAX_TERMINAL_RECONNECT_ATTEMPTS = 4
+
+function connectorTerminalStreamUrl(
+  connectorId: string,
+  terminalId: string,
+  token: string,
+  fromSeq = 0,
+): string {
   const apiBase = process.env.NEXT_PUBLIC_AGENTS_ANYWHERE_API?.replace(/\/$/, "") || ""
   const path = apiPath(`/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}/stream`)
   const url = new URL(path, apiBase || window.location.origin)
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
   url.searchParams.set("token", token)
-  url.searchParams.set("fromSeq", "0")
+  url.searchParams.set("fromSeq", String(fromSeq))
   return url.toString()
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
@@ -29,6 +31,10 @@ func (a *App) registerShareRoutes(mux *http.ServeMux) {
 	// both costs one route and keeps either client working.
 	mux.HandleFunc("GET /api/v2/shares/{share_id}", a.handlePublicSessionShare)
 	mux.HandleFunc("GET /api/v2/public/shares/{share_id}", a.handlePublicSessionShare)
+	// Public share pages load images and downloads from this unauthenticated
+	// route; the share id is the credential, exactly as for the snapshot.
+	mux.HandleFunc("GET /api/v2/public/shares/{share_id}/attachments/{file_id}",
+		a.handlePublicShareAttachment)
 
 	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/sessions/archive-all",
 		a.requireUser(a.handleConnectorArchiveAll))
@@ -212,11 +218,17 @@ func (a *App) handleCreateSessionShare(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
+	allowedFiles, err := json.Marshal(attachmentFileIDs(views))
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
 	share, err := a.db.CreateSessionShare(r.Context(), store.SessionShare{
-		UserID:       user.ID,
-		SessionID:    session.ID,
-		Scope:        scope,
-		SnapshotJSON: string(snapshot),
+		UserID:             user.ID,
+		SessionID:          session.ID,
+		Scope:              scope,
+		SnapshotJSON:       string(snapshot),
+		AllowedFileIDsJSON: string(allowedFiles),
 	})
 	if err != nil {
 		httpx.Fail(w, err)
@@ -301,6 +313,93 @@ func (a *App) handlePublicSessionShare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handlePublicShareAttachment serves a blob that the frozen snapshot
+// references. The allow-list is recorded at share creation, so a link cannot
+// reach files uploaded after it was made.
+func (a *App) handlePublicShareAttachment(w http.ResponseWriter, r *http.Request) {
+	share, err := a.db.SessionShareByID(r.Context(), r.PathValue("share_id"))
+	if err != nil {
+		httpx.Fail(w, httpx.NotFound("share not found"))
+		return
+	}
+	fileID := r.PathValue("file_id")
+	var allowed []string
+	if err := json.Unmarshal([]byte(share.AllowedFileIDsJSON), &allowed); err != nil {
+		httpx.Fail(w, httpx.NewError(http.StatusInternalServerError, "share attachment list is corrupt"))
+		return
+	}
+	if !containsString(allowed, fileID) {
+		httpx.Fail(w, httpx.NotFound("file not found"))
+		return
+	}
+	meta, data, err := store.ReadAttachment(a.cfg.UploadDir, share.SessionID, fileID)
+	if err != nil {
+		writeAttachmentError(w, err)
+		return
+	}
+	mediaType := meta.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	// The public page expects the blob inline so <img> can render it. A
+	// sandboxing CSP keeps an uploaded HTML or SVG from running script on the
+	// app's origin if someone opens it directly.
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", contentDisposition("inline", meta.Name))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Set("X-File-Name", safeHeaderValue(meta.Name))
+	w.Header().Set("X-File-Sha256", meta.SHA256)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
+}
+
+// attachmentFileIDs collects every fileId referenced anywhere in the shared
+// item payloads. The public attachment route only serves these.
+func attachmentFileIDs(items []ItemView) []string {
+	seen := map[string]struct{}{}
+	var walk func(value any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if key == "fileId" {
+					if id, ok := child.(string); ok && id != "" {
+						seen[id] = struct{}{}
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	for _, item := range items {
+		var content any
+		if json.Unmarshal(item.Content, &content) == nil {
+			walk(content)
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func sharedSessionInfoFrom(session store.Session) sharedSessionInfo {
 	info := sharedSessionInfo{ID: session.ID, Runtime: session.Runtime}
 	if session.Title != "" {
@@ -376,6 +475,65 @@ func (a *App) handleConnectorArchiveAll(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		httpx.Fail(w, err)
 		return
+	}
+	a.writeArchiveAll(w, r, sessions)
+}
+
+// handleProjectArchiveAll archives or restores the sessions of one project.
+// The store's scoped helper filters by connector, not project, so the project's
+// sessions are selected first and the batch update is reused.
+func (a *App) handleProjectArchiveAll(w http.ResponseWriter, r *http.Request, user store.User) {
+	project, ok := a.ownedProject(w, r, user)
+	if !ok {
+		return
+	}
+	archived, scope, ok := decodeArchiveAll(w, r)
+	if !ok {
+		return
+	}
+	states := []bool{false}
+	switch scope {
+	case "archived":
+		states = []bool{true}
+	case "all":
+		states = []bool{false, true}
+	}
+
+	sessions := make([]store.Session, 0)
+	for _, state := range states {
+		matches, err := a.db.ListAllSessions(r.Context(), user.ID, state)
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		for _, session := range matches {
+			if session.ProjectID == project.ID {
+				sessions = append(sessions, session)
+			}
+		}
+	}
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if sessions[i].Pinned != sessions[j].Pinned {
+			return sessions[i].Pinned
+		}
+		if sessions[i].SortAt != sessions[j].SortAt {
+			return sessions[i].SortAt > sessions[j].SortAt
+		}
+		return sessions[i].CreatedAt > sessions[j].CreatedAt
+	})
+
+	ids := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, session.ID)
+	}
+	if len(ids) > 0 {
+		if err := a.db.SetSessionsArchived(r.Context(), user.ID, ids, archived); err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+	}
+	for i := range sessions {
+		sessions[i].Archived = archived
 	}
 	a.writeArchiveAll(w, r, sessions)
 }

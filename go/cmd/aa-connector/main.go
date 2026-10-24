@@ -73,6 +73,9 @@ func main() {
 	if !bridge.Enabled() {
 		log.Warn("the plugin bridge is off; set AGENT_CONNECTOR_CLAUDE_PLUGIN_BRIDGE=1 to drive sessions",
 			"dir", cfg.BridgeDir)
+		// A nil bridge makes the switch real: hello and beat advertise no
+		// delivery capability, so the server never sends a submit here.
+		b = nil
 	}
 
 	client := connector.NewClient(wsURL(profile.ServerURL), profile.ConnectorToken,
@@ -80,12 +83,14 @@ func main() {
 
 	client.Discovery = connector.NewDiscovery(log)
 
-	approvals := connector.NewApprovalServer(b.ApprovalPath(), approvalToken(b), client.Ask, log)
-	if err := approvals.Start(); err != nil {
-		log.Error("could not start the approval endpoint", "error", err)
-		os.Exit(1)
+	if b != nil {
+		approvals := connector.NewApprovalServer(b.ApprovalPath(), approvalToken(b), client.Ask, log)
+		if err := approvals.Start(); err != nil {
+			log.Error("could not start the approval endpoint", "error", err)
+			os.Exit(1)
+		}
+		defer approvals.Stop()
 	}
-	defer approvals.Stop()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

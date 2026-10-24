@@ -2,11 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -82,15 +81,32 @@ func (a *App) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 			expires = &value
 		}
 	}
+	stored := a.loadInstanceSettings(r.Context())
+	// Same rule as the reference implementation: an enabled provider is only
+	// usable once it names an authorize endpoint and a client id.
+	oauthEnabled := stored.OAuth != nil && stored.OAuth.Enabled &&
+		stored.OAuth.AuthorizeURL != "" && stored.OAuth.ClientID != ""
+	var oauthLabel *string
+	if oauthEnabled {
+		label := "OAuth"
+		if strings.TrimSpace(stored.OAuth.Label) != "" {
+			label = stored.OAuth.Label
+		}
+		oauthLabel = &label
+	}
+	emailEnabled := stored.Email.Enabled
 	httpx.OK(w, authConfigResponse{
-		EmailVerificationRequired: false,
+		EmailVerificationRequired: emailEnabled,
 		NeedsBootstrap:            needsBootstrap,
-		RegistrationOpen:          true,
-		OAuthRegistrationOpen:     false,
-		OAuthEnabled:              false,
-		PasswordResetEnabled:      false,
-		SetupTokenExpiresAt:       expires,
-		ServerTime:                timestampNow(),
+		// The first account must always be creatable, even if an administrator
+		// closed registration before removing every user.
+		RegistrationOpen:      stored.RegistrationOpen || needsBootstrap,
+		OAuthRegistrationOpen: stored.OAuthRegistrationOpen,
+		OAuthEnabled:          oauthEnabled,
+		OAuthProviderLabel:    oauthLabel,
+		PasswordResetEnabled:  emailEnabled && stored.PasswordResetEnabled,
+		SetupTokenExpiresAt:   expires,
+		ServerTime:            timestampNow(),
 	})
 }
 
@@ -109,8 +125,9 @@ func (a *App) setupTokenExpiry(ctx context.Context) (int64, bool) {
 
 // handlePasswordSalt returns the salt login should hash with.
 //
-// An unknown address gets a fresh random salt, so the response cannot be used
-// to discover which addresses have accounts.
+// An unknown address gets a deterministic salt derived from a server secret,
+// so the response cannot be used to discover which addresses have accounts:
+// repeated calls for the same address return the same value either way.
 func (a *App) handlePasswordSalt(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email string `json:"email"`
@@ -124,9 +141,18 @@ func (a *App) handlePasswordSalt(w http.ResponseWriter, r *http.Request) {
 		salt = auth.PasswordSalt(user.PasswordHash)
 	}
 	if salt == "" {
-		salt = randomSalt()
+		salt = dummyPasswordSalt(body.Email)
 	}
 	httpx.OK(w, map[string]any{"salt": salt, "serverTime": timestampNow()})
+}
+
+// dummyPasswordSalt derives a stable stand-in salt. It is never used to store
+// a credential; it only keeps an unknown address indistinguishable from a
+// known one that happens to return a salt.
+func dummyPasswordSalt(email string) string {
+	mac := hmac.New(sha256.New, auth.Secret())
+	mac.Write([]byte("password-salt:" + store.NormaliseEmail(email)))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:16])
 }
 
 // handleRegister creates the first administrator or a later member.
@@ -145,6 +171,10 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	count, err := a.db.CountUsers(r.Context())
 	if err != nil {
 		httpx.Fail(w, err)
+		return
+	}
+	if count > 0 && !a.loadInstanceSettings(r.Context()).RegistrationOpen {
+		httpx.Fail(w, httpx.Forbidden("registration is closed"))
 		return
 	}
 	role := "member"
@@ -196,7 +226,9 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := a.db.UserByEmail(r.Context(), body.Email)
 	if err != nil {
-		// Same message and timing shape for unknown accounts.
+		// An unknown account must cost the same PBKDF2 work as a wrong
+		// password, or response time reveals which addresses exist.
+		dummyCredentialCheck(body)
 		httpx.Fail(w, httpx.Unauthorized("invalid credentials"))
 		return
 	}
@@ -406,6 +438,25 @@ func credentialHashFromParts(password, verifier, salt *string) (string, error) {
 	return auth.HashPassword(*password, "")
 }
 
+// dummyLoginSalt is fixed so the unknown-account path performs the same work
+// on every request without storing anything.
+const dummyLoginSalt = "agents-anywhere-login-timing-dummy"
+
+// dummyCredentialCheck spends the same effort as a real failed verification.
+func dummyCredentialCheck(body authRequest) {
+	if body.Password != nil && *body.Password != "" {
+		_, _ = auth.HashPassword(*body.Password, dummyLoginSalt)
+		return
+	}
+	if body.PasswordVerifier != nil && *body.PasswordVerifier != "" {
+		// The verifier path is a constant-time compare; keep the compared
+		// strings the same length as a stored digest.
+		stored := "pbkdf2_sha256$" + dummyLoginSalt + "$" +
+			strings.Repeat("0", len(*body.PasswordVerifier))
+		_ = auth.VerifyPasswordVerifier(*body.PasswordVerifier, stored)
+	}
+}
+
 // verifyCredential checks whichever form the client sent.
 func (a *App) verifyCredential(user store.User, body authRequest) bool {
 	if body.PasswordVerifier != nil && *body.PasswordVerifier != "" {
@@ -480,8 +531,3 @@ func subtleEqual(a, b string) bool {
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
 }
-
-// HashTokenHex is used by tests to build a stored connector token.
-var _ = hex.EncodeToString
-
-var _ = errors.Is

@@ -92,14 +92,18 @@ func (r *approveRegistry) add(noticeID, connectorID string, req protocol.Approva
 	r.connOf[noticeID] = connectorID
 }
 
-func (r *approveRegistry) take(noticeID string) (protocol.ApprovalRequest, string, bool) {
+// takeFor removes a notice only when it belongs to the named session and
+// connector. A mismatched request leaves it pending: another session's id must
+// not be able to consume (and thereby approve or deny) it.
+func (r *approveRegistry) takeFor(
+	noticeID, sessionID, connectorID string,
+) (protocol.ApprovalRequest, string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	req, ok := r.byID[noticeID]
-	if !ok {
+	if !ok || req.SessionID != sessionID || r.connOf[noticeID] != connectorID {
 		return protocol.ApprovalRequest{}, "", false
 	}
-	connectorID := r.connOf[noticeID]
 	delete(r.byID, noticeID)
 	delete(r.connOf, noticeID)
 	return req, connectorID, true
@@ -445,7 +449,7 @@ func (a *App) setSessionStatus(ctx context.Context, sessionID, status string) {
 		a.broker.Publish(sessionID, frame)
 	}
 	if frame, err := newEnvelope(sessionID, session.UpdatedSeq, EventRuntimeState, map[string]any{
-		"state": a.runtimeState(session),
+		"state": a.runtimeState(ctx, session),
 	}); err == nil {
 		a.broker.Publish(sessionID, frame)
 	}

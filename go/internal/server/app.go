@@ -97,9 +97,23 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v2/connectors/{connector_id}", a.requireUser(a.handleDeleteConnector))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes", a.requireUser(a.handleListRuntimes))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtime-types", a.requireUser(a.handleRuntimeTypes))
+	// Discovery is a no-op for this connector: it always reports exactly one
+	// runtime type and one instance. Answering with the current inventory keeps
+	// the device page's refresh button working.
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/runtime-types/discover", a.requireUser(a.handleRuntimeTypes))
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/runtimes/discover", a.requireUser(a.handleListRuntimes))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/preferences", a.requireUser(a.handleConnectorPreferences))
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/runtimes", a.requireUser(a.handleRuntimeManagementUnsupported))
+	mux.HandleFunc("PATCH /api/v2/connectors/{connector_id}/runtimes/{runtime_id}", a.requireUser(a.handleRuntimeManagementUnsupported))
+	mux.HandleFunc("PUT /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/config", a.requireUser(a.handleRuntimeManagementUnsupported))
+	mux.HandleFunc("DELETE /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/config", a.requireUser(a.handleRuntimeManagementUnsupported))
+	mux.HandleFunc("PUT /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/active", a.requireUser(a.handleRuntimeManagementUnsupported))
 	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/fs/list", a.requireUser(a.handleFSList))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}", a.requireUser(a.handleGetRuntime))
 	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/capabilities", a.requireUser(a.handleRuntimeCapabilities))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/catalogs/model", a.requireUser(a.handleConnectorModelCatalog))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/catalogs/permission", a.requireUser(a.handleConnectorPermissionCatalog))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/runtimes/{runtime_id}/commands", a.requireUser(a.handleConnectorCommands))
 
 	// Projects.
 	mux.HandleFunc("GET /api/v2/projects", a.requireUser(a.handleListProjects))
@@ -107,6 +121,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v2/projects/{project_id}", a.requireUser(a.handlePatchProject))
 	mux.HandleFunc("DELETE /api/v2/projects/{project_id}", a.requireUser(a.handleDeleteProject))
 	mux.HandleFunc("GET /api/v2/projects/{project_id}/sessions", a.requireUser(a.handleProjectSessions))
+	mux.HandleFunc("POST /api/v2/projects/{project_id}/sessions/archive-all", a.requireUser(a.handleProjectArchiveAll))
 
 	// Announcements.
 	mux.HandleFunc("GET /api/v2/announcement", a.handleAnnouncement)
@@ -135,6 +150,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleReleaseTakeover))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/messages", a.requireUser(a.handleSendMessage))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/interrupt", a.requireUser(a.handleInterrupt))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/steer", a.requireUser(a.handleSteer))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/state", a.requireUser(a.handleRuntimeState))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/activity", a.requireUser(a.handleSessionActivity))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/capabilities", a.requireUser(a.handleSessionCapabilities))

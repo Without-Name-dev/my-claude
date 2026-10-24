@@ -161,7 +161,7 @@ func fsResult(t *testing.T, body map[string]any) map[string]any {
 	return result
 }
 
-func TestFSReadSmallReturnsBase64(t *testing.T) {
+func TestFSReadSmallUsesTransfer(t *testing.T) {
 	env := newFSTestEnv(t)
 	content := []byte("hello from the file panel\n")
 	fsWriteTestFile(t, env.root, "hello.txt", content)
@@ -173,19 +173,32 @@ func TestFSReadSmallReturnsBase64(t *testing.T) {
 		t.Fatalf("read status = %d: %s", status, raw)
 	}
 	result := fsResult(t, body)
-	encoded, _ := result["contentBase64"].(string)
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatalf("contentBase64: %v", err)
+	transferID, _ := result["transferId"].(string)
+	transferToken, _ := result["token"].(string)
+	downloadURL, _ := result["downloadUrl"].(string)
+	if transferID == "" || transferToken == "" || downloadURL == "" {
+		t.Fatalf("small read did not return a transfer: %#v", result)
 	}
-	if !bytes.Equal(decoded, content) {
-		t.Fatalf("content = %q, want %q", decoded, content)
-	}
-	if _, hasTransfer := result["transferId"]; hasTransfer {
-		t.Fatalf("a small file must be inline, got transfer: %#v", result)
+	if _, inline := result["contentBase64"]; inline {
+		t.Fatalf("a small file must use a transfer, not contentBase64")
 	}
 	if result["size"].(float64) != float64(len(content)) {
 		t.Fatalf("size = %v, want %d", result["size"], len(content))
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, env.srv.URL+downloadURL, nil)
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("download transfer: %v", err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d: %s", resp.StatusCode, got)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("downloaded %q, want %q", got, content)
 	}
 }
 
@@ -660,5 +673,24 @@ func TestFSManualServer(t *testing.T) {
 			t.Fatal("timed out waiting for the stop file")
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// waitForConnector blocks until the connector has a socket or ctx ends.
+func (h *ConnectorHub) waitForConnector(ctx context.Context, connectorID string) bool {
+	if h.Online(connectorID) {
+		return true
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if h.Online(connectorID) {
+				return true
+			}
+		}
 	}
 }

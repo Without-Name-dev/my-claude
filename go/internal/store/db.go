@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql
@@ -151,6 +151,22 @@ var ErrNoRows = sql.ErrNoRows
 // ErrNotFound is the store-level "no such row".
 var ErrNotFound = errors.New("not found")
 
+// isUniqueConstraint reports whether err is a UNIQUE violation on the given
+// column list. The driver reports the extended constraint code, so the primary
+// code is the low byte; the column list distinguishes the constraint because
+// one table can have several.
+func isUniqueConstraint(err error, columns string) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	const sqliteConstraint = 19
+	if sqliteErr.Code()&0xff != sqliteConstraint {
+		return false
+	}
+	return strings.Contains(sqliteErr.Error(), "UNIQUE constraint failed: "+columns)
+}
+
 // migrate applies every embedded migration that has not run yet, in filename
 // order, each inside its own transaction.
 func migrate(ctx context.Context, db *sql.DB) error {
@@ -197,6 +213,20 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		}
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
+			return err
+		}
+		// The applied set was read before any transaction was open, so another
+		// process may have applied this version in the meantime. Re-check under
+		// the write lock (the DSN opens transactions with BEGIN IMMEDIATE) so
+		// only one process executes each migration.
+		var alreadyApplied int
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM schema_migrations WHERE version = ?`, version).Scan(&alreadyApplied); {
+		case err == nil:
+			tx.Rollback()
+			continue
+		case !errors.Is(err, sql.ErrNoRows):
+			tx.Rollback()
 			return err
 		}
 		for _, stmt := range splitStatements(string(body)) {

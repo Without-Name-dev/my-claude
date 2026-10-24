@@ -10,16 +10,27 @@ const subscriberQueue = 256
 // Subscriber is one websocket's queue.
 type Subscriber struct {
 	frames chan []byte
-
-	// closeOnce guards Close so a double close from two code paths is safe.
+	// done is closed once when the subscription ends. The frames channel is
+	// never closed: Publish may discover a subscriber just after it was
+	// removed, and a send on a closed channel would panic.
+	done      chan struct{}
 	closeOnce sync.Once
 }
 
 // Frames is the channel a websocket sends from.
 func (s *Subscriber) Frames() <-chan []byte { return s.frames }
 
-// Close ends the subscription; the reader sees a closed channel.
-func (s *Subscriber) Close() { s.closeOnce.Do(func() { close(s.frames) }) }
+// Done is closed when the subscription ends.
+func (s *Subscriber) Done() <-chan struct{} { return s.done }
+
+// Close ends the subscription; the reader selects on Done.
+func (s *Subscriber) Close() {
+	s.closeOnce.Do(func() {
+		if s.done != nil {
+			close(s.done)
+		}
+	})
+}
 
 // Broker fans session events out to every socket watching that session.
 type Broker struct {
@@ -34,7 +45,10 @@ func NewBroker() *Broker {
 
 // Subscribe registers a socket for one session.
 func (b *Broker) Subscribe(sessionID string) *Subscriber {
-	sub := &Subscriber{frames: make(chan []byte, subscriberQueue)}
+	sub := &Subscriber{
+		frames: make(chan []byte, subscriberQueue),
+		done:   make(chan struct{}),
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	set, ok := b.subs[sessionID]
@@ -46,7 +60,7 @@ func (b *Broker) Subscribe(sessionID string) *Subscriber {
 	return sub
 }
 
-// Unsubscribe removes a socket and closes its queue.
+// Unsubscribe removes a socket and signals its reader to stop.
 func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 	b.mu.Lock()
 	if set, ok := b.subs[sessionID]; ok {
@@ -75,6 +89,11 @@ func (b *Broker) Publish(sessionID string, frame []byte) {
 
 	for _, sub := range targets {
 		select {
+		case <-sub.done:
+			continue
+		default:
+		}
+		select {
 		case sub.frames <- frame:
 		default:
 			// Drop the oldest, then enqueue. The drain is non-blocking because
@@ -85,15 +104,9 @@ func (b *Broker) Publish(sessionID string, frame []byte) {
 			}
 			select {
 			case sub.frames <- frame:
+			case <-sub.done:
 			default:
 			}
 		}
 	}
-}
-
-// SubscriberCount reports how many sockets watch a session.
-func (b *Broker) SubscriberCount(sessionID string) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.subs[sessionID])
 }

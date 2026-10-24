@@ -1,8 +1,16 @@
-# Server Architecture
+# Server Architecture (Python Reference)
 
-The v2 Server uses explicit transport, service, domain, repository-port, and
-infrastructure boundaries. The current refactor keeps behavior stable while
-moving dependencies toward the domain.
+> **The production server is the Go implementation in [`go/`](../go/README.md).**
+> `cmd/aa-server` is a single Go binary: `internal/server` holds the HTTP
+> handlers, WebSockets and projections, `internal/store` owns the SQLite file,
+> WAL mode and embedded SQL migrations, and `internal/connector` handles session
+> discovery, turns, approvals and RPC. This page documents the retired Python
+> reference implementation under `server/` and does not describe the running
+> service.
+
+The Python reference v2 Server uses explicit transport, service, domain,
+repository-port, and infrastructure boundaries. The refactor kept behavior
+stable while moving dependencies toward the domain.
 
 ## Layers
 

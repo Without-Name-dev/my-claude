@@ -34,9 +34,6 @@ struct AccountSettingsSheet: View {
                         NavigationLink { AccountIdentitySettingsView(mode: .nickname, draft: $drafts.nickname) } label: {
                             SettingsRow(title: String(localized: "Nickname"), symbol: "person.text.rectangle", value: me.displayName)
                         }
-                        NavigationLink { AccountIdentitySettingsView(mode: .email, draft: $drafts.email) } label: {
-                            SettingsRow(title: String(localized: "Email"), symbol: "envelope", value: me.email)
-                        }
                         NavigationLink { AvatarSettingsView(draft: $drafts.avatar) } label: {
                             SettingsRow(title: String(localized: "Profile photo"), symbol: "person.crop.circle")
                         }

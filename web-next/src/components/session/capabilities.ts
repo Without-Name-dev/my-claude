@@ -1,5 +1,14 @@
 import type { ProtocolCapability, ProtocolCapabilitySet } from "@/features/dashboard/types"
 
+/**
+ * The Go server rejects attachments on message send and create-and-start until
+ * it can persist uploads and forward AttachmentRefs to the connector. The
+ * new-session composer hides upload controls while this is false; existing
+ * sessions are already gated by the session-scoped runtime.attachment
+ * capability, which the server does not advertise yet.
+ */
+export const SERVER_ATTACHMENT_SUPPORTED = false
+
 export const CAPABILITY = {
   sendMessage: "session.send_message",
   commands: "session.commands",

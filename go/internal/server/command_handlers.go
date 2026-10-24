@@ -70,6 +70,11 @@ func (a *App) handleListCommands(w http.ResponseWriter, r *http.Request, user st
 		}
 	}
 
+	httpx.OK(w, map[string]any{"commands": commandViews(query, limit), "serverTime": timestampNow()})
+}
+
+// commandViews renders the built-in menu, filtered by id or title.
+func commandViews(query string, limit int) []RuntimeCommandView {
 	out := make([]RuntimeCommandView, 0, len(builtinCommands))
 	for _, command := range builtinCommands {
 		if query != "" && !strings.Contains(command.id, query) &&
@@ -94,7 +99,7 @@ func (a *App) handleListCommands(w http.ResponseWriter, r *http.Request, user st
 			break
 		}
 	}
-	httpx.OK(w, map[string]any{"commands": out, "serverTime": timestampNow()})
+	return out
 }
 
 // handleRunCommand executes a slash command through the connector.

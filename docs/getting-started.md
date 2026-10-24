@@ -20,7 +20,7 @@
 - **iOS / iPadOS：** 在 [App Store](https://apps.apple.com/cn/app/agents-anywhere/id6787125178) 下载安装；也可以通过 [TestFlight](https://testflight.apple.com/join/GKGaut99) 安装测试版，以邀请页的可用状态为准。
 - **Web：** 打开 [web.agents-anywhere.com](https://web.agents-anywhere.com)。
 
-在工作设备上使用桌面客户端，或按 [Connector CLI 说明](../connector/README.md#run)接入无图形界面的机器。手机、平板和 Web 用于访问已连接的工作设备。
+在工作设备上使用桌面客户端，或按 [Go Connector 说明](../go/README.md#connector)接入无图形界面的机器（配对后运行 `aa-connector --config`）；Python 参考 Connector 见 [connector/README.md](../connector/README.md)。手机、平板和 Web 用于访问已连接的工作设备。
 
 ## 2. 登录服务
 
@@ -34,7 +34,7 @@
 
 展开连接自己的服务实例的选项，填入服务地址并登录。首次部署的管理员需要从 Server 日志取得 setup token，在 Web 完成首位管理员设置。后续账号由该实例的注册策略和管理员管理。
 
-使用 Connector CLI 时，`--server-url` 填写服务根地址，例如 `https://aa.example.com`，省略 `/api/v2`。部署步骤见 [Docker 文档](../docker/README.md)。
+使用 Connector CLI 时，服务地址填写服务根地址，例如 `https://aa.example.com`，省略 `/api/v2`。部署步骤见 [Go Server 文档](../go/README.md) 或 [Docker（Python 参考栈）](../docker/README.md)。
 
 ## 3. 连接工作设备并创建会话
 

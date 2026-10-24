@@ -1,4 +1,5 @@
 import type { TimelineItem } from "@/features/dashboard/types"
+import { isClaudeInterruptedRequestMarker } from "./session-utils.ts"
 
 export type FileChangeAction = "add" | "modify" | "delete" | "rename" | "unknown"
 export type ReviewFileAction = "add" | "modify" | "delete"
@@ -69,11 +70,6 @@ type ExtractedFileChange = {
 // A streamed item is replaced rather than mutated. Parse and count each file
 // change once per item object, without retaining obsolete payloads by ID.
 const fileChangesByItem = new WeakMap<TimelineItem, ExtractedFileChange[]>()
-
-const CLAUDE_INTERRUPTED_REQUEST_MARKERS = new Set([
-  "[Request interrupted by user]",
-  "[Request interrupted by user for tool use]",
-])
 
 export function buildLatestChangedTurnReview(
   items: TimelineItem[],
@@ -265,7 +261,7 @@ function isVisibleUserTurnBoundary(item: TimelineItem): boolean {
     item.content.message,
     item.content.rawText,
   )?.trim()
-  return !message || !CLAUDE_INTERRUPTED_REQUEST_MARKERS.has(message)
+  return !message || !isClaudeInterruptedRequestMarker(message)
 }
 
 function latestTimelineItemRevisions(items: TimelineItem[]): TimelineItem[] {

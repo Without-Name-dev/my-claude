@@ -754,6 +754,11 @@ export type SessionRuntimeStateResponse = {
   serverTime: string;
 };
 
+export type SessionNoticesResponse = {
+  notices: Notice[];
+  serverTime: string;
+};
+
 export type SessionSelectionPatchResponse = {
   ok: boolean;
   state?: SessionRuntimeState | null;

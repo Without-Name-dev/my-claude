@@ -239,18 +239,6 @@ export function withServerAttachments(
   }
 }
 
-export function revokeOptimisticItemResources(item: TimelineItem): void {
-  for (const attachment of attachmentsFromContent(item.content)) {
-    revokeOptimisticAttachmentPreview(attachment)
-  }
-}
-
-function revokeOptimisticAttachmentPreview(attachment: Record<string, unknown>): void {
-  const previewUrl = attachment.previewUrl
-  if (typeof previewUrl !== "string" || !previewUrl.startsWith("blob:")) return
-  URL.revokeObjectURL(previewUrl)
-}
-
 export function markOptimisticItemFailed(item: TimelineItem, message: string): TimelineItem {
   return {
     ...item,

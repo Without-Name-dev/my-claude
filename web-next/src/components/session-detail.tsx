@@ -18,7 +18,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { createClientId } from "@/lib/id"
-import { isApiError } from "@/lib/api/errors"
+import { isApiError, isAuthFailure } from "@/lib/api/errors"
 import { cn } from "@/lib/utils"
 import { dashboardApi } from "@/features/dashboard/api"
 import type {
@@ -27,7 +27,6 @@ import type {
   ProtocolEventEnvelope,
   ProtocolModelCatalog,
   ProtocolPermissionCatalog,
-  RuntimeStatusValue,
   SessionLocalTimelineState,
   SessionSnapshotResponse,
   SessionRuntimeState,
@@ -75,10 +74,17 @@ import { nextTimelineResetVersion } from "@/components/session/session-review-hi
 import { createTurnReviewDisplaySelector, type SessionReviewTarget } from "@/components/session/session-review-model"
 import { SessionReviewCard } from "@/components/session/session-review-card"
 import { SessionReviewTag } from "@/components/session/session-review-tag"
-import { isVisibleTimelineItem, messageText, runtimeLabel, textOf } from "@/components/session/session-utils"
+import {
+  effectiveRuntimeStatus,
+  isVisibleTimelineItem,
+  messageText,
+  runtimeLabel,
+  textOf,
+} from "@/components/session/session-utils"
 import { stripInjectedAttachmentMentions } from "@/features/dashboard/attachments"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
 import { useWorkspace } from "@/components/workspace-context"
+import { useAuth } from "@/components/auth/auth-context"
 
 type SessionDetailProps = {
   token: string
@@ -133,6 +139,7 @@ function remoteStateFromOptimisticState(optimisticState: SessionLocalTimelineSta
 }
 
 const INITIAL_TIMELINE_LIMIT = 100
+const INITIAL_LOAD_MAX_ATTEMPTS = 3
 const TIMELINE_PAGE_LIMIT = 100
 const LOAD_OLDER_SCROLL_THRESHOLD = 96
 const SCROLL_TO_BOTTOM_PRUNE_DISTANCE = 180
@@ -156,10 +163,19 @@ async function loadInitialSessionState(
   options: { reason?: string } = {},
 ): Promise<SessionRemoteState> {
   const reason = options.reason ?? "session-detail.initial-load"
-  const snapshot = await dashboardApi.getSessionSnapshot(token, sessionId, INITIAL_TIMELINE_LIMIT, {
-    reason,
-  })
+  const [snapshot, noticesResponse] = await Promise.all([
+    dashboardApi.getSessionSnapshot(token, sessionId, INITIAL_TIMELINE_LIMIT, {
+      reason,
+    }),
+    dashboardApi.getSessionNotices(token, sessionId).catch(() => null),
+  ])
   const state = sessionStateFromSnapshot(snapshot)
+  if (noticesResponse) {
+    state.notices = mergeNotices(
+      state.notices,
+      serverNotices(noticesResponse.notices, noticesResponse.serverTime),
+    )
+  }
   console.info("[session_status_trace]", {
     layer: "frontend-snapshot",
     reason,
@@ -180,7 +196,7 @@ function sessionStateFromSnapshot(snapshot: SessionSnapshotResponse): SessionRem
     session: snapshot.session,
     state: snapshot.state ?? null,
     items: mergeTimelineItems([], snapshot.timeline.items),
-    notices: snapshot.notices,
+    notices: serverNotices(snapshot.notices, snapshot.serverTime),
     nextSeq: snapshot.timeline.nextSeq,
     hasMore: snapshot.timeline.hasMore,
     timelineResetVersion: 0,
@@ -314,7 +330,7 @@ function writeComposerDraft(sessionId: string, value: string) {
   }
 }
 
-export function SessionDetail({
+function SessionDetailView({
   token,
   sessionId,
   fallbackSession,
@@ -338,10 +354,17 @@ export function SessionDetail({
     markOptimisticMessageFailed,
     replaceHome,
   } = useWorkspace()
+  const { signOut } = useAuth()
+  const signOutRef = React.useRef(signOut)
+  signOutRef.current = signOut
   const initialOptimisticState = getOptimisticSessionState(sessionId)
   const [state, setState] = React.useState<SessionRemoteState | null>(() =>
     initialOptimisticState ? remoteStateFromOptimisticState(initialOptimisticState) : null,
   )
+  const memorySnapshotRef = React.useRef<{
+    callback: SessionDetailProps["onMemorySnapshotUpdated"]
+    snapshot: SessionMemorySnapshot | null
+  }>({ callback: undefined, snapshot: null })
   const [loading, setLoading] = React.useState(() => !initialOptimisticState)
   const [error, setError] = React.useState<string | null>(null)
   const [sending, setSending] = React.useState(false)
@@ -701,11 +724,30 @@ export function SessionDetail({
   }, [composerInsertion, consumeComposerInsertion, sessionId])
 
   React.useEffect(() => {
+    const previous = memorySnapshotRef.current
+    const callbackChanged = previous.callback !== onMemorySnapshotUpdated
     if (!state) {
-      onMemorySnapshotUpdated?.(null)
+      if (callbackChanged || previous.snapshot !== null) {
+        memorySnapshotRef.current = { callback: onMemorySnapshotUpdated, snapshot: null }
+        onMemorySnapshotUpdated?.(null)
+      }
       return
     }
-    onMemorySnapshotUpdated?.({
+    const pendingInteractionCount = blockingInteractions(state.notices, state.session.id).length
+    const snapshot = previous.snapshot
+    if (
+      !callbackChanged &&
+      snapshot &&
+      snapshot.session === state.session &&
+      snapshot.state === (state.state ?? null) &&
+      snapshot.items === state.items &&
+      snapshot.notices === state.notices &&
+      snapshot.nextSeq === state.nextSeq &&
+      snapshot.hasMore === state.hasMore &&
+      snapshot.timelineResetVersion === state.timelineResetVersion &&
+      snapshot.pendingInteractionCount === pendingInteractionCount
+    ) return
+    const next: SessionMemorySnapshot = {
       session: state.session,
       state: state.state ?? null,
       items: state.items,
@@ -714,8 +756,10 @@ export function SessionDetail({
       hasMore: state.hasMore,
       timelineResetVersion: state.timelineResetVersion,
       serverTime: state.serverTime,
-      pendingInteractionCount: blockingInteractions(state.notices, state.session.id).length,
-    })
+      pendingInteractionCount,
+    }
+    memorySnapshotRef.current = { callback: onMemorySnapshotUpdated, snapshot: next }
+    onMemorySnapshotUpdated?.(next)
   }, [onMemorySnapshotUpdated, state])
 
   React.useEffect(() => {
@@ -861,6 +905,9 @@ export function SessionDetail({
     let recoveryPromise: Promise<void> | null = null
     let recoveryStarting = false
     let snapshotReady = false
+    let snapshotHydrated = false
+    let initialRetryTimer: number | null = null
+    let initialLoadAttempt = 0
     let socketSubscribed = false
     let connectionSequence = 0
     const recoveredSubscriptions = createRecoveredSubscriptionTracker(() => {
@@ -884,6 +931,8 @@ export function SessionDetail({
       refetchPromise = loadInitialSessionState(token, sessionId, { reason })
         .then((next) => {
           if (cancelled) return
+          snapshotHydrated = true
+          setError(null)
           const merged = applyOptimisticItemsRef.current(next)
           renderBuffer.clear()
           clearResolvedOptimisticMessagesRef.current(sessionId, merged.items)
@@ -898,7 +947,9 @@ export function SessionDetail({
           }))
           onSessionUpdatedRef.current?.(next.session)
         })
-        .catch(() => undefined)
+        .catch((error) => {
+          if (!cancelled && isAuthFailure(error)) signOutRef.current?.()
+        })
         .finally(() => {
           refetchPromise = null
         })
@@ -969,17 +1020,19 @@ export function SessionDetail({
               sessionId,
               cursorSequence(recovery.nextCursor),
             )
-            // Runtime state is not recovered by /events. Read it even when
-            // offline so the Server can return its last cached/persisted fact.
-            // Keep events received during these reads queued until both settle.
+            // Runtime state and pending notices are not recovered by /events.
+            // Read them even when offline so the Server can return its last
+            // cached/persisted fact. Keep events received during these reads
+            // queued until all settle.
             const bufferedBeforeLiveRead = bufferedEvents
             bufferedEvents = []
             const liveReadConnection = connectionSequence
-            const [stateResult, capabilitiesResult] = await Promise.allSettled([
+            const [stateResult, capabilitiesResult, noticesResult] = await Promise.allSettled([
               dashboardApi.getSessionRuntimeState(token, sessionId),
               shouldReadLiveCapabilities
                 ? dashboardApi.getSessionRuntimeCapabilities(token, sessionId)
                 : Promise.resolve(null),
+              dashboardApi.getSessionNotices(token, sessionId),
             ])
             if (cancelled) return
             const liveReadIsCurrent = liveReadConnection === connectionSequence
@@ -988,6 +1041,12 @@ export function SessionDetail({
               : null
             const liveCapabilities = liveReadIsCurrent && capabilitiesResult.status === "fulfilled"
               ? capabilitiesResult.value
+              : null
+            const liveNotices = liveReadIsCurrent && noticesResult.status === "fulfilled"
+              ? {
+                  notices: serverNotices(noticesResult.value.notices, noticesResult.value.serverTime),
+                  serverTime: noticesResult.value.serverTime,
+                }
               : null
             bufferedEvents = bufferedEventsAfterLiveCapabilityRead(
               liveState
@@ -1017,17 +1076,32 @@ export function SessionDetail({
                 current.effectiveCapabilities,
                 liveCapabilities?.capabilitySet ?? null,
               )
-              return nextRuntimeState === current.state && nextCapabilities === current.effectiveCapabilities
+              const nextNotices = liveNotices
+                ? mergeNotices(current.notices, liveNotices.notices)
+                : current.notices
+              return nextRuntimeState === current.state &&
+                nextCapabilities === current.effectiveCapabilities &&
+                nextNotices === current.notices
                 ? current
                 : {
                     ...current,
                     state: nextRuntimeState,
                     effectiveCapabilities: nextCapabilities,
-                    serverTime: liveState?.serverTime ?? liveCapabilities?.serverTime ?? current.serverTime,
+                    notices: nextNotices,
+                    serverTime: liveState?.serverTime
+                      ?? liveCapabilities?.serverTime
+                      ?? liveNotices?.serverTime
+                      ?? current.serverTime,
                   }
             })
           })
-          .catch(() => refetch(`${reason}:recovery-failed`))
+          .catch(async (error) => {
+            if (isAuthFailure(error)) {
+              signOutRef.current?.()
+              return
+            }
+            await refetch(`${reason}:recovery-failed`)
+          })
         recoveryPromise = settleSessionEventRecovery(
           recoveryRequest,
           () => {
@@ -1072,6 +1146,12 @@ export function SessionDetail({
       const pendingRecovery = recoveryPromise
       if (pendingRecovery) await pendingRecovery
       if (cancelled || !snapshotReady || !socketSubscribed) return
+      if (!snapshotHydrated) {
+        // The first snapshot failed: a subscription is the earliest safe point
+        // to retry hydration, otherwise recovered events have no state to merge.
+        await refetch(`${reason}:hydrate`)
+        if (cancelled || !socketSubscribed || connection !== connectionSequence || !snapshotHydrated) return
+      }
       await recoverEvents(eventSequenceCursor.current(sessionId), reason)
       if (!cancelled && socketSubscribed && connection === connectionSequence) recoveredSubscriptions.recovered(connection)
     }
@@ -1116,8 +1196,12 @@ export function SessionDetail({
             void connect()
           }, 1200)
         }
-      } catch {
+      } catch (error) {
         if (cancelled) return
+        if (isAuthFailure(error)) {
+          signOutRef.current?.()
+          return
+        }
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null
           void connect()
@@ -1127,29 +1211,42 @@ export function SessionDetail({
 
     void connect()
 
-    loadInitialSessionState(token, sessionId, {
-      reason: "session-detail.initial-load",
-    })
-      .then((next) => {
-        if (cancelled) return
-        setError(null)
-        const merged = applyOptimisticItemsRef.current(next)
-        clearResolvedOptimisticMessagesRef.current(sessionId, merged.items)
-        setState((current) => current ? mergeSessionSnapshot(current, merged) : merged)
-        eventSequenceCursor.advance(
-          sessionId,
-          cursorSequence(next.eventCursor) || next.nextSeq,
-        )
-        onSessionUpdatedRef.current?.(next.session)
-        snapshotReady = true
-        if (socketSubscribed) {
-          void recoverAfterSubscription("websocket.initial-subscription", connectionSequence)
-        } else {
-          drainBufferedEvents()
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
+    const loadInitial = (reason: string) => {
+      loadInitialSessionState(token, sessionId, { reason })
+        .then((next) => {
+          if (cancelled) return
+          snapshotHydrated = true
+          setError(null)
+          const merged = applyOptimisticItemsRef.current(next)
+          clearResolvedOptimisticMessagesRef.current(sessionId, merged.items)
+          setState((current) => current ? mergeSessionSnapshot(current, merged) : merged)
+          eventSequenceCursor.advance(
+            sessionId,
+            cursorSequence(next.eventCursor) || next.nextSeq,
+          )
+          onSessionUpdatedRef.current?.(next.session)
+          snapshotReady = true
+          if (socketSubscribed) {
+            void recoverAfterSubscription("websocket.initial-subscription", connectionSequence)
+          } else {
+            drainBufferedEvents()
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return
+          if (isAuthFailure(err)) {
+            signOutRef.current?.()
+            return
+          }
+          initialLoadAttempt += 1
+          if (initialLoadAttempt < INITIAL_LOAD_MAX_ATTEMPTS) {
+            const delay = Math.min(1000 * 2 ** (initialLoadAttempt - 1), 8000)
+            initialRetryTimer = window.setTimeout(() => {
+              initialRetryTimer = null
+              loadInitial(`${reason}:retry`)
+            }, delay)
+            return
+          }
           snapshotReady = true
           setError(err instanceof Error ? err.message : tSessionRef.current("loadFailed"))
           setLoading(false)
@@ -1158,8 +1255,10 @@ export function SessionDetail({
           } else {
             drainBufferedEvents()
           }
-        }
-      })
+        })
+    }
+
+    loadInitial("session-detail.initial-load")
 
     return () => {
       cancelled = true
@@ -1167,6 +1266,7 @@ export function SessionDetail({
       bufferedEvents = []
       streamConnectedRef.current = false
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+      if (initialRetryTimer !== null) window.clearTimeout(initialRetryTimer)
       socket?.close()
     }
   }, [
@@ -1851,6 +1951,8 @@ export function SessionDetail({
   )
 }
 
+export const SessionDetail = React.memo(SessionDetailView)
+
 function sessionSourceErrorCode(error: unknown): SessionSourceErrorCode | null {
   if (!isApiError(error)) return null
   if (
@@ -2526,10 +2628,10 @@ function mergeSessionEvent(
     ? event.payload.items.filter(isTimelineItem)
     : null
   const notice = event.type === "runtime.notice.updated"
-    ? readPayloadValue<Notice>(event.payload.notice)
+    ? serverNotices([event.payload.notice], event.emittedAt)[0] ?? null
     : null
   const noticeSnapshot = event.type === "runtime.notice.snapshot" && Array.isArray(event.payload.notices)
-    ? event.payload.notices.filter(isNotice)
+    ? serverNotices(event.payload.notices, event.emittedAt)
     : null
   const capabilitySet = event.type === "runtime.capability.updated"
     ? readPayloadValue<ProtocolCapabilitySet>(event.payload.capabilitySet)
@@ -2758,14 +2860,6 @@ function runtimeStatesSemanticallyEqual(
   })
 }
 
-function effectiveRuntimeStatus(
-  runtimeState: SessionRuntimeState | null | undefined,
-  session: SessionView | null | undefined,
-): RuntimeStatusValue {
-  if (runtimeState) return runtimeState.status
-  if (session?.connectorStatus === "offline") return "disconnected"
-  return session?.status ?? "idle"
-}
 
 function mergeNotices(current: Notice[], incoming: Notice[]): Notice[] {
   if (incoming.length === 0) return current
@@ -2824,10 +2918,28 @@ function isTimelineItem(value: unknown): value is TimelineItem {
   return typeof item.id === "string" && typeof item.updatedSeq === "number"
 }
 
-function isNotice(value: unknown): value is Notice {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const notice = value as Partial<Notice>
-  return typeof notice.noticeId === "string" && typeof notice.updatedSeq === "number"
+/**
+ * Normalize notices from snapshots, events and the notices endpoint. Some
+ * servers omit updatedSeq/updatedAt; fill them in rather than dropping the
+ * notice the session is blocked on.
+ */
+function serverNotices(value: unknown, serverTime: string): Notice[] {
+  if (!Array.isArray(value)) return []
+  const notices: Notice[] = []
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue
+    const notice = item as Partial<Notice>
+    if (typeof notice.noticeId !== "string" || typeof notice.status !== "string") continue
+    notices.push({
+      ...(notice as Notice),
+      createdAt: typeof notice.createdAt === "string" ? notice.createdAt : serverTime,
+      updatedSeq: typeof notice.updatedSeq === "number" ? notice.updatedSeq : 0,
+      updatedAt: typeof notice.updatedAt === "string"
+        ? notice.updatedAt
+        : typeof notice.createdAt === "string" ? notice.createdAt : serverTime,
+    })
+  }
+  return notices
 }
 
 function openInteractions(notices: Notice[], _sessionId?: string): Notice[] {

@@ -39,32 +39,18 @@ Any Web code that builds a URL without `ApiClient` must call `apiPath()` explici
 
 The Next.js dev proxy rewrites `/api/v2/*` to the backend. New root-level API rewrites should not be added.
 
-## Connector Migration
+## Connector
 
-Connector config still stores the server origin:
+Connector config stores the server origin only; do not store `/api/v2` in `serverUrl`.
 
-```bash
-uvx anywhere-cli configure \
-  --server-url http://127.0.0.1:8000 \
-  --connector-id conn_xxx \
-  --connector-token cxt_xxx
-```
+The Go connector (`go/cmd/aa-connector`) pairs once through the pairing API, then keeps a WebSocket open:
 
-Do not store `/api/v2` in `serverUrl`.
+1. `POST /api/v2/pairing/start` creates a pairing session and returns a `pairingId` and six-digit code; no credentials are needed.
+2. A signed-in client enters the code and calls `POST /api/v2/pairing/claim`, which binds the code to the user and creates the connector.
+3. The connector calls `POST /api/v2/pairing/poll` with the `pairingId`. Once claimed, the response hands out the connector token once; the connector writes `connector.json` under `AA_CONNECTOR_DATA_DIR`.
+4. The connector connects to `WS /api/v2/connector/ws` with `Authorization: Bearer <connector token>`.
 
-`connector.server.urls` owns endpoint construction through `api_v2_path()`,
-`api_v2_url()`, and `ws_url()`. Connector HTTP and WebSocket calls now target:
-
-- `POST /api/v2/connector/auth`
-- `POST /api/v2/connector/ingest`
-- `WS /api/v2/connector/ws`
-- `GET /api/v2/connector/sessions/{session_id}/attachments/{file_id}/content`
-- `PUT /api/v2/connector/fs/transfers/{transfer_id}`
-- `WS /api/v2/connector/terminals/{terminal_id}/relay`
-
-Connector health probes use `/api/v2/health`.
-
-Server-generated connector URLs, such as file transfer `uploadUrl` and runtime attachment `downloadUrl`, are also returned with `/api/v2` included. Connector URL helpers are idempotent for already-prefixed paths.
+The Go server registers only `GET /api/v2/connector/ws` for connectors; every other `/api/v2/connector/*` path returns a JSON 404. Session messages, file access, terminals and approvals travel over the connector WebSocket as protocol frames. The Python reference connector additionally used `/api/v2/connector/auth` and `/api/v2/connector/ingest`, which the Go server does not serve.
 
 ## Compatibility Rule
 

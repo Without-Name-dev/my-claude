@@ -41,6 +41,7 @@ import type {
   SessionCreateResponse,
   SessionCommandResponse,
   SessionListResponse,
+  SessionNoticesResponse,
   SessionPatchRequest,
   SessionResponse,
   SessionRuntimeStateResponse,
@@ -755,6 +756,16 @@ export class DashboardApi {
   ): Promise<SessionRuntimeStateResponse> {
     return this.client.get<SessionRuntimeStateResponse>(
       `/sessions/${encodeURIComponent(sessionId)}/runtime/state`,
+      { token },
+    );
+  }
+
+  getSessionNotices(
+    token: string,
+    sessionId: string,
+  ): Promise<SessionNoticesResponse> {
+    return this.client.get<SessionNoticesResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/notices`,
       { token },
     );
   }

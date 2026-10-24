@@ -27,44 +27,36 @@ All product endpoints are mounted under `/api/v2`.
 ### Stable or mostly unrelated to runtime protocol
 
 ```text
+/health
 /auth/*
 /oauth/*
 /admin/*
 /pairing/*
-/connector/auth
-/connector/ingest
 /connector/ws
 ```
 
-The connector channel endpoints are intentionally stable. Runtime protocol refactors should happen behind this channel, not by renaming these endpoints.
+`/connector/ws` is the only connector channel endpoint, and it is intentionally stable. Runtime protocol refactors should happen behind this channel, not by renaming it. The Go server returns a JSON 404 for every other `/connector/*` path; `/connector/auth` and `/connector/ingest` belong to the Python reference connector only.
 
 ### Connector and runtime management
 
 ```text
 /connectors
 /connectors/{connectorId}
-/connectors/{connectorId}/preferences
+/connectors/{connectorId}/revoke
 /connectors/{connectorId}/runtimes
-/connectors/{connectorId}/runtimes/discover
+/connectors/{connectorId}/runtime-types
+/connectors/{connectorId}/runtimes/{runtimeId}
 /connectors/{connectorId}/runtimes/{runtimeId}/capabilities
-/connectors/{connectorId}/runtimes/{runtimeId}/config
-/connectors/{connectorId}/runtimes/{runtimeId}/active
-/connectors/{connectorId}/runtimes/{runtimeId}/catalogs/model
-/connectors/{connectorId}/runtimes/{runtimeId}/catalogs/permission
+/connectors/{connectorId}/fs/*
+/connectors/{connectorId}/terminals-v2/*
 ```
 
-Runtime-scoped capability and catalog reads live under runtime resources. If a
-specific connector must be selected, the connector is part of the path, not a
-query parameter.
-
-Generic runtime routes may exist only when the server can select the runtime
-unambiguously:
-
-```text
-/runtimes/{runtimeId}/capabilities
-/runtimes/{runtimeId}/catalogs/model
-/runtimes/{runtimeId}/catalogs/permission
-```
+If a specific connector must be selected, the connector is part of the path, not
+a query parameter. Model and permission catalogs and runtime selections are
+session-scoped (`/sessions/{sessionId}/runtime/catalogs/*` and
+`/sessions/{sessionId}/runtime/selections`). The Go server does not register
+connector-scoped preferences, runtime discovery, runtime config/active, or
+generic `/runtimes/{runtimeId}/*` routes.
 
 ### Session API
 

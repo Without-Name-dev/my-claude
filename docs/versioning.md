@@ -44,25 +44,18 @@ Agents Anywhere 的产品版本使用 `MAJOR.MINOR.PATCH`，三段各有明确�
 
 | 编号 | 位置 | 规则 |
 | --- | --- | --- |
-| 数据库 revision / schema version | `server/migrations/versions/v2_N.py` | 每次迁移递增，前缀跟随 MAJOR |
+| 数据库 revision / schema version | `go/internal/store/migrations/NNNN_*.sql` | 每次 schema 变化新增一个文件，按文件名顺序应用 |
 | 契约版本 | `contracts/<name>/<version>/` | 按各契约自身演进；有不兼容变化时新建版本目录 |
-| Android `versionCode` | `android/app/build.gradle.kts` | 每次发布安装包必须递增的整数 |
 
 ## 各端版本号的位置
 
 | 端 | 文件 | 字段 |
 | --- | --- | --- |
-| Server | `server/pyproject.toml`、`server/agent_server/app.py` | `version`（两处都要改；`/health` 返回 `app.py` 中的值） |
-| Desktop | `desktop-workbench/package.json`、`desktop-workbench/renderer/package.json` | `version` |
-| Android | `android/app/build.gradle.kts` | `versionName`、`versionCode` |
+| Server | `go/` 构建元数据 | 模块版本或 `vcs.revision`；`/api/v2/admin/service` 的 `version` 返回该值（本地构建显示 `devel-<revision>`） |
 | iOS | `ios/Agents Anywhere/Agents Anywhere.xcodeproj/project.pbxproj` | `MARKETING_VERSION` |
 | Web | `web-next/package.json` | `version`（`src/lib/demo-api.ts` 中的演示版本号也要同步） |
-| Connector | `connector/pyproject.toml` | `version` |
+| Connector | `go/` 构建元数据 | 模块版本或 `vcs.revision` |
 
 升 MINOR 或 MAJOR 时，逐项检查上表中的每一个位置。
 
-## Desktop 更新检查
-
-Desktop 构建时（`yarn build:main`）会把 `server/pyproject.toml` 中的版本记录到 `build-info.json`，作为这个 Desktop 对应的 Server 版本。运行时，如果 Server `/health` 返回的版本**大于**这个记录值，就提示有新的 Desktop 可以更新；Desktop 自身的版本号不参与比较。
-
-因此，发布 Desktop 前要确认 `server/pyproject.toml` 已经是最新版本。Server 升级后，只有在发布了基于新 Server 版本构建的 Desktop 之后，旧 Desktop 才应该收到更新提示。
+Python 参考实现的版本仍记录在 `server/pyproject.toml`、`server/agent_server/app.py` 和 `connector/pyproject.toml`，但这些版本不代表生产 Go 二进制。

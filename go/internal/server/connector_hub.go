@@ -14,10 +14,6 @@ import (
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 )
 
-// connectorOfflineAfter is how long the server waits without a frame before it
-// decides a connector socket is dead. Connectors beat every 20 seconds.
-const connectorOfflineAfter = 65 * time.Second
-
 // connectorConn is one live connector socket.
 type connectorConn struct {
 	id           string
@@ -25,7 +21,11 @@ type connectorConn struct {
 	connectionID string
 	ws           *websocket.Conn
 
-	outbound  chan []byte
+	outbound chan []byte
+	// done is closed once when the connection is replaced or revoked. The
+	// outbound channel stays open: SendRaw may still hold a pointer to a
+	// connection another goroutine just removed, and closing it would panic.
+	done      chan struct{}
 	closeOnce sync.Once
 
 	// bridgeOK reports whether the phone-pane plugin is loaded in a live
@@ -35,7 +35,22 @@ type connectorConn struct {
 	bridgeOK bool
 }
 
-func (c *connectorConn) close() { c.closeOnce.Do(func() { close(c.outbound) }) }
+func (c *connectorConn) close() {
+	c.closeOnce.Do(func() {
+		if c.done != nil {
+			close(c.done)
+		}
+	})
+}
+
+func (c *connectorConn) closed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
 
 func (c *connectorConn) setBridge(ok bool) {
 	c.bridgeMu.Lock()
@@ -111,7 +126,7 @@ func (h *ConnectorHub) SendRaw(connectorID string, body []byte) bool {
 	h.mu.RLock()
 	conn := h.byID[connectorID]
 	h.mu.RUnlock()
-	if conn == nil {
+	if conn == nil || conn.closed() {
 		return false
 	}
 	select {
@@ -161,25 +176,6 @@ func (h *ConnectorHub) unregister(conn *connectorConn) bool {
 	return true
 }
 
-// waitForConnector blocks until the connector has a socket or ctx ends.
-func (h *ConnectorHub) waitForConnector(ctx context.Context, connectorID string) bool {
-	if h.Online(connectorID) {
-		return true
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-ticker.C:
-			if h.Online(connectorID) {
-				return true
-			}
-		}
-	}
-}
-
 // ServeConnectorWS upgrades a request to the connector link.
 //
 // The connector authenticates with its pairing token in the Authorization
@@ -208,6 +204,7 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 		connectionID: connectionID,
 		ws:           ws,
 		outbound:     make(chan []byte, 256),
+		done:         make(chan struct{}),
 	}
 
 	previous := a.connectors.register(conn)
@@ -247,7 +244,16 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 
 // writeConnectorLoop drains the outbound queue into the socket.
 func (a *App) writeConnectorLoop(conn *connectorConn) {
-	for body := range conn.outbound {
+	for {
+		var body []byte
+		select {
+		case <-conn.done:
+			// The socket was replaced or revoked. close() already ran, and the
+			// reader will notice the closed websocket and unwind.
+			conn.ws.CloseNow()
+			return
+		case body = <-conn.outbound:
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		err := conn.ws.Write(ctx, websocket.MessageText, body)
 		cancel()

@@ -1,4 +1,9 @@
-import type { TimelineItem } from "@/features/dashboard/types"
+import type {
+  RuntimeStatusValue,
+  SessionRuntimeState,
+  SessionView,
+  TimelineItem,
+} from "@/features/dashboard/types"
 
 const CLAUDE_INTERRUPTED_REQUEST_MARKERS = new Set([
   "[Request interrupted by user]",
@@ -19,8 +24,21 @@ export function messageText(item: TimelineItem): string {
 export function isVisibleTimelineItem(item: TimelineItem): boolean {
   if (item.type !== "message" || textOf(item.source.runtime) !== "claude") return true
   const text = messageText(item).trim()
-  if (item.role === "user" && CLAUDE_INTERRUPTED_REQUEST_MARKERS.has(text)) return false
+  if (item.role === "user" && isClaudeInterruptedRequestMarker(text)) return false
   return !(item.role === "assistant" && text === CLAUDE_NO_RESPONSE_MARKER)
+}
+
+export function isClaudeInterruptedRequestMarker(text: string): boolean {
+  return CLAUDE_INTERRUPTED_REQUEST_MARKERS.has(text)
+}
+
+export function effectiveRuntimeStatus(
+  runtimeState: SessionRuntimeState | null | undefined,
+  session: SessionView | null | undefined,
+): RuntimeStatusValue {
+  if (runtimeState) return runtimeState.status
+  if (session?.connectorStatus === "offline") return "disconnected"
+  return session?.status ?? "idle"
 }
 
 export function runtimeLabel(runtime: string): string {
@@ -56,10 +74,6 @@ export function commandText(value: unknown): string | null {
   if (typeof value === "string") return value
   if (Array.isArray(value)) return value.map((part) => String(part)).join(" ")
   return null
-}
-
-export function stringSetting(value: unknown): string {
-  return typeof value === "string" ? value : ""
 }
 
 export function recordsOf(value: unknown): Array<Record<string, unknown>> {

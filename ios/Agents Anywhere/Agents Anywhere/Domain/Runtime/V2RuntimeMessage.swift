@@ -58,9 +58,3 @@ nonisolated struct V2RuntimeCommandExecuteResponse: Decodable, Hashable {
     let session: V2SessionMeta?
     let serverTime: String
 }
-
-nonisolated struct V2RuntimeSteerRequest: Encodable, Hashable {
-    let content: String
-    let attachments: [V2AttachmentSendReference]
-    let clientMessageId: String?
-}

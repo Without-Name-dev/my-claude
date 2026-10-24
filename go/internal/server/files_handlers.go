@@ -24,12 +24,9 @@ import (
 )
 
 const (
-	// Files at or below this size travel inside the JSON answer. Larger ones
-	// become a transfer so a 200 MiB file does not turn into a 270 MiB body.
-	fsInlineReadLimit = 2 << 20
-	fsTransferTTL     = 300 * time.Second
-	fsTransferChunk   = 1 << 20
-	fsMaxPushBytes    = 256 << 20
+	fsTransferTTL   = 300 * time.Second
+	fsTransferChunk = 1 << 20
+	fsMaxPushBytes  = 256 << 20
 
 	fsPreviewTokenKind  = "fs_preview"
 	fsPreviewStageOpen  = "open"
@@ -153,7 +150,7 @@ func (a *App) handleFSRead(w http.ResponseWriter, r *http.Request, user store.Us
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	result, err := a.prepareFSDownload(r.Context(), connector.ID, target, "", false)
+	result, err := a.prepareFSDownload(r.Context(), connector.ID, target, "")
 	if err != nil {
 		a.writeFSError(w, err)
 		return
@@ -357,7 +354,7 @@ func (a *App) handleFSPreviewRead(w http.ResponseWriter, r *http.Request) {
 	}
 	// Preview always returns a transfer: an <iframe> or <img> must be able to
 	// point at downloadUrl, and a download URL needs no Authorization header.
-	result, err := a.prepareFSDownload(r.Context(), connector.ID, target, body.PreviewAccessToken, true)
+	result, err := a.prepareFSDownload(r.Context(), connector.ID, target, body.PreviewAccessToken)
 	if err != nil {
 		a.writeFSError(w, err)
 		return
@@ -515,10 +512,12 @@ func (a *App) handleFSTransferUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// prepareFSDownload asks the connector for metadata and either returns the
-// bytes inline or registers a short-lived transfer.
+// prepareFSDownload asks the connector for metadata and registers a
+// short-lived transfer. Every size goes through the transfer URL: both shipped
+// clients decode downloadUrl as a required field, and the browser preview
+// needs a URL it can put in an <img> without an Authorization header.
 func (a *App) prepareFSDownload(
-	ctx context.Context, connectorID string, target fsResolved, previewAccess string, forceTransfer bool,
+	ctx context.Context, connectorID string, target fsResolved, previewAccess string,
 ) (map[string]any, error) {
 	var meta fsRPCFile
 	if err := a.callFS(ctx, connectorID, "fs.size", map[string]any{
@@ -532,22 +531,6 @@ func (a *App) prepareFSDownload(
 		"size":      meta.Size,
 		"sha256":    meta.SHA256,
 		"mediaType": meta.MediaType,
-	}
-	if meta.Size <= fsInlineReadLimit && !forceTransfer {
-		var chunk fsRPCRead
-		if err := a.callFS(ctx, connectorID, "fs.read", map[string]any{
-			"root": target.Root, "path": target.Path,
-			"offset": int64(0), "length": meta.Size,
-		}, &chunk); err != nil {
-			return nil, err
-		}
-		data, err := base64.StdEncoding.DecodeString(chunk.ContentBase64)
-		if err != nil {
-			return nil, fmt.Errorf("connector returned invalid base64: %w", err)
-		}
-		result["contentBase64"] = base64.StdEncoding.EncodeToString(data)
-		result["encoding"] = "base64"
-		return result, nil
 	}
 
 	transfer := fsTransfers.create(fsTransfer{

@@ -105,6 +105,61 @@ func (s *Store) TimelineItems(ctx context.Context, q Querier, sessionID string, 
 	return out, rows.Err()
 }
 
+// TimelineItemsLatest returns the newest limit items in display order.
+//
+// A long session opens on its current conversation, not on its first page: the
+// rows before this window are read with TimelineItemsBefore.
+func (s *Store) TimelineItemsLatest(ctx context.Context, q Querier, sessionID string, limit int) ([]TimelineItem, error) {
+	return s.timelineWindow(ctx, q, sessionID, limit, 0, false)
+}
+
+// TimelineItemsBefore returns the newest limit items older than beforeOrderSeq,
+// in display order. It backs mode=history pagination.
+func (s *Store) TimelineItemsBefore(ctx context.Context, q Querier, sessionID string, beforeOrderSeq int64, limit int) ([]TimelineItem, error) {
+	return s.timelineWindow(ctx, q, sessionID, limit, beforeOrderSeq, true)
+}
+
+func (s *Store) timelineWindow(
+	ctx context.Context, q Querier, sessionID string, limit int,
+	beforeOrderSeq int64, hasBefore bool,
+) ([]TimelineItem, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	query := `SELECT ` + timelineColumns + ` FROM timeline_items WHERE session_id = ?`
+	args := []any{sessionID}
+	if hasBefore {
+		query += ` AND order_seq < ? ORDER BY order_seq DESC LIMIT ?`
+		args = append(args, beforeOrderSeq, limit)
+	} else {
+		query += ` ORDER BY coalesce(item_time, 0) DESC, order_seq DESC LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TimelineItem, 0, limit)
+	for rows.Next() {
+		it, err := scanTimelineItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The query reads newest first so LIMIT keeps the current window; clients
+	// render the page oldest first.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
 // TimelineItemsAfter returns the items changed after a revision, oldest
 // change first. Recovery reads this to catch a client up without a snapshot.
 func (s *Store) TimelineItemsAfter(ctx context.Context, q Querier, sessionID string, after int64, limit int) ([]TimelineItem, error) {

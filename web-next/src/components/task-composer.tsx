@@ -64,7 +64,12 @@ import {
   selectionIdForModelCatalog,
   selectionIdForPermissionCatalog,
 } from "@/components/session/catalog-selection"
-import { CAPABILITY, capabilityIsUsable, attachmentMimeTypes } from "@/components/session/capabilities"
+import {
+  CAPABILITY,
+  SERVER_ATTACHMENT_SUPPORTED,
+  capabilityIsUsable,
+  attachmentMimeTypes,
+} from "@/components/session/capabilities"
 import {
   runtimeInstanceName,
   runtimeTypeName,
@@ -144,8 +149,18 @@ function arrayBufferToBase64(value: ArrayBuffer): string {
 }
 
 async function sha256Hex(value: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", value)
-  return Array.from(new Uint8Array(digest))
+  const subtle = globalThis.crypto?.subtle
+  if (subtle) {
+    return bytesToHex(new Uint8Array(await subtle.digest("SHA-256", value)))
+  }
+  // Plain-HTTP origins cannot use SubtleCrypto; load the JS implementation
+  // only there, matching the password verifier fallback.
+  const { sha256 } = await import("@noble/hashes/sha2.js")
+  return bytesToHex(sha256(new Uint8Array(value)))
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("")
 }
@@ -477,7 +492,7 @@ export function TaskComposer() {
     CAPABILITY.permissionCatalog,
     selectedRuntimeScope,
   )
-  const canUseAttachments = capabilityIsUsable(
+  const canUseAttachments = SERVER_ATTACHMENT_SUPPORTED && capabilityIsUsable(
     runtimeCapabilities,
     CAPABILITY.attachment,
     selectedRuntimeScope,
@@ -817,7 +832,7 @@ export function TaskComposer() {
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <DragOverlay isDragging={isDragging} />
+      {canUseAttachments ? <DragOverlay isDragging={isDragging} /> : null}
       {showCollapsedBrand ? (
         <div className="absolute left-13 top-2.5 flex h-9 items-center">
           <button
@@ -866,13 +881,14 @@ export function TaskComposer() {
           {/* No wrapping: the option controls shrink instead, so the send
               button always stays on the same row. */}
           <div className="flex items-center gap-1 px-3 pb-2 pt-1.5">
-            <AttachmentButton
-              attachments={attachments}
-              onAttach={add}
-              isDragging={isDragging}
-              allowedMimeTypes={allowedMimeTypes}
-              disabled={!canUseAttachments}
-            />
+            {canUseAttachments ? (
+              <AttachmentButton
+                attachments={attachments}
+                onAttach={add}
+                isDragging={isDragging}
+                allowedMimeTypes={allowedMimeTypes}
+              />
+            ) : null}
 
             {selectorsLoading ? (
               <>

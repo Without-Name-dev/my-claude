@@ -1,6 +1,12 @@
 package connector
 
-import "testing"
+import (
+	"os"
+	"testing"
+
+	"github.com/agents-anywhere/agents-anywhere/internal/bridge"
+	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
+)
 
 func TestAdvanceReportsOnlyNewText(t *testing.T) {
 	cases := []struct {
@@ -41,5 +47,57 @@ func TestAdvanceRebuildsTextAfterTruncation(t *testing.T) {
 	}
 	if got != full {
 		t.Fatalf("rebuilt text = %q, want %q", got, full)
+	}
+}
+
+// toolSink records tool events for the watcher tests.
+type toolSink struct {
+	begins []string
+	ends   []string
+	oks    []bool
+}
+
+func (s *toolSink) TurnBegin(protocol.TurnBegin)         {}
+func (s *toolSink) TurnDelta(protocol.TurnDelta)         {}
+func (s *toolSink) TurnEnd(protocol.TurnEnd)             {}
+func (s *toolSink) AgentActivity(protocol.AgentActivity) {}
+func (s *toolSink) ToolBegin(msg protocol.ToolBegin)     { s.begins = append(s.begins, msg.ToolUseID) }
+func (s *toolSink) ToolEnd(msg protocol.ToolEnd) {
+	s.ends = append(s.ends, msg.ToolUseID)
+	s.oks = append(s.oks, msg.OK)
+}
+
+func TestEmitToolsClosesAToolFirstSeenWhileRunning(t *testing.T) {
+	b := bridge.New(t.TempDir())
+	writeTools := func(body string) {
+		if err := os.WriteFile(b.ToolsPath(), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &toolSink{}
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", nil)
+
+	writeTools(`{"sessionId":"runtime-sess","entries":[
+		{"id":"tool-1","tool":"Read","input":{"file_path":"x"},"done":false}
+	]}`)
+	w.emitTools("turn-1")
+	if len(sink.begins) != 1 || len(sink.ends) != 0 {
+		t.Fatalf("running tool: begins=%v ends=%v", sink.begins, sink.ends)
+	}
+
+	writeTools(`{"sessionId":"runtime-sess","entries":[
+		{"id":"tool-1","tool":"Read","input":{"file_path":"x"},"done":true,"output":"ok"}
+	]}`)
+	w.emitTools("turn-1")
+	if len(sink.ends) != 1 || sink.ends[0] != "tool-1" || !sink.oks[0] {
+		t.Fatalf("finished tool: ends=%v oks=%v", sink.ends, sink.oks)
+	}
+
+	writeTools(`{"sessionId":"other-session","entries":[
+		{"id":"tool-2","tool":"Bash","done":true}
+	]}`)
+	w.emitTools("turn-1")
+	if len(sink.begins) != 1 || len(sink.ends) != 1 {
+		t.Fatalf("another session's tool leaked: begins=%v ends=%v", sink.begins, sink.ends)
 	}
 }

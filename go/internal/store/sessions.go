@@ -33,6 +33,11 @@ type Session struct {
 	CreatedAt    int64
 	UpdatedAt    int64
 	LastActivity *int64
+
+	// LatestItemOrderSeq is the sort key of the newest timeline item. It is
+	// filled by the paginated list queries and is part of the list cursor;
+	// single-session reads leave it zero.
+	LatestItemOrderSeq int64
 }
 
 const sessionColumns = `id, connector_id, coalesce(project_id, ''), runtime, runtime_id,
@@ -41,14 +46,20 @@ const sessionColumns = `id, connector_id, coalesce(project_id, ''), runtime, run
 	seq, updated_seq, last_read_seq, timeline_reset_seq, latest_turn_end_seq,
 	coalesce(sort_at, created_at), created_at, updated_at, last_activity_at`
 
-func scanSession(row interface{ Scan(...any) error }) (Session, error) {
+// sessionIdentityColumns is the unique identity of a runtime session; keep the
+// text in sync with uq_sessions_connector_runtime_external.
+const sessionIdentityColumns = "sessions.connector_id, sessions.runtime, sessions.external_session_id"
+
+func scanSession(row interface{ Scan(...any) error }, extra ...any) (Session, error) {
 	var s Session
 	var takeover, pinned, archived int
-	err := row.Scan(&s.ID, &s.ConnectorID, &s.ProjectID, &s.Runtime, &s.RuntimeID,
+	dest := []any{&s.ID, &s.ConnectorID, &s.ProjectID, &s.Runtime, &s.RuntimeID,
 		&s.Origin, &s.ExternalID, &s.Title, &s.CWD, &s.Status,
 		&takeover, &pinned, &archived, &s.SourceState,
 		&s.Seq, &s.UpdatedSeq, &s.LastReadSeq, &s.ResetSeq, &s.LastTurnEnd,
-		&s.SortAt, &s.CreatedAt, &s.UpdatedAt, &s.LastActivity)
+		&s.SortAt, &s.CreatedAt, &s.UpdatedAt, &s.LastActivity}
+	dest = append(dest, extra...)
+	err := row.Scan(dest...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
@@ -85,6 +96,8 @@ func (s *Store) CreateSession(ctx context.Context, in Session) (Session, error) 
 	if in.ExternalID != "" {
 		externalID = in.ExternalID
 	}
+	inserted := false
+	id := in.ID
 	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions (id, connector_id, project_id, runtime, runtime_id, origin,
@@ -93,10 +106,26 @@ func (s *Store) CreateSession(ctx context.Context, in Session) (Session, error) 
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?, ?)`,
 			in.ID, in.ConnectorID, projectID, in.Runtime, in.RuntimeID, in.Origin,
 			externalID, in.Title, in.CWD, in.Status, now, now, now)
-		return err
+		if err == nil {
+			inserted = true
+			return nil
+		}
+		// Another row may already represent this runtime session (for example
+		// when the connector inventory and the API raced). Reuse it rather than
+		// surfacing a constraint violation as a 500.
+		if in.ExternalID == "" || !isUniqueConstraint(err, sessionIdentityColumns) {
+			return err
+		}
+		return tx.QueryRowContext(ctx, `
+			SELECT id FROM sessions
+			WHERE connector_id = ? AND runtime = ? AND external_session_id = ?`,
+			in.ConnectorID, in.Runtime, in.ExternalID).Scan(&id)
 	})
 	if err != nil {
 		return Session{}, err
+	}
+	if !inserted {
+		return s.SessionByIDAny(ctx, s.Read(), id)
 	}
 	return in, nil
 }
@@ -117,18 +146,80 @@ func (s *Store) SessionByIDAny(ctx context.Context, q Querier, id string) (Sessi
 	return scanSession(row)
 }
 
-// ListSessions returns a user's sessions ordered the way the dashboard shows
-// them: pinned first, then most recently active.
-func (s *Store) ListSessions(ctx context.Context, userID string, archived bool, limit int) ([]Session, error) {
-	if limit <= 0 || limit > 200 {
+// SessionCursor is the position of the last row of a session page. Its fields
+// mirror the values documented for GET /sessions?cursor=.
+type SessionCursor struct {
+	Pinned             int
+	SortAt             int64
+	LatestItemOrderSeq int64
+	UpdatedSeq         int64
+	ID                 string
+}
+
+// sessionLatestOrderSeqSQL resolves the newest timeline item's sort key. The
+// correlated lookup is driven by idx_timeline_items_session_latest.
+const sessionLatestOrderSeqSQL = `coalesce((SELECT ti.order_seq FROM timeline_items ti
+	WHERE ti.session_id = s.id
+	ORDER BY coalesce(ti.item_time, 0) DESC, ti.order_seq DESC, ti.updated_seq DESC
+	LIMIT 1), -1)`
+
+const sessionListOrderSQL = ` ORDER BY s.pinned DESC, coalesce(s.sort_at, s.created_at) DESC, ` +
+	sessionLatestOrderSeqSQL + ` DESC, s.updated_seq DESC, s.id DESC`
+
+// ListSessions returns one page of a user's sessions in dashboard order:
+// pinned first, then the most recently active. cursor is the position returned
+// by the previous page, or nil for the first page.
+func (s *Store) ListSessions(
+	ctx context.Context, userID string, archived bool, limit int, cursor *SessionCursor,
+) ([]Session, error) {
+	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.Read().QueryContext(ctx, `
-		SELECT `+sessionColumnsFor("s")+` FROM sessions s
+	if limit > 200 {
+		limit = 200
+	}
+	query := `SELECT ` + sessionColumnsFor("s") + `, ` + sessionLatestOrderSeqSQL + `
+		FROM sessions s
 		JOIN connectors c ON c.id = s.connector_id
-		WHERE c.user_id = ? AND s.archived = ?
-		ORDER BY s.pinned DESC, s.sort_at DESC, s.created_at DESC
-		LIMIT ?`, userID, boolInt(archived), limit)
+		WHERE c.user_id = ? AND s.archived = ?`
+	args := []any{userID, boolInt(archived)}
+	if cursor != nil {
+		query += ` AND (
+			s.pinned < ?
+			OR (s.pinned = ? AND coalesce(s.sort_at, s.created_at) < ?)
+			OR (s.pinned = ? AND coalesce(s.sort_at, s.created_at) = ?
+				AND ` + sessionLatestOrderSeqSQL + ` < ?)
+			OR (s.pinned = ? AND coalesce(s.sort_at, s.created_at) = ?
+				AND ` + sessionLatestOrderSeqSQL + ` = ? AND s.updated_seq < ?)
+			OR (s.pinned = ? AND coalesce(s.sort_at, s.created_at) = ?
+				AND ` + sessionLatestOrderSeqSQL + ` = ? AND s.updated_seq = ? AND s.id < ?)
+		)`
+		args = append(args,
+			cursor.Pinned,
+			cursor.Pinned, cursor.SortAt,
+			cursor.Pinned, cursor.SortAt, cursor.LatestItemOrderSeq,
+			cursor.Pinned, cursor.SortAt, cursor.LatestItemOrderSeq, cursor.UpdatedSeq,
+			cursor.Pinned, cursor.SortAt, cursor.LatestItemOrderSeq, cursor.UpdatedSeq, cursor.ID)
+	}
+	query += sessionListOrderSQL + ` LIMIT ?`
+	args = append(args, limit)
+	return s.querySessionPage(ctx, query, args...)
+}
+
+// ListAllSessions returns the complete inventory for one archived state, with
+// no page limit. GET /sessions/list and the dashboard snapshot need every row:
+// splitting a person's sessions across pages there silently hides the tail.
+func (s *Store) ListAllSessions(ctx context.Context, userID string, archived bool) ([]Session, error) {
+	query := `SELECT ` + sessionColumnsFor("s") + `, ` + sessionLatestOrderSeqSQL + `
+		FROM sessions s
+		JOIN connectors c ON c.id = s.connector_id
+		WHERE c.user_id = ? AND s.archived = ?` + sessionListOrderSQL
+	return s.querySessionPage(ctx, query, userID, boolInt(archived))
+}
+
+// querySessionPage scans rows that end with the latest timeline item's sort key.
+func (s *Store) querySessionPage(ctx context.Context, query string, args ...any) ([]Session, error) {
+	rows, err := s.Read().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -136,10 +227,12 @@ func (s *Store) ListSessions(ctx context.Context, userID string, archived bool, 
 
 	var out []Session
 	for rows.Next() {
-		sess, err := scanSession(rows)
+		var latestOrderSeq int64
+		sess, err := scanSession(rows, &latestOrderSeq)
 		if err != nil {
 			return nil, err
 		}
+		sess.LatestItemOrderSeq = latestOrderSeq
 		out = append(out, sess)
 	}
 	return out, rows.Err()
@@ -303,54 +396,44 @@ func (s *Store) UpsertDiscoveredSession(
 	updatedAt int64,
 ) (Session, error) {
 	now := time.Now().UnixMilli()
-	var existingID string
-	err := s.Read().QueryRowContext(ctx, `
-		SELECT id FROM sessions
-		WHERE connector_id = ? AND runtime = 'claude' AND external_session_id = ?`,
-		connectorID, externalID).Scan(&existingID)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		session, createErr := s.CreateSession(ctx, Session{
-			ConnectorID: connectorID,
-			ProjectID:   projectID,
-			Runtime:     "claude",
-			RuntimeID:   "claude",
-			ExternalID:  externalID,
-			Title:       title,
-			CWD:         cwd,
-			Origin:      "connector_import",
-		})
-		if createErr != nil {
-			return Session{}, createErr
-		}
-		_ = s.bumpActivity(ctx, session.ID, updatedAt)
-		return s.SessionByIDAny(ctx, s.Read(), session.ID)
-	}
-	if err != nil {
-		return Session{}, err
-	}
-
-	return s.updateDiscovered(ctx, existingID, projectID, title, cwd, updatedAt, now)
-}
-
-// updateDiscovered refreshes the mutable facts of a discovered session.
-func (s *Store) updateDiscovered(
-	ctx context.Context, id, projectID, title, cwd string, updatedAt, now int64,
-) (Session, error) {
+	var id string
 	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		// Only a title the person typed is frozen. An automatic title keeps
-		// following the transcript, because the first scan of a fresh session
-		// often has nothing better than an auto-generated slug.
+		readErr := tx.QueryRowContext(ctx, `
+			SELECT id FROM sessions
+			WHERE connector_id = ? AND runtime = 'claude' AND external_session_id = ?`,
+			connectorID, externalID).Scan(&id)
+		switch {
+		case readErr == nil:
+			return updateDiscoveredTx(ctx, tx, id, projectID, title, cwd, updatedAt, now)
+		case !errors.Is(readErr, sql.ErrNoRows):
+			return readErr
+		}
+
+		id = NewID("ses")
 		_, err := tx.ExecContext(ctx, `
-			UPDATE sessions SET
-				project_id = coalesce(?, project_id),
-				title = CASE WHEN title_source = 'user' THEN title ELSE ? END,
-				title_source = CASE WHEN title_source = 'user' THEN 'user' ELSE 'connector' END,
-				cwd = coalesce(nullif(?, ''), cwd),
-				sort_at = max(coalesce(sort_at, 0), ?),
-				updated_at = ?
-			WHERE id = ?`,
-			nullIfEmpty(projectID), title, cwd, updatedAt, now, id)
+			INSERT INTO sessions (id, connector_id, project_id, runtime, runtime_id, origin,
+			                      external_session_id, title, cwd, status, source_state,
+			                      sort_at, created_at, updated_at)
+			VALUES (?, ?, ?, 'claude', 'claude', 'connector_import', ?, ?, ?, 'idle', 'visible', ?, ?, ?)`,
+			id, connectorID, nullIfEmpty(projectID), nullIfEmpty(externalID),
+			title, cwd, now, now, now)
+		if err != nil {
+			if !isUniqueConstraint(err, sessionIdentityColumns) {
+				return err
+			}
+			// Another writer inserted the same runtime session first; fold this
+			// scan into the row it created.
+			if err := tx.QueryRowContext(ctx, `
+				SELECT id FROM sessions
+				WHERE connector_id = ? AND runtime = 'claude' AND external_session_id = ?`,
+				connectorID, externalID).Scan(&id); err != nil {
+				return err
+			}
+			return updateDiscoveredTx(ctx, tx, id, projectID, title, cwd, updatedAt, now)
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE sessions SET last_activity_at = ?, sort_at = max(coalesce(sort_at, 0), ?)
+			WHERE id = ?`, updatedAt, updatedAt, id)
 		return err
 	})
 	if err != nil {
@@ -359,14 +442,24 @@ func (s *Store) updateDiscovered(
 	return s.SessionByIDAny(ctx, s.Read(), id)
 }
 
-// bumpActivity records how recently a session actually did something.
-func (s *Store) bumpActivity(ctx context.Context, id string, at int64) error {
-	return s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`UPDATE sessions SET last_activity_at = ?, sort_at = max(coalesce(sort_at,0), ?) WHERE id = ?`,
-			at, at, id)
-		return err
-	})
+// updateDiscoveredTx refreshes the mutable facts of a discovered session.
+func updateDiscoveredTx(
+	ctx context.Context, tx *sql.Tx, id, projectID, title, cwd string, updatedAt, now int64,
+) error {
+	// Only a title the person typed is frozen. An automatic title keeps
+	// following the transcript, because the first scan of a fresh session
+	// often has nothing better than an auto-generated slug.
+	_, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET
+			project_id = coalesce(?, project_id),
+			title = CASE WHEN title_source = 'user' THEN title ELSE ? END,
+			title_source = CASE WHEN title_source = 'user' THEN 'user' ELSE 'connector' END,
+			cwd = coalesce(nullif(?, ''), cwd),
+			sort_at = max(coalesce(sort_at, 0), ?),
+			updated_at = ?
+		WHERE id = ?`,
+		nullIfEmpty(projectID), title, cwd, updatedAt, now, id)
+	return err
 }
 
 func nullIfEmpty(value string) any {

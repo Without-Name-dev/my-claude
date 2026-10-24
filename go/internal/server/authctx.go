@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -87,21 +86,6 @@ func (a *App) requireUser(next func(http.ResponseWriter, *http.Request, store.Us
 		}
 		next(w, r, user)
 	}
-}
-
-// ctxWithUser stores the authenticated user for handlers that need it deeper
-// than the signature allows.
-type ctxKey struct{ name string }
-
-var userKey = ctxKey{name: "user"}
-
-func withUser(ctx context.Context, user store.User) context.Context {
-	return context.WithValue(ctx, userKey, user)
-}
-
-func userFromCtx(ctx context.Context) (store.User, bool) {
-	user, ok := ctx.Value(userKey).(store.User)
-	return user, ok
 }
 
 // ErrUnavailable is returned when the target connector has no live socket.

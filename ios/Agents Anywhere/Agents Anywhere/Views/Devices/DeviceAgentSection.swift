@@ -26,15 +26,19 @@ struct DeviceAgentSection: View {
             }
             DeviceRows {
                 ForEach(model.inventory.configuredInstances) { runtime in row(runtime) }
-                Button { showsAddAgents = true } label: {
-                    HStack(spacing: 12) {
-                        AppSymbol("plus", size: 14).frame(width: 14)
-                        Text(String(localized: "添加更多 Agent")).font(.body.weight(.medium))
-                        Spacer(minLength: 0)
+                // A server without an addable runtime type would open an empty
+                // picker, so only offer the entry point when there is a choice.
+                if !model.addableTypes.isEmpty {
+                    Button { showsAddAgents = true } label: {
+                        HStack(spacing: 12) {
+                            AppSymbol("plus", size: 14).frame(width: 14)
+                            Text(String(localized: "添加更多 Agent")).font(.body.weight(.medium))
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 52).contentShape(.rect)
                     }
-                    .frame(minHeight: 52).contentShape(.rect)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .task(id: model.connected) { await model.refresh() }
@@ -71,6 +75,13 @@ struct DeviceAgentSection: View {
     }
     private var canChange: Bool { model.connected && model.busyID == nil }
 
+    /// Runtime config/active/rename/delete need a server that publishes a
+    /// config schema. Servers with one implicit runtime (no schema) reject
+    /// those control routes, so do not offer actions that cannot succeed.
+    private func canManage(_ runtime: V2DeviceRuntime) -> Bool {
+        canChange && (try? model.schema(runtime)) != nil
+    }
+
     private func row(_ runtime: V2DeviceRuntime) -> some View {
         HStack(spacing: 12) {
             Button { configure(runtime) } label: {
@@ -86,7 +97,7 @@ struct DeviceAgentSection: View {
                 }
                 .contentShape(.rect)
             }
-            .buttonStyle(.plain).disabled(!canChange)
+            .buttonStyle(.plain).disabled(!canManage(runtime))
             .accessibilityLabel(Text(String(localized: "配置 \(runtime.sessionDisplayName)")))
             Menu {
                 actions(runtime)
@@ -94,13 +105,13 @@ struct DeviceAgentSection: View {
                 AppSymbol("ellipsis", size: 18).foregroundStyle(.secondary)
                     .frame(width: 36, height: 44).contentShape(.rect)
             }
-            .buttonStyle(.plain).disabled(!canChange)
+            .buttonStyle(.plain).disabled(!canManage(runtime))
             .accessibilityLabel(Text(runtime.sessionDisplayName))
             Toggle(String(localized: "启用 \(runtime.sessionDisplayName)"), isOn: Binding(get: { runtime.active }, set: { active in
                 Task { try? await model.setActive(runtime, active) }
             }))
             .labelsHidden().toggleStyle(.switch).tint(.green).fixedSize()
-            .disabled(!canChange)
+            .disabled(!canManage(runtime))
         }
         .frame(minHeight: 60)
         .contextMenu { actions(runtime) }
@@ -109,12 +120,12 @@ struct DeviceAgentSection: View {
     @ViewBuilder
     private func actions(_ runtime: V2DeviceRuntime) -> some View {
         Button(String(localized: "dashboard.device.configure"), systemImage: "slider.horizontal.3") { configure(runtime) }
-            .disabled(!canChange)
+            .disabled(!canManage(runtime))
         Button(String(localized: "重命名"), systemImage: "pencil") { proposedName = runtime.name; renaming = runtime }
-            .disabled(!canChange)
+            .disabled(!canManage(runtime))
         Divider()
         Button(String(localized: "删除配置"), systemImage: "trash", role: .destructive) { deleting = runtime }
-            .disabled(!canChange)
+            .disabled(!canManage(runtime))
     }
 
     private func configure(_ runtime: V2DeviceRuntime) {

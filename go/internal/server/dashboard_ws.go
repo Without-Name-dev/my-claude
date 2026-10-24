@@ -154,9 +154,9 @@ func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID str
 		return true
 	}
 
-	sessions, err := a.db.ListSessions(ctx, userID, false, 200)
+	sessions, err := a.db.ListAllSessions(ctx, userID, false)
 	if err == nil {
-		archived, archErr := a.db.ListSessions(ctx, userID, true, 200)
+		archived, archErr := a.db.ListAllSessions(ctx, userID, true)
 		if archErr == nil {
 			sessions = append(sessions, archived...)
 		}

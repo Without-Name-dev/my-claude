@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -83,19 +84,15 @@ func (a *App) projectViews(ctx context.Context, userID string) ([]ProjectView, e
 	return out, nil
 }
 
-// projectDisplayName prefers the folder name over the full path.
-//
-// Projects created by an early build stored the path as the name; rather than
-// migrate every row, the view repairs it on the way out.
-func projectDisplayName(p store.Project) string {
-	if p.Name != "" && p.Name != p.WorkspacePath {
-		return p.Name
-	}
-	base := store.BaseName(p.WorkspacePath)
-	if base == "" {
-		return p.WorkspacePath
-	}
-	return base
+// writeProjectNameConflict reports the documented 409 shape, whose code lives
+// inside detail rather than in a string.
+func writeProjectNameConflict(w http.ResponseWriter) {
+	httpx.JSON(w, http.StatusConflict, map[string]any{
+		"detail": map[string]any{
+			"code":    "project_name_conflict",
+			"message": "project name already exists",
+		},
+	})
 }
 
 // handleCreateProject adds a workspace.
@@ -125,8 +122,12 @@ func (a *App) handleCreateProject(w http.ResponseWriter, r *http.Request, user s
 		return
 	}
 
-	existing, err := a.db.EnsureProject(r.Context(), user.ID, body.ConnectorID, workspace, name)
+	existing, err := a.db.EnsureProject(r.Context(), user.ID, body.ConnectorID, workspace, name, true)
 	if err != nil {
+		if errors.Is(err, store.ErrProjectNameConflict) {
+			writeProjectNameConflict(w)
+			return
+		}
 		httpx.Fail(w, err)
 		return
 	}
@@ -175,6 +176,10 @@ func (a *App) handlePatchProject(w http.ResponseWriter, r *http.Request, user st
 		body.Name = &trimmed
 	}
 	if err := a.db.UpdateProject(r.Context(), project.ID, body.Name, body.Pinned); err != nil {
+		if errors.Is(err, store.ErrProjectNameConflict) {
+			writeProjectNameConflict(w)
+			return
+		}
 		httpx.Fail(w, err)
 		return
 	}
@@ -200,6 +205,10 @@ func (a *App) handleDeleteProject(w http.ResponseWriter, r *http.Request, user s
 	}
 	detached, err := a.db.DeleteProject(r.Context(), project.ID)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.Fail(w, httpx.NotFound("project not found"))
+			return
+		}
 		httpx.Fail(w, err)
 		return
 	}
@@ -217,7 +226,7 @@ func (a *App) handleProjectSessions(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	archived := r.URL.Query().Get("archived") == "true"
-	sessions, err := a.db.ListSessions(r.Context(), user.ID, archived, 100)
+	sessions, err := a.db.ListSessions(r.Context(), user.ID, archived, 100, nil)
 	if err != nil {
 		httpx.Fail(w, err)
 		return

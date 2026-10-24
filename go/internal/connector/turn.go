@@ -36,27 +36,31 @@ type TurnSink interface {
 
 // TurnWatcher follows one submitted message until the plugin closes it.
 type TurnWatcher struct {
-	bridge     *bridge.Bridge
-	sink       TurnSink
-	sessionID  string
-	previousID string
-	queuedAt   int64
+	bridge            *bridge.Bridge
+	sink              TurnSink
+	sessionID         string
+	externalSessionID string
+	previousID        string
+	queuedAt          int64
 
 	mu        sync.Mutex
 	turnID    string
 	sent      string
 	rev       int
 	seenTool  map[string]bool
+	endedTool map[string]bool
 	agentsKey string
 }
 
 // NewTurnWatcher prepares a watcher for a message that was just queued.
-func NewTurnWatcher(b *bridge.Bridge, sink TurnSink, sessionID string, sub *bridge.Submission) *TurnWatcher {
+func NewTurnWatcher(b *bridge.Bridge, sink TurnSink, sessionID, externalSessionID string, sub *bridge.Submission) *TurnWatcher {
 	w := &TurnWatcher{
-		bridge:    b,
-		sink:      sink,
-		sessionID: sessionID,
-		seenTool:  map[string]bool{},
+		bridge:            b,
+		sink:              sink,
+		sessionID:         sessionID,
+		externalSessionID: externalSessionID,
+		seenTool:          map[string]bool{},
+		endedTool:         map[string]bool{},
 	}
 	if sub != nil {
 		w.previousID = sub.PreviousTurnID
@@ -73,6 +77,32 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 	deadline := time.Now().Add(pickupTimeout)
 	lastActivity := time.Now()
 
+	// A turn that has been picked up but whose plugin has gone away never
+	// closes its outbox entry. Once the heartbeat is past its TTL and the
+	// snapshot has stopped changing, report the failure instead of holding
+	// every later submit behind this watcher.
+	var unavailableSince time.Time
+	var stalledTS int64
+	stalled := func(box *bridge.Outbox) bool {
+		if w.turnID == "" {
+			return false
+		}
+		if w.bridge.Available() {
+			unavailableSince = time.Time{}
+			return false
+		}
+		ts := int64(0)
+		if box != nil {
+			ts = box.TS
+		}
+		if unavailableSince.IsZero() || ts != stalledTS {
+			unavailableSince = time.Now()
+			stalledTS = ts
+			return false
+		}
+		return time.Since(unavailableSince) > bridge.DefaultHeartbeatTTL
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,6 +112,15 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 
 		box, err := w.bridge.ReadOutbox()
 		if err != nil || box == nil {
+			if stalled(nil) {
+				w.sink.TurnEnd(protocol.TurnEnd{
+					SessionID: w.sessionID,
+					TurnID:    w.turnID,
+					Status:    "error",
+					Error:     "the desktop stopped responding while the turn was running",
+				})
+				return ""
+			}
 			if time.Now().After(deadline) && w.turnID == "" {
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
@@ -100,8 +139,12 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		}
 
 		// The outbox still shows the turn that was running when this message
-		// was queued; ignore it until the plugin moves on.
-		if box.TurnID == "" || box.TurnID == w.previousID {
+		// was queued, another plugin instance wrote it, or it predates the
+		// message itself; none of those is this message's answer.
+		stale := box.TurnID == "" || box.TurnID == w.previousID ||
+			!box.BelongsTo(w.sessionID, w.externalSessionID) ||
+			(w.turnID == "" && box.TS > 0 && box.TS < w.queuedAt)
+		if stale {
 			if time.Now().After(deadline) && w.turnID == "" {
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
@@ -117,6 +160,8 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.turnID = box.TurnID
 			w.sent = ""
 			w.rev = 0
+			w.seenTool = map[string]bool{}
+			w.endedTool = map[string]bool{}
 			w.sink.TurnBegin(protocol.TurnBegin{
 				SessionID: w.sessionID,
 				TurnID:    box.TurnID,
@@ -152,37 +197,54 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			})
 			return box.Text
 		}
+
+		if stalled(box) {
+			w.sink.TurnEnd(protocol.TurnEnd{
+				SessionID: w.sessionID,
+				TurnID:    w.turnID,
+				Status:    "error",
+				Error:     "the desktop stopped responding while the turn was running",
+			})
+			return ""
+		}
 	}
 }
 
 // currentText is what the caller gets when a turn is interrupted mid-flight.
 func (w *TurnWatcher) currentText() string {
 	box, err := w.bridge.ReadOutbox()
-	if err != nil || box == nil {
+	if err != nil || box == nil || !box.BelongsTo(w.sessionID, w.externalSessionID) {
 		return w.sent
 	}
 	return box.Text
 }
 
 // emitTools reports tool calls the plugin recorded since the last poll.
+//
+// The plugin writes an entry when the tool starts and patches the same entry
+// when it finishes, so begin and end are tracked separately: an entry first
+// seen while running must still be closed on a later poll.
 func (w *TurnWatcher) emitTools(turnID string) {
-	for _, entry := range w.bridge.Tools() {
-		if entry.ToolUseID == "" || w.seenTool[entry.ToolUseID] {
+	for _, entry := range w.bridge.Tools(w.sessionID, w.externalSessionID) {
+		if entry.ID == "" {
 			continue
 		}
-		w.seenTool[entry.ToolUseID] = true
-		w.sink.ToolBegin(protocol.ToolBegin{
-			SessionID: w.sessionID,
-			TurnID:    turnID,
-			ToolUseID: entry.ToolUseID,
-			Tool:      entry.Tool,
-			Input:     entry.Input,
-		})
-		if entry.Status == "done" || entry.Status == "error" || len(entry.Output) > 0 {
+		if !w.seenTool[entry.ID] {
+			w.seenTool[entry.ID] = true
+			w.sink.ToolBegin(protocol.ToolBegin{
+				SessionID: w.sessionID,
+				TurnID:    turnID,
+				ToolUseID: entry.ID,
+				Tool:      entry.Tool,
+				Input:     entry.Input,
+			})
+		}
+		if entry.Done && !w.endedTool[entry.ID] {
+			w.endedTool[entry.ID] = true
 			w.sink.ToolEnd(protocol.ToolEnd{
 				SessionID: w.sessionID,
-				ToolUseID: entry.ToolUseID,
-				OK:        entry.Status != "error",
+				ToolUseID: entry.ID,
+				OK:        !entry.IsError,
 				Output:    entry.Output,
 			})
 		}
@@ -220,7 +282,7 @@ func advance(prev, next string) string {
 // The plugin writes them while they work; the connector forwards only when the
 // set changes, because a status line that redraws on every poll is noise.
 func (w *TurnWatcher) emitAgents(turnID string) {
-	entries := w.bridge.Agents()
+	entries := w.bridge.Agents(w.sessionID, w.externalSessionID)
 	key := ""
 	for _, entry := range entries {
 		key += entry.AgentID + ":" + entry.Status + ":" + entry.Label + ";"

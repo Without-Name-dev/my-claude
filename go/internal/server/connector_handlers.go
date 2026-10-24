@@ -138,7 +138,16 @@ func (a *App) handleDeleteConnector(w http.ResponseWriter, r *http.Request, user
 	if !ok {
 		return
 	}
+	var files []store.AttachmentFileRef
 	if err := a.db.Write(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		// Collect the attachment files before the sessions (and their index
+		// rows) are gone. The blobs live outside SQLite, so they are removed
+		// only after this transaction commits.
+		var err error
+		files, err = a.db.AttachmentFilesForConnector(ctx, tx, connector.ID)
+		if err != nil {
+			return err
+		}
 		// Sessions and projects reference the connector; delete them first so
 		// the foreign keys stay satisfied without a cascade surprise.
 		if _, err := tx.ExecContext(ctx,
@@ -149,11 +158,17 @@ func (a *App) handleDeleteConnector(w http.ResponseWriter, r *http.Request, user
 			`DELETE FROM projects WHERE connector_id = ?`, connector.ID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ?`, connector.ID)
+		_, err = tx.ExecContext(ctx, `DELETE FROM connectors WHERE id = ?`, connector.ID)
 		return err
 	}); err != nil {
 		httpx.Fail(w, err)
 		return
+	}
+	for _, file := range files {
+		if err := store.DeleteAttachment(a.cfg.UploadDir, file.SessionID, file.FileID); err != nil {
+			a.log.Warn("could not delete an attachment",
+				"session", file.SessionID, "file", file.FileID, "error", err)
+		}
 	}
 	a.disconnectConnector(connector.ID)
 	httpx.NoContent(w)

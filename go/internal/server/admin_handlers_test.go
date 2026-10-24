@@ -122,8 +122,8 @@ func TestAdminUsageLiveUsesRealCounts(t *testing.T) {
 		t.Fatalf("create other connector: %v", err)
 	}
 	// Two live sockets, but only one belongs to the signed-in administrator.
-	app.connectors.register(&connectorConn{id: adminConnector.ID, userID: admin.ID, outbound: make(chan []byte, 1)})
-	app.connectors.register(&connectorConn{id: otherConnector.ID, userID: other.ID, outbound: make(chan []byte, 1)})
+	app.connectors.register(&connectorConn{id: adminConnector.ID, userID: admin.ID, outbound: make(chan []byte, 1), done: make(chan struct{})})
+	app.connectors.register(&connectorConn{id: otherConnector.ID, userID: other.ID, outbound: make(chan []byte, 1), done: make(chan struct{})})
 	t.Cleanup(func() {
 		app.connectors.drop(adminConnector.ID)
 		app.connectors.drop(otherConnector.ID)

@@ -28,7 +28,8 @@ nonisolated struct V2WorkspaceEntry: Decodable, Identifiable, Hashable {
     let path: String
     let type: String
     let size: Int?
-    let modifiedAt: String?
+    /// The connector reports epoch milliseconds.
+    let modifiedAt: Int64?
 
     var id: String { path }
     var isDirectory: Bool { type == "directory" }

@@ -120,6 +120,8 @@ private struct QRScanStepView: View {
                 }
             }
         }
+        // Popping back from confirm/waiting must accept a fresh code.
+        .onAppear { didReadPayload = false }
     }
 
     private func parsePayload(_ value: String) {

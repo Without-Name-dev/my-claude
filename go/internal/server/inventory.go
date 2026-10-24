@@ -21,7 +21,7 @@ func (a *App) applyInventory(ctx context.Context, conn *connectorConn, inv proto
 		}
 		projectID := ""
 		if record.CWD != "" {
-			project, err := a.db.EnsureProject(ctx, conn.userID, conn.id, record.CWD, "")
+			project, err := a.db.EnsureProject(ctx, conn.userID, conn.id, record.CWD, "", false)
 			if err != nil {
 				a.log.Debug("could not ensure project", "cwd", record.CWD, "error", err)
 			} else {

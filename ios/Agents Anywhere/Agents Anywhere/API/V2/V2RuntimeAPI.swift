@@ -9,7 +9,6 @@ protocol V2RuntimeAPIProtocol {
     func commands(sessionId: V2SessionID) async throws -> V2RuntimeCommandListResponse
     func executeCommand(sessionId: V2SessionID, request: V2RuntimeCommandExecuteRequest) async throws -> V2RuntimeCommandExecuteResponse
     func sendMessage(sessionId: V2SessionID, request: V2RuntimeMessageSendRequest) async throws -> V2RuntimeActionResponse
-    func steer(sessionId: V2SessionID, request: V2RuntimeSteerRequest) async throws -> V2RuntimeActionResponse
     func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse
     func notices(sessionId: V2SessionID) async throws -> V2RuntimeNoticeSnapshot
     func respondToNotice(sessionId: V2SessionID, noticeId: V2NoticeID, request: V2RuntimeNoticeRespondRequest) async throws -> V2RuntimeActionResponse
@@ -57,10 +56,6 @@ struct V2RuntimeAPI: V2RuntimeAPIProtocol {
         request body: V2RuntimeMessageSendRequest
     ) async throws -> V2RuntimeActionResponse {
         try await send(sessionId: sessionId, suffix: "messages", method: .post, body: body)
-    }
-
-    func steer(sessionId: V2SessionID, request body: V2RuntimeSteerRequest) async throws -> V2RuntimeActionResponse {
-        try await send(sessionId: sessionId, suffix: "steer", method: .post, body: body)
     }
 
     func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse {

@@ -53,14 +53,23 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request, user st
 		}
 	}
 	archived := query.Get("archived") == "true"
+	var cursor *store.SessionCursor
 	if raw := query.Get("cursor"); raw != "" {
-		if _, err := decodeCursor(raw); err != nil {
+		decoded, err := decodeCursor(raw)
+		if err != nil {
 			httpx.Fail(w, httpx.BadRequest("invalid session cursor"))
 			return
 		}
+		cursor = &store.SessionCursor{
+			Pinned:             decoded.Pinned,
+			SortAt:             decoded.SortAt,
+			LatestItemOrderSeq: decoded.Order,
+			UpdatedSeq:         decoded.Updated,
+			ID:                 decoded.ID,
+		}
 	}
 
-	sessions, err := a.db.ListSessions(r.Context(), user.ID, archived, limit+1)
+	sessions, err := a.db.ListSessions(r.Context(), user.ID, archived, limit+1, cursor)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
@@ -81,8 +90,8 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request, user st
 			pinned = 1
 		}
 		nextCursor = encodeCursor(sessionCursor{
-			Version: 1, Pinned: pinned, SortAt: last.SortAt, Order: -1,
-			Updated: last.UpdatedSeq, ID: last.ID,
+			Version: 1, Pinned: pinned, SortAt: last.SortAt,
+			Order: last.LatestItemOrderSeq, Updated: last.UpdatedSeq, ID: last.ID,
 		})
 	}
 	httpx.OK(w, map[string]any{
@@ -95,12 +104,12 @@ func (a *App) handleListSessions(w http.ResponseWriter, r *http.Request, user st
 
 // handleListAllSessions returns the whole inventory, archived included.
 func (a *App) handleListAllSessions(w http.ResponseWriter, r *http.Request, user store.User) {
-	sessions, err := a.db.ListSessions(r.Context(), user.ID, false, 200)
+	sessions, err := a.db.ListAllSessions(r.Context(), user.ID, false)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
-	archived, err := a.db.ListSessions(r.Context(), user.ID, true, 200)
+	archived, err := a.db.ListAllSessions(r.Context(), user.ID, true)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
@@ -200,12 +209,24 @@ func (a *App) handleTimeline(w http.ResponseWriter, r *http.Request, user store.
 
 	var items []store.TimelineItem
 	var err error
+	hasMore := false
 	switch mode {
 	case "changes":
 		after, _ := strconv.ParseInt(query.Get("afterSeq"), 10, 64)
 		items, err = a.db.TimelineItemsAfter(r.Context(), a.db.Read(), session.ID, after, limit)
+	case "history":
+		raw := query.Get("beforeOrderSeq")
+		before, parseErr := strconv.ParseInt(raw, 10, 64)
+		if raw == "" || parseErr != nil || before < 1 {
+			httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+				"beforeOrderSeq is required for history mode"))
+			return
+		}
+		items, err = a.db.TimelineItemsBefore(r.Context(), a.db.Read(), session.ID, before, limit+1)
+		items, hasMore = trimTimelinePage(items, limit)
 	default:
-		items, err = a.db.TimelineItems(r.Context(), a.db.Read(), session.ID, limit)
+		items, err = a.db.TimelineItemsLatest(r.Context(), a.db.Read(), session.ID, limit+1)
+		items, hasMore = trimTimelinePage(items, limit)
 	}
 	if err != nil {
 		httpx.Fail(w, err)
@@ -219,9 +240,18 @@ func (a *App) handleTimeline(w http.ResponseWriter, r *http.Request, user store.
 		"sessionId":  session.ID,
 		"items":      views,
 		"nextSeq":    session.Seq,
-		"hasMore":    false,
+		"hasMore":    hasMore,
 		"serverTime": timestampNow(),
 	})
+}
+
+// trimTimelinePage drops the oldest item fetched only to learn whether another
+// page exists. The store returns timeline windows oldest first.
+func trimTimelinePage(items []store.TimelineItem, limit int) ([]store.TimelineItem, bool) {
+	if len(items) <= limit {
+		return items, false
+	}
+	return items[len(items)-limit:], true
 }
 
 // handleSnapshot is the first hydration a client does.
@@ -236,11 +266,12 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request, user store.
 			limit = n
 		}
 	}
-	items, err := a.db.TimelineItems(r.Context(), a.db.Read(), session.ID, limit)
+	items, err := a.db.TimelineItemsLatest(r.Context(), a.db.Read(), session.ID, limit+1)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
+	items, hasMore := trimTimelinePage(items, limit)
 	views := make([]ItemView, 0, len(items))
 	for _, it := range items {
 		views = append(views, toView(it, session.Runtime))
@@ -252,10 +283,10 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request, user store.
 
 	httpx.OK(w, map[string]any{
 		"session":               a.sessionView(r.Context(), session),
-		"state":                 a.runtimeState(session),
-		"timeline":              map[string]any{"items": views, "nextSeq": session.Seq, "hasMore": false},
+		"state":                 a.runtimeState(r.Context(), session),
+		"timeline":              map[string]any{"items": views, "nextSeq": session.Seq, "hasMore": hasMore},
 		"approvals":             []any{},
-		"notices":               []any{},
+		"notices":               a.pendingNotices(r.Context(), session.ID),
 		"effectiveCapabilities": a.capabilitySet(session),
 		"runtimeCapabilities":   a.capabilitySet(session),
 		"catalogs":              map[string]any{},
@@ -325,11 +356,17 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		return
 	}
 	var body struct {
-		Content         string  `json:"content"`
-		ClientMessageID *string `json:"clientMessageId"`
+		Content         string            `json:"content"`
+		ClientMessageID *string           `json:"clientMessageId"`
+		Attachments     []json.RawMessage `json:"attachments"`
 	}
 	if err := httpx.Decode(r, &body); err != nil {
 		httpx.Fail(w, err)
+		return
+	}
+	if len(body.Attachments) > 0 {
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+			"attachments are not supported by this server yet"))
 		return
 	}
 	if !a.connectors.Online(session.ConnectorID) {
@@ -349,19 +386,87 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		messageID = store.NewID("msg")
 	}
 
-	if err := a.deliverMessage(r.Context(), session, body.Content, messageID); err != nil {
+	if err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
 		httpx.Fail(w, err)
 		return
 	}
 	httpx.OK(w, map[string]any{"ok": true, "result": map[string]any{"messageId": messageID}, "error": nil})
 }
 
+// handleSteer delivers text into a turn that is already running. The Go
+// connector forwards it as a submit with action "steer"; the plugin queues it
+// like a normal prompt, which is the closest behaviour this stack offers.
+func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.User) {
+	session, ok := a.ownedSession(w, r, user)
+	if !ok {
+		return
+	}
+	var body struct {
+		Content         string            `json:"content"`
+		ClientMessageID *string           `json:"clientMessageId"`
+		Attachments     []json.RawMessage `json:"attachments"`
+	}
+	if err := httpx.Decode(r, &body); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	if len(body.Attachments) > 0 {
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+			"attachments are not supported by this server yet"))
+		return
+	}
+	if strings.TrimSpace(body.Content) == "" {
+		httpx.Fail(w, httpx.BadRequest("content is required"))
+		return
+	}
+	if !a.connectors.Online(session.ConnectorID) {
+		httpx.Fail(w, httpx.Conflict("connector is offline"))
+		return
+	}
+	if !a.connectors.CanDeliver(session.ConnectorID) {
+		httpx.Fail(w, httpx.Conflict("no live Claude session on the connector"))
+		return
+	}
+	requestID := ""
+	if body.ClientMessageID != nil {
+		requestID = *body.ClientMessageID
+	}
+	if requestID == "" {
+		requestID = store.NewID("msg")
+	}
+	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
+		RequestID:         requestID,
+		SessionID:         session.ID,
+		ExternalSessionID: session.ExternalID,
+		Text:              body.Content,
+		Action:            "steer",
+	}) {
+		httpx.Fail(w, httpx.Conflict("connector is offline"))
+		return
+	}
+	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
+}
+
 // deliverMessage records a person's message and hands it to the connector.
 //
 // The transcript entry is written first, so the phone shows what it typed even
-// if the desktop takes a while to pick it up.
-func (a *App) deliverMessage(ctx context.Context, session store.Session, content, messageID string) error {
+// if the desktop takes a while to pick it up. If the connector refuses the
+// frame anyway (the socket dropped after the pre-check, or its queue is full),
+// the entry is marked failed and the session status returns to what it was, so
+// a reload does not show a phantom delivered prompt.
+func (a *App) deliverMessage(
+	ctx context.Context, session store.Session, content, messageID, action string,
+) error {
+	if action == "" {
+		action = "prompt"
+	}
+	previousStatus := session.Status
+	if current, err := a.db.SessionByIDAny(ctx, a.db.Read(), session.ID); err == nil {
+		previousStatus = current.Status
+	}
+
 	userItemID := "msg_" + messageID + "_user"
+	orderSeq := store.NowMS()
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
 		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
@@ -369,7 +474,7 @@ func (a *App) deliverMessage(ctx context.Context, session store.Session, content
 			Type:       "message",
 			Status:     "done",
 			Role:       "user",
-			OrderSeq:   store.NowMS(),
+			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
 			Payload:    messageContent(content),
 		}, store.NowMS())
@@ -385,8 +490,23 @@ func (a *App) deliverMessage(ctx context.Context, session store.Session, content
 		SessionID:         session.ID,
 		ExternalSessionID: session.ExternalID,
 		Text:              content,
-		Action:            "prompt",
+		Action:            action,
 	}) {
+		if failSeq, writeErr := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
+			return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
+				SessionID:  session.ID,
+				ID:         userItemID,
+				Type:       "message",
+				Status:     "failed",
+				Role:       "user",
+				OrderSeq:   orderSeq,
+				UpdatedSeq: seq,
+				Payload:    messageContent(content),
+			}, store.NowMS())
+		}); writeErr == nil {
+			a.publishItem(ctx, session.ID, userItemID, failSeq, false)
+		}
+		a.setSessionStatus(ctx, session.ID, previousStatus)
 		return httpx.Conflict("connector is offline")
 	}
 	return nil
@@ -429,7 +549,7 @@ func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user s
 		httpx.Fail(w, err)
 		return
 	}
-	request, connectorID, found := a.approvals.take(noticeID)
+	request, connectorID, found := a.approvals.takeFor(noticeID, session.ID, session.ConnectorID)
 	if !found {
 		httpx.OK(w, map[string]any{
 			"ok":     false,
@@ -451,12 +571,18 @@ func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user s
 			}
 		}
 	}
-	a.connectors.Send(connectorID, protocol.TypeApprovalAnswer, protocol.ApprovalAnswer{
+	if !a.connectors.Send(connectorID, protocol.TypeApprovalAnswer, protocol.ApprovalAnswer{
 		RequestID: store.NewID("ans"),
 		ToolUseID: request.ToolUseID,
 		Decision:  decision,
 		Answers:   answers,
-	})
+	}) {
+		// The decision never reached the connector; keep the notice pending so
+		// the person can try again once the connector is back.
+		a.approvals.add(noticeID, connectorID, request)
+		httpx.Fail(w, httpx.Conflict("connector is offline"))
+		return
+	}
 	a.setSessionStatus(r.Context(), session.ID, "running")
 	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
 }
@@ -472,7 +598,7 @@ func (a *App) ownedSession(w http.ResponseWriter, r *http.Request, user store.Us
 }
 
 // runtimeState renders the session's runtime state.
-func (a *App) runtimeState(session store.Session) map[string]any {
+func (a *App) runtimeState(ctx context.Context, session store.Session) map[string]any {
 	runtime := session.Runtime
 	var external any
 	if session.ExternalID != "" {
@@ -485,7 +611,7 @@ func (a *App) runtimeState(session store.Session) map[string]any {
 		"runtimeType":       runtime,
 		"externalSessionId": external,
 		"status":            session.Status,
-		"selections":        map[string]any{},
+		"selections":        a.selectionState(ctx, session.ID),
 		"statusReason":      nil,
 		"error":             nil,
 		"metadata":          map[string]any{},
@@ -493,6 +619,24 @@ func (a *App) runtimeState(session store.Session) map[string]any {
 		"createdAt":         isoTime(session.CreatedAt),
 		"updatedAt":         isoTime(session.UpdatedAt),
 	}
+}
+
+// selectionState reads the model and permission choices stored on the session.
+func (a *App) selectionState(ctx context.Context, sessionID string) map[string]any {
+	out := map[string]any{}
+	var model, permission sql.NullString
+	if err := a.db.Read().QueryRowContext(ctx,
+		`SELECT model_selection_id, permission_selection_id FROM sessions WHERE id = ?`,
+		sessionID).Scan(&model, &permission); err != nil {
+		return out
+	}
+	if model.Valid && model.String != "" {
+		out["model"] = model.String
+	}
+	if permission.Valid && permission.String != "" {
+		out["permission"] = permission.String
+	}
+	return out
 }
 
 // capabilitySet advertises what this connector can do in this session.
@@ -594,16 +738,24 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request, user s
 // message, which is what the phone's "new conversation" button does.
 func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user store.User) {
 	var body struct {
-		ConnectorID string  `json:"connectorId"`
-		ProjectID   *string `json:"projectId"`
-		Runtime     string  `json:"runtime"`
-		RuntimeID   *string `json:"runtimeId"`
-		Title       *string `json:"title"`
-		CWD         *string `json:"cwd"`
-		Content     string  `json:"content"`
+		ConnectorID     string             `json:"connectorId"`
+		ProjectID       *string            `json:"projectId"`
+		Runtime         string             `json:"runtime"`
+		RuntimeID       *string            `json:"runtimeId"`
+		Title           *string            `json:"title"`
+		CWD             *string            `json:"cwd"`
+		Content         string             `json:"content"`
+		Selections      map[string]*string `json:"selections"`
+		Attachments     []json.RawMessage  `json:"attachments"`
+		ClientMessageID *string            `json:"clientMessageId"`
 	}
 	if err := httpx.Decode(r, &body); err != nil {
 		httpx.Fail(w, err)
+		return
+	}
+	if len(body.Attachments) > 0 {
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+			"attachments are not supported by this server yet"))
 		return
 	}
 	connector, err := a.db.ConnectorByID(r.Context(), body.ConnectorID)
@@ -641,7 +793,22 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 		httpx.Fail(w, err)
 		return
 	}
-	a.deliverMessage(r.Context(), session, body.Content, store.NewID("msg"))
+	if err := a.applySelections(r.Context(), session.ID, body.Selections); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	messageID := ""
+	if body.ClientMessageID != nil {
+		messageID = *body.ClientMessageID
+	}
+	if messageID == "" {
+		messageID = store.NewID("msg")
+	}
+	if err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
+		a.setSessionStatus(r.Context(), session.ID, "error")
+		httpx.Fail(w, err)
+		return
+	}
 	httpx.OK(w, map[string]any{
 		"session":         a.sessionView(r.Context(), session),
 		"connectorResult": nil,

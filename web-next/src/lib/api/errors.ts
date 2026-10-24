@@ -41,6 +41,16 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
 
+/** True when the server rejected the bearer token rather than being unavailable. */
+export function isAuthFailure(error: unknown): boolean {
+  return isApiError(error) && (
+    error.status === 401 ||
+    error.status === 403 ||
+    error.kind === "unauthorized" ||
+    error.kind === "forbidden"
+  );
+}
+
 export function errorMessage(error: unknown, fallback = "Something went wrong."): string {
   if (error instanceof ApiError) return error.detail || fallback;
   if (error instanceof Error) return error.message || fallback;

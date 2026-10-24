@@ -174,7 +174,9 @@ final class NewSessionModel {
             }
         } catch { if isValid, !Task.isCancelled { homeErrors[device] = error.localizedDescription } }
     }
-    var canAttach: Bool { prepared?.capabilities.allows("runtime.attachment") == true }
+    /// The server rejects create-and-start requests that carry attachments and
+    /// does not persist uploaded files yet, so never offer the picker.
+    var canAttach: Bool { false }
     var canCreate: Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil

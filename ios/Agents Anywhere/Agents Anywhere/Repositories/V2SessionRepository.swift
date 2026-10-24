@@ -288,14 +288,6 @@ final class V2SessionRepository {
         return response
     }
 
-    func steer(sessionId: V2SessionID, content: String, attachmentIDs: [V2AttachmentID] = [], clientMessageID: String) async throws -> V2RuntimeActionResponse {
-        try requireNetwork()
-        let entry = entry(for: sessionId)
-        let response = try await detail.steer(sessionId: sessionId, content: content, attachmentIds: attachmentIDs, clientMessageId: clientMessageID)
-        try requireCurrent(entry)
-        return response
-    }
-
     func interrupt(sessionId: V2SessionID) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)

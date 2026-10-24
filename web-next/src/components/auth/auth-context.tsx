@@ -11,6 +11,7 @@ import {
 import type { AuthMe, OAuthFinalizePayload, StoredSession } from "@/features/auth/types"
 import { useTranslations } from "next-intl"
 import { authFlowHash, clearAuthFlow, rememberAuthFlow, takeAuthFlow } from "@/features/auth/continuation"
+import { isAuthFailure } from "@/lib/api/errors"
 
 export type AuthScreen =
   | "bootstrap"
@@ -228,12 +229,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return
         setMe(currentUser)
         setScreenState(nextScreen === "login" || nextScreen === "register" || nextScreen === "forgot-password" ? "app" : nextScreen)
-      } catch {
-        clearStoredSession()
+      } catch (err) {
+        if (isAuthFailure(err)) {
+          clearStoredSession()
+          if (cancelled) return
+          setSession(null)
+          setMe(null)
+          setScreenState(authFlowHash(window.location.hash) ? hashToScreen(window.location.hash) : "login")
+          return
+        }
+        // The server is unreachable or failing: keep the stored bearer and
+        // open the app, which retries its own requests once it is back.
         if (cancelled) return
-        setSession(null)
         setMe(null)
-        setScreenState(authFlowHash(window.location.hash) ? hashToScreen(window.location.hash) : "login")
+        setScreenState(
+          nextScreen === "login" || nextScreen === "register" || nextScreen === "forgot-password"
+            ? "app"
+            : nextScreen,
+        )
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -380,16 +393,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setScreenState("login")
   }, [])
 
-  const refreshMe = React.useCallback(async () => {
-    if (!session?.accessToken) {
-      setMe(null)
-      return null
-    }
-    const currentUser = await authApi.me(session.accessToken)
-    setMe(currentUser)
-    return currentUser
-  }, [session?.accessToken])
-
   const signOut = React.useCallback(() => {
     clearAuthFlow(window.sessionStorage)
     clearStoredSession()
@@ -399,6 +402,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.location.hash = "#/signed-out"
     setScreenState("signed-out")
   }, [])
+
+  const refreshMe = React.useCallback(async () => {
+    if (!session?.accessToken) {
+      setMe(null)
+      return null
+    }
+    try {
+      const currentUser = await authApi.me(session.accessToken)
+      setMe(currentUser)
+      return currentUser
+    } catch (err) {
+      if (isAuthFailure(err)) signOut()
+      throw err
+    }
+  }, [session?.accessToken, signOut])
 
   return (
     <AuthContext.Provider

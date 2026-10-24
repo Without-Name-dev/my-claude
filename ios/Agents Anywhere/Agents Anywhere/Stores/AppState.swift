@@ -53,6 +53,7 @@ final class AppState {
     @ObservationIgnored private let dashboardClientId = "ios-dashboard-\(UUID().uuidString)"
     @ObservationIgnored private var lastDashboardRefreshAt: Date?
     @ObservationIgnored private var dashboardUpdatesTask: Task<Void, Never>?
+    @ObservationIgnored private var dashboardUpdatesID = UUID()
     @ObservationIgnored private var cachedServices: V2ClientServices?
     @ObservationIgnored private var cachedServicesTokenProvider: MutableAuthTokenProvider?
     /// Keychain is the durable source; view bodies and task identities read
@@ -351,9 +352,11 @@ final class AppState {
         guard let services = makeV2Services() else { return }
         guard services.connectivity.status.availability != .offline else { return }
 
+        let id = UUID()
+        dashboardUpdatesID = id
         dashboardUpdatesTask = Task { [weak self] in
             guard let self else { return }
-            await receiveDashboardUpdates(services: services)
+            await receiveDashboardUpdates(services: services, id: id)
         }
     }
 
@@ -712,7 +715,12 @@ final class AppState {
     }
 
     /// Receives server-pushed dashboard snapshots and reconnects after transient failures.
-    private func receiveDashboardUpdates(services: V2ClientServices) async {
+    private func receiveDashboardUpdates(services: V2ClientServices, id: UUID) async {
+        // Every exit path, including non-retryable failures, must release the
+        // slot so a later connectivity recovery can reconnect.
+        defer {
+            if dashboardUpdatesID == id { dashboardUpdatesTask = nil }
+        }
         var attempt = 0
         while !Task.isCancelled {
             do {

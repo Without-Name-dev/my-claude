@@ -40,7 +40,7 @@ import {
   withServerAttachments,
 } from "@/components/session/optimistic-timeline"
 import { sortSessionViews } from "@/components/session/session-list-order"
-import { isApiError } from "@/lib/api/errors"
+import { isApiError, isAuthFailure } from "@/lib/api/errors"
 
 // ─── Panel / page types ───────────────────────────────────────
 
@@ -436,7 +436,7 @@ export function useWorkspace() {
 // ─── Provider ─────────────────────────────────────────────────
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const { session: authSession } = useAuth()
+  const { session: authSession, signOut } = useAuth()
   const currentAccessTokenRef = React.useRef(authSession?.accessToken ?? null)
   currentAccessTokenRef.current = authSession?.accessToken ?? null
   const [connectors, setConnectors] = React.useState<ConnectorView[]>([])
@@ -808,8 +808,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         socket.onerror = () => {
           socket?.close()
         }
-      } catch {
+      } catch (err) {
         if (cancelled) return
+        if (isAuthFailure(err)) {
+          signOut()
+          return
+        }
         scheduleInitialFallback()
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null
@@ -829,7 +833,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (snapshotFrame !== null) window.cancelAnimationFrame(snapshotFrame)
       pendingSnapshot = null
     }
-  }, [applyDashboardSnapshot, authSession?.accessToken, fetchData, workspaceDataEnabled])
+  }, [applyDashboardSnapshot, authSession?.accessToken, fetchData, signOut, workspaceDataEnabled])
 
   // ── Hash routing ──────────────────────────────────────────
   React.useEffect(() => {

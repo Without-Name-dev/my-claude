@@ -48,6 +48,22 @@ type Client struct {
 	pendingMu sync.Mutex
 	pending   map[string]*pendingAsk
 
+	// turnSessions maps a runtime turn id to the server session it belongs to,
+	// so an approval request that carries only the turn id can be addressed.
+	turnMu       sync.RWMutex
+	turnSessions map[string]string
+
+	// pendingEnd keeps the last turn.end that could not be sent, so it can be
+	// replayed after the next hello.
+	endMu      sync.Mutex
+	pendingEnd *protocol.TurnEnd
+
+	// activeMu guards the session whose submitted message is being followed,
+	// which is how an abort is routed to the plugin instance that owns it.
+	activeMu       sync.Mutex
+	activeSession  string
+	activeExternal string
+
 	// turns is drained by a single goroutine, so one turn runs at a time even
 	// though the server may submit several.
 	turns chan protocol.Submit
@@ -64,13 +80,14 @@ type pendingAsk struct {
 // NewClient prepares a client. Run opens the connection.
 func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Client {
 	return &Client{
-		URL:     url,
-		Token:   token,
-		Name:    name,
-		Bridge:  b,
-		Log:     log,
-		pending: map[string]*pendingAsk{},
-		turns:   make(chan protocol.Submit, 32),
+		URL:          url,
+		Token:        token,
+		Name:         name,
+		Bridge:       b,
+		Log:          log,
+		pending:      map[string]*pendingAsk{},
+		turnSessions: map[string]string{},
+		turns:        make(chan protocol.Submit, 32),
 	}
 }
 
@@ -80,9 +97,14 @@ func (c *Client) Run(ctx context.Context) {
 
 	backoff := time.Second
 	for ctx.Err() == nil {
-		err := c.session(ctx)
+		reachedHello, err := c.session(ctx)
 		if ctx.Err() != nil {
 			return
+		}
+		if reachedHello {
+			// The outage is over, so the next interruption starts from the
+			// shortest delay instead of inheriting the previous one.
+			backoff = time.Second
 		}
 		c.Log.Warn("connector link lost", "error", err, "retry_in", backoff)
 		select {
@@ -96,8 +118,9 @@ func (c *Client) Run(ctx context.Context) {
 	}
 }
 
-// session runs one connection until it fails.
-func (c *Client) session(ctx context.Context) error {
+// session runs one connection until it fails. It reports whether the link
+// reached hello, so Run can tell a failed dial from a lost connection.
+func (c *Client) session(ctx context.Context) (reachedHello bool, err error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -105,7 +128,7 @@ func (c *Client) session(ctx context.Context) error {
 		HTTPHeader: map[string][]string{"Authorization": {"Bearer " + c.Token}},
 	})
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(8 << 20)
@@ -126,9 +149,13 @@ func (c *Client) session(ctx context.Context) error {
 		Capabilities: map[string]bool{"bridge": c.Bridge != nil && c.Bridge.Available()},
 		Runtimes:     []protocol.RuntimeInfo{{Type: "claude", Ready: c.Bridge != nil}},
 	}); err != nil {
-		return err
+		return false, err
 	}
+	reachedHello = true
 	c.Log.Info("connector link established", "url", c.URL)
+	// A turn that ended while the link was down is replayed now that the
+	// server can hear it; turn.end is idempotent there.
+	c.replayTurnEnd()
 
 	beatCtx, stopBeat := context.WithCancel(ctx)
 	defer stopBeat()
@@ -140,7 +167,7 @@ func (c *Client) session(ctx context.Context) error {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			return err
+			return reachedHello, err
 		}
 		var env protocol.Envelope
 		if err := json.Unmarshal(data, &env); err != nil {
@@ -182,10 +209,20 @@ func (c *Client) dispatch(env protocol.Envelope) {
 			c.Log.Warn("turn queue full; dropping submit", "session", msg.SessionID)
 		}
 	case protocol.TypeAbort:
-		if c.Bridge != nil {
-			if err := c.Bridge.RequestAbort(); err != nil {
-				c.Log.Warn("could not write the abort request", "error", err)
-			}
+		var msg protocol.Abort
+		if err := json.Unmarshal(env.Data, &msg); err != nil {
+			return
+		}
+		if c.Bridge == nil {
+			return
+		}
+		external, ok := c.abortTarget(msg.SessionID)
+		if !ok {
+			c.Log.Debug("ignoring abort for a session this connector is not driving", "session", msg.SessionID)
+			return
+		}
+		if err := c.Bridge.RequestAbort(external); err != nil {
+			c.Log.Warn("could not write the abort request", "error", err)
 		}
 	case protocol.TypeApprovalAnswer:
 		var msg protocol.ApprovalAnswer
@@ -232,32 +269,53 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 	if action == "" {
 		action = "prompt"
 	}
-	var sub *bridge.Submission
-	var err error
 	if action == "command" {
 		// A command carries a name and an argument tail; the plugin runs it
-		// through $.command.run instead of submitting it as prompt text.
+		// through $.command.run instead of submitting it as prompt text. It
+		// never writes a turn to the outbox, so there is nothing to watch.
 		name, args := splitCommand(msg.Text)
-		sub, err = c.Bridge.SubmitCommand(msg.SessionID, msg.RequestID, name, args)
-	} else {
-		sub, err = c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, msg.Text, action)
+		if _, err := c.Bridge.SubmitCommand(msg.SessionID, msg.RequestID, name, args); err != nil {
+			c.Log.Warn("could not queue the command", "error", err)
+		}
+		return
 	}
+	sub, err := c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, msg.Text, action)
 	if err != nil {
 		c.Log.Warn("could not queue the message", "error", err)
 		return
 	}
-	watcher := NewTurnWatcher(c.Bridge, c, msg.SessionID, sub)
+	c.setActive(msg.SessionID, msg.ExternalSessionID)
+	defer c.clearActive(msg.SessionID)
+	watcher := NewTurnWatcher(c.Bridge, c, msg.SessionID, msg.ExternalSessionID, sub)
 	watcher.Run(ctx)
 }
 
 // TurnBegin implements TurnSink.
-func (c *Client) TurnBegin(msg protocol.TurnBegin) { c.emit(protocol.TypeTurnBegin, msg) }
+func (c *Client) TurnBegin(msg protocol.TurnBegin) {
+	if msg.TurnID != "" && msg.SessionID != "" {
+		c.turnMu.Lock()
+		c.turnSessions[msg.TurnID] = msg.SessionID
+		c.turnMu.Unlock()
+	}
+	c.emit(protocol.TypeTurnBegin, msg)
+}
 
 // TurnDelta implements TurnSink.
 func (c *Client) TurnDelta(msg protocol.TurnDelta) { c.emit(protocol.TypeTurnDelta, msg) }
 
 // TurnEnd implements TurnSink.
-func (c *Client) TurnEnd(msg protocol.TurnEnd) { c.emit(protocol.TypeTurnEnd, msg) }
+//
+// The final text lives only in this frame, so a send failure is not just
+// logged: the frame is kept and replayed after the next hello.
+func (c *Client) TurnEnd(msg protocol.TurnEnd) {
+	if err := c.send(protocol.TypeTurnEnd, msg); err != nil {
+		c.endMu.Lock()
+		c.pendingEnd = &msg
+		c.endMu.Unlock()
+		c.Log.Debug("could not forward frame", "type", protocol.TypeTurnEnd, "error", err)
+	}
+	c.forgetTurn(msg.TurnID)
+}
 
 // ToolBegin implements TurnSink.
 func (c *Client) ToolBegin(msg protocol.ToolBegin) { c.emit(protocol.TypeToolBegin, msg) }
@@ -276,6 +334,75 @@ func (c *Client) emit(frameType string, value any) {
 	}
 }
 
+// replayTurnEnd re-sends the final turn.end that a disconnect swallowed.
+func (c *Client) replayTurnEnd() {
+	c.endMu.Lock()
+	msg := c.pendingEnd
+	c.pendingEnd = nil
+	c.endMu.Unlock()
+	if msg == nil {
+		return
+	}
+	if err := c.send(protocol.TypeTurnEnd, *msg); err != nil {
+		c.endMu.Lock()
+		if c.pendingEnd == nil {
+			c.pendingEnd = msg
+		}
+		c.endMu.Unlock()
+		c.Log.Debug("could not replay turn.end", "error", err)
+	}
+}
+
+// setActive records which submitted session the connector is following and
+// the runtime id the plugin knows it by.
+func (c *Client) setActive(sessionID, externalSessionID string) {
+	c.activeMu.Lock()
+	c.activeSession = sessionID
+	c.activeExternal = externalSessionID
+	c.activeMu.Unlock()
+}
+
+// clearActive forgets the session unless another submit has already claimed
+// it.
+func (c *Client) clearActive(sessionID string) {
+	c.activeMu.Lock()
+	if c.activeSession == sessionID {
+		c.activeSession, c.activeExternal = "", ""
+	}
+	c.activeMu.Unlock()
+}
+
+// abortTarget returns the runtime session id to stamp on an abort, and whether
+// the abort is addressed to the message this connector is driving.
+func (c *Client) abortTarget(sessionID string) (string, bool) {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	if sessionID == "" || c.activeSession != sessionID {
+		return "", false
+	}
+	return c.activeExternal, true
+}
+
+// sessionForTurn resolves the server session that owns a runtime turn.
+func (c *Client) sessionForTurn(turnID string) string {
+	if turnID == "" {
+		return ""
+	}
+	c.turnMu.RLock()
+	defer c.turnMu.RUnlock()
+	return c.turnSessions[turnID]
+}
+
+// forgetTurn drops a finished turn's session mapping.
+func (c *Client) forgetTurn(turnID string) {
+	if turnID == "" {
+		return
+	}
+	c.turnMu.Lock()
+	delete(c.turnSessions, turnID)
+	c.turnMu.Unlock()
+}
+
 // Ask is the ApprovalServer callback: it forwards the plugin's question to the
 // server and waits for the person.
 //
@@ -286,9 +413,25 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	if toolUseID == "" {
 		return nil, errors.New("approval request has no toolUseId")
 	}
+
+	// The pane answers by posting the decision to this same endpoint. Settle
+	// the hook that is waiting on this tool instead of treating the decision
+	// as another question.
+	if decision := stringField(request, "decision"); decision == "allow" || decision == "deny" {
+		return c.settle(toolUseID, protocol.ApprovalAnswer{ToolUseID: toolUseID, Decision: decision}), nil
+	}
+
 	kind := stringField(request, "kind")
 	if kind == "" {
 		kind = "permission"
+	}
+	turnID := stringField(request, "turnId")
+	// The turn.begin the watcher forwarded is authoritative. The installed
+	// plugin sends only the turn id; newer builds may also send a session id,
+	// which covers a re-ask that arrives before the watcher saw the turn.
+	sessionID := c.sessionForTurn(turnID)
+	if sessionID == "" {
+		sessionID = stringField(request, "sessionId")
 	}
 
 	c.pendingMu.Lock()
@@ -304,17 +447,19 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	}
 	c.pendingMu.Unlock()
 
-	if !exists {
-		raw, _ := json.Marshal(request["input"])
-		if err := c.send(protocol.TypeApprovalRequest, protocol.ApprovalRequest{
-			SessionID: stringField(request, "sessionId"),
-			ToolUseID: toolUseID,
-			Tool:      stringField(request, "tool"),
-			Kind:      kind,
-			Input:     raw,
-		}); err != nil {
-			return nil, err
-		}
+	// Re-send while the question is unanswered. The plugin asks again after
+	// its own timeout and the server keys the notice by toolUseId, so a repeat
+	// is idempotent and recovers a frame lost to a disconnect.
+	raw, _ := json.Marshal(request["input"])
+	if err := c.send(protocol.TypeApprovalRequest, protocol.ApprovalRequest{
+		SessionID: sessionID,
+		TurnID:    turnID,
+		ToolUseID: toolUseID,
+		Tool:      stringField(request, "tool"),
+		Kind:      kind,
+		Input:     raw,
+	}); err != nil {
+		return nil, err
 	}
 
 	select {
@@ -328,6 +473,24 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// settle stores a decision for a pending question and hands it to the hook
+// that is waiting right now, if any.
+func (c *Client) settle(toolUseID string, answer protocol.ApprovalAnswer) map[string]any {
+	c.pendingMu.Lock()
+	ask, ok := c.pending[toolUseID]
+	if ok {
+		ask.settled = &answer
+	}
+	c.pendingMu.Unlock()
+	if ok {
+		select {
+		case ask.answers <- answer:
+		default:
+		}
+	}
+	return answerPayload(answer)
 }
 
 // deliverApproval hands a decision to the waiting Ask, if any.

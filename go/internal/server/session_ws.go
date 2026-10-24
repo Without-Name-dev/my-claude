@@ -84,10 +84,9 @@ func (a *App) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
-		case frame, ok := <-sub.Frames():
-			if !ok {
-				return
-			}
+		case <-sub.Done():
+			return
+		case frame := <-sub.Frames():
 			deadline, stop := context.WithTimeout(ctx, 15*time.Second)
 			err := ws.Write(deadline, websocket.MessageText, frame)
 			stop()

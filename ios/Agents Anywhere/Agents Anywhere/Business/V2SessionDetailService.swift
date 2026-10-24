@@ -53,27 +53,6 @@ struct V2SessionDetailService {
         ).requireSuccess()
     }
 
-    func steer(
-        sessionId: V2SessionID,
-        content: String,
-        attachmentIds: [V2AttachmentID],
-        clientMessageId: String
-    ) async throws -> V2RuntimeActionResponse {
-        let normalizedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if attachmentIds.count > 10 { throw V2BusinessError.tooManyAttachments(maximum: 10) }
-        if normalizedContent.isEmpty, attachmentIds.isEmpty {
-            throw V2BusinessError.emptyMessage
-        }
-        return try await runtimeAPI.steer(
-            sessionId: sessionId,
-            request: V2RuntimeSteerRequest(
-                content: normalizedContent,
-                attachments: attachmentIds.map { V2AttachmentSendReference(fileId: $0) },
-                clientMessageId: clientMessageId
-            )
-        ).requireSuccess()
-    }
-
     func interrupt(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse {
         try await runtimeAPI.interrupt(sessionId: sessionId).requireSuccess()
     }

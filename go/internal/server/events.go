@@ -122,8 +122,6 @@ func toView(it store.TimelineItem, runtime string) ItemView {
 		r := it.Role
 		role = &r
 	}
-	updated := isoTime(it.UpdatedSeq) // replaced below; sequence is not a clock
-	_ = updated
 	ts := it.OrderSeq
 	created := isoTime(ts)
 	completed := (*string)(nil)

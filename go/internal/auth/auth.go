@@ -49,51 +49,6 @@ func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func b64Decode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
 
-// CreateConnectorAccessToken mints the bearer a connector presents on its
-// websocket and RPC calls. credentialHash binds the token to one pairing
-// credential so a token from a revoked pairing stops verifying.
-func CreateConnectorAccessToken(connectorID string, expiresIn int, credentialHash string) string {
-	expiresAt := time.Now().Unix() + int64(expiresIn)
-	payload := connectorID + ":" + strconv.FormatInt(expiresAt, 10) + ":" + credentialHash
-	mac := hmac.New(sha256.New, Secret())
-	mac.Write([]byte(payload))
-	return connectorID + "." + strconv.FormatInt(expiresAt, 10) + "." + b64(mac.Sum(nil))
-}
-
-// ConnectorAccessTokenID reads the lookup key without verifying the signature.
-// Callers must still verify against the stored credential before trusting it.
-func ConnectorAccessTokenID(token string) (string, bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] == "" {
-		return "", false
-	}
-	return parts[0], true
-}
-
-// VerifyConnectorAccessToken returns the connector id when the token is
-// unexpired and its signature matches the stored credential hash.
-func VerifyConnectorAccessToken(token, credentialHash string) (string, error) {
-	parts := strings.SplitN(token, ".", 3)
-	if len(parts) != 3 {
-		return "", ErrInvalidToken
-	}
-	expiresAt, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return "", ErrInvalidToken
-	}
-	if expiresAt < time.Now().Unix() {
-		return "", ErrInvalidToken
-	}
-	payload := parts[0] + ":" + parts[1] + ":" + credentialHash
-	mac := hmac.New(sha256.New, Secret())
-	mac.Write([]byte(payload))
-	expected := b64(mac.Sum(nil))
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
-		return "", ErrInvalidToken
-	}
-	return parts[0], nil
-}
-
 func iterations() int {
 	if raw := os.Getenv("AGENT_SERVER_PASSWORD_ITERATIONS"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {

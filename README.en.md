@@ -18,7 +18,7 @@
 <p align="center">
   <a href="docs/releases/2.0.3.md"><img src="https://img.shields.io/badge/release-2.0.3-222222?style=flat" alt="Release 2.0.3"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-222222?style=flat" alt="MIT"></a>
-  <a href="docker/README.md"><img src="https://img.shields.io/badge/self--hosted-Docker-222222?style=flat" alt="Self-host with Docker"></a>
+  <a href="go/README.md"><img src="https://img.shields.io/badge/self--hosted-Go-222222?style=flat" alt="Self-host with Go"></a>
 </p>
 
 **My Claude** is an open-source agent workbench across your devices. Connect a work machine running **Claude Code**, then view sessions, respond to requests, manage files and use terminals from desktop, mobile and Web. Agents execute tasks on the connected work machine.
@@ -36,7 +36,7 @@ Install the desktop client on your work machine, then access it from your phone,
 | **iOS / iPadOS** | [Download on the App Store](https://apps.apple.com/cn/app/agents-anywhere/id6787125178) · [Join TestFlight](https://testflight.apple.com/join/GKGaut99) |
 | **Android** | [APK · 2.0.3](https://modelscope.cn/models/t4wefan/deepseek-harness-desktop/resolve/master/agents-anywhere-2.0.3-release.apk) |
 | **Web** | [Open Web](https://web.agents-anywhere.com) |
-| **Linux / headless** | [Run the Connector CLI](connector/README.md) |
+| **Linux / headless** | [Run the Go Connector CLI](go/README.md#connector) (pair, set `AA_CONNECTOR_DATA_DIR`, then start with `aa-connector --config`) |
 
 See the [download page](https://www.agents-anywhere.com/en/download) for platform details. Read the [upgrade guide](docs/upgrading.md) before upgrading a legacy deployment.
 
@@ -95,7 +95,7 @@ Check progress and reply from your phone, open the workspace on your tablet, the
 ## First use
 
 1. **Sign in to a service.** Install a client or open Web. Sign in to Cloud or enter your self-hosted service address.
-2. **Connect your work machine.** Desktop includes a managed local Connector; servers and headless machines use the [Connector CLI](connector/README.md).
+2. **Connect your work machine.** Desktop includes a managed local Connector; servers and headless machines use the [Go Connector CLI](go/README.md#connector): pair via `/api/v2/pairing/start`, `claim` and `poll` to obtain `connector.json`, then start it with `aa-connector --config`.
 3. **Prepare your agent and project.** Configure the runtime, account and working directory on that machine, then open or create a session.
 4. **Access from another device.** Sign in to the same service and account from your phone, tablet or another computer.
 
@@ -117,32 +117,39 @@ Session content, timelines and uploaded attachments may pass through or be store
 
 <a id="self-hosting-quickstart"></a>
 
-### Deploy with Docker
+### Self-host the Go server
 
-After cloning the repository, run from its root. Replace the example password and secret first:
+The production service is the Go binary `aa-server`; its data lives in `AA_DATA_DIR/server.db` (SQLite). The server can serve the static Web client from `AA_WEB_DIR`, or nginx can host it.
 
 ```bash
-POSTGRES_PASSWORD=replace-with-a-strong-password \
-AGENT_SERVER_SECRET=replace-with-a-long-random-secret \
-docker compose -f docker/docker-compose.postgres.yml up --build
+cd go
+go build -o bin/aa-server ./cmd/aa-server
+AA_DATA_DIR=/var/lib/agents-anywhere \
+AA_LISTEN=0.0.0.0:8080 \
+AA_PUBLIC_URL=https://aa.example.com \
+AGENT_SERVER_SECRET=$(openssl rand -hex 32) \
+AA_WEB_DIR=/opt/agents-anywhere/web \
+bin/aa-server
 ```
 
-Open `http://127.0.0.1:5174`, retrieve the setup token from Server logs and create the first administrator. Compose includes PostgreSQL, Redis, a migration job and the Server hosting the static Web client.
+Open `AA_PUBLIC_URL`, retrieve the setup token from the Server logs and create the first administrator. See [go/README.md](go/README.md) for environment variables, the nginx reverse proxy and pairing.
 
-[Deployment guide](docker/README.md) · [Backups and upgrades](docs/upgrading.md) · [Server documentation](server/README.md)
+`docker/docker-compose.postgres.yml` deploys the **Python reference implementation** (PostgreSQL, Redis, Alembic); it is not the production Go server.
+
+[Backups and upgrades](docs/upgrading.md) · [Go server and connector documentation](go/README.md) · [Python reference deployment](docker/README.md)
 
 <a id="architecture-and-source"></a>
 
 ## For developers
 
-Development uses **Python 3.12+ / uv / Node.js 22 / Corepack + Yarn**. Start with the [development guide](docs/development.md) for source setup and headless checks. Most detailed guides currently use Chinese.
+Development uses **Go 1.27+ / Python 3.12+ / uv / Node.js 22 / Corepack + Yarn**. Start with the [development guide](docs/development.md) for source setup and headless checks. Most detailed guides currently use Chinese.
 
 | What to explore | Start here |
 | --- | --- |
-| Architecture and API | [Server architecture](docs/server-architecture.md) · [API documentation](docs/api/README.md) |
-| Agent integrations and local execution | [Connector](connector/README.md) · [Runtime protocol](docs/runtime-protocol/README.md) |
-| Web and desktop clients | [Web source](web-next/) · [Desktop Workbench](desktop-workbench/README.md) |
-| Native mobile clients | [Android](android/README.md) · [iOS source](ios/) |
+| Architecture and API | [Go server](go/README.md) · [Python reference architecture](docs/server-architecture.md) · [API documentation](docs/api/README.md) |
+| Agent integrations and local execution | [Go connector](go/README.md#connector) · [Python reference connector](connector/README.md) · [Runtime protocol](docs/runtime-protocol/README.md) |
+| Web client | [Web source](web-next/) |
+| Native mobile clients | [iOS source](ios/) |
 | More documentation | [Documentation index](docs/README.md) · [Protocol contracts](contracts/) |
 
 Report problems in [Issues](https://github.com/anywhere-labs/Agents-Anywhere/issues) or contribute through [Pull Requests](https://github.com/anywhere-labs/Agents-Anywhere/pulls). Include the client version, operating system, runtime type and reproduction steps, with credentials removed from logs.

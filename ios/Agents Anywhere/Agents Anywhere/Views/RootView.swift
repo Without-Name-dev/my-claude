@@ -4,7 +4,6 @@ struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingManualLogin = false
-    @State private var showingQRCodeLogin = false
 
     var body: some View {
         Group {
@@ -14,7 +13,6 @@ struct RootView: View {
             case .signedOut:
                 ServiceEntryView(
                     onManualLogin: { showingManualLogin = true },
-                    onQRCodeLogin: { showingQRCodeLogin = true },
                 )
             case .signedIn:
                 ChatShellView()
@@ -26,16 +24,10 @@ struct RootView: View {
                 showingManualLogin = false
             }
         }
-        .sheet(isPresented: $showingQRCodeLogin) {
-            QRCodeLoginView(appState: appState) {
-                appState.activateSignedInRoute()
-                showingQRCodeLogin = false
-            }
-        }
         .announcementGate(
             server: appState.serverURL,
             route: appState.route,
-            blocked: showingManualLogin || showingQRCodeLogin
+            blocked: showingManualLogin
         )
         .overlay(alignment: .top) {
             if appState.route == .signedIn, let error = appState.restoreConnectionError {

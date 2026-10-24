@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync"
 
@@ -70,14 +69,3 @@ func (a *App) handleSessionActivity(w http.ResponseWriter, r *http.Request, user
 	}
 	httpx.OK(w, map[string]any{"agents": agents, "serverTime": timestampNow()})
 }
-
-// agentsPayload is the shape embedded in the session snapshot.
-func (a *App) agentsPayload(sessionID string) []protocol.AgentRunning {
-	agents := a.activity.get(sessionID)
-	if agents == nil {
-		return []protocol.AgentRunning{}
-	}
-	return agents
-}
-
-var _ = json.Marshal

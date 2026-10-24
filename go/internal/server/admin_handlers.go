@@ -279,7 +279,7 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, acto
 // Refusing the last administrator is the difference between a clean delete and
 // an instance nobody can administer afterwards.
 func (a *App) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, actor store.User) {
-	err := a.db.DeleteUserAsAdmin(r.Context(), actor.ID, r.PathValue("user_id"))
+	files, err := a.db.DeleteUserAsAdmin(r.Context(), actor.ID, r.PathValue("user_id"))
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -292,6 +292,14 @@ func (a *App) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request, acto
 			httpx.Fail(w, err)
 		}
 		return
+	}
+	// The rows are committed; the blobs are not part of the database and must
+	// be removed separately.
+	for _, file := range files {
+		if err := store.DeleteAttachment(a.cfg.UploadDir, file.SessionID, file.FileID); err != nil {
+			a.log.Warn("could not delete an attachment",
+				"session", file.SessionID, "file", file.FileID, "error", err)
+		}
 	}
 	httpx.NoContent(w)
 }

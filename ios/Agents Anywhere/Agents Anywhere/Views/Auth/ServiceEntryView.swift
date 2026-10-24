@@ -4,7 +4,6 @@ struct ServiceEntryView: View {
     @Environment(AppState.self) private var appState
     @State private var showsPrivacyPolicy = false
     var onManualLogin: () -> Void = {}
-    var onQRCodeLogin: () -> Void = {}
 
     var body: some View {
         NavigationStack {
@@ -12,11 +11,7 @@ struct ServiceEntryView: View {
                 AuthBrandLockup()
 
                 VStack(spacing: 12) {
-                    AuthPrimaryButton(title: String(localized: "QR Code Login"), systemImage: "qrcode.viewfinder") {
-                        onQRCodeLogin()
-                    }
-
-                    AuthGlassButton(String(localized: "Manual Login"), systemImage: "link") {
+                    AuthPrimaryButton(title: String(localized: "Manual Login"), systemImage: "link") {
                         onManualLogin()
                     }
                 }

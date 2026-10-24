@@ -36,13 +36,6 @@ export interface AttachedFile {
   uploadError?: string
 }
 
-interface AttachmentInputProps {
-  attachments: AttachedFile[]
-  onAttach: (files: AttachedFile[]) => void
-  onRemove: (id: string) => void
-  isDragging: boolean
-}
-
 type AttachmentButtonProps = {
   attachments: AttachedFile[]
   onAttach: (files: AttachedFile[]) => void
@@ -215,6 +208,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
 
   // Global paste handler
   useEffect(() => {
+    if (!enabled) return
     const onPaste = (e: ClipboardEvent) => {
       if (!e.clipboardData) return
       const items = Array.from(e.clipboardData.items)
@@ -229,7 +223,7 @@ export function useAttachments(options: UseAttachmentsOptions = {}) {
     }
     window.addEventListener("paste", onPaste)
     return () => window.removeEventListener("paste", onPaste)
-  }, [add])
+  }, [add, enabled])
 
   // Drag over entire window
   const onDragEnter = useCallback((e: React.DragEvent) => {
@@ -387,21 +381,6 @@ export function AttachmentPreviewList({ attachments, onRemove }: AttachmentPrevi
         )
       })}
     </AttachmentGroup>
-  )
-}
-
-// The legacy combined component is kept for compatibility. Prefer composing
-// AttachmentPreviewList above the textarea and AttachmentButton in the toolbar.
-export function AttachmentBar(props: AttachmentInputProps) {
-  return (
-    <>
-      <AttachmentButton
-        attachments={props.attachments}
-        onAttach={props.onAttach}
-        isDragging={props.isDragging}
-      />
-      <AttachmentPreviewList attachments={props.attachments} onRemove={props.onRemove} />
-    </>
   )
 }
 

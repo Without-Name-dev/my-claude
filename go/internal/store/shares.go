@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -160,26 +161,48 @@ func (s *Store) SetSessionsArchivedWithScope(
 			return err
 		}
 
-		now := time.Now().UnixMilli()
-		for _, id := range ids {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE sessions SET archived = ?, archived_at = ?, updated_at = ?
-				WHERE id = ? AND connector_id IN (SELECT id FROM connectors WHERE user_id = ?)`,
-				boolInt(archived), archivedAt(archived, now), now, id, userID); err != nil {
-				return err
-			}
+		sessions = make([]Session, 0, len(ids))
+		if len(ids) == 0 {
+			return nil
 		}
 
-		sessions = make([]Session, 0, len(ids))
+		// The ids were selected through the ownership join above, so the
+		// updates do not need to repeat it. Both statements are set based:
+		// archive-all can touch thousands of sessions while holding the single
+		// write connection.
+		now := time.Now().UnixMilli()
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		updateArgs := make([]any, 0, len(ids)+3)
+		updateArgs = append(updateArgs, boolInt(archived), archivedAt(archived, now), now)
 		for _, id := range ids {
-			session, err := scanSession(tx.QueryRowContext(ctx,
-				`SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, id))
+			updateArgs = append(updateArgs, id)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET archived = ?, archived_at = ?, updated_at = ?
+			 WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
+			return err
+		}
+
+		selectArgs := make([]any, 0, len(ids))
+		for _, id := range ids {
+			selectArgs = append(selectArgs, id)
+		}
+		rows, err = tx.QueryContext(ctx,
+			`SELECT `+sessionColumns+` FROM sessions
+			 WHERE id IN (`+placeholders+`)
+			 ORDER BY pinned DESC, sort_at DESC, created_at DESC`, selectArgs...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			session, err := scanSession(rows)
 			if err != nil {
 				return err
 			}
 			sessions = append(sessions, session)
 		}
-		return nil
+		return rows.Err()
 	})
 	if err != nil {
 		return nil, err

@@ -156,6 +156,51 @@ func (s *Store) InsertAttachment(ctx context.Context, meta AttachmentMeta, creat
 	})
 }
 
+// AttachmentFileRef identifies one stored attachment by the two path segments
+// its blob lives under. It is what callers need to delete the files after the
+// session rows are gone.
+type AttachmentFileRef struct {
+	SessionID string
+	FileID    string
+}
+
+// AttachmentFilesForConnector lists the attachments of every session on one
+// connector. It must be called before those sessions are deleted, because the
+// attachment rows cascade away with them.
+func (s *Store) AttachmentFilesForConnector(ctx context.Context, q Querier, connectorID string) ([]AttachmentFileRef, error) {
+	return attachmentFiles(ctx, q, `
+		SELECT a.session_id, a.id FROM attachments a
+		JOIN sessions s ON s.id = a.session_id
+		WHERE s.connector_id = ?`, connectorID)
+}
+
+// AttachmentFilesForUser lists the attachments of every session a user owns.
+func (s *Store) AttachmentFilesForUser(ctx context.Context, q Querier, userID string) ([]AttachmentFileRef, error) {
+	return attachmentFiles(ctx, q, `
+		SELECT a.session_id, a.id FROM attachments a
+		JOIN sessions s ON s.id = a.session_id
+		JOIN connectors c ON c.id = s.connector_id
+		WHERE c.user_id = ?`, userID)
+}
+
+func attachmentFiles(ctx context.Context, q Querier, query string, arg any) ([]AttachmentFileRef, error) {
+	rows, err := q.QueryContext(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AttachmentFileRef
+	for rows.Next() {
+		var ref AttachmentFileRef
+		if err := rows.Scan(&ref.SessionID, &ref.FileID); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
 // writeFileAtomic stages data in the destination directory, then renames it
 // into place. The rename is atomic on one filesystem, so readers never observe
 // a partially written file.

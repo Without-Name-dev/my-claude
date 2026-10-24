@@ -458,8 +458,9 @@ func (s *Store) UpdateUserAsAdmin(
 // projects, so they go first; projects then release their connector reference;
 // connectors go last before the user because users are referenced with
 // ON DELETE RESTRICT.
-func (s *Store) DeleteUserAsAdmin(ctx context.Context, actorID, targetID string) error {
-	return s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+func (s *Store) DeleteUserAsAdmin(ctx context.Context, actorID, targetID string) ([]AttachmentFileRef, error) {
+	var files []AttachmentFileRef
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		target, err := scanUser(tx.QueryRowContext(ctx,
 			`SELECT `+userColumns+` FROM users WHERE id = ?`, targetID))
 		if err != nil {
@@ -479,6 +480,14 @@ func (s *Store) DeleteUserAsAdmin(ctx context.Context, actorID, targetID string)
 		}
 		if targetID == actorID {
 			return ErrSelfDeleteUser
+		}
+
+		// The attachment rows cascade with the sessions, so collect the file
+		// locations while they still exist; the caller removes the blobs after
+		// this transaction commits.
+		files, err = s.AttachmentFilesForUser(ctx, tx, targetID)
+		if err != nil {
+			return err
 		}
 
 		if _, err := tx.ExecContext(ctx, `
@@ -510,6 +519,10 @@ func (s *Store) DeleteUserAsAdmin(ctx context.Context, actorID, targetID string)
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 func countEnabledAdmins(ctx context.Context, tx *sql.Tx) (int, error) {

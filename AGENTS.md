@@ -10,20 +10,18 @@ My Claude 是一个跨设备的 Agent 工作台。工作设备上的 **Connector
 
 | 目录 | 内容 | 技术栈 |
 | --- | --- | --- |
-| `server/` | API、实时通道、存储；分层规则见 [Server 架构](docs/server-architecture.md) | Python 3.12、FastAPI、PostgreSQL、Redis、Alembic、uv |
-| `connector/` | 工作设备侧进程，连接 Server 并驱动 Runtime | Python、uv |
+| `go/` | **生产实现**：`cmd/aa-server`、`cmd/aa-connector`，见 [go/README.md](go/README.md) | Go、SQLite |
+| `server/` | **Python 参考实现**，不参与生产部署；分层规则见 [Server 架构](docs/server-architecture.md) | Python 3.12、FastAPI、PostgreSQL、Redis、Alembic、uv |
+| `connector/` | **Python 参考 Connector**，不参与生产部署 | Python、uv |
 | `web-next/` | Web 客户端（另有自己的 [AGENTS.md](web-next/AGENTS.md)） | Next.js、TypeScript、Yarn |
-| `desktop-workbench/` | **当前**桌面客户端，内含受管理的本机 Connector | Electron、TypeScript、Yarn |
-| `android/` | Android 客户端，见 `android/ARCHITECTURE.md` | Kotlin、Gradle、JDK 17 |
 | `ios/` | iOS / iPadOS 客户端，见 `ios/ARCHITECTURE.md` | Swift、Xcode |
 | `contracts/` | 跨端契约与 fixtures，按 `<name>/<version>/` 组织 | JSON Schema / 文档 |
-| `docker/` | 自托管部署与本地数据库 compose | Docker Compose |
+| `docker/` | Python 参考栈的自托管部署与本地数据库 compose | Docker Compose |
 | `docs/` | 使用、开发、API、Runtime 协议、发布说明 | — |
 
 不在当前主线上开发的目录：
 
-- `desktop-next/`：已被 `desktop-workbench/` 取代，除非任务明确要求，否则不要修改。
-- `_deprecated/`、`_reference/`，以及各子项目内同名目录：历史代码或参考实现，不参与构建，不要从中导入。
+- `_deprecated/`、`_reference/`，以及各子项目内同名目录：历史代码或参考实现（Desktop 源码在 `_deprecated/desktop`），不参与构建，不要从中导入。
 - `docs/` 中名字带 proposal、plan、target、gap 的文档，以及 `docs/migrations/`：描述设计或某个时间点的状态，使用前要和源码、契约核对。
 
 ## 开发与验证
@@ -33,22 +31,29 @@ My Claude 是一个跨设备的 Agent 工作台。工作设备上的 **Connector
 - 仓库根目录**没有**统一的构建命令，每个子项目单独安装依赖、单独检查。
 - **不提交 lockfile**（`yarn.lock`、`uv.lock`、`package-lock.json` 等已被 `.gitignore` 忽略），不要把它们加回来。
 - 只运行和修改有关的 headless 检查：
-  - Server：`cd server && uv run ruff check . --exclude .venv && uv run pytest -q`（需要 `AGENT_SERVER_TEST_DB_URL`；`tests/test_connector_pipeline.py` 会导入 Connector 包，先执行一次 `uv pip install --python .venv/bin/python ../connector`）
-  - Connector：`cd connector && uv run ruff check connector tests && uv run pytest -q`
+  - Go（生产 Server / Connector）：`cd go && go build ./cmd/aa-server ./cmd/aa-connector && go test ./...`
   - Web：`cd web-next && yarn test && yarn typecheck && yarn protocol:check`
-  - Desktop：`cd desktop-workbench && yarn test:main && yarn renderer:typecheck`
-- 本地联调用 `./local-up.sh`（Server + Web，可加 `--with-connector`）或 `./desktop-local-up.sh`。**不要**使用 `--reset-data`，除非用户明确要求，因为它会删除本地数据库。
-- Server 测试需要 PostgreSQL：通过 `AGENT_SERVER_TEST_DB_URL` 指向一个名字含 `test` 的一次性数据库（本地用 `docker/docker-compose.local.yml` 的 postgres，建库和环境变量见[开发指南](docs/development.md)）；测试会清空该库的所有表，绝不能指向开发库或生产库，也不要把生产 URL 带进测试进程。
+  - Python 参考 Server：`cd server && uv run ruff check . --exclude .venv && uv run pytest -q`（需要 `AGENT_SERVER_TEST_DB_URL`；`tests/test_connector_pipeline.py` 会导入 Connector 包，先执行一次 `uv pip install --python .venv/bin/python ../connector`）
+  - Python 参考 Connector：`cd connector && uv run ruff check connector tests && uv run pytest -q`
+- Go Server/Connector 的环境变量、配对流程和 nginx 配置见 [go/README.md](go/README.md)；本地联调 Python 参考栈用 `./local-up.sh`（Python Server + Web，可加 `--with-connector`）。**不要**使用 `--reset-data`，除非用户明确要求，因为它会删除本地数据库。
+- Python 参考 Server 的测试需要 PostgreSQL：通过 `AGENT_SERVER_TEST_DB_URL` 指向一个名字含 `test` 的一次性数据库（本地用 `docker/docker-compose.local.yml` 的 postgres，建库和环境变量见[开发指南](docs/development.md)）；测试会清空该库的所有表，绝不能指向开发库或生产库，也不要把生产 URL 带进测试进程。
 - Headless 检查通过，不等于真实安装、OAuth 回调或远程 Runtime 会话已经验证。汇报时要说明哪些验证没有做。
-- CI（`.github/workflows/ci.yml`）按改动路径运行 Connector、Server、Web、Desktop 的 headless 检查：`connector/` 的改动会连带触发 Server，`contracts/` 与工作流文件触发全部。CI 不跑 ruff（仓库里还有历史 lint 问题），也不覆盖 Android / iOS，这些要靠本地检查。
+- CI（`.github/workflows/ci.yml`）按改动路径运行 Connector、Server、Web 的 headless 检查：`connector/` 的改动会连带触发 Server，`contracts/` 与工作流文件触发全部。CI 不跑 ruff（仓库里还有历史 lint 问题）；工作流目前**没有 `go/` 任务**，`go/` 的改动必须本地执行上面的 Go 检查。iOS 由 `.github/workflows/ios-unsigned-ipa.yml` 单独构建。
 
 ## 跨端修改的规则
 
 - **契约优先**：修改 API 字段、实时事件或 Runtime 协议时，先更新 `contracts/` 或 `docs/api/`，再同步修改 Server、Connector 和所有受影响的客户端。Web / Desktop 的 `protocol:check` 用来发现契约偏差。
 - **能力驱动**：各 Runtime 支持的功能不同，客户端应当根据有效能力（见 [capabilities](docs/api/capabilities.md)）显示或隐藏功能，不要按 provider 名称写死判断。
+- **Go 分层**：`internal/store` 不导入其他 `internal/` 包；`internal/server` 可以依赖 `store` 与 `protocol`；`internal/connector` 只依赖 `bridge` / `protocol`，不能导入 `server`；`internal/protocol` 是两个二进制共享的帧定义。Go 暂无自动边界检查，改动时要自行遵守。
+- **数据库**：Go schema 变化需要在 `go/internal/store/migrations/` 新增 `NNNN_*.sql` 文件（四位编号接着现有最大值递增），不要修改已应用的迁移；`aa-server` 启动或运行 `aa-server -migrate` 时按文件名顺序应用。
+- 多端功能（例如排队消息、计划审阅）通常要同时修改 Web 与 iOS。如果只修改了其中一部分，要在 PR 中写明哪些端还没有跟进。
+
+### Python 参考实现（`server/`、`connector/`）
+
+以下规则只约束参考实现，不适用于生产 Go Server。
+
 - **Server 分层**：`core` 不能导入外层；`services` 不能导入 FastAPI、API 模块或具体的 `Store`。这些规则由 `server/tests/test_architecture_boundaries.py` 强制检查。
 - **数据库**：schema 变化需要新增 Alembic 迁移 `server/migrations/versions/v2_N.py`，编号接着现有最大值递增，不要修改已发布的迁移。
-- 多端功能（例如排队消息、计划审阅）通常要同时修改 Web、Desktop、Android、iOS。如果只修改了其中一部分，要在 PR 中写明哪些端还没有跟进。
 
 ## 版本号
 
@@ -56,7 +61,7 @@ My Claude 是一个跨设备的 Agent 工作台。工作设备上的 **Connector
 
 ## 提交与 PR
 
-- 从最新的 `main` 创建分支，分支名为 `<type>/<domain>/<topic>`：type 与提交信息的类型一致（`feat`、`fix`、`docs`、`chore`、`refactor` 等）；domain 用缩写：`fe`（Web）、`be`（Server）、`con`（Connector）、`dsk`（Desktop）、`apk`（Android）、`ios`、`docs`，同时涉及多个 domain 时用 `+` 连接。例如 `feat/con/runtime-phase`、`fix/ios/testflight-entry`、`feat/con+be/runtime-phase`。
+- 从最新的 `main` 创建分支，分支名为 `<type>/<domain>/<topic>`：type 与提交信息的类型一致（`feat`、`fix`、`docs`、`chore`、`refactor` 等）；domain 用缩写：`fe`（Web）、`be`（Server）、`con`（Connector）、`ios`、`docs`，同时涉及多个 domain 时用 `+` 连接。例如 `feat/con/runtime-phase`、`fix/ios/testflight-entry`、`feat/con+be/runtime-phase`。
 - 提交信息使用 Conventional Commits，并带上作用域，例如 `fix(connector): ...`、`feat(android): ...`、`docs(ios): ...`。正文可以用中文或英文。
 - 一个 PR 只做一件事。不要顺手提交与任务无关的本地改动、部署检查点或调试产物（`.local-dev/`、截图、日志）。
 - 不要提交凭据、签名证书、`.env` 文件或生产地址中的密钥。签名、公证和发布流程见各子项目的 README。

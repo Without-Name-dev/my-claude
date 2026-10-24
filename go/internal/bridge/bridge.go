@@ -10,7 +10,8 @@
 //	heartbeat.txt    rewritten every few seconds while the plugin is loaded
 //	auth.json        the per-process token a queued message must carry
 //	approval.json    the port and token of the approval long-poll endpoint
-//	abort.txt        a stamp that asks the plugin to cancel its turn
+//	abort.txt        a stamp that asks the plugin to cancel its turn, followed
+//	                 by the runtime session it is addressed to
 //	tools.json       the tool calls seen in the running turn
 //
 // The field names are frozen: a plugin build already installed on the desktop
@@ -132,9 +133,9 @@ func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action st
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("empty message")
 	}
-	previous := ""
-	if box, err := b.ReadOutbox(); err == nil && box != nil {
-		previous = box.TurnID
+	previous, err := b.previousTurnID()
+	if err != nil {
+		return nil, err
 	}
 	msg := QueueMessage{
 		ID:                messageID,
@@ -151,6 +152,26 @@ func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action st
 		return nil, err
 	}
 	return &Submission{QueuedAt: msg.QueuedAt, PreviousTurnID: previous}, nil
+}
+
+// previousTurnID reads the turn the outbox showed before this message was
+// queued. The plugin rewrites the file while text streams in, so a read can
+// catch it half-written; retrying beats treating a torn file as "no previous
+// turn", which would let the watcher adopt a stale turn as the answer.
+func (b *Bridge) previousTurnID() (string, error) {
+	var last error
+	for attempt := 0; attempt < 10; attempt++ {
+		box, err := b.ReadOutbox()
+		if err == nil {
+			if box == nil {
+				return "", nil
+			}
+			return box.TurnID, nil
+		}
+		last = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	return "", fmt.Errorf("read outbox: %w", last)
 }
 
 // writeQueueRaw queues an already-shaped message. Both prompts and commands go
@@ -253,12 +274,38 @@ func readCursor(dir string) int {
 
 // Outbox is the plugin's snapshot of the turn it is running.
 type Outbox struct {
-	TurnID string
-	Status string
-	Chunks int
-	Text   string
-	TS     int64
-	State  map[string]any
+	// SessionID is the runtime session that wrote the snapshot. Older plugin
+	// builds did not write it, so it can be empty.
+	SessionID string
+	TurnID    string
+	Status    string
+	Chunks    int
+	Text      string
+	TS        int64
+	State     map[string]any
+}
+
+// BelongsTo reports whether the snapshot was written by one of the given
+// sessions. An unattributed snapshot comes from an older plugin and is
+// accepted rather than ignored.
+func (o *Outbox) BelongsTo(sessionIDs ...string) bool {
+	return matchesSession(o.SessionID, sessionIDs)
+}
+
+// matchesSession reports whether a declared session id is one of the expected
+// ones. An empty declaration (an older plugin) cannot be attributed, and an
+// empty expectation means the connector has no id to compare, so both are
+// accepted rather than risking a session's own turn being ignored.
+func matchesSession(declared string, sessionIDs []string) bool {
+	if declared == "" {
+		return true
+	}
+	for _, id := range sessionIDs {
+		if id == "" || id == declared {
+			return true
+		}
+	}
+	return false
 }
 
 // Running reports whether text is still arriving.
@@ -268,7 +315,8 @@ func (o *Outbox) Running() bool { return o.Status == "streaming" }
 func (o *Outbox) Finished() bool { return o.Status == "done" }
 
 // ReadOutbox returns the current snapshot, or nil when the plugin has not
-// written one yet.
+// written one yet. A read that catches the file mid-rewrite returns an error;
+// the caller polls again.
 func (b *Bridge) ReadOutbox() (*Outbox, error) {
 	raw, err := os.ReadFile(b.OutboxPath())
 	if err != nil {
@@ -279,9 +327,12 @@ func (b *Bridge) ReadOutbox() (*Outbox, error) {
 	}
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, nil // a torn read; the next poll sees a complete file
+		return nil, fmt.Errorf("parse outbox: %w", err)
 	}
 	out := &Outbox{State: map[string]any{}}
+	if v, ok := data["sessionId"].(string); ok {
+		out.SessionID = v
+	}
 	if v, ok := data["turnId"].(string); ok {
 		out.TurnID = v
 	}
@@ -305,33 +356,47 @@ func (b *Bridge) ReadOutbox() (*Outbox, error) {
 	return out, nil
 }
 
-// ToolEntry is one tool call the plugin observed.
+// ToolEntry is one tool call the plugin observed. The field names match the
+// plugin's writeTools output.
 type ToolEntry struct {
-	ToolUseID string          `json:"toolUseId"`
-	Tool      string          `json:"tool"`
-	Input     json.RawMessage `json:"input"`
-	Output    json.RawMessage `json:"output,omitempty"`
-	Status    string          `json:"status,omitempty"`
+	ID      string          `json:"id"`
+	Tool    string          `json:"tool"`
+	Input   json.RawMessage `json:"input"`
+	Output  json.RawMessage `json:"output,omitempty"`
+	Done    bool            `json:"done"`
+	IsError bool            `json:"isError,omitempty"`
 }
 
 // Tools returns the tool calls recorded for the running turn, oldest first.
-func (b *Bridge) Tools() []ToolEntry {
+// A snapshot stamped with a different runtime session is skipped.
+func (b *Bridge) Tools(sessionIDs ...string) []ToolEntry {
 	raw, err := os.ReadFile(b.ToolsPath())
 	if err != nil {
 		return nil
 	}
 	var payload struct {
-		Entries []ToolEntry `json:"entries"`
+		SessionID string      `json:"sessionId"`
+		Entries   []ToolEntry `json:"entries"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	if !matchesSession(payload.SessionID, sessionIDs) {
 		return nil
 	}
 	return payload.Entries
 }
 
-// RequestAbort asks the plugin to cancel the turn it is running.
-func (b *Bridge) RequestAbort() error {
-	return writeAtomic(b.AbortPath(), []byte(strconv.FormatInt(time.Now().UnixMilli(), 10)))
+// RequestAbort asks the plugin to cancel the turn it is running. The stamp is
+// followed by the runtime session id on a second line, so a plugin shared by
+// several sessions can ignore a request addressed to another one; an older
+// plugin parses only the first line.
+func (b *Bridge) RequestAbort(sessionID string) error {
+	body := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	if sessionID != "" {
+		body += "\n" + sessionID
+	}
+	return writeAtomic(b.AbortPath(), []byte(body))
 }
 
 // HeartbeatAge returns how long ago the plugin reported it was alive, or
@@ -436,16 +501,21 @@ type AgentEntry struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
-// Agents returns the subagents the plugin currently knows about.
-func (b *Bridge) Agents() []AgentEntry {
+// Agents returns the subagents the plugin currently knows about. A snapshot
+// stamped with a different runtime session is skipped.
+func (b *Bridge) Agents(sessionIDs ...string) []AgentEntry {
 	raw, err := os.ReadFile(filepath.Join(b.Dir, "agents.json"))
 	if err != nil {
 		return nil
 	}
 	var payload struct {
-		Entries []AgentEntry `json:"entries"`
+		SessionID string       `json:"sessionId"`
+		Entries   []AgentEntry `json:"entries"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+	if !matchesSession(payload.SessionID, sessionIDs) {
 		return nil
 	}
 	return payload.Entries

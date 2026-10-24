@@ -30,7 +30,6 @@ import type {
   ProtocolModelCatalog,
   ProtocolPermissionCatalog,
   RuntimeCommand,
-  RuntimeStatusValue,
   SessionRuntimeState,
   SessionView,
 } from "@/features/dashboard/types"
@@ -48,6 +47,7 @@ import {
 } from "@/components/session/catalog-selection"
 import { SelectionSettingsDrawer } from "@/components/session/selection-settings-drawer"
 import { CAPABILITY, capabilityIsUsable, findCapability, attachmentMimeTypes } from "@/components/session/capabilities"
+import { effectiveRuntimeStatus } from "@/components/session/session-utils"
 import { useElementWidth } from "@/hooks/use-element-width"
 import { sessionRuntimeId, sessionRuntimeType } from "@/features/dashboard/runtime-instances"
 
@@ -527,7 +527,7 @@ export function SessionComposer({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <DragOverlay isDragging={isDragging} />
+      {canUseAttachments ? <DragOverlay isDragging={isDragging} /> : null}
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
         {commandFeedback ? (
           <Alert variant="destructive" role="alert" className="pr-10">
@@ -604,7 +604,7 @@ export function SessionComposer({
               )}
             </div>
           ) : null}
-          {isDragging ? (
+          {canUseAttachments && isDragging ? (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-background/75 text-sm font-medium text-foreground backdrop-blur-sm">
               {tSession("dropFiles")}
             </div>
@@ -662,14 +662,16 @@ export function SessionComposer({
           {/* No wrapping: the option controls shrink instead, so the takeover
               switch and send button always stay on the same row. */}
           <div className="flex items-center gap-1 px-3 pb-3 pt-2">
-            <AttachmentButton
-              attachments={attachments}
-              onAttach={add}
-              isDragging={isDragging}
-              className="size-8"
-              allowedMimeTypes={allowedMimeTypes}
-              disabled={!canUseAttachments || sourceUnavailable || creatingSession}
-            />
+            {canUseAttachments ? (
+              <AttachmentButton
+                attachments={attachments}
+                onAttach={add}
+                isDragging={isDragging}
+                className="size-8"
+                allowedMimeTypes={allowedMimeTypes}
+                disabled={sourceUnavailable || creatingSession}
+              />
+            ) : null}
             {hasSelectors ? (
               compactSelectors ? (
                 <SelectionSettingsDrawer
@@ -879,12 +881,4 @@ export function SessionComposer({
       </div>
     </div>
   )
-}
-
-function effectiveRuntimeStatus(
-  runtimeState: SessionRuntimeState | null | undefined,
-  session: SessionView,
-): RuntimeStatusValue {
-  if (runtimeState) return runtimeState.status
-  return session.connectorStatus === "offline" ? "disconnected" : session.status
 }

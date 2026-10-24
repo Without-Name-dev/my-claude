@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -261,7 +263,7 @@ func (a *App) handleRuntimeState(w http.ResponseWriter, r *http.Request, user st
 		return
 	}
 	httpx.OK(w, map[string]any{
-		"state":      a.runtimeState(session),
+		"state":      a.runtimeState(r.Context(), session),
 		"serverTime": timestampNow(),
 	})
 }
@@ -297,18 +299,168 @@ func (a *App) handlePermissionCatalog(w http.ResponseWriter, r *http.Request, us
 	})
 }
 
-// handleUpdateSelections accepts a model or permission change and echoes the
-// current state back.
+// handleConnectorModelCatalog is the device-page variant of the session
+// catalog. There is only one runtime, and it publishes no catalog yet.
+func (a *App) handleConnectorModelCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedConnector(w, r, user); !ok {
+		return
+	}
+	if r.PathValue("runtime_id") != "claude" {
+		httpx.Fail(w, httpx.NotFound("runtime not found"))
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"catalog": map[string]any{
+			"runtime":  "claude",
+			"revision": 1,
+			"models":   []any{},
+		},
+		"serverTime": timestampNow(),
+	})
+}
+
+// handleConnectorPermissionCatalog is the device-page permission catalog.
+func (a *App) handleConnectorPermissionCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedConnector(w, r, user); !ok {
+		return
+	}
+	if r.PathValue("runtime_id") != "claude" {
+		httpx.Fail(w, httpx.NotFound("runtime not found"))
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"catalog": map[string]any{
+			"runtime":     "claude",
+			"revision":    1,
+			"permissions": []any{},
+		},
+		"serverTime": timestampNow(),
+	})
+}
+
+// handleConnectorCommands serves the slash-command menu for a runtime on the
+// device page. The menu is local presentation data, not connector state.
+func (a *App) handleConnectorCommands(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedConnector(w, r, user); !ok {
+		return
+	}
+	if r.PathValue("runtime_id") != "claude" {
+		httpx.Fail(w, httpx.NotFound("runtime not found"))
+		return
+	}
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, ok := atoi(raw); ok && n > 0 && n <= 1000 {
+			limit = int(n)
+		}
+	}
+	httpx.OK(w, map[string]any{
+		"commands":   commandViews(query, limit),
+		"serverTime": timestampNow(),
+	})
+}
+
+// handleConnectorPreferences returns the per-device preferences document.
+// Nothing is stored today, so the document is empty rather than missing.
+func (a *App) handleConnectorPreferences(w http.ResponseWriter, r *http.Request, user store.User) {
+	connector, ok := a.ownedConnector(w, r, user)
+	if !ok {
+		return
+	}
+	httpx.OK(w, map[string]any{
+		"connectorId": connector.ID,
+		"preferences": map[string]any{},
+		"serverTime":  timestampNow(),
+	})
+}
+
+// handleRuntimeManagementUnsupported is the honest answer for the multi-runtime
+// management UI: this server has one implicit runtime and no persistence for
+// runtime instances. Until that exists, 501 says so instead of a 404 the
+// client would read as a missing route.
+func (a *App) handleRuntimeManagementUnsupported(w http.ResponseWriter, r *http.Request, user store.User) {
+	if _, ok := a.ownedConnector(w, r, user); !ok {
+		return
+	}
+	httpx.Fail(w, httpx.NewError(http.StatusNotImplemented,
+		"runtime instance management is not implemented by this server"))
+}
+
+// handleUpdateSelections persists a model or permission change and echoes the
+// current state back. The connector has no selection RPC, so the value is kept
+// on the session for the next client that hydrates it.
 func (a *App) handleUpdateSelections(w http.ResponseWriter, r *http.Request, user store.User) {
 	session, ok := a.ownedSession(w, r, user)
 	if !ok {
 		return
 	}
+	var body struct {
+		Selections map[string]*string `json:"selections"`
+	}
+	if err := httpx.DecodeOptional(r, &body); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	if err := a.applySelections(r.Context(), session.ID, body.Selections); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	updated, err := a.db.SessionByIDAny(r.Context(), a.db.Read(), session.ID)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
 	httpx.OK(w, map[string]any{
 		"ok":              true,
-		"state":           a.runtimeState(session),
+		"state":           a.runtimeState(r.Context(), updated),
 		"connectorResult": nil,
 		"serverTime":      timestampNow(),
+	})
+}
+
+// applySelections writes the known selection scopes to the session columns.
+// Unknown scopes are ignored: the clients may send an effort selection that
+// this server has nowhere to keep.
+func (a *App) applySelections(ctx context.Context, sessionID string, selections map[string]*string) error {
+	if len(selections) == 0 {
+		return nil
+	}
+	var model, permission any
+	hasModel, hasPermission := false, false
+	for scope, value := range selections {
+		switch scope {
+		case "model":
+			hasModel = true
+			if value != nil {
+				model = *value
+			}
+		case "permission":
+			hasPermission = true
+			if value != nil {
+				permission = *value
+			}
+		}
+	}
+	if !hasModel && !hasPermission {
+		return nil
+	}
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	if hasModel {
+		sets = append(sets, "model_selection_id = ?")
+		args = append(args, model)
+	}
+	if hasPermission {
+		sets = append(sets, "permission_selection_id = ?")
+		args = append(args, permission)
+	}
+	sets = append(sets, "updated_at = ?")
+	args = append(args, store.NowMS(), sessionID)
+	return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+		return err
 	})
 }
 

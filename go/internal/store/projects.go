@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
-	"runtime"
+	"fmt"
+	"path"
 	"strings"
 	"time"
 )
@@ -60,18 +60,41 @@ func BaseName(value string) string {
 	return trimmed
 }
 
+// ErrProjectNameConflict reports that another project of the same user
+// already uses the requested name.
+var ErrProjectNameConflict = errors.New("project name conflict")
+
 // WorkspaceKey normalises a working directory so the same folder discovered by
 // two different spellings maps to one project.
-func WorkspaceKey(path string) string {
-	key := strings.TrimSpace(path)
+//
+// The server runs on Linux but stores Windows paths, so filepath.Clean and
+// filepath.ToSlash cannot be used here: on Linux a backslash is an ordinary
+// character, and a value's case would not be folded at all. Normalise by
+// content instead, and fold the case of paths that look like Windows paths.
+func WorkspaceKey(value string) string {
+	key := strings.TrimSpace(value)
 	if key == "" {
 		return ""
 	}
-	key = filepath.ToSlash(filepath.Clean(key))
-	if runtime.GOOS == "windows" {
+	key = strings.ReplaceAll(key, `\`, "/")
+	windows := isWindowsWorkspace(key)
+	key = path.Clean(key)
+	if windows {
 		key = strings.ToLower(key)
 	}
 	return key
+}
+
+// isWindowsWorkspace reports whether a slash-normalised path starts with a
+// UNC prefix or a drive letter.
+func isWindowsWorkspace(key string) bool {
+	if strings.HasPrefix(key, "//") {
+		return true
+	}
+	if len(key) < 3 || key[1] != ':' || key[2] != '/' {
+		return false
+	}
+	return (key[0] >= 'A' && key[0] <= 'Z') || (key[0] >= 'a' && key[0] <= 'z')
 }
 
 // ListProjects returns a user's projects, pinned first then most recent.
@@ -125,46 +148,121 @@ func (s *Store) CreateProject(ctx context.Context, p Project) (Project, error) {
 		return err
 	})
 	if err != nil {
+		if isUniqueConstraint(err, "projects.user_id, projects.name") {
+			return Project{}, ErrProjectNameConflict
+		}
 		return Project{}, err
 	}
 	return p, nil
 }
 
+// projectByWorkspace resolves the project a connector already has for a
+// normalised workspace key.
+func (s *Store) projectByWorkspace(ctx context.Context, userID, connectorID, key string) (Project, error) {
+	row := s.Read().QueryRowContext(ctx, `
+		SELECT `+projectColumns+` FROM projects
+		WHERE user_id = ? AND connector_id = ? AND workspace_key = ?`,
+		userID, connectorID, key)
+	return scanProject(row)
+}
+
 // EnsureProject returns the project for a workspace, creating it when missing.
-// Discovery calls this for every directory it finds sessions in.
-func (s *Store) EnsureProject(ctx context.Context, userID, connectorID, workspacePath, name string) (Project, error) {
+// Discovery calls this for every directory it finds sessions in; the project
+// editor calls it with manuallyCreated=true.
+func (s *Store) EnsureProject(ctx context.Context, userID, connectorID, workspacePath, name string, manuallyCreated bool) (Project, error) {
 	key := WorkspaceKey(workspacePath)
-	var id string
-	err := s.Read().QueryRowContext(ctx, `
-		SELECT id FROM projects
-		WHERE connector_id = ? AND workspace_key = ?`, connectorID, key).Scan(&id)
+	existing, err := s.projectByWorkspace(ctx, userID, connectorID, key)
 	if err == nil {
-		return s.ProjectByID(ctx, id, userID)
+		if !manuallyCreated {
+			return existing, nil
+		}
+		if err := s.makeProjectManual(ctx, userID, existing.ID, name, workspacePath); err != nil {
+			return Project{}, err
+		}
+		return s.ProjectByID(ctx, existing.ID, userID)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, ErrNotFound) {
 		return Project{}, err
 	}
 	if name == "" {
 		name = BaseName(workspacePath)
 	}
 	project, err := s.CreateProject(ctx, Project{
-		UserID:        userID,
-		ConnectorID:   connectorID,
-		Name:          name,
-		WorkspacePath: workspacePath,
-		WorkspaceKey:  key,
+		UserID:          userID,
+		ConnectorID:     connectorID,
+		Name:            name,
+		WorkspacePath:   workspacePath,
+		WorkspaceKey:    key,
+		ManuallyCreated: manuallyCreated,
 	})
-	if err != nil {
-		// A concurrent discovery may have won the race; read it back.
-		var existing string
-		if readErr := s.Read().QueryRowContext(ctx, `
-			SELECT id FROM projects WHERE connector_id = ? AND workspace_key = ?`,
-			connectorID, key).Scan(&existing); readErr == nil {
-			return s.ProjectByID(ctx, existing, userID)
+	if err == nil {
+		return project, nil
+	}
+	// A concurrent caller may have created this workspace first; reuse it.
+	if existing, readErr := s.projectByWorkspace(ctx, userID, connectorID, key); readErr == nil {
+		if !manuallyCreated {
+			return existing, nil
 		}
+		if err := s.makeProjectManual(ctx, userID, existing.ID, name, workspacePath); err != nil {
+			return Project{}, err
+		}
+		return s.ProjectByID(ctx, existing.ID, userID)
+	}
+	// Discovery must still link the session to a project when the folder name
+	// is already taken by another directory; retry with a numbered suffix.
+	if manuallyCreated || !errors.Is(err, ErrProjectNameConflict) {
 		return Project{}, err
 	}
-	return project, nil
+	base := BaseName(workspacePath)
+	if base == "" {
+		base = name
+	}
+	for suffix := 2; suffix <= 100; suffix++ {
+		candidate := fmt.Sprintf("%s (%d)", base, suffix)
+		project, err = s.CreateProject(ctx, Project{
+			UserID:        userID,
+			ConnectorID:   connectorID,
+			Name:          candidate,
+			WorkspacePath: workspacePath,
+			WorkspaceKey:  key,
+		})
+		if err == nil {
+			return project, nil
+		}
+		if !errors.Is(err, ErrProjectNameConflict) {
+			// The workspace may have appeared meanwhile; read it back.
+			if existing, readErr := s.projectByWorkspace(ctx, userID, connectorID, key); readErr == nil {
+				return existing, nil
+			}
+			return Project{}, err
+		}
+	}
+	return Project{}, ErrProjectNameConflict
+}
+
+// makeProjectManual promotes a discovered project when a person adds the same
+// workspace through the project editor.
+func (s *Store) makeProjectManual(ctx context.Context, userID, id, name, workspacePath string) error {
+	if name == "" {
+		name = BaseName(workspacePath)
+	}
+	now := time.Now().UnixMilli()
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE projects SET name = ?, workspace_path = ?, manually_created = 1, updated_at = ?
+			WHERE id = ? AND user_id = ?`, name, workspacePath, now, id, userID)
+		if err != nil {
+			if isUniqueConstraint(err, "projects.user_id, projects.name") {
+				return ErrProjectNameConflict
+			}
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	return err
 }
 
 // UpdateProject changes the name or the pinned flag.
@@ -174,6 +272,9 @@ func (s *Store) UpdateProject(ctx context.Context, id string, name *string, pinn
 		if name != nil {
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE projects SET name = ?, updated_at = ? WHERE id = ?`, *name, now, id); err != nil {
+				if isUniqueConstraint(err, "projects.user_id, projects.name") {
+					return ErrProjectNameConflict
+				}
 				return err
 			}
 		}
@@ -196,15 +297,19 @@ func (s *Store) UpdateProject(ctx context.Context, id string, name *string, pinn
 func (s *Store) DeleteProject(ctx context.Context, id string) (int64, error) {
 	var detached int64
 	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE sessions SET project_id = NULL WHERE project_id = ?`, id); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+		res, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET project_id = NULL WHERE project_id = ?`, id)
 		if err != nil {
 			return err
 		}
 		detached, _ = res.RowsAffected()
+		res, err = tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
 		return nil
 	})
 	return detached, err

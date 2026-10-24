@@ -91,7 +91,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		return
 	}
 
-	items, err := a.db.TimelineItems(ctx, a.db.Read(), session.ID, 500)
+	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 500)
 	if err != nil {
 		return
 	}

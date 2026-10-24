@@ -18,7 +18,7 @@
 <p align="center">
   <a href="docs/releases/2.0.3.md"><img src="https://img.shields.io/badge/release-2.0.3-222222?style=flat" alt="Release 2.0.3"></a>
   <a href="#开源许可"><img src="https://img.shields.io/badge/license-MIT-222222?style=flat" alt="MIT"></a>
-  <a href="docker/README.md"><img src="https://img.shields.io/badge/self--hosted-Docker-222222?style=flat" alt="Self-host with Docker"></a>
+  <a href="go/README.md"><img src="https://img.shields.io/badge/self--hosted-Go-222222?style=flat" alt="Self-host with Go"></a>
 </p>
 
 **My Claude** 是跨设备的开源 Agent 工作台。连接运行 **Claude Code** 的工作设备，在桌面、手机和 Web 查看会话、回复请求、管理文件与终端。Agent 在连接的工作设备上执行任务。
@@ -36,7 +36,7 @@
 | **iOS / iPadOS** | [在 App Store 下载](https://apps.apple.com/cn/app/agents-anywhere/id6787125178) · [加入 TestFlight](https://testflight.apple.com/join/GKGaut99) |
 | **Android** | [APK · 2.0.3](https://modelscope.cn/models/t4wefan/deepseek-harness-desktop/resolve/master/agents-anywhere-2.0.3-release.apk) |
 | **Web** | [立即打开 Web](https://web.agents-anywhere.com) |
-| **Linux / headless** | [运行 Connector CLI](connector/README.md) |
+| **Linux / headless** | [运行 Go Connector CLI](go/README.md#connector)（配对后设置 `AA_CONNECTOR_DATA_DIR`，再用 `aa-connector --config` 启动） |
 
 更多平台说明见[官网下载页](https://www.agents-anywhere.com/download)。旧版部署升级前请阅读[升级指南](docs/upgrading.md)。
 
@@ -95,7 +95,7 @@ Runtime 是工作设备上运行和连接 Agent 的组件。模型账号和调�
 ## 首次使用
 
 1. **登录服务。** 安装客户端或打开 Web，登录 Cloud，或填写自托管服务地址。
-2. **连接工作设备。** Desktop 集成本机 Connector；服务器与无图形环境使用 [Connector CLI](connector/README.md)。
+2. **连接工作设备。** Desktop 集成本机 Connector；服务器与无图形环境使用 [Go Connector CLI](go/README.md#connector)：先通过 `/api/v2/pairing/start`、`claim`、`poll` 配对取得 `connector.json`，再用 `aa-connector --config` 启动。
 3. **准备 Agent 和项目。** 在工作设备上配置 Runtime、账号与工作目录，创建或打开会话。
 4. **从其他设备访问。** 在手机、平板或另一台电脑登录同一服务和账号，访问自己的设备与任务。
 
@@ -117,32 +117,39 @@ flowchart LR
 
 <a id="自托管快速开始"></a>
 
-### 使用 Docker 部署
+### 自托管部署
 
-克隆仓库后，在根目录运行以下命令，先替换示例密码和密钥：
+生产服务是 Go 二进制 `aa-server`，数据存放在 `AA_DATA_DIR/server.db`（SQLite）；Web 静态文件可由 Server 通过 `AA_WEB_DIR` 直接提供，或由 nginx 托管。
 
 ```bash
-POSTGRES_PASSWORD=replace-with-a-strong-password \
-AGENT_SERVER_SECRET=replace-with-a-long-random-secret \
-docker compose -f docker/docker-compose.postgres.yml up --build
+cd go
+go build -o bin/aa-server ./cmd/aa-server
+AA_DATA_DIR=/var/lib/agents-anywhere \
+AA_LISTEN=0.0.0.0:8080 \
+AA_PUBLIC_URL=https://aa.example.com \
+AGENT_SERVER_SECRET=$(openssl rand -hex 32) \
+AA_WEB_DIR=/opt/agents-anywhere/web \
+bin/aa-server
 ```
 
-打开 `http://127.0.0.1:5174`，从 Server 日志取得 setup token，完成首位管理员设置。Compose 包含 PostgreSQL、Redis、迁移任务以及托管 Web 的 Server。
+打开 `AA_PUBLIC_URL`，从 Server 日志取得 setup token，完成首位管理员设置。环境变量、nginx 反向代理和配对流程见 [go/README.md](go/README.md)。
 
-[完整部署步骤](docker/README.md) · [备份与升级](docs/upgrading.md) · [Server 文档](server/README.md)
+`docker/docker-compose.postgres.yml` 是 **Python 参考实现**的部署方式（PostgreSQL、Redis、Alembic），不是生产 Go Server 的部署。
+
+[升级与备份](docs/upgrading.md) · [Go Server 与 Connector 文档](go/README.md) · [Python 参考部署](docker/README.md)
 
 <a id="架构与源码"></a>
 
 ## 开发与贡献
 
-开发环境使用 **Python 3.12+ / uv / Node.js 22 / Corepack + Yarn**。从[开发指南](docs/development.md)开始，查看源码运行方式与 headless 检查。
+开发环境使用 **Go 1.27+ / Python 3.12+ / uv / Node.js 22 / Corepack + Yarn**。从[开发指南](docs/development.md)开始，查看源码运行方式与 headless 检查。
 
 | 想了解什么 | 从这里开始 |
 | --- | --- |
-| 整体架构与 API | [Server 架构](docs/server-architecture.md) · [API 文档](docs/api/README.md) |
-| Agent 接入与本机执行 | [Connector](connector/README.md) · [Runtime 协议](docs/runtime-protocol/README.md) |
-| Web 与桌面客户端 | [Web 源码](web-next/) · [Desktop Workbench](desktop-workbench/README.md) |
-| 原生移动客户端 | [Android](android/README.md) · [iOS 源码](ios/) |
+| 整体架构与 API | [Go Server](go/README.md) · [Python 参考架构](docs/server-architecture.md) · [API 文档](docs/api/README.md) |
+| Agent 接入与本机执行 | [Go Connector](go/README.md#connector) · [Python 参考 Connector](connector/README.md) · [Runtime 协议](docs/runtime-protocol/README.md) |
+| Web 客户端 | [Web 源码](web-next/) |
+| 原生移动客户端 | [iOS 源码](ios/) |
 | 更多文档 | [文档目录](docs/README.md) · [协议契约](contracts/) |
 
 欢迎通过 [Issues](https://github.com/anywhere-labs/Agents-Anywhere/issues) 反馈问题，或通过 [Pull Requests](https://github.com/anywhere-labs/Agents-Anywhere/pulls) 参与改进。报告问题时，请附上客户端版本、系统、Runtime 类型和复现步骤，并移除日志中的凭据。
