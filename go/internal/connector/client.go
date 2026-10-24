@@ -240,7 +240,7 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		name, args := splitCommand(msg.Text)
 		sub, err = c.Bridge.SubmitCommand(msg.SessionID, msg.RequestID, name, args)
 	} else {
-		sub, err = c.Bridge.Submit(msg.SessionID, msg.RequestID, msg.Text, action)
+		sub, err = c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, msg.Text, action)
 	}
 	if err != nil {
 		c.Log.Warn("could not queue the message", "error", err)

@@ -381,10 +381,11 @@ func (a *App) deliverMessage(ctx context.Context, session store.Session, content
 	a.setSessionStatus(ctx, session.ID, "running")
 
 	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
-		RequestID: messageID,
-		SessionID: session.ID,
-		Text:      content,
-		Action:    "prompt",
+		RequestID:         messageID,
+		SessionID:         session.ID,
+		ExternalSessionID: session.ExternalID,
+		Text:              content,
+		Action:            "prompt",
 	}) {
 		return httpx.Conflict("connector is offline")
 	}

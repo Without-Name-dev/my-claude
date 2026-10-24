@@ -113,6 +113,10 @@ type QueueMessage struct {
 	QueuedAt  int64  `json:"queuedAt"`
 	Token     string `json:"token"`
 	SessionID string `json:"sessionId,omitempty"`
+	// ExternalSessionID is the runtime's own session id (the transcript file
+	// name). The plugin compares it with its own session so a message is only
+	// submitted into the conversation it was addressed to.
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
 }
 
 // Submission describes what the caller needs to follow the turn it queued.
@@ -124,7 +128,7 @@ type Submission struct {
 }
 
 // Submit queues a prompt and returns the handle used to follow it.
-func (b *Bridge) Submit(sessionID, messageID, text, action string) (*Submission, error) {
+func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action string) (*Submission, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("empty message")
 	}
@@ -133,11 +137,12 @@ func (b *Bridge) Submit(sessionID, messageID, text, action string) (*Submission,
 		previous = box.TurnID
 	}
 	msg := QueueMessage{
-		ID:        messageID,
-		Action:    action,
-		Text:      text,
-		QueuedAt:  time.Now().UnixMilli(),
-		SessionID: sessionID,
+		ID:                messageID,
+		Action:            action,
+		Text:              text,
+		QueuedAt:          time.Now().UnixMilli(),
+		SessionID:         sessionID,
+		ExternalSessionID: externalSessionID,
 	}
 	if msg.ID == "" {
 		msg.ID = "bridge-" + strconv.FormatInt(msg.QueuedAt, 10)
@@ -192,6 +197,9 @@ func (b *Bridge) writeQueue(msg QueueMessage) error {
 	}
 	if msg.SessionID != "" {
 		payload["sessionId"] = msg.SessionID
+	}
+	if msg.ExternalSessionID != "" {
+		payload["externalSessionId"] = msg.ExternalSessionID
 	}
 	return b.writeQueueRaw(payload)
 }

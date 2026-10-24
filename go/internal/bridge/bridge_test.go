@@ -11,7 +11,7 @@ func TestSubmitWritesOneCompleteQueueFile(t *testing.T) {
 	dir := t.TempDir()
 	b := New(dir)
 
-	sub, err := b.Submit("sess-1", "msg-1", "hello", "prompt")
+	sub, err := b.Submit("sess-1", "", "msg-1", "hello", "prompt")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSubmitCarriesPreviousTurnSoStaleOutboxIsIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sub, err := b.Submit("s", "m", "next", "prompt")
+	sub, err := b.Submit("s", "", "m", "next", "prompt")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -65,14 +65,14 @@ func TestSubmitCarriesPreviousTurnSoStaleOutboxIsIgnored(t *testing.T) {
 func TestQueueSequenceSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	first := New(dir)
-	if _, err := first.Submit("s", "a", "one", "prompt"); err != nil {
+	if _, err := first.Submit("s", "", "a", "one", "prompt"); err != nil {
 		t.Fatal(err)
 	}
 
 	// A connector restart forgets its counter; the next message must not
 	// overwrite the one still sitting in the queue.
 	second := New(dir)
-	if _, err := second.Submit("s", "b", "two", "prompt"); err != nil {
+	if _, err := second.Submit("s", "", "b", "two", "prompt"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,7 +120,7 @@ func TestQueueNumberingRespectsPluginCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := New(dir)
-	if _, err := b.Submit("s", "m", "hello", "prompt"); err != nil {
+	if _, err := b.Submit("s", "", "m", "hello", "prompt"); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "queue"))

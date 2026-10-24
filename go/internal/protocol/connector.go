@@ -149,7 +149,10 @@ type ApprovalCancel struct {
 type Submit struct {
 	RequestID string `json:"requestId"`
 	SessionID string `json:"sessionId"`
-	Text      string `json:"text"`
+	// ExternalSessionID is the runtime's own session id, used to route the
+	// message to the conversation it was addressed to.
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	Text              string `json:"text"`
 	// Action is "prompt" for ordinary text and "command" for a slash command,
 	// which the plugin executes without raising a turn.
 	Action string `json:"action,omitempty"`
