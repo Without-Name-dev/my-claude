@@ -18,4 +18,8 @@ nonisolated struct TimelineViewport: Equatable {
         self.topInset = topInset
     }
     var isMeasured: Bool { visibleHeight > 0 }
+    /// How far the bottom edge of the viewport sits above the end of the
+    /// content. Zero when the reader is at the tail or when the content is
+    /// shorter than the viewport.
+    var distanceFromBottom: CGFloat { max(0, contentHeight - visibleBottom) }
 }

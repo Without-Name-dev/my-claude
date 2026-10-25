@@ -34,12 +34,30 @@ nonisolated struct TimelineScrollState: Equatable {
     var needsUserScrollSettlement: Bool {
         awaitsUserScrollSettlement && phase == .idle && tail.isMeasured && !navigationIsSuspended
     }
+    /// Whether the reader is parked at the live tail.
+    ///
+    /// The end marker covers only the last few points of the content, so a
+    /// small drag can pass it without every visibility callback arriving, and
+    /// its last answer then claims the tail is on screen while the reader has
+    /// already moved up. The measured offset is exact whenever it exists, so a
+    /// marker that disagrees with it by more than a line loses: otherwise a
+    /// light swipe re-armed following and every streamed chunk pulled the page
+    /// back to the bottom.
+    var atContentBottom: Bool {
+        guard tail.isAtBottom else { return false }
+        guard viewport.isMeasured else { return true }
+        return viewport.distanceFromBottom <= Self.bottomTolerance
+    }
+    /// How far the measured offset may disagree with the end marker. Content
+    /// height is only estimated for a lazy column, so a few points of error
+    /// are expected; a reader who is a line away from the tail is not on it.
+    static let bottomTolerance: CGFloat = 24
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
     var mayFollowNewContent: Bool {
         !userIsScrolling && !navigationIsSuspended && !needsUserScrollSettlement
-            && (mode == .following || tail.isAtBottom)
+            && (mode == .following || atContentBottom)
     }
 
     mutating func open(interactionPresented: Bool = false) {
@@ -132,7 +150,7 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func settleUserScroll() {
         guard needsUserScrollSettlement, !returningToBottom else { return }
         awaitsUserScrollSettlement = false
-        mode = tail.isAtBottom && !interactionIsPresented ? .following : .reading
+        mode = atContentBottom && !interactionIsPresented ? .following : .reading
     }
 
     var pendingBottomRequest: BottomRequest? {
@@ -146,7 +164,7 @@ nonisolated struct TimelineScrollState: Equatable {
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
         // changes only need correction when they actually move away from bottom.
-        if tail.isAtBottom && (mode == .following || lastRequest != nil) { return nil }
+        if atContentBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
         return request == lastRequest ? nil : request

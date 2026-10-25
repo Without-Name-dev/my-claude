@@ -545,7 +545,12 @@ private struct ChatTimelineContent: View, Equatable {
                         .allowsHitTesting(false).accessibilityHidden(true)
                 }
                 .overlay(alignment: .bottom) {
-                    Color.clear.frame(height: 2)
+                    // Twelve points, not two: the marker decides whether new
+                    // content may move the page, and a sliver at the very end
+                    // of the content misses small drags often enough to leave
+                    // its last "visible" answer in place after the reader has
+                    // already scrolled up.
+                    Color.clear.frame(height: 12)
                         .onScrollVisibilityChange(threshold: 0.5) { onTailVisibility(.end, $0) }
                         .allowsHitTesting(false).accessibilityHidden(true)
                 }

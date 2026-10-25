@@ -138,16 +138,34 @@ import Testing
             var state = try openedAtBottom()
             visibility(&state, end: false)
             state.phaseChanged(.interacting, viewport: viewport(offset: 1000))
-            state.phaseChanged(.idle, viewport: viewport(offset: 1100))
+            // A real arrival lands on the tail: offset 1320 is the bottom of a
+            // 2000-point page in this helper's insets.
+            state.phaseChanged(.idle, viewport: viewport(offset: 1320))
             // Arrival can be reported after idle. Only the end marker, not
             // the wider pill margin, may restore following after settlement.
             visibility(&state, end: arrived, near: true)
             state.settleUserScroll()
             #expect(state.mode == expected && !state.showsBottomButton())
-            state.geometryChanged(viewport(offset: 1100, height: 2200))
+            state.geometryChanged(viewport(offset: 1320, height: 2200))
             visibility(&state, end: false)
             #expect((state.pendingBottomRequest != nil) == (expected == .following))
         }
+    }
+
+    /// The reported bug: a light swipe up made the page keep jumping to the
+    /// bottom while a reply streamed in. The end marker is a sliver of the
+    /// content, so a small drag can leave its last "visible" answer behind;
+    /// the measured offset must outvote it.
+    @Test func aLightSwipeOffTheTailStopsFollowingEvenWhenTheMarkerIsStale() throws {
+        var state = try openedAtBottom()
+        state.phaseChanged(.tracking, viewport: viewport(offset: 1320))
+        state.phaseChanged(.interacting, viewport: viewport(offset: 1240))
+        state.phaseChanged(.idle, viewport: viewport(offset: 1240))
+        visibility(&state, end: true) // Stale: the reader is 80 points up.
+        state.settleUserScroll()
+        #expect(state.mode == .reading)
+        #expect(!state.mayFollowNewContent)
+        #expect(state.pendingBottomRequest == nil)
     }
 
     @Test func forcedScrollIsIgnoredWhileAGestureOwnsTheOffset() throws {
