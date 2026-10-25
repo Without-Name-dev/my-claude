@@ -291,6 +291,9 @@ struct ChatTimelineView: View {
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
+            // The keyboard covers the newest rows. A reader who was following
+            // the tail must not be left looking at a cut-off message.
+            if scrolling.mayFollowNewContent { scrolling.requestBottom() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardIsVisible = false

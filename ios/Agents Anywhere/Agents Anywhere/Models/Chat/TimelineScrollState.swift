@@ -36,22 +36,11 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// The end marker covers only the last few points of the content, so a
-    /// small drag can pass it without every visibility callback arriving, and
-    /// its last answer then claims the tail is on screen while the reader has
-    /// already moved up. The measured offset is exact whenever it exists, so a
-    /// marker that disagrees with it by more than a line loses: otherwise a
-    /// light swipe re-armed following and every streamed chunk pulled the page
-    /// back to the bottom.
-    var atContentBottom: Bool {
-        guard tail.isAtBottom else { return false }
-        guard viewport.isMeasured else { return true }
-        return viewport.distanceFromBottom <= Self.bottomTolerance
-    }
-    /// How far the measured offset may disagree with the end marker. Content
-    /// height is only estimated for a lazy column, so a few points of error
-    /// are expected; a reader who is a line away from the tail is not on it.
-    static let bottomTolerance: CGFloat = 24
+    /// The end marker is authoritative: content height is only estimated for a
+    /// lazy column, and gating following on that estimate stopped the page from
+    /// ever re-arming — a new message then arrived below the fold with no way
+    /// back except the pill. The marker's own callback is the reliable signal.
+    var atContentBottom: Bool { tail.isAtBottom }
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
