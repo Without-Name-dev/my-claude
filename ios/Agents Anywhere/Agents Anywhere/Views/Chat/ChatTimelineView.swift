@@ -55,7 +55,12 @@ struct ChatTimelineView: View {
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
                     onTailVisibility: { region, visible in scrolling.tailVisibilityChanged(region, visible: visible) })
                     .equatable()
-                    .background { ChatPageScrollEdge() }
+                    .background {
+                        ChatPageScrollEdge()
+                        // Inside the content, so the recogniser it installs
+                        // lands on this scroll view.
+                        ChatTranscriptTapDismiss(onTap: dismissKeyboard)
+                    }
             }
             .scrollPosition($position)
             .scrollDismissesKeyboard(.interactively)
@@ -69,17 +74,11 @@ struct ChatTimelineView: View {
             // reader has scrolled away.
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
-            // A tap in the transcript dismisses the keyboard. The gesture sits
-            // on the scroll view, not on the enclosing ZStack, so it can never
-            // cover the return pill (a sibling under the ZStack) or replace its
-            // button action. It is simultaneous, so message buttons, links,
-            // attachments and Textual's selection overlay still receive their
-            // taps; dragging keeps using .scrollDismissesKeyboard above.
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                TapGesture().onEnded { _ in dismissKeyboard() },
-                including: keyboardIsVisible ? .all : .none
-            )
+            // A tap in the transcript dismisses the keyboard. It is installed
+            // on the underlying scroll view (see ChatTranscriptTapDismiss):
+            // a SwiftUI tap gesture here lost to message text's selection
+            // overlay, so tapping the upper half of the screen never closed
+            // the keyboard. Dragging still uses .scrollDismissesKeyboard.
             .onScrollPhaseChange { _, phase, context in
                 // A phase callback carries a newer authoritative sample.
                 viewportUpdates.cancel()
