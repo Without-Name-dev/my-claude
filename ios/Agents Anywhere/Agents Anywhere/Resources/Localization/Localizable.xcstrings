@@ -1,6 +1,108 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "会话连接已失效，请返回列表重新打开。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This conversation's connection expired. Go back and open it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话连接已失效，请返回列表重新打开。"
+          }
+        }
+      }
+    },
+    "暂时读不到指令列表，请稍后重试。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot read the command list right now. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时读不到指令列表，请稍后重试。"
+          }
+        }
+      }
+    },
+    "输入框里已有内容。请先发送或清空，再返回这条记录。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The composer already has content. Send or clear it before returning to this record."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入框里已有内容。请先发送或清空，再返回这条记录。"
+          }
+        }
+      }
+    },
+    "附件还没有上传完成，暂时无法预览。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This attachment has not finished uploading, so it cannot be previewed yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "附件还没有上传完成，暂时无法预览。"
+          }
+        }
+      }
+    },
+    "上一次保存的草稿没有恢复，因为你已经开始输入。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The previously saved draft was not restored because you had already started typing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一次保存的草稿没有恢复，因为你已经开始输入。"
+          }
+        }
+      }
+    },
+    "部分附件太大，未能随草稿保存，请重新选择。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some attachments were too large to save with the draft. Please pick them again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分附件太大，未能随草稿保存，请重新选择。"
+          }
+        }
+      }
+    },
     "Close terminal": {
       "extractionState": "manual",
       "localizations": {

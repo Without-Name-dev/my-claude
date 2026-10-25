@@ -64,6 +64,11 @@ final class V2StreamCoordinator {
     /// Called once, when the first dashboard snapshot arrives.
     var prefetchSessions: (([V2SessionMeta]) -> Void)?
 
+    /// Whether the shared socket is ready right now. Consumers that synthesise
+    /// a "subscribed" signal must ask first: claiming a subscription while the
+    /// stream reconnects reports a page as live with nothing behind it.
+    var isReady: Bool { state == .connected && !isInvalidated }
+
     init(
         realtimeAPI: any V2RealtimeAPIProtocol,
         streamAPI: V2StreamAPI,

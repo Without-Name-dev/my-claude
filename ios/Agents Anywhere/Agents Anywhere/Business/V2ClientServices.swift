@@ -122,9 +122,17 @@ final class V2ClientServices {
     }
 
     func updateAgentConnections() {
-        let online = Set(dashboardRepository.connectors.filter { $0.status == .online }.map(\.id))
+        let connectors = dashboardRepository.connectors
+        let online = Set(connectors.filter { $0.status == .online }.map(\.id))
+        // A deleted connector must take its model with it: the map, each
+        // model's inventory and its service reference otherwise live until
+        // sign-out.
+        let live = Set(connectors.map(\.id))
+        for id in Array(agentModels.keys) where !live.contains(id) {
+            agentModels.removeValue(forKey: id)?.invalidate()
+        }
         for (id, model) in agentModels { model.updateConnection(dashboardRepository.isFresh && online.contains(id) && connectivity.status.availability != .offline) }
-        if dashboardRepository.isFresh { agentSetup.updateConnectors(dashboardRepository.connectors) }
+        if dashboardRepository.isFresh { agentSetup.updateConnectors(connectors) }
     }
 
     func editCreation(_ session: V2SessionModel, pending: V2PendingMessage) {

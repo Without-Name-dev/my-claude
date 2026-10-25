@@ -118,7 +118,8 @@ struct V2SessionDetailService {
         if let streamCoordinator, !streamCoordinator.isUsingFallback {
             do {
                 let events = try await streamCoordinator.sessionUpdates(id: sessionId)
-                return Self.withSubscriptionMarker(events, sessionId: sessionId)
+                return Self.withSubscriptionMarker(events, sessionId: sessionId,
+                    isReady: streamCoordinator.isReady)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -135,13 +136,18 @@ struct V2SessionDetailService {
     /// it ahead of the shared stream without inventing any server payload.
     private static func withSubscriptionMarker(
         _ events: AsyncThrowingStream<V2SessionEvent, Error>,
-        sessionId: V2SessionID
+        sessionId: V2SessionID,
+        isReady: Bool
     ) -> AsyncThrowingStream<V2SessionEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<V2SessionEvent, Error>.makeStream(
             bufferingPolicy: .bufferingNewest(2048)
         )
         let task = Task {
-            continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
+            // A reconnecting socket delivers this marker itself once it is
+            // ready again; inventing one now would mark the page live early.
+            if isReady {
+                continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
+            }
             do {
                 for try await event in events {
                     continuation.yield(event)

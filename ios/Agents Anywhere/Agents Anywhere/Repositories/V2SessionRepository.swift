@@ -440,13 +440,20 @@ final class V2SessionRepository {
             // Dashboard pushes repeat every session on each tick; unchanged
             // metadata must not re-project and re-persist every open session.
             let changed = entry.projection?.applyMeta(session) ?? false
-            let invalidates = session.connectorStatus != .online || previous?.effectiveRuntimeId != session.effectiveRuntimeId
-            if invalidates { invalidateCatalogs(entry) }
+            // Everything below must reason about the metadata the projection
+            // actually accepted. A stale snapshot is rejected by applyMeta, and
+            // acting on it anyway invalidated catalogs and tore the socket down
+            // and back up on every repeated push of the old value.
+            let accepted = entry.projection?.data.session
+            let invalidates = accepted.map { $0.connectorStatus != .online }
+                ?? (session.connectorStatus != .online)
+            let bindingChanged = previous?.effectiveRuntimeId != accepted?.effectiveRuntimeId
+            if changed || invalidates { invalidateCatalogs(entry) }
             if changed || invalidates { emit(entry) }
             // A projection still loading has no previous binding to compare, so
             // it must not stop and restart its own socket on every tick.
-            if let previous, session.connectorStatus == .online,
-               previous.connectorStatus != .online || previous.effectiveRuntimeId != session.effectiveRuntimeId {
+            if changed, let previous, let accepted, accepted.connectorStatus == .online,
+               previous.connectorStatus != .online || bindingChanged {
                 // A dashboard projection can arrive before the session socket frame.
                 // Restart observed sessions so their runtime facts match the new binding.
                 stop(entry)

@@ -28,6 +28,9 @@ nonisolated struct V2SessionArchive: Codable {
     let hasNewerItems: Bool
     let draft: String
     let draftAttachments: [ChatAttachment]
+    /// Draft files whose bytes did not fit in the archive. They are reported
+    /// on restore instead of coming back as empty attachments.
+    var droppedDraftAttachments: [String]? = nil
     let pending: [Pending]
     var previews: ChatAttachmentStore.Archive? = nil
 
@@ -38,7 +41,26 @@ nonisolated struct V2SessionArchive: Codable {
         // Marked input-method text is provisional; persist the last committed
         // text so a restore does not greet the person with pinyin.
         draft = model.composer.isComposing ? model.committedDraft : model.draft
-        draftAttachments = model.composer.attachments.map { $0.archived() }
+        // One archive is one JSON file with a 64 MiB ceiling, and base64 makes
+        // bytes larger again. Keeping every attachment would exceed it and the
+        // whole draft — text included — would silently stop being saved, so
+        // bytes are kept up to a budget and the rest are reported on restore.
+        var budget = 24 * 1024 * 1024
+        var kept: [ChatAttachment] = []
+        var dropped: [String] = []
+        for attachment in model.composer.attachments {
+            let archived = attachment.archived()
+            if archived.uploaded == nil {
+                guard archived.data.count <= budget else {
+                    dropped.append(archived.name)
+                    continue
+                }
+                budget -= archived.data.count
+            }
+            kept.append(archived)
+        }
+        draftAttachments = kept
+        droppedDraftAttachments = dropped.isEmpty ? nil : dropped
         pending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
             let error: String?; let rejected: Bool
             switch value.delivery {

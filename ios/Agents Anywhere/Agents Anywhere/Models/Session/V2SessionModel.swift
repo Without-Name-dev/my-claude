@@ -291,10 +291,25 @@ final class V2SessionModel: Identifiable {
     }
 
     func restoreLocal(_ archive: V2SessionArchive) {
-        guard isValid, !hasLocalWork else { return }
+        guard isValid else { return }
+        guard !hasLocalWork else {
+            // The person typed before the cached archive arrived. Their words
+            // win, but an older draft existed and silently dropping it would
+            // look like the app lost their text.
+            if !archive.draft.isEmpty, archive.draft != draft {
+                failure = V2ClientFailure(kind: .unavailable,
+                    message: String(localized: "上一次保存的草稿没有恢复，因为你已经开始输入。"))
+            }
+            return
+        }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
         draft = archive.draft; committedDraft = archive.draft
         composer.attachments = archive.draftAttachments
+        if let dropped = archive.droppedDraftAttachments, !dropped.isEmpty {
+            // Saying so is the only honest option: those bytes were never
+            // stored, and the tray must not pretend otherwise.
+            failure = V2ClientFailure(kind: .unavailable, message: String(localized: "部分附件太大，未能随草稿保存，请重新选择。"))
+        }
         draftAttachmentIDs = archive.draftAttachments.compactMap { $0.uploaded?.fileId }
         pendingMessages = archive.pending.map { value in
             let pending = V2PendingMessage(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,

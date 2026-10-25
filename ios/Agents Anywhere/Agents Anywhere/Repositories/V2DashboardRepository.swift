@@ -26,6 +26,9 @@ final class V2DashboardRepository {
     @ObservationIgnored private var projectRefreshID: UUID?
     @ObservationIgnored private var projectRefreshGeneration: Int?
     @ObservationIgnored private var checkedMissingProjects: Set<String> = []
+    /// When the missing-project read last ran. A failed read used to be retried
+    /// on every dashboard frame, which turns an outage into a request storm.
+    @ObservationIgnored private var lastMissingProjectAttempt = Date.distantPast
     /// Set by list mutations; loading-flag changes republish without a disk write.
     @ObservationIgnored private var isDirty = false
 
@@ -90,8 +93,13 @@ final class V2DashboardRepository {
 
     private func apply(connectors: [V2Connector], projects: [V2Project], sessions incoming: [V2SessionMeta]) {
         var mutated = !hasLoaded
-        if self.connectors != connectors { self.connectors = connectors; mutated = true }
-        if self.projects != projects { self.projects = projects; mutated = true }
+        // The snapshot decides which ids exist, but a locally newer copy wins
+        // for the ids it still contains: a rename or delete that finished while
+        // an older snapshot was in flight used to be reverted by it.
+        let mergedConnectors = mergeByNewest(connectors, current: self.connectors)
+        let mergedProjects = mergeByNewest(projects, current: self.projects)
+        if self.connectors != mergedConnectors { self.connectors = mergedConnectors; mutated = true }
+        if self.projects != mergedProjects { self.projects = mergedProjects; mutated = true }
         let current = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         let validDevices = Set(connectors.map(\.id))
         let pending = sessions.filter { $0.id.hasPrefix("local:") && validDevices.contains($0.connectorId) }
@@ -143,10 +151,17 @@ final class V2DashboardRepository {
         checkedMissingProjects.formIntersection(missingBindings)
         let missing = missingBindings.subtracting(checkedMissingProjects)
         guard !missing.isEmpty else { return }
+        // A failure keeps the keys checked and waits out the backoff instead of
+        // firing one full project read per dashboard frame.
+        guard Date().timeIntervalSince(lastMissingProjectAttempt) > 30 else { return }
+        lastMissingProjectAttempt = Date()
         checkedMissingProjects.formUnion(missing)
         Task { [weak self] in
             guard let self else { return }
-            if !(await refreshProjects()), isValid { checkedMissingProjects.subtract(missing) }
+            if !(await refreshProjects()), isValid {
+                // Allow the next attempt to reconsider them once the backoff ends.
+                self.checkedMissingProjects.subtract(missing)
+            }
         }
     }
 
@@ -233,6 +248,24 @@ final class V2DashboardRepository {
         generation += 1; projectGeneration += 1
         projects.removeAll { $0.id == project.id }; projects.append(project); changed()
     }
+    /// Keeps the server's id set and the newer copy of each entry.
+    private func mergeByNewest<T: Identifiable>(_ incoming: [T], current: [T],
+                                               updatedAt: (T) -> String) -> [T] {
+        let existing = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return incoming.map { value in
+            if let old = existing[value.id], updatedAt(old) > updatedAt(value) { return old }
+            return value
+        }
+    }
+
+    private func mergeByNewest(_ incoming: [V2Connector], current: [V2Connector]) -> [V2Connector] {
+        mergeByNewest(incoming, current: current, updatedAt: \.updatedAt).sorted { $0.id < $1.id }
+    }
+
+    private func mergeByNewest(_ incoming: [V2Project], current: [V2Project]) -> [V2Project] {
+        mergeByNewest(incoming, current: current, updatedAt: \.updatedAt)
+    }
+
     private func mergeSessions(_ incoming: [V2SessionMeta]) {
         var values = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         for value in incoming { values[value.id] = merge(values[value.id], value) }
