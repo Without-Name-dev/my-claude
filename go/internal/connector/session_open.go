@@ -19,6 +19,12 @@ import (
 // window is long enough for Claude Code to start and stamp its presence.
 const sessionOpenThrottle = 60 * time.Second
 
+// transcriptQuietWindow is how recently a transcript must have been written for
+// the connector to treat a conversation as already running. It catches plugin
+// builds that predate the live stamps, which would otherwise look dead while
+// they are actively serving the conversation.
+const transcriptQuietWindow = 2 * time.Minute
+
 // sessionOpenState is the per-connector spawn throttle.
 type sessionOpenState struct {
 	mu sync.Mutex
@@ -155,6 +161,19 @@ func (c *Client) openSession(msg protocol.SessionOpen) {
 	if c.Bridge != nil && sessionIsLive(c.Bridge, externalID) {
 		c.refuseSessionOpen(msg, "the session is already live")
 		return
+	}
+	// A plugin build that predates the live stamps can still be running this
+	// conversation without announcing itself: its outbox carries no session id
+	// and it writes no stamp. The transcript is rewritten whenever the
+	// conversation does anything, so a file touched moments ago is proof enough
+	// not to start a second process on the same session.
+	if c.Discovery != nil {
+		if path, ok := c.Discovery.PathFor(externalID); ok {
+			if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) <= transcriptQuietWindow {
+				c.refuseSessionOpen(msg, "the transcript was updated moments ago")
+				return
+			}
+		}
 	}
 	cwd := strings.TrimSpace(msg.CWD)
 	if cwd == "" {
