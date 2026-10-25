@@ -95,6 +95,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Publish IPA to the self-hosted server
+        # The phone downloads the package from the server's own /dl/ URL, so the
+        # build hands it over directly instead of leaving it behind a login.
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::notice::DEPLOY_SSH_KEY is not set; skipping the upload to the server"
+            exit 0
+          fi
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            out/AgentsAnywhere-unsigned.ipa \
+            deploy@8.166.138.207:/opt/agents-anywhere/web/dl/MyClaude.ipa
+          echo "uploaded $(stat -c%s out/AgentsAnywhere-unsigned.ipa) bytes"
+
       - name: Publish IPA as a public release asset
         # Actions artifacts need a signed-in session to download; a release
         # asset on a public repository does not, which is what makes it usable
