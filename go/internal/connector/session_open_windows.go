@@ -47,6 +47,7 @@ func startSessionTerminal(cwd, externalSessionID, title string, resume bool) (st
 
 	cmd := exec.Command("cmd.exe", cmdArgs...)
 	cmd.Dir = cwd
+	cmd.Env = childEnvironment()
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start cmd.exe: %w", err)
 	}
@@ -92,6 +93,7 @@ func windowsTerminalPath(path string) string {
 func launchWindowTerminal(name string, args []string) (string, bool) {
 	command := formatCommand(name, args)
 	cmd := exec.Command(name, args...)
+	cmd.Env = childEnvironment()
 	if err := cmd.Start(); err != nil {
 		return command, false
 	}

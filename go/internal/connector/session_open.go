@@ -73,6 +73,31 @@ func (c *Client) sessionOpenState() *sessionOpenState {
 // can observe a spawn without starting one.
 var startSessionTerminalProcess = startSessionTerminal
 
+// childEnvironment is the environment a spawned conversation starts with.
+//
+// A Claude Code process marks sessions it spawns with CLAUDE_CODE_CHILD_SESSION.
+// If the connector itself was started from such a session, that marker leaks
+// into every terminal it opens, and Claude Code then disables transcript saving
+// there ("Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION
+// marker"): the conversation cannot be resumed or imported. The marker is
+// therefore dropped, and persistence is asserted for the new process.
+func childEnvironment() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		name := entry
+		if i := strings.IndexByte(entry, '='); i >= 0 {
+			name = entry[:i]
+		}
+		switch strings.ToUpper(name) {
+		case "CLAUDE_CODE_CHILD_SESSION":
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1")
+}
+
 // handleSessionOpen runs one session.open frame.
 //
 // The frame arrives on the connector's read loop, which also carries heartbeats

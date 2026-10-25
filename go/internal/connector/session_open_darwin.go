@@ -27,7 +27,10 @@ func startSessionTerminal(cwd, externalSessionID, title string, resume bool) (st
 	if resume {
 		flag = "--resume"
 	}
-	line := "cd -- " + posixQuote(cwd) + " && exec claude " + flag + " " + posixQuote(externalSessionID)
+	// Terminal runs a login shell of its own, so the marker is cleared again
+	// inside the command that starts the conversation.
+	line := "unset CLAUDE_CODE_CHILD_SESSION; cd -- " + posixQuote(cwd) +
+		" && exec claude " + flag + " " + posixQuote(externalSessionID)
 	script := "tell application \"Terminal\"\nactivate\ndo script " + appleScriptString(line) + "\nend tell"
 	args := []string{"-e", script}
 	if err := exec.Command("/usr/bin/osascript", args...).Run(); err != nil {
