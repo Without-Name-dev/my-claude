@@ -21,6 +21,7 @@ struct SessionChatView: View, Equatable {
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
     @State private var confirmsOpenOnComputer = false
+    @State private var confirmsCloseTerminal = false
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
@@ -110,6 +111,10 @@ struct SessionChatView: View, Equatable {
                             CommandSuccessToast(feedback: confirmation) { model.openOnComputerConfirmation = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
+                        if let confirmation = model.closeTerminalConfirmation {
+                            CommandSuccessToast(feedback: confirmation) { model.closeTerminalConfirmation = nil }
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
                     }.padding(.top, 8)
                 }
         }
@@ -126,6 +131,8 @@ struct SessionChatView: View, Equatable {
                 Menu {
                     Button(String(localized: "在电脑上打开"), systemImage: "display") { confirmsOpenOnComputer = true }
                         .disabled(!model.canOpenOnComputer)
+                    Button(String(localized: "关闭终端"), systemImage: "xmark.rectangle") { confirmsCloseTerminal = true }
+                        .disabled(!model.canCloseTerminal)
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
                 } label: { AppSymbol("ellipsis") }
@@ -136,6 +143,15 @@ struct SessionChatView: View, Equatable {
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
         })
+        .confirmationDialog(String(localized: "关闭这个会话的终端？"),
+            isPresented: $confirmsCloseTerminal, titleVisibility: .visible) {
+            Button(String(localized: "关闭终端"), role: .destructive) {
+                Task { await model.closeTerminal() }
+            }
+            Button(String(localized: "取消"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "会结束电脑上这个会话的进程，对话记录保留；下次发送消息会自动重新打开。"))
+        }
         .confirmationDialog(String(localized: "在电脑上打开此会话？"),
             isPresented: $confirmsOpenOnComputer, titleVisibility: .visible) {
             Button(String(localized: "在电脑上打开")) {

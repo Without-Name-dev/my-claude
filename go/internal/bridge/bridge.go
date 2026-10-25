@@ -94,6 +94,22 @@ func (b *Bridge) TokenPath() string     { return filepath.Join(b.Dir, "auth.json
 func (b *Bridge) ApprovalPath() string  { return filepath.Join(b.Dir, "approval.json") }
 func (b *Bridge) LiveDir() string       { return filepath.Join(b.Dir, "live") }
 
+// RemoveLiveStamp withdraws one conversation's presence.
+//
+// Used when the connector itself ends the process: the plugin never gets to
+// delete its own stamp, and until the TTL runs out the conversation would still
+// look ready to take a message.
+func (b *Bridge) RemoveLiveStamp(sessionID string) error {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+		return nil
+	}
+	err := os.Remove(filepath.Join(b.LiveDir(), sessionID+".txt"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // maxLiveStamps bounds one presence scan. Stamps that stopped moving are
 // deleted as they are found (see expireLiveStamp), so a normal directory holds
 // one file per conversation that can accept a prompt; the cap only matters in a

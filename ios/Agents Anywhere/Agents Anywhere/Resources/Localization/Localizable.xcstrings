@@ -1,6 +1,108 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Close terminal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close terminal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭终端"
+          }
+        }
+      }
+    },
+    "关闭终端": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close terminal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭终端"
+          }
+        }
+      }
+    },
+    "关闭这个会话的终端？": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close this conversation's terminal?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭这个会话的终端？"
+          }
+        }
+      }
+    },
+    "会结束电脑上这个会话的进程，对话记录保留；下次发送消息会自动重新打开。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This ends the process running this conversation on the computer. The transcript stays; the next message reopens it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会结束电脑上这个会话的进程，对话记录保留；下次发送消息会自动重新打开。"
+          }
+        }
+      }
+    },
+    "已关闭终端。下一条消息会重新打开这个会话。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminal closed. The next message reopens this conversation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已关闭终端。下一条消息会重新打开这个会话。"
+          }
+        }
+      }
+    },
+    "The connector did not accept the close request.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connector did not accept the close request."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接器没有接受关闭请求。"
+          }
+        }
+      }
+    },
     "": {
       "extractionState": "manual",
       "localizations": {

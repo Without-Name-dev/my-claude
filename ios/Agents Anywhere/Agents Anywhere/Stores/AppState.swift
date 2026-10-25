@@ -400,6 +400,23 @@ final class AppState {
         }
     }
 
+    /// Stops the terminal running one conversation on its connector. The
+    /// transcript stays; the next message reopens it.
+    func closeSessionTerminal(sessionId: V2SessionID) async -> Bool {
+        sessionActionError = nil
+        guard let services = makeV2Services() else {
+            sessionActionError = String(localized: "The signed-in server is unavailable.")
+            return false
+        }
+        do {
+            try await services.sessionRepository.closeOnComputer(sessionId: sessionId)
+            return true
+        } catch {
+            sessionActionError = error.localizedDescription
+            return false
+        }
+    }
+
     func setSessionArchived(sessionId: V2SessionID, archived: Bool) async -> Bool {
         await setSessionsArchived(sessionIds: [sessionId], archived: archived)
     }

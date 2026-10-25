@@ -79,6 +79,19 @@ struct V2SessionDetailService {
         return result
     }
 
+    /// Asks the desktop to stop the terminal running this conversation. The
+    /// transcript is untouched: the next message opens it again.
+    func closeOnComputer(sessionId: V2SessionID) async throws -> V2RuntimeOpenResult {
+        let response = try await sessionAPI.closeRuntime(sessionId: sessionId)
+        guard response.ok, let result = response.result else {
+            throw response.error ?? V2RuntimeError(
+                code: nil,
+                message: String(localized: "The connector did not accept the close request.")
+            )
+        }
+        return result
+    }
+
     func updateSelection(
         sessionId: V2SessionID,
         scope: V2RuntimeSelectionScope,

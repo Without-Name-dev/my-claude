@@ -5,6 +5,9 @@ protocol V2SessionAPIProtocol {
     func sync(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse
     /// Asks the desktop connector to open this conversation in a terminal.
     func openRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse
+    /// Asks the desktop connector to stop the terminal running this
+    /// conversation, so the phone can restart it.
+    func closeRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse
     func listSessions(archived: Bool, cursor: String?) async throws -> V2SessionListResponse
     func sessionInventory() async throws -> V2SessionInventoryResponse
     func sessionMeta(sessionId: V2SessionID) async throws -> V2SessionMetaResponse
@@ -139,6 +142,12 @@ struct V2SessionAPI: V2SessionAPIProtocol {
     func openRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse {
         try await transport.send(HTTPRequest<EmptyRequestBody, V2RuntimeOpenResponse>(
             method: .post, path: sessionPath(sessionId, suffix: "runtime/open")
+        ))
+    }
+
+    func closeRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse {
+        try await transport.send(HTTPRequest<EmptyRequestBody, V2RuntimeOpenResponse>(
+            method: .post, path: sessionPath(sessionId, suffix: "runtime/close")
         ))
     }
 

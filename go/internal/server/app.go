@@ -159,6 +159,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleReleaseTakeover))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/messages", a.requireUser(a.handleSendMessage))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/open", a.requireUser(a.handleOpenRuntime))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/close", a.requireUser(a.handleCloseRuntime))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/interrupt", a.requireUser(a.handleInterrupt))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/steer", a.requireUser(a.handleSteer))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/state", a.requireUser(a.handleRuntimeState))

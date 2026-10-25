@@ -23,6 +23,9 @@ final class SessionChatModel {
     private(set) var isOpeningOnComputer = false
     /// Success is transient, like a command result.
     var openOnComputerConfirmation: CommandFeedback?
+    /// True while the close-terminal request is in flight.
+    private(set) var isClosingTerminal = false
+    var closeTerminalConfirmation: CommandFeedback?
     private(set) var responseRevision = 0
     private(set) var commands: [V2RuntimeCommand] = []
     private(set) var isLoadingCommands = false
@@ -97,6 +100,13 @@ final class SessionChatModel {
     var canOpenOnComputer: Bool {
         session.isValid && session.metadata?.connectorStatus == .online && session.network.availability != .offline
             && !isOpeningOnComputer
+    }
+
+    /// Closing needs a running conversation: without a runtime id there is no
+    /// process to stop, and the menu item would do nothing.
+    var canCloseTerminal: Bool {
+        session.isValid && session.metadata?.connectorStatus == .online && session.network.availability != .offline
+            && session.metadata?.externalSessionId?.isEmpty == false && !isClosingTerminal
     }
 
     // MARK: Commands
@@ -338,6 +348,28 @@ final class SessionChatModel {
                 error = String(localized: "无法在这台电脑上打开此会话。")
             }
             return result.sent
+        } catch {
+            guard session.isValid else { return false }
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Stops the terminal running this conversation on the desktop. The
+    /// transcript stays; the next message opens the conversation again, which
+    /// is what makes this a restart rather than a delete.
+    @discardableResult func closeTerminal() async -> Bool {
+        guard canCloseTerminal else { return false }
+        isClosingTerminal = true
+        defer { isClosingTerminal = false }
+        do {
+            _ = try await repository.closeOnComputer(sessionId: session.id)
+            guard session.isValid else { return false }
+            closeTerminalConfirmation = CommandFeedback(
+                title: String(localized: "已关闭终端。下一条消息会重新打开这个会话。"),
+                message: nil
+            )
+            return true
         } catch {
             guard session.isValid else { return false }
             self.error = error.localizedDescription

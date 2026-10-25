@@ -55,6 +55,9 @@ const (
 	// terminal on its machine, so a phone message sent to a conversation with
 	// no running plugin still has somewhere to land.
 	TypeSessionOpen = "session.open"
+	// TypeSessionClose asks the connector to stop the terminal it is running
+	// for one conversation, so a person can restart it from the phone.
+	TypeSessionClose = "session.close"
 	// TypePing is a liveness probe; the connector answers with TypeBeat.
 	TypePing = "ping"
 )
@@ -234,6 +237,15 @@ type SessionOpen struct {
 	CWD               string `json:"cwd"`
 	Title             string `json:"title"`
 	Resume            bool   `json:"resume"`
+}
+
+// SessionClose asks the connector to stop whatever is running for one
+// conversation: the Claude Code process the phone opened, and the terminal
+// window that hosts it. The transcript and the server record stay; the next
+// message reopens the conversation, which is what makes "close" a restart.
+type SessionClose struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId"`
 }
 
 // Abort asks the connector to stop the running turn.

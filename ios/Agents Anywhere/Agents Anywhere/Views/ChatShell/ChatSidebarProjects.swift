@@ -11,6 +11,7 @@ struct ChatSidebarProjects: View {
     let onPinSession: (String, Bool) -> Void
     let onArchiveSession: (String) -> Void
     let onCopySession: (String) -> Void
+    let onCloseTerminalSession: (String) -> Void
     @State private var filter = V2DeviceSessionFilter.active
     @State private var createsProject = false
     @State private var editing: V2Project?
@@ -176,7 +177,8 @@ struct ChatSidebarProjects: View {
                     inset: inset,
                     onOpen: { onOpenSession(session.id) }, onRename: { onRenameSession(session.id, $0) },
                     onTogglePinned: { onPinSession(session.id, !session.pinned) }, onArchive: { onArchiveSession(session.id) },
-                    onCopyId: { onCopySession(session.id) })
+                    onCopyId: { onCopySession(session.id) },
+                    onCloseTerminal: { onCloseTerminalSession(session.id) })
             }
         }
     }

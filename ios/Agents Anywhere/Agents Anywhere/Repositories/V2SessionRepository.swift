@@ -354,6 +354,16 @@ final class V2SessionRepository {
         return result
     }
 
+    /// Stops the terminal running this conversation on the desktop.
+    @discardableResult
+    func closeOnComputer(sessionId: V2SessionID) async throws -> V2RuntimeOpenResult {
+        try requireNetwork()
+        let entry = entry(for: sessionId)
+        let result = try await detail.closeOnComputer(sessionId: sessionId)
+        try requireCurrent(entry)
+        return result
+    }
+
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)

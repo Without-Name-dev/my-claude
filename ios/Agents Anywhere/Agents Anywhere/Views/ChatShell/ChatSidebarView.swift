@@ -25,6 +25,7 @@ struct ChatSidebarView: View {
     let onArchiveSession: (V2SessionID) -> Void
     let onCopyDeviceId: (V2ConnectorID) -> Void
     let onCopySessionId: (V2SessionID) -> Void
+    let onCloseSessionTerminal: (V2SessionID) -> Void
 
     @State private var isShowingPairing = false
     @State private var showsArchives = false
@@ -80,7 +81,8 @@ struct ChatSidebarView: View {
                         onRename: onRenameSession,
                         onTogglePinned: onToggleSessionPinned,
                         onArchive: onArchiveSession,
-                        onCopyId: onCopySessionId
+                        onCopyId: onCopySessionId,
+                        onCloseTerminal: onCloseSessionTerminal
                     )
                 }
 
@@ -104,14 +106,16 @@ struct ChatSidebarView: View {
                             onRename: onRenameSession,
                             onTogglePinned: onToggleSessionPinned,
                             onArchive: onArchiveSession,
-                            onCopyId: onCopySessionId
+                            onCopyId: onCopySessionId,
+                            onCloseTerminal: onCloseSessionTerminal
                         )
                     } else {
                         ChatSidebarProjects(repository: repository, showsSessionList: $showsSessionList,
                             selectedSessionID: selectedSessionId, onShowArchives: { showsArchives = true },
                             onNewSession: onNewProjectSession, onOpenSession: onOpenSession,
                             onRenameSession: onRenameSession, onPinSession: onToggleSessionPinned,
-                            onArchiveSession: onArchiveSession, onCopySession: onCopySessionId)
+                            onArchiveSession: onArchiveSession, onCopySession: onCopySessionId,
+                            onCloseTerminalSession: onCloseSessionTerminal)
                     }
                 }
 
@@ -268,6 +272,7 @@ private struct ChatSidebarSessionSection: View {
     let onTogglePinned: (V2SessionID, Bool) -> Void
     let onArchive: (V2SessionID) -> Void
     let onCopyId: (V2SessionID) -> Void
+    let onCloseTerminal: (V2SessionID) -> Void
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 4) {
@@ -288,7 +293,8 @@ private struct ChatSidebarSessionSection: View {
                         onRename: { onRename(session.id, $0) },
                         onTogglePinned: { onTogglePinned(session.id, !session.pinned) },
                         onArchive: { onArchive(session.id) },
-                        onCopyId: { onCopyId(session.id) }
+                        onCopyId: { onCopyId(session.id) },
+                        onCloseTerminal: { onCloseTerminal(session.id) }
                     )
                 }
             }
@@ -362,6 +368,7 @@ struct ChatSidebarSessionRow: View {
     let onTogglePinned: () -> Void
     let onArchive: () -> Void
     let onCopyId: () -> Void
+    let onCloseTerminal: () -> Void
 
     @State private var isRenaming = false
     @State private var titleDraft = ""
@@ -423,6 +430,11 @@ struct ChatSidebarSessionRow: View {
                 Label(session.archived ? String(localized: "Restore") : String(localized: "Archive"), systemImage: "archivebox")
             }.disabled(session.id.hasPrefix("local:"))
             Divider()
+            // Long press is how a conversation is restarted from the phone:
+            // close the terminal here, send the next message to reopen it.
+            Button(action: onCloseTerminal) {
+                Label(String(localized: "Close terminal"), systemImage: "xmark.rectangle")
+            }.disabled(session.id.hasPrefix("local:"))
             Button(action: onCopyId) {
                 Label(String(localized: "Copy session ID"), systemImage: "doc.on.doc")
             }

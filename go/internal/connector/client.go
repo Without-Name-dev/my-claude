@@ -79,6 +79,12 @@ type Client struct {
 	// conversation's queue cursor before the message is written.
 	spawnMu       sync.Mutex
 	spawnRequests map[string]time.Time
+
+	// closedMu guards closed: server sessions whose terminal the person closed
+	// from the phone. A turn watcher stops on its next poll instead of waiting
+	// for the heartbeat to expire.
+	closedMu sync.Mutex
+	closed   map[string]time.Time
 }
 
 // pendingAsk is one question awaiting an answer from the phone.
@@ -103,6 +109,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		cancelled:     map[string]int{},
 		turns:         make(chan protocol.Submit, 32),
 		spawnRequests: map[string]time.Time{},
+		closed:        map[string]time.Time{},
 	}
 }
 
@@ -289,6 +296,8 @@ func (c *Client) dispatch(env protocol.Envelope) {
 				Error:     "the connector is still working through earlier messages; send this one again",
 			})
 		}
+	case protocol.TypeSessionClose:
+		c.handleSessionClose(env.Data)
 	case protocol.TypeAbort:
 		var msg protocol.Abort
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
@@ -423,6 +432,10 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		}
 	}
 	watcher := NewTurnWatcher(c.Bridge, c, msg.SessionID, msg.ExternalSessionID, msg.RequestID, sub)
+	// This message is the request to run again; a close recorded for the
+	// previous terminal must not end it.
+	c.clearSessionClosed(msg.SessionID)
+	watcher.Closed = func() bool { return c.sessionWasClosed(msg.SessionID) }
 	watcher.Run(ctx)
 }
 

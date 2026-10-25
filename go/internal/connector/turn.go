@@ -57,6 +57,10 @@ type TurnWatcher struct {
 	messageID  string
 	previousID string
 	queuedAt   int64
+	// Closed, when set, reports that the person ended this conversation's
+	// terminal from the phone. The watcher then closes the turn instead of
+	// polling for an answer that can never arrive.
+	Closed func() bool
 
 	turnID    string
 	sent      string
@@ -124,6 +128,19 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		case <-ctx.Done():
 			return w.currentText()
 		case <-ticker.C:
+		}
+
+		// The person closed the terminal. Nothing will ever finish this turn,
+		// so it is ended now rather than three minutes later when the missing
+		// heartbeat would have been noticed.
+		if w.Closed != nil && w.Closed() {
+			w.sink.TurnEnd(protocol.TurnEnd{
+				SessionID: w.sessionID,
+				TurnID:    w.currentTurnID(),
+				Status:    "aborted",
+				Error:     "the terminal was closed from the phone",
+			})
+			return w.currentText()
 		}
 
 		box, err := w.bridge.ReadOutbox()
@@ -251,6 +268,20 @@ func (w *TurnWatcher) cancelQueued() {
 		return
 	}
 	_ = w.bridge.CancelQueued(w.messageID)
+}
+
+// currentTurnID is the turn the watcher would have to close when it stops
+// without an answer: the one it adopted, else the one the outbox is showing for
+// this conversation (never the stale turn it was queued behind).
+func (w *TurnWatcher) currentTurnID() string {
+	if w.turnID != "" {
+		return w.turnID
+	}
+	if box, err := w.bridge.ReadOutbox(); err == nil && box != nil &&
+		box.BelongsTo(w.sessionID, w.externalSessionID) && box.TurnID != w.previousID {
+		return box.TurnID
+	}
+	return w.messageID
 }
 
 // currentText is what the caller gets when a turn is interrupted mid-flight.

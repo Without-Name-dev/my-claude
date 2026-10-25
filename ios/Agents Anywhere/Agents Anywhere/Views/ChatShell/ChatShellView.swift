@@ -115,7 +115,8 @@ struct ChatShellView: View {
                 onToggleSessionPinned: setSessionPinned,
                 onArchiveSession: archiveSession,
                 onCopyDeviceId: copyDeviceId,
-                onCopySessionId: copySessionId
+                onCopySessionId: copySessionId,
+                onCloseSessionTerminal: closeSessionTerminal
             )
         } content: { safeAreaInsets in
             mainContent
@@ -285,6 +286,10 @@ struct ChatShellView: View {
 
     private func copySessionId(_ id: V2SessionID) {
         UIPasteboard.general.string = id
+    }
+
+    private func closeSessionTerminal(_ id: V2SessionID) {
+        Task { _ = await appState.closeSessionTerminal(sessionId: id) }
     }
 
     private func toggleSidebar() {
