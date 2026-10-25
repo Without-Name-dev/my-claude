@@ -3,7 +3,20 @@ import Foundation
 enum ProjectSidebarPresentation {
     static func visible(_ project: V2Project, filter: V2DeviceSessionFilter, sessions: [V2SessionMeta] = []) -> Bool {
         if project.manuallyCreated { return true }
-        return sessions.contains { $0.projectId == project.id && matches($0, filter: filter) }
+        return sessions.contains { $0.projectId == project.id && governsProject($0, filter: filter) }
+    }
+
+    /// Whether a session keeps its project in the list.
+    ///
+    /// Pinning moves a row to the "Pinned" section, but the session still
+    /// belongs to its project: hiding the project because its only session was
+    /// pinned would take the project row and its "new session" button away.
+    private static func governsProject(_ session: V2SessionMeta, filter: V2DeviceSessionFilter) -> Bool {
+        switch filter {
+        case .active: !session.archived
+        case .archived: session.archived
+        case .all: true
+        }
     }
     private static func matches(_ session: V2SessionMeta, filter: V2DeviceSessionFilter) -> Bool {
         switch filter {
@@ -31,7 +44,7 @@ enum ProjectSidebarPresentation {
         var projectsWithMatches: Set<String> = []
         for session in sessions {
             guard let id = session.projectId else { continue }
-            if matches(session, filter: filter) { projectsWithMatches.insert(id) }
+            if governsProject(session, filter: filter) { projectsWithMatches.insert(id) }
             let time = [session.sortAt, session.lastActivityAt, session.createdAt].compactMap { $0 }.first { !$0.isEmpty }
             activity[id] = max(activity[id] ?? 0, timestamp(time))
         }

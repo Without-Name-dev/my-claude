@@ -19,7 +19,10 @@ actor V2LocalStore {
         guard let archive = session(id) else { return nil }
         return V2SessionRestore(archive: archive, items: archive.items.compactMap { try? V2TimelineItem(json: $0) })
     }
-    func saveDashboard(_ value: V2DashboardArchive) { write(value, key: "dashboard") }
+    /// Returns whether the archive was written, so a refused write can be
+    /// retried instead of silently leaving an older cache on disk.
+    @discardableResult
+    func saveDashboard(_ value: V2DashboardArchive) -> Bool { write(value, key: "dashboard") }
     /// Returns whether the archive was written. A refused or failed write must
     /// leave the session dirty so a later flush can retry it.
     @discardableResult

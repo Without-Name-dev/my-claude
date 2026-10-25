@@ -20,6 +20,15 @@ final class V2SessionRepository {
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
     private var entries: [V2SessionID: Entry] = [:]
+    /// Sessions handed to a view but not yet observed by it.
+    ///
+    /// The page takes its model in `body` and starts observing in `.task`; a
+    /// prefetch that hydrates eight other sessions can run in between. Evicting
+    /// the entry then disposes the model the view is already holding, and the
+    /// page can never finish opening. A short lease keeps it alive until the
+    /// observer attaches (or the person leaves).
+    private var leasedEntries: [V2SessionID: Date] = [:]
+    private let leaseDuration: TimeInterval = 15
     private var accessCounter = 0
     private var suspended = false
     private(set) var network = V2NetworkStatus()
@@ -46,6 +55,7 @@ final class V2SessionRepository {
 
     func session(id: V2SessionID) -> V2SessionModel {
         let entry = entry(for: id)
+        leasedEntries[id] = now()
         evict(protecting: entry)
         return entry.model
     }
@@ -734,9 +744,12 @@ final class V2SessionRepository {
     }
 
     private func evict(protecting protected: Entry? = nil) {
+        let cutoff = now().addingTimeInterval(-leaseDuration)
+        leasedEntries = leasedEntries.filter { $0.value > cutoff }
         let candidates = entries.values.filter {
             $0 !== protected && $0.observers.isEmpty && $0.loadTask == nil && $0.catalogTask == nil
                 && $0.historyTask == nil && !$0.model.hasLocalWork
+                && leasedEntries[$0.id] == nil
         }
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in candidates where entries.count > max(1, policy.maximumSessions) {

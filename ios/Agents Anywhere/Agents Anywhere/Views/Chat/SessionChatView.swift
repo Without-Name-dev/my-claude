@@ -85,7 +85,7 @@ struct SessionChatView: View, Equatable {
                             settingsError: model.settingsError, sessionChat: model,
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                             onApplySettings: model.applySettings, applyError: { model.settingsError },
-                            onDraftChange: { model.repository.draftDidChange(sessionID: model.session.id) })
+                            onDraftChange: { model.draftDidChange() })
                             .traceChatLayout("composer-dock")
                     }
                     .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
@@ -263,6 +263,12 @@ struct SessionChatView: View, Equatable {
 
     private func openAttachment(_ file: V2AttachmentContent) {
         if file.readsFromDevice, let path = file.devicePath { sheet = .preview(SessionFileReference(path: path), root: file.root); return }
+        // An optimistic attachment that has not finished uploading has only a
+        // local id; asking the server for it can only 404.
+        if file.fileId?.hasPrefix("local:") == true {
+            model.error = String(localized: "附件还没有上传完成，暂时无法预览。")
+            return
+        }
         guard !isDownloading, let fileID = file.fileId else { return }
         isDownloading = true
         model.error = nil

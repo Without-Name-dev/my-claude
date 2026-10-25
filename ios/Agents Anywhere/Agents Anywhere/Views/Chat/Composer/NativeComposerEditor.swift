@@ -90,10 +90,20 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.commandSend = onCommandSend
         // Do not replace native pre-edit text or disrupt its selection/candidate bar.
         if view.markedTextRange == nil, view.text != draft.text {
+            let previous = view.text ?? ""
             let selection = view.selectedRange
             view.text = draft.text
             let end = (draft.text as NSString).length
-            view.selectedRange = NSRange(location: min(selection.location, end), length: 0)
+            // The saved caret belonged to the old string. When the new text
+            // merely extends it (a keystroke echoed back) the offset is still
+            // valid; a whole-string replacement — command completion, a
+            // restored draft — must put the caret after the new text, or the
+            // next character lands inside the command name.
+            if !previous.isEmpty && draft.text.hasPrefix(previous) {
+                view.selectedRange = NSRange(location: min(selection.location, end), length: 0)
+            } else {
+                view.selectedRange = NSRange(location: end, length: 0)
+            }
         }
         if draft.isFocused, !view.isFirstResponder {
             view.becomeFirstResponder()

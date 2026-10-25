@@ -285,6 +285,20 @@ final class NewSessionModel {
         draft.text = text
         guard draft.canAttemptSend else { return nil }
         let files = draft.attachments
+        // Clear before the first suspension. The message leaves the composer
+        // as soon as it is sent, and anything typed while the project is being
+        // resolved is a new draft rather than a keystroke this send swallows.
+        draft.clear(); saveDraft()
+        var completed = false
+        // Declared here, not after the project lookup: every failure path —
+        // including the ones that return before a session exists — has to give
+        // the message back, or closing the screen would lose it.
+        defer {
+            if !completed, draft.text.isEmpty, draft.attachments.isEmpty {
+                draft.text = text; draft.attachments = files
+                saveDraft()
+            }
+        }
         isCreating = true; error = nil
         saveSelections()
         defer { isCreating = false; saveDraft() }
@@ -311,14 +325,11 @@ final class NewSessionModel {
             return nil
         }
         let submission = NewSessionSubmission(project: project, runtime: runtime, text: text, attachments: files)
-        draft.clear(); saveDraft()
-        var completed = false
         defer {
             if !completed, isValid {
                 let failure = V2ClientFailure(kind: .unavailable, message: error ?? String(localized: "未能完成创建，请检查设备连接和运行选项。"))
                 submission.pending.update(creationUncertain ? .uncertain(failure) : .rejected(failure))
                 onFailed?(submission)
-                if draft.text.isEmpty, draft.attachments.isEmpty { draft.text = text; draft.attachments = files }
             }
         }
         await onStaged?(submission)
@@ -374,6 +385,10 @@ final class NewSessionModel {
         if case .uncertain = pending.delivery { creationUncertain = true }
         error = creationUncertain ? String(localized: "请先检查会话列表，确认上次创建结果后再发送。") : nil
         saveDraft()
+        // focusDevice() dropped the prepared target and the screen's load task
+        // will not run again (the selection did not change), so prepare here or
+        // the send button stays disabled on the restored draft.
+        Task { await prepareTarget() }
     }
 
     /// Explicitly reviewed by the user. Network recovery alone never retries creation.

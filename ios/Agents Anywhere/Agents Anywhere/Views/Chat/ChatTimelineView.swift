@@ -34,8 +34,12 @@ struct ChatTimelineView: View {
     private static let drawerLayoutLog = Logger(subsystem: "agents.anywhere", category: "drawer-layout")
 #endif
 
+    /// The same predicate the interaction dock renders with. A notice that is
+    /// visible but does not block this session draws no card, so it must not
+    /// suspend following either — that left a streaming reply parked with no
+    /// explanation on screen.
     private var hasInteractions: Bool {
-        model.session.notices.notices.contains { $0.isVisible && $0.notice.type == "interaction" }
+        model.session.notices.notices.contains { $0.isVisible && $0.blocks(model.session.id) }
     }
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }

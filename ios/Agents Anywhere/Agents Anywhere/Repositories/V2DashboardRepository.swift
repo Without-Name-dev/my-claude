@@ -42,8 +42,11 @@ final class V2DashboardRepository {
         persistenceTask?.cancel(); persistenceTask = nil
         guard isValid, hasLoaded, isDirty, let localStore else { return }
         isDirty = false
-        await localStore.saveDashboard(.init(connectors: connectors, projects: projects, sessions: sessions,
+        let saved = await localStore.saveDashboard(.init(connectors: connectors, projects: projects, sessions: sessions,
             pages: []))
+        // A refused write (too large, disk full) must keep the cache dirty, or
+        // the next launch restores an older list and never retries.
+        if !saved { isDirty = true }
     }
     private func changed(persist: Bool = true) {
         onChange?()
@@ -55,7 +58,15 @@ final class V2DashboardRepository {
         }
     }
     var canWrite: Bool { isValid && isFresh && network.availability != .offline }
-    func updateNetwork(_ network: V2NetworkStatus) { self.network = network }
+    func updateNetwork(_ network: V2NetworkStatus) {
+        self.network = network
+        // Confirmed freshness ends the moment the device is offline. Keeping
+        // it would enable writes and green dots from a pre-outage snapshot.
+        if network.availability == .offline, isFresh {
+            isFresh = false
+            changed(persist: false)
+        }
+    }
 
     func refresh() async {
         guard isValid, network.availability != .offline, !isLoading else { return }

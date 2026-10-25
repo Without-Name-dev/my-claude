@@ -153,6 +153,10 @@ final class V2StreamCoordinator {
     /// lifetime ends, e.g. on sign-out.
     func invalidate() {
         isInvalidated = true
+        // A new sign-in deserves a fresh verdict on the unified endpoint; the
+        // static below would otherwise keep every later session on the legacy
+        // sockets for the life of the process.
+        Self.processFallbackEngaged = false
         connectionGeneration &+= 1
         connectionTask?.cancel()
         connectionTask = nil
@@ -314,7 +318,12 @@ final class V2StreamCoordinator {
                 // the unified protocol are terminal for this process; those
                 // consumers fall back to the legacy sockets instead of
                 // reconnecting forever.
-                guard connectedOnce, Self.isRetryable(error) else {
+                //
+                // This used to require a successful connection first, but that
+                // flag resets with every loop: an app launched offline (or
+                // resumed after a suspend) fell back permanently on the first
+                // transient failure, and every later login inherited it.
+                guard Self.isRetryable(error) else {
                     engageFallback()
                     return
                 }

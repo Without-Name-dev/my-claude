@@ -121,7 +121,11 @@ struct PendingMessageRow: View {
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             Button(String(localized: "返回编辑")) {
                 if chat.session.isLocalCreation { chat.onEditCreation?(pending) }
-                else { _ = chat.session.restoreDraft(from: pending) }
+                else if !chat.session.restoreDraft(from: pending) {
+                    // Refused because the composer already holds a draft;
+                    // saying so beats a dialog that closes and does nothing.
+                    chat.error = String(localized: "输入框里已有内容。请先发送或清空，再返回这条记录。")
+                }
             }
             Button(String(localized: "移除此发送记录")) {
                 if chat.session.isLocalCreation { chat.onDiscardCreation?() } else { onDismiss() }

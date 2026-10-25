@@ -35,7 +35,10 @@ nonisolated struct V2SessionArchive: Codable {
         session = data.session; items = data.items.map(\.raw); cursor = data.cursor
         hasOlderItems = data.hasOlderItems; hasNewerItems = data.hasNewerItems
         previews = model.attachmentPreviews.archived()
-        draft = model.draft; draftAttachments = model.composer.attachments.map { $0.archived() }
+        // Marked input-method text is provisional; persist the last committed
+        // text so a restore does not greet the person with pinyin.
+        draft = model.composer.isComposing ? model.committedDraft : model.draft
+        draftAttachments = model.composer.attachments.map { $0.archived() }
         pending = model.pendingMessages.filter { $0.delivery != .confirmed }.map { value in
             let error: String?; let rejected: Bool
             switch value.delivery {

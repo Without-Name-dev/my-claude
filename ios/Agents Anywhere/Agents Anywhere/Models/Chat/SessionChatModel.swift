@@ -237,7 +237,15 @@ final class SessionChatModel {
             guard !Task.isCancelled else { return }
             openingError = error.localizedDescription
         }
-        guard session.isValid, !Task.isCancelled else { return }
+        guard session.isValid, !Task.isCancelled else {
+            // The model was disposed underneath this page (a cache eviction
+            // before the view attached its observer). Saying so gives the
+            // person a way out; returning silently left a spinner forever.
+            if !Task.isCancelled, openingError == nil {
+                openingError = String(localized: "会话连接已失效，请返回列表重新打开。")
+            }
+            return
+        }
         if let data = repository.cached(sessionId: session.id) {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
         }
@@ -300,13 +308,21 @@ final class SessionChatModel {
 
     func send(_ text: String) async {
         if let command = await catalogCommand(for: text) {
-            session.composer.text = text
+            // Do not write the tap-time snapshot back: the catalog read can
+            // await, and a keystroke that landed meanwhile must survive.
             await runCommand(command, raw: text)
+            return
+        }
+        // A bare "/name" that matches no catalog command is still likely a
+        // command. Sending it as prose would hand the model its syntax and
+        // never run it, so hold it while the catalog is unreadable and say why.
+        if commandsError != nil, let intent = SlashIntent(text),
+           intent.isCommandLike, intent.suffix.isEmpty, !intent.multiline {
+            fail(String(localized: "暂时读不到指令列表，请稍后重试。"))
             return
         }
         guard !isWorking, session.canSend, !session.composer.isComposing else { return }
         let draft = session.composer
-        draft.text = text
         let selected = draft.attachments
         guard selected.isEmpty || canAttach else { return }
         isWorking = true

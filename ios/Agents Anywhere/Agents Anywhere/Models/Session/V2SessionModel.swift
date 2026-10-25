@@ -97,6 +97,12 @@ final class V2SessionModel: Identifiable {
         get { composer.text }
         set { composer.text = newValue }
     }
+    /// The draft as it stood when no input-method composition was running.
+    ///
+    /// Marked text is provisional: while a candidate bar is open the editor's
+    /// text is pinyin, and an archive written then comes back as letters
+    /// instead of the words the person typed.
+    @ObservationIgnored private(set) var committedDraft = ""
     var draftAttachmentIDs: [V2AttachmentID] = []
     @ObservationIgnored private weak var repository: V2SessionRepository?
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
@@ -155,7 +161,11 @@ final class V2SessionModel: Identifiable {
             return nil
         }
         let content = draft
-        let attachments = draftAttachmentIDs
+        // The tray is the truth. `draftAttachmentIDs` is a mirror kept for
+        // restored drafts, and removing a tile only touches the tray; sending
+        // the mirror would deliver the file the person just deleted, and the
+        // upload pass below cannot correct it once every file is uploaded.
+        let attachments = composer.attachments.compactMap { $0.uploaded?.fileId }
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || !composer.attachments.isEmpty else {
             failure = V2ClientFailure(V2BusinessError.emptyMessage)
             return nil
@@ -197,7 +207,8 @@ final class V2SessionModel: Identifiable {
             else {
                 self.failure = failure
                 if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
-                    draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
+                    draft = pending.content; committedDraft = pending.content
+        composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
                     pending.didRestoreDraft = true
                 }
             }
@@ -271,7 +282,8 @@ final class V2SessionModel: Identifiable {
     }
     func restoreDraft(from pending: V2PendingMessage) -> Bool {
         guard isValid, composer.text.isEmpty, composer.attachments.isEmpty else { return false }
-        draft = pending.content; composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
+        draft = pending.content; committedDraft = pending.content
+        composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
         pending.didRestoreDraft = true
         composer.isFocused = true
         repository?.draftDidChange(sessionID: id)
@@ -281,7 +293,8 @@ final class V2SessionModel: Identifiable {
     func restoreLocal(_ archive: V2SessionArchive) {
         guard isValid, !hasLocalWork else { return }
         if let previews = archive.previews { attachmentPreviews.restore(previews) }
-        draft = archive.draft; composer.attachments = archive.draftAttachments
+        draft = archive.draft; committedDraft = archive.draft
+        composer.attachments = archive.draftAttachments
         draftAttachmentIDs = archive.draftAttachments.compactMap { $0.uploaded?.fileId }
         pendingMessages = archive.pending.map { value in
             let pending = V2PendingMessage(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
@@ -300,6 +313,12 @@ final class V2SessionModel: Identifiable {
         attachmentPreviews.clear()
         notices.clear()
         connection = .inactive; isValid = false; repository = nil
+    }
+
+    /// Records a draft edit for persistence.
+    func draftDidChange() {
+        if !composer.isComposing { committedDraft = composer.text }
+        repository?.draftDidChange(sessionID: id)
     }
 
     private func clearDraft(ifMatching pending: V2PendingMessage) {
