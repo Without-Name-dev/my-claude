@@ -199,6 +199,11 @@ func (a *App) Handler() http.Handler {
 	return a.withCommon(handler)
 }
 
+// Start launches the background work that outlives a single request.
+func (a *App) Start(ctx context.Context) {
+	go a.refreshLiveHistories(ctx)
+}
+
 // handleReady reports database reachability.
 func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)

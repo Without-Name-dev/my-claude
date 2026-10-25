@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,49 @@ import (
 // historyCooldown keeps a client that keeps refetching an empty session from
 // asking the connector every few hundred milliseconds.
 const historyCooldown = 20 * time.Second
+
+// historyRefreshInterval is how often a live conversation's transcript is
+// pulled in.
+//
+// A prompt typed on the desktop never passes through the phone, so the
+// transcript is the only place the server can learn about it. That copy used to
+// be imported once, when the session was first opened, and the phone never saw
+// anything typed afterwards. The connector skips a transcript whose size and
+// mtime have not changed, so a quiet session costs one stat.
+const historyRefreshInterval = 15 * time.Second
+
+// refreshLiveHistories keeps the server's timeline in step with every live
+// conversation's transcript.
+func (a *App) refreshLiveHistories(ctx context.Context) {
+	ticker := time.NewTicker(historyRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for connectorID, live := range a.connectors.LiveByConnector() {
+			if !a.connectors.Online(connectorID) {
+				continue
+			}
+			sessions, err := a.db.SessionsForConnector(ctx, connectorID)
+			if err != nil {
+				continue
+			}
+			for _, session := range sessions {
+				if session.ExternalID == "" || session.Status == "running" {
+					// A turn this server is following writes its own rows.
+					continue
+				}
+				if _, ok := live[session.ExternalID]; !ok {
+					continue
+				}
+				a.maybeRequestHistory(ctx, session)
+			}
+		}
+	}
+}
 
 // maybeRequestHistory asks the connector for a transcript when the session's
 // timeline is empty but the session came from a local one.
@@ -67,6 +111,44 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 //
 // The whole import shares one revision: it is a single state change, and one
 // snapshot event tells every open client to replace its timeline in one go.
+// knownMessages collects the role and normalised text of every message the
+// session already shows from a source other than a transcript import.
+func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]bool {
+	known := map[string]bool{}
+	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, 300)
+	if err != nil {
+		return known
+	}
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, "hist_") {
+			continue
+		}
+		if role, text, ok := messageIdentity(item.Role, item.Payload); ok {
+			known[role+"|"+text] = true
+		}
+	}
+	return known
+}
+
+// messageIdentity renders a message row as the key the importer compares.
+// Whitespace is normalised so a re-wrapped transcript still matches.
+func messageIdentity(role string, payload json.RawMessage) (string, string, bool) {
+	if role == "" || len(payload) == 0 {
+		return "", "", false
+	}
+	var decoded struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(payload, &decoded) != nil {
+		return "", "", false
+	}
+	text := strings.Join(strings.Fields(decoded.Text), " ")
+	if text == "" {
+		return "", "", false
+	}
+	return role, text, true
+}
+
 func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protocol.History) {
 	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
 	if err != nil {
@@ -77,6 +159,10 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		return
 	}
 
+	// Messages the server already recorded from the phone (or from a turn it
+	// followed) must not be imported again: the transcript copy has a different
+	// id, so only the role and the text identify it.
+	known := a.knownMessages(ctx, session.ID)
 	var seq int64
 	changed := 0
 	err = a.db.WithSession(session.ID, func() error {
@@ -84,6 +170,9 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 			rows := make([]store.TimelineItem, 0, len(msg.Items))
 			for _, item := range msg.Items {
 				row := historyItemRow(session.ID, item, 0)
+				if role, text, ok := messageIdentity(item.Role, row.Payload); ok && known[role+"|"+text] {
+					continue
+				}
 				existing, err := a.db.TimelineItemByID(ctx, tx, session.ID, item.ID)
 				if err != nil && !errors.Is(err, store.ErrNotFound) {
 					return err

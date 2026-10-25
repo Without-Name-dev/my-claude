@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -80,11 +81,22 @@ type Client struct {
 	spawnMu       sync.Mutex
 	spawnRequests map[string]time.Time
 
+	// historyMu guards historyStamps: the transcript size and mtime last sent
+	// for a session, so a periodic refresh costs one stat when nothing changed.
+	historyMu     sync.Mutex
+	historyStamps map[string]historyStamp
+
 	// closedMu guards closed: server sessions whose terminal the person closed
 	// from the phone. A turn watcher stops on its next poll instead of waiting
 	// for the heartbeat to expire.
 	closedMu sync.Mutex
 	closed   map[string]time.Time
+}
+
+// historyStamp identifies a transcript version by its size and write time.
+type historyStamp struct {
+	size     int64
+	modified int64
 }
 
 // pendingAsk is one question awaiting an answer from the phone.
@@ -110,6 +122,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		turns:         make(chan protocol.Submit, 32),
 		spawnRequests: map[string]time.Time{},
 		closed:        map[string]time.Time{},
+		historyStamps: map[string]historyStamp{},
 	}
 }
 
@@ -885,6 +898,20 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 		c.Log.Debug("no transcript for session", "external", req.ExternalID)
 		return
 	}
+	// The server now asks live conversations for their transcript every few
+	// seconds. Reading a long transcript for an unchanged file would be pure
+	// cost, so the last sent size and mtime decide.
+	stamp, haveStamp := historyStamp{}, false
+	if info, err := os.Stat(path); err == nil {
+		stamp = historyStamp{size: info.Size(), modified: info.ModTime().UnixMilli()}
+		haveStamp = true
+		c.historyMu.Lock()
+		previous, seen := c.historyStamps[req.SessionID]
+		c.historyMu.Unlock()
+		if seen && previous == stamp {
+			return
+		}
+	}
 	items, err := ReadHistory(path, req.Limit)
 	if err != nil {
 		c.Log.Warn("could not read transcript", "error", err)
@@ -893,6 +920,11 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 	if err := c.send(protocol.TypeHistory, protocol.History{SessionID: req.SessionID, Items: items}); err != nil {
 		c.Log.Debug("could not send history", "error", err)
 		return
+	}
+	if haveStamp {
+		c.historyMu.Lock()
+		c.historyStamps[req.SessionID] = stamp
+		c.historyMu.Unlock()
 	}
 	c.Log.Info("sent history", "session", req.SessionID, "items", len(items))
 }

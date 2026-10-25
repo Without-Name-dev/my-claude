@@ -142,6 +142,24 @@ func (h *ConnectorHub) Live(connectorID, externalSessionID string) bool {
 	return ok
 }
 
+// LiveByConnector snapshots every connector's live external session ids.
+func (h *ConnectorHub) LiveByConnector() map[string]map[string]struct{} {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]map[string]struct{}, len(h.live))
+	for id, set := range h.live {
+		if len(set) == 0 {
+			continue
+		}
+		copySet := make(map[string]struct{}, len(set))
+		for sessionID := range set {
+			copySet[sessionID] = struct{}{}
+		}
+		out[id] = copySet
+	}
+	return out
+}
+
 // SetLiveSessions replaces one connection's live set and returns the external
 // session ids whose membership changed, so the caller can publish just those.
 // It ignores a frame from a socket another connection has replaced.

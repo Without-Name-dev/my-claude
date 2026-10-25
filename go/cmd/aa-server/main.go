@@ -56,6 +56,7 @@ func main() {
 	}
 
 	app := server.New(cfg, db, log)
+	app.Start(ctx)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           app.Handler(),
