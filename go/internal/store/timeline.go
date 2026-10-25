@@ -39,7 +39,10 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 	if orderSeq == 0 {
 		orderSeq = now
 	}
-	itemTime := item.OrderSeq
+	// Fall back to the resolved sort key, not the raw field: an item written
+	// without an order_seq would otherwise be stamped with time zero and sort
+	// to the very top of the session.
+	itemTime := orderSeq
 	if item.ItemTime != nil {
 		itemTime = *item.ItemTime
 	}
@@ -79,30 +82,13 @@ func scanTimelineItem(row interface{ Scan(...any) error }) (TimelineItem, error)
 	return it, nil
 }
 
-// TimelineItems returns a session's items in display order.
+// TimelineItems returns a session's newest limit items in display order.
+//
+// It backs the public share snapshot, which is capped: reading the oldest
+// items instead would freeze a long conversation at its opening and hide
+// everything the person actually shared.
 func (s *Store) TimelineItems(ctx context.Context, q Querier, sessionID string, limit int) ([]TimelineItem, error) {
-	if limit <= 0 || limit > 2000 {
-		limit = 500
-	}
-	rows, err := q.QueryContext(ctx, `
-		SELECT `+timelineColumns+` FROM timeline_items
-		WHERE session_id = ?
-		ORDER BY coalesce(item_time, 0) ASC, order_seq ASC
-		LIMIT ?`, sessionID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []TimelineItem
-	for rows.Next() {
-		it, err := scanTimelineItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, it)
-	}
-	return out, rows.Err()
+	return s.timelineWindow(ctx, q, sessionID, limit, 0, false)
 }
 
 // TimelineItemsLatest returns the newest limit items in display order.

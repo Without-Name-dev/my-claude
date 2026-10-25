@@ -173,22 +173,22 @@ func (a *App) handleAdminCreateUser(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 
-	email := store.NormaliseEmail(body.Email)
-	if email == "" || len(email) > 320 {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity, "email must be 1..320 characters"))
+	email, err := validateEmailAddress(body.Email)
+	if err != nil {
+		httpx.Fail(w, err)
 		return
 	}
-	displayName := strings.TrimSpace(body.DisplayName)
-	if len(displayName) < 1 || len(displayName) > 64 {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity, "displayName must be 1..64 characters"))
+	displayName, err := validateDisplayName(body.DisplayName)
+	if err != nil {
+		httpx.Fail(w, err)
 		return
 	}
 	role := "member"
 	if body.Role != nil && *body.Role != "" {
 		role = *body.Role
 	}
-	if role != "admin" && role != "member" {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity, `role must be "admin" or "member"`))
+	if role, err = validateRole(role); err != nil {
+		httpx.Fail(w, err)
 		return
 	}
 
@@ -240,18 +240,20 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, acto
 		return
 	}
 	if body.DisplayName != nil {
-		name := strings.TrimSpace(*body.DisplayName)
-		if len(name) < 1 || len(name) > 64 {
-			httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
-				"displayName must be 1..64 characters"))
+		name, err := validateDisplayName(*body.DisplayName)
+		if err != nil {
+			httpx.Fail(w, err)
 			return
 		}
 		body.DisplayName = &name
 	}
-	if body.Role != nil && *body.Role != "admin" && *body.Role != "member" {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
-			`role must be "admin" or "member"`))
-		return
+	if body.Role != nil {
+		role, err := validateRole(*body.Role)
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		body.Role = &role
 	}
 
 	updated, err := a.db.UpdateUserAsAdmin(

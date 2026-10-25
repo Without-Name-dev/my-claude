@@ -4,9 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
+
+// sessionArchiveBatch keeps each IN list well below SQLite's bind-variable
+// limit while still archiving thousands of sessions.
+const sessionArchiveBatch = 500
 
 // SessionShare is one public read-only snapshot of a session.
 //
@@ -169,40 +174,64 @@ func (s *Store) SetSessionsArchivedWithScope(
 		// The ids were selected through the ownership join above, so the
 		// updates do not need to repeat it. Both statements are set based:
 		// archive-all can touch thousands of sessions while holding the single
-		// write connection.
+		// write connection. They are chunked because one IN list would exceed
+		// SQLite's bind-variable limit long before that.
 		now := time.Now().UnixMilli()
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-		updateArgs := make([]any, 0, len(ids)+3)
-		updateArgs = append(updateArgs, boolInt(archived), archivedAt(archived, now), now)
-		for _, id := range ids {
-			updateArgs = append(updateArgs, id)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE sessions SET archived = ?, archived_at = ?, updated_at = ?
-			 WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
-			return err
-		}
+		for start := 0; start < len(ids); start += sessionArchiveBatch {
+			end := start + sessionArchiveBatch
+			if end > len(ids) {
+				end = len(ids)
+			}
+			batch := ids[start:end]
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
 
-		selectArgs := make([]any, 0, len(ids))
-		for _, id := range ids {
-			selectArgs = append(selectArgs, id)
-		}
-		rows, err = tx.QueryContext(ctx,
-			`SELECT `+sessionColumns+` FROM sessions
-			 WHERE id IN (`+placeholders+`)
-			 ORDER BY pinned DESC, sort_at DESC, created_at DESC`, selectArgs...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			session, err := scanSession(rows)
+			updateArgs := make([]any, 0, len(batch)+3)
+			updateArgs = append(updateArgs, boolInt(archived), archivedAt(archived, now), now)
+			for _, id := range batch {
+				updateArgs = append(updateArgs, id)
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE sessions SET archived = ?, archived_at = ?, updated_at = ?
+				 WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
+				return err
+			}
+
+			selectArgs := make([]any, 0, len(batch))
+			for _, id := range batch {
+				selectArgs = append(selectArgs, id)
+			}
+			rows, err := tx.QueryContext(ctx,
+				`SELECT `+sessionColumns+` FROM sessions
+				 WHERE id IN (`+placeholders+`)`, selectArgs...)
 			if err != nil {
 				return err
 			}
-			sessions = append(sessions, session)
+			for rows.Next() {
+				session, err := scanSession(rows)
+				if err != nil {
+					rows.Close()
+					return err
+				}
+				sessions = append(sessions, session)
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
 		}
-		return rows.Err()
+
+		// The chunks come back in arbitrary order; restore the list order.
+		sort.SliceStable(sessions, func(i, j int) bool {
+			if sessions[i].Pinned != sessions[j].Pinned {
+				return sessions[i].Pinned
+			}
+			if sessions[i].SortAt != sessions[j].SortAt {
+				return sessions[i].SortAt > sessions[j].SortAt
+			}
+			return sessions[i].CreatedAt > sessions[j].CreatedAt
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err

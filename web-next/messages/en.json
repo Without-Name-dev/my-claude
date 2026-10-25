@@ -576,6 +576,8 @@
       "setup": "Setup",
       "revoke": "Revoke",
       "renameFailed": "Failed to rename device.",
+      "deleteFailed": "Failed to delete device.",
+      "deviceNotFound": "This device no longer exists.",
       "setupFailed": "Failed to prepare device setup.",
       "agentRuntimes": "Agent runtimes",
       "configuredRuntimes": "Configured",

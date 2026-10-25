@@ -201,7 +201,8 @@ nonisolated struct V2ToolContent: Hashable {
     let raw: JSONValue
 
     init(rawContent: JSONValue) {
-        name = rawContent["name"]?.stringValue ?? rawContent["toolName"]?.stringValue
+        // The server projects tool items as {"tool": ..., "input": ..., "output": ...}.
+        name = rawContent["tool"]?.stringValue ?? rawContent["name"]?.stringValue ?? rawContent["toolName"]?.stringValue
         input = rawContent["input"]
         output = rawContent["output"]
         raw = rawContent

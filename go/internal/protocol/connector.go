@@ -15,13 +15,8 @@ import "encoding/json"
 const ConnectorProtocolVersion = 1
 
 // Envelope wraps every connector frame.
-//
-// Seq is monotonic per direction and lets either end notice a gap it did not
-// see, which matters because a dropped turn.delta leaves the phone showing a
-// truncated answer.
 type Envelope struct {
 	Type string          `json:"t"`
-	Seq  uint64          `json:"seq"`
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
@@ -131,12 +126,16 @@ type ToolEnd struct {
 // client render the right card: a plain allow/deny, a question with options, or
 // a plan awaiting approval.
 type ApprovalRequest struct {
-	SessionID string          `json:"sessionId"`
-	TurnID    string          `json:"turnId,omitempty"`
-	ToolUseID string          `json:"toolUseId"`
-	Tool      string          `json:"tool"`
-	Kind      string          `json:"kind"` // "permission" | "question" | "plan"
-	Input     json.RawMessage `json:"input,omitempty"`
+	SessionID string `json:"sessionId"`
+	// ExternalSessionID is the runtime's own session id when the plugin reports
+	// it; the server can use it to address a question that arrives before the
+	// connector has mapped the turn.
+	ExternalSessionID string          `json:"externalSessionId,omitempty"`
+	TurnID            string          `json:"turnId,omitempty"`
+	ToolUseID         string          `json:"toolUseId"`
+	Tool              string          `json:"tool"`
+	Kind              string          `json:"kind"` // "permission" | "question" | "plan"
+	Input             json.RawMessage `json:"input,omitempty"`
 }
 
 // ApprovalCancel retracts a question that no longer needs an answer.
@@ -159,9 +158,14 @@ type Submit struct {
 }
 
 // Abort asks the connector to stop the running turn.
+//
+// ExternalSessionID is optional: a server that knows the runtime's own session
+// id sends it so the connector can address the abort without relying on which
+// message it happens to be following.
 type Abort struct {
-	RequestID string `json:"requestId"`
-	SessionID string `json:"sessionId"`
+	RequestID         string `json:"requestId"`
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
 }
 
 // ApprovalAnswer carries the person's decision back to the blocked hook.

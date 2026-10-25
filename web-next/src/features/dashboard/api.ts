@@ -1,4 +1,4 @@
-import { ApiClient, apiClient, apiPath } from "@/lib/api";
+import { ApiClient, ApiError, apiClient, apiErrorKind, apiPath, extractErrorPayload } from "@/lib/api";
 import { shouldAuthorizeDownloadUrl } from "@/lib/api/download-auth";
 import type {
   ArchiveAllResponse,
@@ -53,9 +53,7 @@ import type {
   TakeoverResponse,
   TerminalCreateRequest,
   TerminalListResult,
-  TerminalListResponse,
   TerminalResponse,
-  TerminalSnapshotResult,
   UsageLiveResponse,
   UsageReportResponse,
   WsTicketResponse,
@@ -71,6 +69,23 @@ export type SessionStateQuery = {
 export type SessionSnapshotRequestOptions = {
   reason?: string;
 };
+
+// The server rejects bulk session mutations with more than 200 ids.
+const SESSION_BULK_LIMIT = 200;
+
+async function bulkSessionRequest(
+  ids: string[],
+  send: (chunk: string[]) => Promise<BulkArchiveResponse>,
+): Promise<BulkArchiveResponse> {
+  const merged: BulkArchiveResponse = { sessions: [], notFound: [], serverTime: "" }
+  for (let index = 0; index < ids.length; index += SESSION_BULK_LIMIT) {
+    const response = await send(ids.slice(index, index + SESSION_BULK_LIMIT))
+    merged.sessions.push(...response.sessions)
+    merged.notFound.push(...response.notFound)
+    merged.serverTime = response.serverTime
+  }
+  return merged
+}
 
 export class DashboardApi {
   constructor(private readonly client: ApiClient = apiClient) {}
@@ -252,7 +267,8 @@ export class DashboardApi {
   }
 
   bulkMarkSessionsRead(token: string, ids: string[]): Promise<BulkArchiveResponse> {
-    return this.client.post<BulkArchiveResponse>("/sessions/read", ids, { token });
+    return bulkSessionRequest(ids, (chunk) =>
+      this.client.post<BulkArchiveResponse>("/sessions/read", chunk, { token }));
   }
 
   bulkArchiveSessions(
@@ -261,11 +277,8 @@ export class DashboardApi {
     archived: boolean,
   ): Promise<BulkArchiveResponse> {
     const path = archived ? "/sessions/archive" : "/sessions/unarchive";
-    return this.client.post<BulkArchiveResponse>(
-      path,
-      ids,
-      { token },
-    );
+    return bulkSessionRequest(ids, (chunk) =>
+      this.client.post<BulkArchiveResponse>(path, chunk, { token }));
   }
 
   markSessionRead(token: string, sessionId: string): Promise<SessionResponse> {
@@ -319,16 +332,8 @@ export class DashboardApi {
     token: string,
     sessionId: string,
     limit = 100,
-    options: SessionSnapshotRequestOptions = {},
+    _options: SessionSnapshotRequestOptions = {},
   ): Promise<SessionSnapshotResponse> {
-    const reason = options.reason ?? "unspecified";
-    console.info("[AgentsAnywhere] session snapshot request", {
-      sessionId,
-      limit,
-      reason,
-      requestedAt: new Date().toISOString(),
-      stack: new Error().stack,
-    });
     return this.client.get<SessionSnapshotResponse>(
       `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
       { token, query: { limit } },
@@ -514,31 +519,36 @@ export class DashboardApi {
   async downloadBlob(token: string | null, url: string): Promise<Blob> {
     const headers: HeadersInit = {};
     if (token && shouldAuthorizeDownloadUrl(url)) headers.authorization = `Bearer ${token}`;
-    const response = await fetch(url, {
-      headers,
-    });
-    if (!response.ok) throw new Error(await response.text());
+    let response: Response;
+    try {
+      response = await fetch(url, { headers });
+    } catch (error) {
+      throw new ApiError({
+        status: 0,
+        kind: "network",
+        detail: error instanceof Error ? error.message : "network error",
+        url,
+      });
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      let payload: unknown = text;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        // Not JSON; keep the raw body.
+      }
+      const normalized = extractErrorPayload(payload);
+      throw new ApiError({
+        status: response.status,
+        kind: apiErrorKind(response.status),
+        detail: normalized.detail || text || `HTTP ${response.status}`,
+        code: normalized.code,
+        payload,
+        url,
+      });
+    }
     return response.blob();
-  }
-
-  connectorTerminalList(token: string, connectorId: string): Promise<TerminalListResponse> {
-    return this.client.get<TerminalListResponse>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals`,
-      { token },
-    );
-  }
-
-  connectorTerminalCreate(
-    token: string,
-    connectorId: string,
-    root: string,
-    body: TerminalCreateRequest,
-  ): Promise<TerminalResponse> {
-    return this.client.post<TerminalResponse>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals`,
-      body,
-      { token, query: { root } },
-    );
   }
 
   connectorTerminalListV2(token: string, connectorId: string): Promise<RpcResponse<TerminalListResult>> {
@@ -558,30 +568,6 @@ export class DashboardApi {
       `/connectors/${encodeURIComponent(connectorId)}/terminals-v2`,
       body,
       { token, query: { root } },
-    );
-  }
-
-  connectorTerminalRename(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    label: string,
-  ): Promise<TerminalResponse> {
-    return this.client.patch<TerminalResponse>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals/${encodeURIComponent(terminalId)}`,
-      { label },
-      { token },
-    );
-  }
-
-  connectorTerminalClose(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-  ): Promise<TerminalResponse> {
-    return this.client.delete<TerminalResponse>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals/${encodeURIComponent(terminalId)}`,
-      { token },
     );
   }
 
@@ -607,72 +593,6 @@ export class DashboardApi {
       `/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}`,
       { label },
       { token },
-    );
-  }
-
-  connectorTerminalSetPersistenceV2(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    persistent: boolean,
-  ): Promise<RpcResponse<TerminalResponse["terminal"]>> {
-    return this.client.patch<RpcResponse<TerminalResponse["terminal"]>>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}/persistence`,
-      { persistent },
-      { token },
-    );
-  }
-
-  connectorTerminalResize(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    cols: number,
-    rows: number,
-  ): Promise<TerminalResponse> {
-    return this.client.post<TerminalResponse>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals/${encodeURIComponent(terminalId)}/resize`,
-      { cols, rows },
-      { token },
-    );
-  }
-
-  connectorTerminalResizeV2(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    cols: number,
-    rows: number,
-  ): Promise<RpcResponse<unknown>> {
-    return this.client.post<RpcResponse<unknown>>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}/resize`,
-      { cols, rows },
-      { token },
-    );
-  }
-
-  connectorTerminalWriteV2(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    dataBase64: string,
-  ): Promise<RpcResponse<unknown>> {
-    return this.client.post<RpcResponse<unknown>>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}/write`,
-      { dataBase64 },
-      { token },
-    );
-  }
-
-  connectorTerminalSnapshotV2(
-    token: string,
-    connectorId: string,
-    terminalId: string,
-    fromSeq = 0,
-  ): Promise<RpcResponse<TerminalSnapshotResult>> {
-    return this.client.get<RpcResponse<TerminalSnapshotResult>>(
-      `/connectors/${encodeURIComponent(connectorId)}/terminals-v2/${encodeURIComponent(terminalId)}/snapshot`,
-      { token, query: { fromSeq } },
     );
   }
 

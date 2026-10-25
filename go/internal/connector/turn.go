@@ -3,7 +3,6 @@ package connector
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/bridge"
@@ -40,12 +39,15 @@ type TurnWatcher struct {
 	sink              TurnSink
 	sessionID         string
 	externalSessionID string
-	previousID        string
-	queuedAt          int64
+	// messageID is the submit's request id; the queue entry carries it as its
+	// id, so it is how an undelivered prompt is withdrawn again.
+	messageID  string
+	previousID string
+	queuedAt   int64
 
-	mu        sync.Mutex
 	turnID    string
 	sent      string
+	full      string
 	rev       int
 	seenTool  map[string]bool
 	endedTool map[string]bool
@@ -53,12 +55,13 @@ type TurnWatcher struct {
 }
 
 // NewTurnWatcher prepares a watcher for a message that was just queued.
-func NewTurnWatcher(b *bridge.Bridge, sink TurnSink, sessionID, externalSessionID string, sub *bridge.Submission) *TurnWatcher {
+func NewTurnWatcher(b *bridge.Bridge, sink TurnSink, sessionID, externalSessionID, messageID string, sub *bridge.Submission) *TurnWatcher {
 	w := &TurnWatcher{
 		bridge:            b,
 		sink:              sink,
 		sessionID:         sessionID,
 		externalSessionID: externalSessionID,
+		messageID:         messageID,
 		seenTool:          map[string]bool{},
 		endedTool:         map[string]bool{},
 	}
@@ -83,6 +86,8 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 	// every later submit behind this watcher.
 	var unavailableSince time.Time
 	var stalledTS int64
+	var behindTurn string
+	var behindTS int64
 	stalled := func(box *bridge.Outbox) bool {
 		if w.turnID == "" {
 			return false
@@ -122,8 +127,10 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 				return ""
 			}
 			if time.Now().After(deadline) && w.turnID == "" {
+				w.cancelQueued()
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
+					TurnID:    w.messageID,
 					Status:    "error",
 					Error:     "the desktop did not pick up the message",
 				})
@@ -132,10 +139,15 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			continue
 		}
 		// While another turn is streaming, the queue is simply waiting its
-		// turn; that is activity, not a stalled pickup.
-		if box.Running() && box.TurnID != w.turnID && time.Since(lastActivity) > 0 {
-			lastActivity = time.Now()
-			deadline = lastActivity.Add(pickupTimeout)
+		// turn; that is activity, not a stalled pickup. Only a snapshot that
+		// changed counts, though: a turn that has stopped producing output
+		// must not hold this message behind it forever.
+		if box.Running() && box.TurnID != w.turnID {
+			if box.TurnID != behindTurn || box.TS != behindTS {
+				behindTurn, behindTS = box.TurnID, box.TS
+				lastActivity = time.Now()
+				deadline = lastActivity.Add(pickupTimeout)
+			}
 		}
 
 		// The outbox still shows the turn that was running when this message
@@ -146,8 +158,10 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			(w.turnID == "" && box.TS > 0 && box.TS < w.queuedAt)
 		if stale {
 			if time.Now().After(deadline) && w.turnID == "" {
+				w.cancelQueued()
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
+					TurnID:    w.messageID,
 					Status:    "error",
 					Error:     "the session did not start a turn",
 				})
@@ -159,6 +173,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		if w.turnID != box.TurnID {
 			w.turnID = box.TurnID
 			w.sent = ""
+			w.full = ""
 			w.rev = 0
 			w.seenTool = map[string]bool{}
 			w.endedTool = map[string]bool{}
@@ -174,6 +189,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 
 		if delta := advance(w.sent, box.Text); delta != "" {
 			w.sent = box.Text
+			w.full += delta
 			w.rev++
 			w.sink.TurnDelta(protocol.TurnDelta{
 				SessionID: w.sessionID,
@@ -187,15 +203,19 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		// status that is neither streaming nor done, and ending on that would
 		// cut the answer short.
 		if box.Finished() {
+			// The plugin keeps only the tail of a long answer, so the final
+			// frame carries what was accumulated from the deltas instead of
+			// the truncated snapshot; otherwise the phone's stored answer is
+			// overwritten with a head-less fragment.
 			w.sink.TurnEnd(protocol.TurnEnd{
 				SessionID: w.sessionID,
 				TurnID:    box.TurnID,
 				Status:    "done",
-				Text:      box.Text,
+				Text:      w.full,
 				Chunks:    box.Chunks,
 				State:     box.State,
 			})
-			return box.Text
+			return w.full
 		}
 
 		if stalled(box) {
@@ -210,8 +230,23 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 	}
 }
 
+// cancelQueued withdraws a prompt the plugin never picked up. The phone has
+// already been told it failed, so leaving the file in the queue would let a
+// later plugin instance run it long after the fact.
+func (w *TurnWatcher) cancelQueued() {
+	if w.messageID == "" {
+		return
+	}
+	_ = w.bridge.CancelQueued(w.messageID)
+}
+
 // currentText is what the caller gets when a turn is interrupted mid-flight.
+// The accumulated text is preferred over the snapshot, which may have lost its
+// head to the plugin's tail-only buffer.
 func (w *TurnWatcher) currentText() string {
+	if w.full != "" {
+		return w.full
+	}
 	box, err := w.bridge.ReadOutbox()
 	if err != nil || box == nil || !box.BelongsTo(w.sessionID, w.externalSessionID) {
 		return w.sent

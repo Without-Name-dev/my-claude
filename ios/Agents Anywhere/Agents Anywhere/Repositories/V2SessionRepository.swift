@@ -132,8 +132,12 @@ final class V2SessionRepository {
             .sorted { $0.lastAccess < $1.lastAccess }
         for entry in dirty {
             guard let projection = entry.projection else { continue }
+            // Clearing before the write avoids losing a change made while the
+            // actor encodes; restore the flag if the write was refused or the
+            // disk failed so a later flush retries it.
             entry.isDirty = false
-            await localStore.saveSession(V2SessionArchive(data: projection.data, model: entry.model))
+            let saved = await localStore.saveSession(V2SessionArchive(data: projection.data, model: entry.model))
+            if !saved, isCurrent(entry) { entry.isDirty = true }
         }
     }
 
@@ -387,6 +391,17 @@ final class V2SessionRepository {
         try await reconcile(entry)
     }
 
+    /// Current subagent run set for a session whose socket just reconnected.
+    /// `runtime.activity` is live-only, so the presentation refetches instead
+    /// of trusting a running block from before the drop.
+    func sessionActivity(sessionId: V2SessionID) async throws -> [V2AgentRun] {
+        try requireNetwork()
+        guard let entry = entries[sessionId] else { throw CacheError.invalidated }
+        let runs = try await detail.activity(sessionId: sessionId)
+        try requireCurrent(entry)
+        return runs
+    }
+
     func applyMetadata(_ sessions: [V2SessionMeta]) {
         for session in sessions {
             guard let entry = entries[session.id] else { continue }
@@ -397,8 +412,10 @@ final class V2SessionRepository {
             let invalidates = session.connectorStatus != .online || previous?.effectiveRuntimeId != session.effectiveRuntimeId
             if invalidates { invalidateCatalogs(entry) }
             if changed || invalidates { emit(entry) }
-            if session.connectorStatus == .online,
-               previous?.connectorStatus != .online || previous?.effectiveRuntimeId != session.effectiveRuntimeId {
+            // A projection still loading has no previous binding to compare, so
+            // it must not stop and restart its own socket on every tick.
+            if let previous, session.connectorStatus == .online,
+               previous.connectorStatus != .online || previous.effectiveRuntimeId != session.effectiveRuntimeId {
                 // A dashboard projection can arrive before the session socket frame.
                 // Restart observed sessions so their runtime facts match the new binding.
                 stop(entry)

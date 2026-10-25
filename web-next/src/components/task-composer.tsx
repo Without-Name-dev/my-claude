@@ -818,6 +818,10 @@ export function TaskComposer() {
       const message = err instanceof Error ? err.message : t("createFailed")
       markOptimisticMessageFailed(clientMessageId, message)
       toast.error(message)
+      // The optimistic session has no server row and can never finish loading.
+      // Leave it rather than stranding the user in it, and return to the
+      // composer so the request can be retried.
+      goHome()
     } finally {
       creatingRef.current = false
       setCreating(false)

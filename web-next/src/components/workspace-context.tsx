@@ -40,7 +40,6 @@ import type {
 } from "@/features/dashboard/types"
 import {
   isOptimisticTimelineItem,
-  markOptimisticItemFailed,
   mergeTimelineItems,
   timelineClientMessageId,
   withServerAttachments,
@@ -572,6 +571,18 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   optimisticMessagesRef.current = optimisticMessages
   sessionAliasesRef.current = sessionAliases
 
+  // Optimistic sends belong to the account that started them. Clear them when
+  // the token changes (sign-out, account switch) so they cannot leak into the
+  // next account's session list.
+  const optimisticTokenRef = React.useRef(authSession?.accessToken ?? null)
+  React.useEffect(() => {
+    const token = authSession?.accessToken ?? null
+    if (optimisticTokenRef.current === token) return
+    optimisticTokenRef.current = token
+    setOptimisticMessages([])
+    setSessionAliases({})
+  }, [authSession?.accessToken])
+
   // ── Shared workspace inventory ────────────────────────────
   const initialLoadDoneRef = React.useRef(false)
   const lastDashboardSnapshotKeyRef = React.useRef<string | null>(null)
@@ -903,6 +914,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setSessions((prev) => {
           const index = prev.findIndex((item) => item.id === mapped.id)
           if (index === -1) return sortSessions([mapped, ...prev])
+          // A dashboard snapshot may already carry a newer revision than the
+          // read response; never roll that back.
+          if (prev[index]!.updatedSeq > mapped.updatedSeq) return prev
           const next = [...prev]
           next[index] = mapped
           return sortSessions(next)
@@ -1151,17 +1165,21 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // ── Session mutation helpers ──────────────────────────────
 
   const togglePinSession = React.useCallback(async (id: string) => {
-    const targetSession = sessions.find((s) => s.id === id)
+    const targetSession = sessionsRef.current.find((s) => s.id === id)
     if (!targetSession) return
 
-    if (authSession?.accessToken) {
-      const response = await dashboardApi.patchSession(authSession.accessToken, id, { pinned: !targetSession.pinned })
-      upsertSession(response.session)
-    } else {
-      const response = await patchMockSession("mock-token", id, { pinned: !targetSession.pinned })
-      setSessions((prev) => sortSessions(prev.map((s) => (s.id === id ? response.session : s))))
+    try {
+      if (authSession?.accessToken) {
+        const response = await dashboardApi.patchSession(authSession.accessToken, id, { pinned: !targetSession.pinned })
+        upsertSession(response.session)
+      } else {
+        const response = await patchMockSession("mock-token", id, { pinned: !targetSession.pinned })
+        setSessions((prev) => sortSessions(prev.map((s) => (s.id === id ? response.session : s))))
+      }
+    } catch {
+      // Leave the row untouched; the next snapshot reconciles the pin state.
     }
-  }, [authSession?.accessToken, sessions, sortSessions, upsertSession])
+  }, [authSession?.accessToken, sortSessions, upsertSession])
 
   const toggleArchiveSession = React.useCallback(async (
     id: string,
@@ -1287,23 +1305,20 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     }
   }, [replaceRoute, sortSessions, transferOptimisticTop])
 
-  const markOptimisticMessageFailed = React.useCallback((clientMessageId: string, message: string) => {
+  const markOptimisticMessageFailed = React.useCallback((clientMessageId: string, _message: string) => {
     const failed = optimisticMessagesRef.current.find(
       (entry) => entry.clientMessageId === clientMessageId,
     )
-    if (failed) {
-      clearOptimisticTop(failed.sessionId)
-      setSessions((current) => sortSessions(current))
-    }
+    if (!failed) return
+    clearOptimisticTop(failed.sessionId)
+    // Drop the failed send instead of keeping it as a permanently pending
+    // optimistic item that every later timeline refresh would re-insert.
     setOptimisticMessages((prev) => {
-      const next = prev.map((entry) =>
-        entry.clientMessageId === clientMessageId
-          ? { ...entry, item: markOptimisticItemFailed(entry.item, message) }
-          : entry,
-      )
+      const next = prev.filter((entry) => entry.clientMessageId !== clientMessageId)
       optimisticMessagesRef.current = next
       return next
     })
+    setSessions((current) => sortSessions(current))
   }, [clearOptimisticTop, sortSessions])
 
   const clearResolvedOptimisticMessages = React.useCallback((sessionId: string, items: TimelineItem[]) => {

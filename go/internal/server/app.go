@@ -216,9 +216,12 @@ func (a *App) withCommon(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// Uploads have their own multipart limits; everything else is JSON and
-		// must not be able to make the server read megabytes.
-		if r.Body != nil && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		// Uploads have their own limits; everything else is JSON and must not be
+		// able to make the server read megabytes. The connector's transfer
+		// upload carries raw file bytes and enforces the 256MiB ceiling itself,
+		// so the 2MiB JSON cap would truncate it.
+		if r.Body != nil && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") &&
+			!isRawUpload(r) {
 			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 		}
 		start := time.Now()
@@ -246,6 +249,15 @@ func (a *App) originAllowed(origin string) bool {
 		}
 	}
 	return false
+}
+
+// rawTransferUploadPath is the route registered by registerFileRoutes.
+const rawTransferUploadPath = "/api/v2/connector/fs/transfers/"
+
+// isRawUpload reports whether the request is the connector's push upload,
+// which carries file bytes rather than JSON. Its handler applies fsMaxPushBytes.
+func isRawUpload(r *http.Request) bool {
+	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, rawTransferUploadPath)
 }
 
 // statusRecorder remembers the status for the access log.

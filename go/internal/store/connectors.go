@@ -77,9 +77,14 @@ func (s *Store) ConnectorByID(ctx context.Context, id string) (Connector, error)
 }
 
 // ConnectorByTokenHash resolves a presented bearer to its connector.
+//
+// A disabled account keeps its rows but must not be able to run anything on
+// the instance, so the owner's state is part of the authentication check.
 func (s *Store) ConnectorByTokenHash(ctx context.Context, hash string) (Connector, error) {
-	row := s.Read().QueryRowContext(ctx,
-		`SELECT `+connectorColumns+` FROM connectors WHERE token_hash = ? AND revoked = 0`, hash)
+	row := s.Read().QueryRowContext(ctx, `
+		SELECT `+connectorColumns+` FROM connectors
+		WHERE token_hash = ? AND revoked = 0
+		  AND user_id IN (SELECT id FROM users WHERE disabled = 0)`, hash)
 	return scanConnector(row)
 }
 
@@ -108,7 +113,9 @@ func (s *Store) ListConnectors(ctx context.Context, userID string) ([]Connector,
 //
 // A closed socket only marks the connector offline when it is still the same
 // connection: a reconnect that lands before the old socket's cleanup must not
-// be overwritten by the dying one.
+// be overwritten by the dying one. Losing that connection also ends its turns
+// in the database, because nothing can still be running on the machine the
+// server just stopped hearing from.
 func (s *Store) SetConnectorPresence(ctx context.Context, id, connectionID string, online bool) error {
 	now := time.Now().UnixMilli()
 	return s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -119,10 +126,20 @@ func (s *Store) SetConnectorPresence(ctx context.Context, id, connectionID strin
 				WHERE id = ?`, connectionID, now, now, id)
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 			UPDATE connectors
 			SET status = 'offline', presence_connection_id = NULL, last_seen_at = ?, updated_at = ?
 			WHERE id = ? AND presence_connection_id = ?`, now, now, id, connectionID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			// A newer socket already owns the connector; its turns are live.
+			return nil
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE sessions SET status = 'idle', updated_at = ?
+			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error')`, now, id)
 		return err
 	})
 }
@@ -134,22 +151,5 @@ func (s *Store) TouchConnector(ctx context.Context, id string) error {
 		_, err := tx.ExecContext(ctx,
 			`UPDATE connectors SET last_seen_at = ? WHERE id = ?`, now, id)
 		return err
-	})
-}
-
-// RevokeConnector stops a connector from connecting again.
-func (s *Store) RevokeConnector(ctx context.Context, id, userID string) error {
-	return s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE connectors SET revoked = 1, status = 'offline', updated_at = ?
-			 WHERE id = ? AND user_id = ?`, time.Now().UnixMilli(), id, userID)
-		if err != nil {
-			return err
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			return ErrNotFound
-		}
-		return nil
 	})
 }

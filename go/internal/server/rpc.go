@@ -184,12 +184,39 @@ func (a *App) handleFSList(w http.ResponseWriter, r *http.Request, user store.Us
 		httpx.Fail(w, err)
 		return
 	}
-	if root := r.URL.Query().Get("root"); root != "" {
-		body.Root = root
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		root = body.Root
+	}
+	// Every other fs/* route validates containment before calling the
+	// connector. fs/list must too: without it a caller can send a root and a
+	// path that escapes it. An empty root means "no boundary stated": the
+	// directory picker starts there before the person chooses a workspace, and
+	// the connector resolves it to its default. Relative climbs are still
+	// refused in that case.
+	if strings.TrimSpace(root) == "" {
+		cleaned := fsNormalize(body.Path)
+		if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+				"path escapes the connector root"))
+			return
+		}
+	} else {
+		listPath := body.Path
+		if strings.TrimSpace(listPath) == "" {
+			// The connector treats an empty path as the root itself.
+			listPath = "."
+		}
+		target, err := resolveFSTarget(root, listPath)
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		root = target.Root
 	}
 
 	result, err := a.callConnector(r.Context(), connector.ID, "fs.list", map[string]any{
-		"root": body.Root,
+		"root": root,
 		"path": body.Path,
 	}, 15*time.Second)
 	if err != nil {

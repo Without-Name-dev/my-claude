@@ -14,6 +14,22 @@ import (
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
+// Pairing codes are globally unique and the start endpoint is anonymous, so
+// the TTL is bounded and each source gets a small budget: an unbounded TTL or
+// unlimited starts would let one caller occupy the code space.
+const (
+	pairingDefaultTTL = 600
+	pairingMinTTL     = 60
+	pairingMaxTTL     = 1800
+
+	pairingStartWindow = 10 * time.Minute
+	pairingStartLimit  = 30
+	// How long an expired code keeps answering "expired" before its row is
+	// removed and the code becomes allocatable again.
+	pairingExpiredGrace = time.Hour
+	pairingStaleGrace   = 24 * time.Hour
+)
+
 // handlePairingStart issues a short code a connector prints for the person to
 // enter in the app.
 func (a *App) handlePairingStart(w http.ResponseWriter, r *http.Request) {
@@ -25,9 +41,21 @@ func (a *App) handlePairingStart(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+	startKey := "pairing:ip:" + clientIP(r)
+	if retry := loginAttempts.blocked(startKey, pairingStartLimit); retry > 0 {
+		respondTooManyAttempts(w, retry)
+		return
+	}
+
 	ttl := body.TTLSeconds
 	if ttl <= 0 {
-		ttl = 600
+		ttl = pairingDefaultTTL
+	}
+	if ttl < pairingMinTTL {
+		ttl = pairingMinTTL
+	}
+	if ttl > pairingMaxTTL {
+		ttl = pairingMaxTTL
 	}
 	expires := time.Now().Add(time.Duration(ttl) * time.Second).UnixMilli()
 
@@ -36,23 +64,41 @@ func (a *App) handlePairingStart(w http.ResponseWriter, r *http.Request) {
 		serverURL = *body.ServerURL
 	}
 
-	pairingID := store.NewID("pair")
-	code, err := a.uniquePairingCode(r.Context())
-	if err != nil {
-		httpx.Fail(w, err)
+	a.reapPairingCodes(r.Context())
+
+	// The code column is unique across every status, so a pre-flight lookup of
+	// pending rows is not enough: a previously claimed or expired row can hold
+	// the same digits. Insert and retry on the constraint instead.
+	var pairingID, code string
+	for attempt := 0; attempt < 20; attempt++ {
+		generated, err := randomPairingCode()
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		candidateID := store.NewID("pair")
+		err = a.db.Write(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO pairing_codes (id, code, status, server_url, expires_at, created_at)
+				VALUES (?, ?, 'pending', ?, ?, ?)`,
+				candidateID, generated, serverURL, expires, time.Now().UnixMilli())
+			return err
+		})
+		if err == nil {
+			pairingID, code = candidateID, generated
+			break
+		}
+		if !isUniqueViolation(err) {
+			httpx.Fail(w, err)
+			return
+		}
+	}
+	if code == "" {
+		httpx.Fail(w, errors.New("could not allocate a pairing code"))
 		return
 	}
-	err = a.db.Write(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO pairing_codes (id, code, status, server_url, expires_at, created_at)
-			VALUES (?, ?, 'pending', ?, ?, ?)`,
-			pairingID, code, serverURL, expires, time.Now().UnixMilli())
-		return err
-	})
-	if err != nil {
-		httpx.Fail(w, err)
-		return
-	}
+	loginAttempts.record(startKey, pairingStartWindow)
+
 	httpx.OK(w, map[string]any{
 		"pairingId":  pairingID,
 		"code":       code,
@@ -106,40 +152,59 @@ func (a *App) handlePairingClaim(w http.ResponseWriter, r *http.Request, user st
 		return
 	}
 
-	token := NewToken("con")
-	connector, err := a.db.CreateConnector(r.Context(), store.Connector{
+	token, err := newToken("con")
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	connector := store.Connector{
+		ID:          store.NewID("con"),
 		UserID:      user.ID,
 		Name:        name,
 		Kind:        "cli",
+		Status:      "offline",
 		TokenHash:   HashToken(token),
 		TokenPrefix: tokenPrefix(token),
-	})
-	if err != nil {
-		httpx.Fail(w, err)
-		return
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
-	// Claiming is a compare-and-swap: two people entering the same code must
-	// not both get a connector, so the update only lands while it is pending.
-	var affected int64
+	// The connector insert and the compare-and-swap share one transaction.
+	// The insert has to come first because pairing_codes.connector_id is a
+	// foreign key, but a lost race still leaves nothing behind: returning
+	// errPairingRace rolls the insert back with the rest of the transaction.
 	err = a.db.Write(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO connectors (id, user_id, name, connector_kind, device_os, status,
+			                        token_hash, token_prefix, revoked, created_at, updated_at)
+			VALUES (?, ?, ?, ?, NULL, 'offline', ?, ?, 0, ?, ?)`,
+			connector.ID, connector.UserID, connector.Name, connector.Kind,
+			connector.TokenHash, connector.TokenPrefix, now, now); err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE pairing_codes
 			SET status = 'claimed', connector_id = ?, connector_token = ?, claimed_at = ?
-			WHERE id = ? AND status = 'pending'`,
-			connector.ID, token, now, pairingID)
+			WHERE id = ? AND status = 'pending' AND expires_at >= ?`,
+			connector.ID, token, now, pairingID, now)
 		if err != nil {
 			return err
 		}
-		affected, _ = res.RowsAffected()
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return errPairingRace
+		}
 		return nil
 	})
-	if err != nil {
-		httpx.Fail(w, err)
+	if errors.Is(err, errPairingRace) {
+		if expires < time.Now().UnixMilli() {
+			httpx.Fail(w, httpx.Conflict("code has expired"))
+			return
+		}
+		httpx.Fail(w, httpx.Conflict("code was already claimed"))
 		return
 	}
-	if affected == 0 {
-		httpx.Fail(w, httpx.Conflict("code was already claimed"))
+	if err != nil {
+		httpx.Fail(w, err)
 		return
 	}
 
@@ -149,6 +214,10 @@ func (a *App) handlePairingClaim(w http.ResponseWriter, r *http.Request, user st
 		"serverTime": timestampNow(),
 	})
 }
+
+// errPairingRace means the compare-and-swap lost: the code was expired or
+// claimed between the lookup and the update.
+var errPairingRace = errors.New("pairing code is no longer available")
 
 // handlePairingPoll is how the waiting connector learns it was claimed. The
 // configuration is handed out once; afterwards the code reports "consumed" so a
@@ -221,25 +290,38 @@ func (a *App) handlePairingPoll(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, response)
 }
 
-// uniquePairingCode finds a six-digit code no pending pairing holds.
-func (a *App) uniquePairingCode(ctx context.Context) (string, error) {
-	for attempt := 0; attempt < 20; attempt++ {
-		n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
-		if err != nil {
-			return "", err
-		}
-		code := leftPad6(n.Int64())
-		var existing string
-		err = a.db.Read().QueryRowContext(ctx,
-			`SELECT id FROM pairing_codes WHERE code = ? AND status = 'pending'`, code).Scan(&existing)
-		if errors.Is(err, sql.ErrNoRows) {
-			return code, nil
-		}
-		if err != nil {
-			return "", err
-		}
+// randomPairingCode draws a six-digit code. Uniqueness is settled by the
+// database constraint at insert time, not by a lookup that another request can
+// invalidate before the row is written.
+func randomPairingCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("could not allocate a pairing code")
+	return leftPad6(n.Int64()), nil
+}
+
+// reapPairingCodes frees codes that can no longer be claimed. Expired codes
+// stay readable for a grace period so a waiting connector still sees "expired"
+// rather than "not found", then their rows (and therefore their code values)
+// are released.
+func (a *App) reapPairingCodes(ctx context.Context) {
+	now := time.Now().UnixMilli()
+	expiredBefore := now - int64(pairingExpiredGrace/time.Millisecond)
+	staleBefore := now - int64(pairingStaleGrace/time.Millisecond)
+	err := a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			DELETE FROM pairing_codes
+			WHERE (status IN ('pending', 'expired') AND expires_at < ?)
+			   OR (status = 'claimed' AND claimed_at < ?)
+			   OR (status = 'consumed' AND consumed_at < ?)`,
+			expiredBefore, staleBefore, staleBefore)
+		return err
+	})
+	if err != nil {
+		// Reaping is housekeeping; a failure must not stop a valid start.
+		a.log.Error("could not reap pairing codes", "error", err)
+	}
 }
 
 func leftPad6(value int64) string {

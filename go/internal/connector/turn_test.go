@@ -1,8 +1,10 @@
 package connector
 
 import (
+	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/bridge"
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
@@ -50,6 +52,65 @@ func TestAdvanceRebuildsTextAfterTruncation(t *testing.T) {
 	}
 }
 
+// turnSink records the frames a watcher emits, so a test can wait for them.
+type turnSink struct {
+	deltas chan protocol.TurnDelta
+	ends   chan protocol.TurnEnd
+}
+
+func newTurnSink() *turnSink {
+	return &turnSink{
+		deltas: make(chan protocol.TurnDelta, 16),
+		ends:   make(chan protocol.TurnEnd, 4),
+	}
+}
+
+func (s *turnSink) TurnBegin(protocol.TurnBegin)         {}
+func (s *turnSink) AgentActivity(protocol.AgentActivity) {}
+func (s *turnSink) ToolBegin(protocol.ToolBegin)         {}
+func (s *turnSink) ToolEnd(protocol.ToolEnd)             {}
+func (s *turnSink) TurnDelta(msg protocol.TurnDelta)     { s.deltas <- msg }
+func (s *turnSink) TurnEnd(msg protocol.TurnEnd)         { s.ends <- msg }
+
+// A turn longer than the plugin's tail buffer must still end with the whole
+// answer, not with the fragment the final snapshot happened to hold.
+func TestRunEndsWithTheFullTextAfterTheHeadIsDropped(t *testing.T) {
+	b := bridge.New(t.TempDir())
+	writeOutbox := func(body string) {
+		if err := os.WriteFile(b.OutboxPath(), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeOutbox(`{"sessionId":"runtime-sess","turnId":"turn-1","status":"streaming","text":"abcdef","ts":1000}`)
+
+	sink := newTurnSink()
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1", &bridge.Submission{QueuedAt: 500})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-sink.deltas:
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher never reported the first text")
+	}
+
+	writeOutbox(`{"sessionId":"runtime-sess","turnId":"turn-1","status":"done","text":"defghij","ts":2000}`)
+	select {
+	case msg := <-sink.ends:
+		if msg.Status != "done" || msg.Text != "abcdefghij" {
+			t.Fatalf("turn.end = %+v, want the full answer", msg)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher never closed the turn")
+	}
+	<-done
+}
+
 // toolSink records tool events for the watcher tests.
 type toolSink struct {
 	begins []string
@@ -75,7 +136,7 @@ func TestEmitToolsClosesAToolFirstSeenWhileRunning(t *testing.T) {
 		}
 	}
 	sink := &toolSink{}
-	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", nil)
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1", nil)
 
 	writeTools(`{"sessionId":"runtime-sess","entries":[
 		{"id":"tool-1","tool":"Read","input":{"file_path":"x"},"done":false}

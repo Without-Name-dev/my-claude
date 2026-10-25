@@ -6,9 +6,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/auth"
@@ -18,6 +21,43 @@ import (
 
 // avatarPattern is the only avatar shape the web client sends.
 var avatarPattern = regexp.MustCompile(`^data:image/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$`)
+
+// Field caps shared by every endpoint that writes an account. They mirror the
+// request models the reference server validates against.
+const (
+	maxEmailLength       = 320
+	maxDisplayNameLength = 64
+	maxCodeLength        = 6
+)
+
+// validateEmailAddress normalises an address and enforces its cap.
+func validateEmailAddress(raw string) (string, error) {
+	email := store.NormaliseEmail(raw)
+	if email == "" || len(email) > maxEmailLength {
+		return "", httpx.NewError(http.StatusUnprocessableEntity,
+			"email must be 1..320 characters")
+	}
+	return email, nil
+}
+
+// validateDisplayName trims a name and enforces its cap.
+func validateDisplayName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if len(name) < 1 || len(name) > maxDisplayNameLength {
+		return "", httpx.NewError(http.StatusUnprocessableEntity,
+			"displayName must be 1..64 characters")
+	}
+	return name, nil
+}
+
+// validateRole accepts only the two roles the database stores.
+func validateRole(raw string) (string, error) {
+	if raw != "admin" && raw != "member" {
+		return "", httpx.NewError(http.StatusUnprocessableEntity,
+			`role must be "admin" or "member"`)
+	}
+	return raw, nil
+}
 
 // authConfigResponse is what the client reads before showing a login form.
 type authConfigResponse struct {
@@ -162,9 +202,14 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
-	email := store.NormaliseEmail(body.Email)
-	if email == "" {
-		httpx.Fail(w, httpx.BadRequest("email is required"))
+	email, err := validateEmailAddress(body.Email)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	if body.Code != nil && len(*body.Code) > maxCodeLength {
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
+			"code must be at most 6 characters"))
 		return
 	}
 
@@ -180,7 +225,12 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	role := "member"
 	if count == 0 {
 		role = "admin"
-		if !a.checkSetupToken(r.Context(), body.SetupToken) {
+		ok, err := a.checkSetupToken(r.Context(), body.SetupToken)
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		if !ok {
 			httpx.Fail(w, httpx.Unauthorized("setup token is invalid or expired"))
 			return
 		}
@@ -193,7 +243,12 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	displayName := email
 	if body.DisplayName != nil && strings.TrimSpace(*body.DisplayName) != "" {
-		displayName = strings.TrimSpace(*body.DisplayName)
+		name, err := validateDisplayName(*body.DisplayName)
+		if err != nil {
+			httpx.Fail(w, err)
+			return
+		}
+		displayName = name
 	}
 
 	user, err := a.db.CreateUser(r.Context(), store.User{
@@ -204,7 +259,9 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
-			httpx.Fail(w, httpx.Conflict("user already exists"))
+			// Same body as any other failure so the endpoint cannot be used to
+			// ask whether an address already has an account.
+			httpx.Fail(w, httpx.Conflict("registration could not be completed"))
 			return
 		}
 		httpx.Fail(w, err)
@@ -224,21 +281,52 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+
+	// Each failed attempt spends 120k PBKDF2 rounds, so the endpoint is a
+	// cheap way to pin a CPU. Reject known-bad sources before doing that work.
+	// The account key stops a distributed guess against one address; the IP key
+	// stops one source from spraying many addresses.
+	accountKey := "login:account:" + store.NormaliseEmail(body.Email)
+	ipKey := "login:ip:" + clientIP(r)
+	if retry := loginAttempts.blocked(accountKey, loginAccountLimit); retry > 0 {
+		respondTooManyAttempts(w, retry)
+		return
+	}
+	if retry := loginAttempts.blocked(ipKey, loginIPLimit); retry > 0 {
+		respondTooManyAttempts(w, retry)
+		return
+	}
+
 	user, err := a.db.UserByEmail(r.Context(), body.Email)
 	if err != nil {
 		// An unknown account must cost the same PBKDF2 work as a wrong
 		// password, or response time reveals which addresses exist.
 		dummyCredentialCheck(body)
+		loginAttempts.record(accountKey, loginAttemptWindow)
+		loginAttempts.record(ipKey, loginAttemptWindow)
 		httpx.Fail(w, httpx.Unauthorized("invalid credentials"))
 		return
 	}
 	if !a.verifyCredential(user, body) {
+		loginAttempts.record(accountKey, loginAttemptWindow)
+		loginAttempts.record(ipKey, loginAttemptWindow)
 		httpx.Fail(w, httpx.Unauthorized("invalid credentials"))
 		return
 	}
 	if user.Disabled {
 		httpx.Fail(w, httpx.Forbidden("account is disabled"))
 		return
+	}
+	loginAttempts.reset(accountKey)
+
+	// A hash from before the cost was stored verifies with the process default;
+	// now that the plaintext is in hand, rewrite it with the current cost.
+	if body.Password != nil && *body.Password != "" && auth.NeedsRehash(user.PasswordHash) {
+		if rehashed, hashErr := auth.HashPassword(*body.Password, auth.PasswordSalt(user.PasswordHash)); hashErr == nil {
+			if err := a.db.SetUserPassword(r.Context(), user.ID, rehashed); err == nil {
+				user.PasswordHash = rehashed
+			}
+		}
 	}
 	a.issueSession(w, user)
 }
@@ -254,7 +342,8 @@ func (a *App) sessionTTL() int {
 
 // issueSession mints the bearer and writes the login response.
 func (a *App) issueSession(w http.ResponseWriter, user store.User) {
-	token, err := auth.CreateUserAccessToken(user.ID, a.sessionTTL())
+	token, err := auth.CreateUserAccessTokenVersion(
+		user.ID, auth.CredentialVersion(user.PasswordHash), a.sessionTTL())
 	if err != nil {
 		httpx.Fail(w, err)
 		return
@@ -313,9 +402,9 @@ func (a *App) handleUpdateProfile(w http.ResponseWriter, r *http.Request, user s
 		httpx.Fail(w, err)
 		return
 	}
-	name := strings.TrimSpace(body.DisplayName)
-	if len(name) < 1 || len(name) > 64 {
-		httpx.Fail(w, httpx.BadRequest("displayName must be 1..64 characters"))
+	name, err := validateDisplayName(body.DisplayName)
+	if err != nil {
+		httpx.Fail(w, err)
 		return
 	}
 	if err := a.db.UpdateUserProfile(r.Context(), user.ID, name, user.Avatar, user.Email); err != nil {
@@ -362,14 +451,24 @@ func (a *App) handleDeleteAvatar(w http.ResponseWriter, r *http.Request, user st
 }
 
 // handleChangePassword replaces the credential and answers 204.
+//
+// The new hash changes the credential fingerprint the caller's token carries,
+// so every token minted before this call stops working: a stolen bearer cannot
+// outlive the password it was issued under.
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request, user store.User) {
 	var body struct {
+		OldPassword         *string `json:"oldPassword"`
+		OldPasswordVerifier *string `json:"oldPasswordVerifier"`
 		NewPassword         *string `json:"newPassword"`
 		NewPasswordVerifier *string `json:"newPasswordVerifier"`
 		NewPasswordSalt     *string `json:"newPasswordSalt"`
 	}
 	if err := httpx.Decode(r, &body); err != nil {
 		httpx.Fail(w, err)
+		return
+	}
+	if !verifyCurrentCredential(user, body.OldPassword, body.OldPasswordVerifier) {
+		httpx.Fail(w, httpx.Unauthorized("current password is incorrect"))
 		return
 	}
 	hash, err := credentialHashFromParts(body.NewPassword, body.NewPasswordVerifier, body.NewPasswordSalt)
@@ -382,6 +481,22 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	httpx.NoContent(w)
+}
+
+// verifyCurrentCredential checks the current secret when the client sends one.
+//
+// The bearer has already authenticated the caller, and neither shipped client
+// asks for the current password when changing it, so a request that omits both
+// fields is accepted rather than rejected. A request that does send one must
+// get it right.
+func verifyCurrentCredential(user store.User, password, verifier *string) bool {
+	if password != nil && *password != "" {
+		return auth.VerifyPassword(*password, user.PasswordHash)
+	}
+	if verifier != nil && *verifier != "" {
+		return auth.VerifyPasswordVerifier(*verifier, user.PasswordHash)
+	}
+	return true
 }
 
 // handleWSTicket mints a single-use websocket ticket.
@@ -437,7 +552,11 @@ func credentialHashFromParts(password, verifier, salt *string) (string, error) {
 			useSalt = *salt
 		}
 		if useSalt == "" {
-			useSalt = randomSalt()
+			generated, err := randomSalt()
+			if err != nil {
+				return "", err
+			}
+			useSalt = generated
 		}
 		return auth.PasswordVerifierHash(*verifier, useSalt)
 	}
@@ -477,28 +596,41 @@ func (a *App) verifyCredential(user store.User, body authRequest) bool {
 	return false
 }
 
-// checkSetupToken validates the bootstrap token, minting one on first use.
-func (a *App) checkSetupToken(ctx context.Context, provided *string) bool {
+// checkSetupToken validates the bootstrap token, minting one on first use. An
+// error means the token could not be prepared (for example the entropy source
+// failed) and belongs to the caller as a 500, not as a rejected token.
+func (a *App) checkSetupToken(ctx context.Context, provided *string) (bool, error) {
 	if fromEnv := strings.TrimSpace(envSetupToken()); fromEnv != "" {
-		return provided != nil && subtleEqual(*provided, fromEnv)
+		return provided != nil && subtleEqual(*provided, fromEnv), nil
 	}
 	expected, err := a.ensureSetupToken(ctx)
 	if err != nil {
 		a.log.Error("could not prepare the setup token", "error", err)
-		return false
+		return false, err
 	}
-	return provided != nil && subtleEqual(*provided, expected)
+	if exp, ok := a.setupTokenExpiry(ctx); ok && exp < time.Now().UnixMilli() {
+		return false, nil
+	}
+	return provided != nil && subtleEqual(*provided, expected), nil
 }
 
-// ensureSetupToken returns the stored bootstrap token, generating one when the
-// instance has no users yet. The plaintext is written to the log once so the
-// first administrator can complete setup.
+// ensureSetupToken returns the stored bootstrap token, generating a fresh one
+// when the instance has none or the stored one has expired. The plaintext is
+// written to the log once so the first administrator can complete setup.
 func (a *App) ensureSetupToken(ctx context.Context) (string, error) {
 	stored, err := a.setting(ctx, "setup_token")
 	if err == nil && stored != "" {
-		return stored, nil
+		if exp, ok := a.setupTokenExpiry(ctx); !ok || exp >= time.Now().UnixMilli() {
+			return stored, nil
+		}
+		// An expired token that is never replaced locks everyone out of the
+		// bootstrap screen, so replace it on demand just like a missing one.
 	}
-	token := base64.RawURLEncoding.EncodeToString(randomBytes(18))
+	raw, err := randomBytes(18)
+	if err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
 	expires := time.Now().Add(24 * time.Hour).UnixMilli()
 	if err := a.setSetting(ctx, "setup_token", token); err != nil {
 		return "", err
@@ -513,17 +645,22 @@ func (a *App) ensureSetupToken(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-func randomSalt() string {
-	return base64.RawURLEncoding.EncodeToString(randomBytes(16))
+func randomSalt() (string, error) {
+	raw, err := randomBytes(16)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func randomBytes(n int) []byte {
+// randomBytes reports an entropy failure to the caller instead of deriving a
+// predictable value from the clock.
+func randomBytes(n int) ([]byte, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
-		sum := sha256.Sum256([]byte(time.Now().String()))
-		return sum[:n]
+		return nil, err
 	}
-	return buf
+	return buf, nil
 }
 
 func subtleEqual(a, b string) bool {
@@ -539,4 +676,114 @@ func subtleEqual(a, b string) bool {
 
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unique")
+}
+
+// --- failed-attempt throttling ----------------------------------------------
+
+const (
+	// A short window bounds both the guesser's budget and the time a locked-out
+	// owner has to wait once the counter trips.
+	loginAttemptWindow = 5 * time.Minute
+	// A person mistyping a password a handful of times recovers in seconds; a
+	// guesser gets ten tries per address per window.
+	loginAccountLimit = 10
+	// One source may legitimately sign in many accounts (a shared office), so
+	// its budget is larger.
+	loginIPLimit = 60
+	// The table is swept past this size and stops recording new keys rather
+	// than growing without bound; an attacker who saturates it has already
+	// paid for thousands of keyed requests.
+	maxThrottleEntries = 8192
+)
+
+var loginAttempts = newAttemptLimiter()
+
+type attemptEntry struct {
+	count   int
+	expires time.Time
+}
+
+// attemptLimiter counts recent failures per key over a fixed window.
+type attemptLimiter struct {
+	mu      sync.Mutex
+	entries map[string]attemptEntry
+	now     func() time.Time
+}
+
+func newAttemptLimiter() *attemptLimiter {
+	return &attemptLimiter{entries: make(map[string]attemptEntry), now: time.Now}
+}
+
+// blocked reports how long the key must wait, or zero when it may proceed.
+func (l *attemptLimiter) blocked(key string, limit int) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.entries[key]
+	if !ok {
+		return 0
+	}
+	now := l.now()
+	if !now.Before(entry.expires) {
+		delete(l.entries, key)
+		return 0
+	}
+	if entry.count < limit {
+		return 0
+	}
+	return entry.expires.Sub(now)
+}
+
+// record counts one failure.
+func (l *attemptLimiter) record(key string, window time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	entry, ok := l.entries[key]
+	if !ok || !now.Before(entry.expires) {
+		if len(l.entries) >= maxThrottleEntries {
+			l.sweepLocked(now)
+			if len(l.entries) >= maxThrottleEntries {
+				return
+			}
+		}
+		entry = attemptEntry{expires: now.Add(window)}
+	}
+	entry.count++
+	l.entries[key] = entry
+}
+
+// reset forgets a key after a successful sign-in.
+func (l *attemptLimiter) reset(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.entries, key)
+}
+
+func (l *attemptLimiter) sweepLocked(now time.Time) {
+	for key, entry := range l.entries {
+		if !now.Before(entry.expires) {
+			delete(l.entries, key)
+		}
+	}
+}
+
+// clientIP is the peer address without the port. It deliberately ignores
+// X-Forwarded-For: the header is client-controlled unless a trusted proxy is
+// configured, and a spoofable key would let a guesser reset its own budget.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func respondTooManyAttempts(w http.ResponseWriter, retry time.Duration) {
+	seconds := int((retry + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	httpx.Fail(w, httpx.NewError(http.StatusTooManyRequests,
+		"too many attempts; try again later"))
 }

@@ -78,7 +78,6 @@ final class V2DashboardRepository {
     }
 
     private func apply(connectors: [V2Connector], projects: [V2Project], sessions incoming: [V2SessionMeta]) {
-        generation += 1; projectGeneration += 1
         var mutated = !hasLoaded
         if self.connectors != connectors { self.connectors = connectors; mutated = true }
         if self.projects != projects { self.projects = projects; mutated = true }
@@ -90,6 +89,9 @@ final class V2DashboardRepository {
         if !hasLoaded { hasLoaded = true }
         if !isFresh { isFresh = true }
         if error != nil { error = nil }
+        // Snapshots repeat every tick; an unchanged one must not fence an
+        // in-flight refresh or project read out of its result.
+        if mutated { generation += 1; projectGeneration += 1 }
         changed(persist: mutated); refreshMissingProjects()
     }
 

@@ -43,6 +43,9 @@ nonisolated struct V2SessionEvent: Decodable, Identifiable, Hashable {
     let payload: JSONValue
     /// Client receipt time, excluded from the wire contract. Used to order refresh barriers.
     var receivedAt: Date = Date()
+    /// Size of the decoded wire frame. Bounds the shared stream's replay
+    /// buffer; client bookkeeping, never encoded or part of the contract.
+    var wireBytes: Int = 0
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion, eventId, sequence, cursor, type, sessionId, emittedAt, payload

@@ -20,15 +20,19 @@ actor V2LocalStore {
         return V2SessionRestore(archive: archive, items: archive.items.compactMap { try? V2TimelineItem(json: $0) })
     }
     func saveDashboard(_ value: V2DashboardArchive) { write(value, key: "dashboard") }
-    func saveSession(_ value: V2SessionArchive) {
-        guard !removedSessions.contains(value.session.id) else { return }
+    /// Returns whether the archive was written. A refused or failed write must
+    /// leave the session dirty so a later flush can retry it.
+    @discardableResult
+    func saveSession(_ value: V2SessionArchive) -> Bool {
+        guard !removedSessions.contains(value.session.id) else { return false }
         let key = sessionKey(value.session.id)
         // Rewriting an existing archive cannot exceed the session count; only a
         // new file or a byte-limit check needs the directory scan.
         let isNew = !FileManager.default.fileExists(atPath: url(key).path)
-        write(value, key: key)
+        guard write(value, key: key) else { return false }
         savesSinceTrim += 1
         if isNew || savesSinceTrim >= 20 { trim(); savesSinceTrim = 0 }
+        return true
     }
     func removeSession(_ id: String) { removedSessions.insert(id); try? FileManager.default.removeItem(at: url(sessionKey(id))) }
     func close(removing: Bool) {
@@ -43,8 +47,9 @@ actor V2LocalStore {
               let envelope = try? JSONDecoder().decode(Envelope<Value>.self, from: bytes), envelope.version == 1 else { return nil }
         return envelope.value
     }
-    private func write<Value: Codable>(_ value: Value, key: String) {
-        guard valid, let bytes = try? JSONEncoder().encode(Envelope(version: 1, value: value)), bytes.count <= 64 * 1024 * 1024 else { return }
+    @discardableResult
+    private func write<Value: Codable>(_ value: Value, key: String) -> Bool {
+        guard valid, let bytes = try? JSONEncoder().encode(Envelope(version: 1, value: value)), bytes.count <= 64 * 1024 * 1024 else { return false }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var folder = directory; var values = URLResourceValues(); values.isExcludedFromBackup = true
@@ -54,7 +59,8 @@ actor V2LocalStore {
             #else
             try bytes.write(to: url(key), options: .atomic)
             #endif
-        } catch { /* A full/unavailable disk must not prevent reading or sending. */ }
+            return true
+        } catch { return false } // A full/unavailable disk must not prevent reading or sending.
     }
     private func trim() {
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory,

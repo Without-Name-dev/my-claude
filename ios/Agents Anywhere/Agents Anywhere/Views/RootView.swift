@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingManualLogin = false
 
     var body: some View {
@@ -23,6 +24,12 @@ struct RootView: View {
                 appState.activateSignedInRoute()
                 showingManualLogin = false
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The unified realtime socket must not stay open in the background;
+            // foregrounding reconnects and asks every open session to recover.
+            if phase == .background { appState.nativeChatServices?.streamCoordinator.setActive(false) }
+            else if phase == .active { appState.nativeChatServices?.streamCoordinator.setActive(true) }
         }
         .announcementGate(
             server: appState.serverURL,

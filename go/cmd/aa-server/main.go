@@ -27,10 +27,14 @@ func main() {
 	// The signing key falls back to a constant when unset, which would let
 	// anyone who has read the source forge user tokens. Refuse to serve with
 	// it; local development opts in explicitly.
-	if os.Getenv("AGENT_SERVER_SECRET") == "" && os.Getenv("AA_ALLOW_DEV_SECRET") != "1" {
-		log.Error("refusing to start with the development signing key",
-			"hint", "set AGENT_SERVER_SECRET (production) or AA_ALLOW_DEV_SECRET=1 (local)")
-		os.Exit(1)
+	if os.Getenv("AGENT_SERVER_SECRET") == "" {
+		if os.Getenv("AA_ALLOW_DEV_SECRET") != "1" {
+			log.Error("refusing to start with the development signing key",
+				"hint", "set AGENT_SERVER_SECRET (production) or AA_ALLOW_DEV_SECRET=1 (local)")
+			os.Exit(1)
+		}
+		log.Warn("using the development signing key",
+			"hint", "set AGENT_SERVER_SECRET before exposing this instance")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

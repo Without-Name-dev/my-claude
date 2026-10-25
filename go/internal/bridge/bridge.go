@@ -466,8 +466,10 @@ func mustJSON(value any) []byte {
 }
 
 // SubmitCommand queues a slash command. The plugin reads the name separately
-// from the argument tail, so it cannot be sent as ordinary prompt text.
-func (b *Bridge) SubmitCommand(sessionID, messageID, command, args string) (*Submission, error) {
+// from the argument tail, so it cannot be sent as ordinary prompt text. The
+// runtime session id is carried like a prompt's, so a plugin shared by several
+// sessions only runs the command in the conversation it was addressed to.
+func (b *Bridge) SubmitCommand(sessionID, externalSessionID, messageID, command, args string) (*Submission, error) {
 	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
 	if name == "" {
 		return nil, errors.New("empty command")
@@ -478,6 +480,9 @@ func (b *Bridge) SubmitCommand(sessionID, messageID, command, args string) (*Sub
 		"command":   name,
 		"queuedAt":  time.Now().UnixMilli(),
 		"sessionId": sessionID,
+	}
+	if externalSessionID != "" {
+		body["externalSessionId"] = externalSessionID
 	}
 	if args != "" {
 		body["args"] = args
@@ -490,6 +495,40 @@ func (b *Bridge) SubmitCommand(sessionID, messageID, command, args string) (*Sub
 		return nil, err
 	}
 	return &Submission{QueuedAt: time.Now().UnixMilli(), PreviousTurnID: previous}, nil
+}
+
+// CancelQueued removes a message the plugin has not picked up yet.
+//
+// Deleting the queue file is the only cancellation the plugin understands: it
+// reads the directory in order, so a file that is gone is a message that never
+// runs. One the plugin has already read still runs, which is why this is only
+// used after the pickup deadline has passed.
+func (b *Bridge) CancelQueued(messageID string) error {
+	if messageID == "" {
+		return nil
+	}
+	dir := b.QueueDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var msg struct {
+			ID string `json:"id"`
+		}
+		if !readJSONFile(path, &msg) || msg.ID != messageID {
+			continue
+		}
+		return os.Remove(path)
+	}
+	return nil
 }
 
 // AgentEntry is one subagent or workflow running beside the main turn.

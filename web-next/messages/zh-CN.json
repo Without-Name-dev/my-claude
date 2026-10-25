@@ -576,6 +576,8 @@
       "setup": "设置",
       "revoke": "吊销",
       "renameFailed": "设备重命名失败。",
+      "deleteFailed": "删除设备失败。",
+      "deviceNotFound": "该设备已不存在。",
       "setupFailed": "无法准备设备设置。",
       "agentRuntimes": "Agent Runtime",
       "configuredRuntimes": "已配置",

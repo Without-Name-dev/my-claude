@@ -310,6 +310,7 @@ export function DevicePage() {
     projects,
     sessions: allSessions,
     runtimes: liveRuntimes,
+    isLoading: workspaceLoading,
     startProjectSession,
     openSession,
     goHome,
@@ -372,11 +373,13 @@ export function DevicePage() {
     const currentConnector = connectors.find((item) => item.id === activeConnectorId) ?? null
     const connectorSessions = allSessions.filter((item) => item.connectorId === activeConnectorId)
     setConnector(currentConnector)
-    setNameDraft(currentConnector?.name ?? "")
-    setEditingName(false)
+    // Snapshots and session updates rerun this effect; they must not wipe a
+    // name the user is still editing.
+    if (connectorChanged || !editingName) setNameDraft(currentConnector?.name ?? "")
+    if (connectorChanged) setEditingName(false)
     setSessions(connectorSessions)
     setLoading(false)
-  }, [activeConnectorId, connectors, allSessions])
+  }, [activeConnectorId, connectors, allSessions, editingName])
 
   React.useEffect(() => {
     if (!authSession?.accessToken || !activeConnectorId) return
@@ -427,9 +430,20 @@ export function DevicePage() {
   const configuredRuntimes = configuredRuntimeInstances(runtimes)
   const availableRuntimeTypes = addableRuntimeTypes(runtimeTypes, runtimes)
 
-  if (loading || !connector) {
+  if (loading || workspaceLoading) {
     return (
       <LoadingState className="h-full" />
+    )
+  }
+
+  if (!connector) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
+        <p className="text-sm text-muted-foreground">{t("deviceNotFound")}</p>
+        <Button type="button" variant="outline" size="sm" onClick={goHome}>
+          {tCommon("backHome")}
+        </Button>
+      </div>
     )
   }
 
@@ -476,10 +490,14 @@ export function DevicePage() {
 
   const handleDelete = async () => {
     if (!authSession?.accessToken) return
-    await dashboardApi.deleteConnector(authSession.accessToken, connector.id)
-    setDeleteOpen(false)
-    refreshData()
-    goHome()
+    try {
+      await dashboardApi.deleteConnector(authSession.accessToken, connector.id)
+      setDeleteOpen(false)
+      refreshData()
+      goHome()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("deleteFailed"))
+    }
   }
 
   const replaceRuntime = (runtime: DeviceRuntimeView) => {
@@ -1005,7 +1023,21 @@ export function DevicePage() {
             type="single"
             value={sessionTab}
             onValueChange={(value: string) => {
-              if (value) setSessionTab(value as SessionTabId)
+              if (!value || value === sessionTab) return
+              const nextTab = value as SessionTabId
+              setSessionTab(nextTab)
+              // Drop selections that the new tab no longer shows, so a bulk
+              // action cannot target hidden rows.
+              setSelectedSessionIds((prev) => {
+                const next = new Set<string>()
+                for (const session of sessions) {
+                  if (!prev.has(session.id)) continue
+                  if (nextTab === "active" && session.archived) continue
+                  if (nextTab === "archived" && !session.archived) continue
+                  next.add(session.id)
+                }
+                return next
+              })
             }}
             size="sm"
             className="mb-3"

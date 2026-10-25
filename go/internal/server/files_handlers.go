@@ -35,6 +35,10 @@ const (
 	fsDefaultTextBytes  = 1 << 20
 	fsMaxTextBytes      = 4 << 20
 	fsMaxReadRPCSeconds = 30 * time.Second
+	// fs.size hashes the whole file on the connector to report sha256, so it
+	// needs a budget of its own: a 256MiB file on a slow disk routinely
+	// exceeds the 30s that one chunk read is allowed.
+	fsMaxSizeRPCSeconds = 2 * time.Minute
 )
 
 // registerFileRoutes installs the connector filesystem endpoints.
@@ -118,7 +122,15 @@ type fsRPCText struct {
 
 // callFS runs one filesystem RPC and decodes its JSON result.
 func (a *App) callFS(ctx context.Context, connectorID, method string, params, dst any) error {
-	raw, err := a.callConnector(ctx, connectorID, method, params, fsMaxReadRPCSeconds)
+	return a.callFSWithTimeout(ctx, connectorID, method, params, dst, fsMaxReadRPCSeconds)
+}
+
+// callFSWithTimeout is callFS with an explicit budget. fs.size gets a longer
+// one because its answer requires hashing the whole file.
+func (a *App) callFSWithTimeout(
+	ctx context.Context, connectorID, method string, params, dst any, timeout time.Duration,
+) error {
+	raw, err := a.callConnector(ctx, connectorID, method, params, timeout)
 	if err != nil {
 		return err
 	}
@@ -520,9 +532,9 @@ func (a *App) prepareFSDownload(
 	ctx context.Context, connectorID string, target fsResolved, previewAccess string,
 ) (map[string]any, error) {
 	var meta fsRPCFile
-	if err := a.callFS(ctx, connectorID, "fs.size", map[string]any{
+	if err := a.callFSWithTimeout(ctx, connectorID, "fs.size", map[string]any{
 		"root": target.Root, "path": target.Path,
-	}, &meta); err != nil {
+	}, &meta, fsMaxSizeRPCSeconds); err != nil {
 		return nil, err
 	}
 	result := map[string]any{
@@ -891,12 +903,6 @@ func (a *App) serveFSTransfer(w http.ResponseWriter, r *http.Request, transfer f
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
-	w.Header().Set("Content-Type", mediaType)
-	w.Header().Set("Content-Disposition", contentDisposition("attachment", name))
-	w.Header().Set("X-File-Name", safeHeaderValue(name))
-	w.Header().Set("X-File-Sha256", transfer.SHA256)
-	w.Header().Set("X-File-Size", strconv.FormatInt(transfer.Size, 10))
-	w.Header().Set("Accept-Ranges", "bytes")
 
 	total := transfer.Size
 	var pushed []byte
@@ -913,6 +919,36 @@ func (a *App) serveFSTransfer(w http.ResponseWriter, r *http.Request, transfer f
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
+
+	// Read the first chunk before committing to a status line. Once the
+	// headers are out, a connector-side failure (file removed, permission
+	// denied) can no longer become an HTTP error, only a truncated body. A
+	// later failure aborts the connection instead.
+	var first []byte
+	if length > 0 && !transfer.hasData {
+		chunkLength := int64(fsTransferChunk)
+		if length < chunkLength {
+			chunkLength = length
+		}
+		chunk, err := a.readFSTransferChunk(r.Context(), transfer, start, chunkLength)
+		if err != nil {
+			a.writeFSError(w, err)
+			return
+		}
+		if len(chunk) == 0 {
+			a.writeFSError(w, httpx.NewError(http.StatusBadGateway,
+				fmt.Sprintf("connector returned no data for %s", transfer.Path)))
+			return
+		}
+		first = chunk
+	}
+
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", name))
+	w.Header().Set("X-File-Name", safeHeaderValue(name))
+	w.Header().Set("X-File-Sha256", transfer.SHA256)
+	w.Header().Set("X-File-Size", strconv.FormatInt(transfer.Size, 10))
+	w.Header().Set("Accept-Ranges", "bytes")
 	if ranged {
 		w.Header().Set("Content-Range",
 			fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, total))
@@ -933,12 +969,40 @@ func (a *App) serveFSTransfer(w http.ResponseWriter, r *http.Request, transfer f
 		_, _ = w.Write(pushed[start:end])
 		return
 	}
-	a.pullFSTransfer(r.Context(), w, transfer, start, length)
+	if _, err := w.Write(first); err != nil {
+		return
+	}
+	remaining := length - int64(len(first))
+	if remaining > 0 {
+		a.pullFSTransfer(r.Context(), w, transfer, start+int64(len(first)), remaining)
+	}
+}
+
+// readFSTransferChunk asks the connector for one range of a transfer.
+func (a *App) readFSTransferChunk(
+	ctx context.Context, transfer fsTransfer, offset, length int64,
+) ([]byte, error) {
+	var chunk fsRPCRead
+	if err := a.callFS(ctx, transfer.ConnectorID, "fs.read", map[string]any{
+		"root": transfer.Root, "path": transfer.Path,
+		"offset": offset, "length": length,
+	}, &chunk); err != nil {
+		return nil, err
+	}
+	data, err := base64.StdEncoding.DecodeString(chunk.ContentBase64)
+	if err != nil {
+		return nil, httpx.NewError(http.StatusBadGateway, "connector returned invalid base64")
+	}
+	if int64(len(data)) > length {
+		data = data[:length]
+	}
+	return data, nil
 }
 
 // pullFSTransfer asks the connector for consecutive chunks. The transfer was
 // created for a file larger than the inline limit, so it is streamed rather
-// than held in memory.
+// than held in memory. Headers are already written at this point, so a failure
+// aborts the connection instead of returning a successful-looking short body.
 func (a *App) pullFSTransfer(ctx context.Context, w http.ResponseWriter, transfer fsTransfer, start, length int64) {
 	flusher, _ := w.(http.Flusher)
 	offset := start
@@ -948,24 +1012,11 @@ func (a *App) pullFSTransfer(ctx context.Context, w http.ResponseWriter, transfe
 		if remaining < chunkLength {
 			chunkLength = remaining
 		}
-		var chunk fsRPCRead
-		err := a.callFS(ctx, transfer.ConnectorID, "fs.read", map[string]any{
-			"root": transfer.Root, "path": transfer.Path,
-			"offset": offset, "length": chunkLength,
-		}, &chunk)
+		data, err := a.readFSTransferChunk(ctx, transfer, offset, chunkLength)
 		if err != nil {
 			a.log.Warn("fs transfer read failed",
 				"transfer", transfer.ID, "offset", offset, "error", err)
-			return
-		}
-		data, err := base64.StdEncoding.DecodeString(chunk.ContentBase64)
-		if err != nil {
-			a.log.Warn("fs transfer chunk was not base64",
-				"transfer", transfer.ID, "error", err)
-			return
-		}
-		if int64(len(data)) > chunkLength {
-			data = data[:chunkLength]
+			panic(http.ErrAbortHandler)
 		}
 		if len(data) == 0 {
 			return

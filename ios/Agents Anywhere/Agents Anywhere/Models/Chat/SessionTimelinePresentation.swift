@@ -100,6 +100,8 @@ final class SessionTimelinePresentation {
     @ObservationIgnored private var lastConnection: V2SessionConnectionState = .inactive
     @ObservationIgnored private var lastActivityEventID: String?
     @ObservationIgnored private var activityPendingBoundary: String?
+    @ObservationIgnored private weak var repository: V2SessionRepository?
+    @ObservationIgnored private var activityResyncTask: Task<Void, Never>?
     @ObservationIgnored private var wake: AsyncStream<Void>.Continuation?
     /// When the newest reveal batch ends and the buffer may publish again.
     @ObservationIgnored private(set) var nextBatchAt: TimeInterval = 0
@@ -116,6 +118,13 @@ final class SessionTimelinePresentation {
         guard let data = observation.data else { return }
         stage(data.items, animate: initialized && lastConnection == .connected && observation.connection == .connected)
         initialized = true
+        // `lastExtensionEvent` can be a running snapshot from before the view
+        // reopened, and the server replays neither it nor the final empty
+        // update on a reconnect. Ask for the authoritative set on every fresh
+        // connection so a finished subagent cannot stay "running" forever.
+        if observation.connection == .connected, lastConnection != .connected {
+            resyncActivity(sessionID: observation.sessionId)
+        }
     }
 
     /// `runtime.activity` is an extension event: the projection keeps the most
@@ -126,9 +135,26 @@ final class SessionTimelinePresentation {
         lastActivityEventID = event.eventId
         guard let encoded = try? JSONEncoder().encode(event.payload),
               let payload = try? JSONDecoder().decode(V2AgentActivity.self, from: encoded) else { return }
-        guard !payload.agents.isEmpty || subagentActivity != nil else { return }
+        applyActivity(payload.agents, at: event.receivedAt)
+    }
+
+    private func resyncActivity(sessionID: V2SessionID) {
+        guard activityResyncTask == nil, let repository else { return }
+        activityResyncTask = Task { [weak self, weak repository] in
+            defer { self?.activityResyncTask = nil }
+            guard let repository,
+                  let runs = try? await repository.sessionActivity(sessionId: sessionID) else { return }
+            // A result that lands after another drop describes the old socket.
+            guard !Task.isCancelled, let self, self.lastConnection == .connected else { return }
+            self.applyActivity(runs, at: Date())
+        }
+    }
+
+    private func applyActivity(_ runs: [V2AgentRun], at date: Date) {
+        guard !runs.isEmpty || subagentActivity != nil else { return }
         var activity = subagentActivity ?? SubagentActivityPresentation()
-        activity.receive(payload.agents, at: event.receivedAt)
+        // An empty authoritative set finishes every agent that is still shown.
+        activity.receive(runs, at: date)
         if subagentActivity != activity { subagentActivity = activity }
     }
 
@@ -195,9 +221,14 @@ final class SessionTimelinePresentation {
 
     func run(sessionID: V2SessionID, repository: V2SessionRepository) async {
         let session = repository.session(id: sessionID)
+        self.repository = repository
         let signal = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         wake = signal.continuation
-        defer { signal.continuation.finish(); wake = nil }
+        defer {
+            signal.continuation.finish(); wake = nil
+            activityResyncTask?.cancel(); activityResyncTask = nil
+            self.repository = nil
+        }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { @MainActor [weak self] in
                 defer { signal.continuation.finish() }

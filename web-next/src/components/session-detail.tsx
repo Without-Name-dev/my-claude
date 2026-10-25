@@ -140,6 +140,10 @@ function remoteStateFromOptimisticState(optimisticState: SessionLocalTimelineSta
 }
 
 const INITIAL_TIMELINE_LIMIT = 100
+// Live events append to the timeline without the scroll-to-bottom prune. Keep
+// the in-memory window bounded so a long session does not rebuild the whole
+// conversation on every frame; older items remain loadable from the server.
+const MAX_TIMELINE_ITEMS = 500
 const INITIAL_LOAD_MAX_ATTEMPTS = 3
 const TIMELINE_PAGE_LIMIT = 100
 const LOAD_OLDER_SCROLL_THRESHOLD = 96
@@ -226,6 +230,21 @@ function mergeSessionSnapshot(
     eventCursor: incoming.nextSeq >= current.nextSeq
       ? incoming.eventCursor
       : current.eventCursor,
+  }
+}
+
+// Trim the oldest items once the live timeline outgrows the window. Only do
+// this while the viewport follows the bottom: trimming above a reader's
+// scroll position would move the text under them.
+function boundTimelineItems(
+  state: SessionRemoteState,
+  following: boolean,
+): SessionRemoteState {
+  if (!following || state.items.length <= MAX_TIMELINE_ITEMS) return state
+  return {
+    ...state,
+    items: state.items.slice(-MAX_TIMELINE_ITEMS),
+    hasMore: true,
   }
 }
 
@@ -364,10 +383,14 @@ function SessionDetailView({
   subscribeSessionStreamRef.current = subscribeSessionStream
   const whenRealtimeStreamResolvedRef = React.useRef(whenRealtimeStreamResolved)
   whenRealtimeStreamResolvedRef.current = whenRealtimeStreamResolved
-  const initialOptimisticState = getOptimisticSessionState(sessionId)
+  const initialOptimisticState = isOptimisticSession(sessionId)
+    ? getOptimisticSessionState(sessionId)
+    : null
   const [state, setState] = React.useState<SessionRemoteState | null>(() =>
     initialOptimisticState ? remoteStateFromOptimisticState(initialOptimisticState) : null,
   )
+  const stateRef = React.useRef(state)
+  stateRef.current = state
   const memorySnapshotRef = React.useRef<{
     callback: SessionDetailProps["onMemorySnapshotUpdated"]
     snapshot: SessionMemorySnapshot | null
@@ -541,6 +564,7 @@ function SessionDetailView({
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
     if (!session) return false
+    const selectionSessionId = session.id
     const selectionPatch = selectionPatchFromComposerSelections(state?.state?.selections ?? {}, selections)
     if (Object.keys(selectionPatch).length === 0) return true
 
@@ -548,7 +572,7 @@ function SessionDetailView({
     const selectionUpdateSeq = selectionUpdateSeqRef.current + 1
     selectionUpdateSeqRef.current = selectionUpdateSeq
     setState((current) =>
-      current
+      current && current.session.id === selectionSessionId
         ? {
             ...current,
             state: runtimeStateWithSelections(current.state, current.session, selectionPatch),
@@ -556,15 +580,15 @@ function SessionDetailView({
         : current,
     )
     try {
-      const previousWrite = selectionWritesRef.current.get(session.id) ?? Promise.resolve()
-      const write = previousWrite.catch(() => undefined).then(() => dashboardApi.updateSessionSelections(token, session.id, selectionPatch))
-      selectionWritesRef.current.set(session.id, write)
+      const previousWrite = selectionWritesRef.current.get(selectionSessionId) ?? Promise.resolve()
+      const write = previousWrite.catch(() => undefined).then(() => dashboardApi.updateSessionSelections(token, selectionSessionId, selectionPatch))
+      selectionWritesRef.current.set(selectionSessionId, write)
       const result = await write.finally(() => {
-        if (selectionWritesRef.current.get(session.id) === write) selectionWritesRef.current.delete(session.id)
+        if (selectionWritesRef.current.get(selectionSessionId) === write) selectionWritesRef.current.delete(selectionSessionId)
       })
       if (selectionUpdateSeqRef.current !== selectionUpdateSeq) return true
       setState((current) =>
-        current
+        current && current.session.id === selectionSessionId
           ? {
               ...current,
               state: runtimeStateWithSelectionResult(
@@ -581,7 +605,7 @@ function SessionDetailView({
       // An official operation can partially succeed. Roll back the optimistic selection.
       if (selectionUpdateSeqRef.current === selectionUpdateSeq) {
         setState((current) =>
-          current
+          current && current.session.id === selectionSessionId
             ? {
                 ...current,
                 state: runtimeStateWithSelectionRollback(
@@ -835,7 +859,7 @@ function SessionDetailView({
         TIMELINE_PAGE_LIMIT,
       )
       setState((current) => {
-        if (!current) return current
+        if (!current || current.session.id !== sessionId) return current
         if (older.items.length === 0) return { ...current, hasMore: older.hasMore, serverTime: older.serverTime }
         const items = mergeTimelineItems(older.items, current.items)
         pendingPrependScrollRestoreRef.current = {
@@ -886,7 +910,13 @@ function SessionDetailView({
     setSending(false)
     setInterrupting(false)
     setError(null)
-    const optimisticState = getOptimisticSessionStateRef.current(sessionId)
+    // Only a not-yet-bound local session is hydrated from the optimistic store.
+    // After binding, its id belongs to a real session: reusing the placeholder
+    // state would show the old optimistic status/selections under the new id
+    // instead of the server snapshot.
+    const optimisticState = isLocalOptimisticSession
+      ? getOptimisticSessionStateRef.current(sessionId)
+      : null
     eventSequenceCursor.switchTo(sessionId, optimisticState?.nextSeq ?? 0)
     if (optimisticState) {
       setState(remoteStateFromOptimisticState(optimisticState))
@@ -922,17 +952,30 @@ function SessionDetailView({
     })
     let bufferedEvents: ProtocolEventEnvelope[] = []
     let processedEventIds = new Set<string>()
-    const renderBuffer = createSessionEventBuffer((events) => {
+    const commitEvents = (
+      events: ProtocolEventEnvelope[],
+      options: { allowStaleSequence?: boolean } = {},
+    ) => {
       if (cancelled) return
-      setState((current) => events.reduce((next, event) =>
-        next && event.sequence < next.nextSeq ? next : mergeSessionEvent(next, event), current))
+      setState((current) => {
+        const next = events.reduce((stateAfterEvent, event) =>
+          !options.allowStaleSequence
+            && stateAfterEvent
+            && event.sequence < stateAfterEvent.nextSeq
+            ? stateAfterEvent
+            : mergeSessionEvent(stateAfterEvent, event), current)
+        return next
+          ? boundTimelineItems(next, timelineFollowRef.current?.isFollowing() ?? false)
+          : next
+      })
       const items = events.flatMap((event) => {
         const item = readPayloadValue<TimelineItem>(event.payload.item)
         if (item) return [item]
         return Array.isArray(event.payload.items) ? event.payload.items.filter(isTimelineItem) : []
       })
       if (items.length > 0) clearResolvedOptimisticMessagesRef.current(sessionId, items)
-    })
+    }
+    const renderBuffer = createSessionEventBuffer(commitEvents)
     const refetch = (reason: string) => {
       if (refetchPromise) return refetchPromise
       refetchPromise = loadInitialSessionState(token, sessionId, { reason })
@@ -963,9 +1006,13 @@ function SessionDetailView({
       return refetchPromise
     }
 
-    const applyEvent = (event: ProtocolEventEnvelope) => {
+    const applyEvent = (
+      event: ProtocolEventEnvelope,
+      options: { detectGap?: boolean; recovered?: boolean } = {},
+    ) => {
       if (cancelled || event.sessionId !== sessionId) return
       if (event.type === "keepalive") return
+      const previousSequence = eventSequenceCursor.current(sessionId)
       const usesDurableEventIdDedup = sessionEventUsesDurableEventIdDedup(event)
       if (!eventSequenceCursor.accepts(sessionId, event.sequence)) return
       if (!acceptSessionEventId(event, processedEventIds)) return
@@ -981,15 +1028,41 @@ function SessionDetailView({
         )
         return
       }
+      // Revisions are allocated per write, so a frame can legitimately skip
+      // numbers. A jump of more than one still means some revision's frames
+      // were lost or arrived out of order; advancing past them would drop them
+      // for good. Recover from the cursor before this frame. A timeline
+      // snapshot already replaces everything, so it needs no recovery.
+      const sequenceGap = options.detectGap !== false
+        && event.type !== "timeline.snapshot"
+        && event.sequence > previousSequence + 1
       if (!sessionEventCanUpdateState(event)) {
         eventSequenceCursor.advance(sessionId, event.sequence)
+        if (sequenceGap) {
+          void recoverEvents(previousSequence, "sequence-gap", { allowCursorBehind: true })
+        }
         return
       }
-      renderBuffer.push(event)
+      if (options.recovered) {
+        // A recovered frame can sit below state.nextSeq: that watermark already
+        // moved past the lost revision when a later live frame arrived first.
+        // The sequence guard exists for late duplicate frames, so bypass it
+        // here and let the per-item revision checks decide.
+        commitEvents([event], { allowStaleSequence: true })
+      } else {
+        renderBuffer.push(event)
+      }
       eventSequenceCursor.advance(sessionId, event.sequence)
+      if (sequenceGap) {
+        void recoverEvents(previousSequence, "sequence-gap", { allowCursorBehind: true })
+      }
     }
 
-    const recoverEvents = async (afterSeq: number, reason: string) => {
+    const recoverEvents = async (
+      afterSeq: number,
+      reason: string,
+      options: { allowCursorBehind?: boolean } = {},
+    ) => {
       if (recoveryPromise || recoveryStarting) return recoveryPromise
       recoveryStarting = true
       // Events received before this recovery request causally precede its
@@ -998,10 +1071,9 @@ function SessionDetailView({
       // recoveryStarting also makes a buffered refetch_required join this
       // recovery instead of recursively starting another one.
       drainBufferedEvents({ allowWhileRecoveryStarting: true })
-      const recoveryAfterSeq = Math.max(
-        afterSeq,
-        eventSequenceCursor.current(sessionId),
-      )
+      const recoveryAfterSeq = options.allowCursorBehind
+        ? afterSeq
+        : Math.max(afterSeq, eventSequenceCursor.current(sessionId))
       try {
         const recoveryRequest = dashboardApi.getSessionEvents(token, sessionId, `seq:${recoveryAfterSeq}`)
           .then(async (recovery) => {
@@ -1016,12 +1088,21 @@ function SessionDetailView({
               },
               null,
             )
-            const shouldReadLiveCapabilities = recoveredSession?.connectorStatus === "online"
+            // /events only replays timeline items, so it rarely carries the
+            // session meta this reads. Fall back to the snapshot-hydrated
+            // session; otherwise the live capability read below never runs.
+            const liveReadSession = recoveredSession ?? stateRef.current?.session ?? null
+            const shouldReadLiveCapabilities = liveReadSession?.connectorStatus === "online"
+            // Rewind to the recovery cursor so events between it and the last
+            // live frame are accepted instead of rejected as stale. Live
+            // events are buffered while recovery runs, so nothing else
+            // advances the cursor in this window.
+            eventSequenceCursor.replaceFromSnapshot(sessionId, recoveryAfterSeq)
             for (const event of recovery.events) {
               if (event.type === "runtime.capability.updated" && shouldReadLiveCapabilities) {
                 continue
               }
-              applyEvent(event)
+              applyEvent(event, { detectGap: false, recovered: true })
             }
             eventSequenceCursor.advance(
               sessionId,
@@ -1339,6 +1420,7 @@ function SessionDetailView({
     selections: { model?: string; permission?: string },
   ): Promise<boolean> => {
     if (!session || (!content.trim() && attachments.length === 0)) return false
+    const sendSessionId = session.id
     const uploadedAttachments = attachments.flatMap((attachment) =>
       attachment.uploaded ? [attachment.uploaded] : [],
     )
@@ -1347,21 +1429,21 @@ function SessionDetailView({
     const messageText = content.trim() || tNew("attachmentOnlyPrompt")
     timelineFollowRef.current?.resume()
     const optimisticMessage = buildOptimisticUserMessage({
-      sessionId: session.id,
+      sessionId: sendSessionId,
       clientMessageId,
       text: messageText,
       attachments,
       items: state?.items ?? [],
-      nextSeq: state?.nextSeq ?? eventSequenceCursor.current(sessionId),
+      nextSeq: state?.nextSeq ?? eventSequenceCursor.current(sendSessionId),
     })
     addOptimisticMessage({
       clientMessageId,
-      sessionId: session.id,
+      sessionId: sendSessionId,
       item: optimisticMessage,
     })
     const previousRuntimeState = state?.state ?? null
     setState((current) => {
-      if (!current) return current
+      if (!current || current.session.id !== sendSessionId) return current
       return {
         ...current,
         state: nextOptimisticRuntimeState(current.state, current.session, "waiting"),
@@ -1372,9 +1454,9 @@ function SessionDetailView({
     try {
       const selectionPatch = selectionPatchFromComposerSelections(runtimeState?.selections ?? {}, selections)
       if (Object.keys(selectionPatch).length > 0) {
-        const selectionResult = await dashboardApi.updateSessionSelections(token, session.id, selectionPatch)
+        const selectionResult = await dashboardApi.updateSessionSelections(token, sendSessionId, selectionPatch)
         setState((current) =>
-          current
+          current && current.session.id === sendSessionId
             ? {
                 ...current,
                 state: runtimeStateWithSelectionResult(
@@ -1387,7 +1469,7 @@ function SessionDetailView({
             : current,
         )
       }
-      await dashboardApi.sendSessionMessage(token, session.id, messageText, {
+      await dashboardApi.sendSessionMessage(token, sendSessionId, messageText, {
         attachments: uploadedAttachments.map((attachment) => ({ fileId: attachment.fileId })),
         clientMessageId,
       })
@@ -1401,7 +1483,7 @@ function SessionDetailView({
           : tSession("sendFailed")
       markOptimisticMessageFailed(clientMessageId, message)
       setState((current) => {
-        if (!current) return current
+        if (!current || current.session.id !== sendSessionId) return current
         return {
           ...current,
           state:
@@ -1424,7 +1506,9 @@ function SessionDetailView({
           sourceAvailabilityUpdatedAt: new Date().toISOString(),
           sourceObservationOrigin: "operation",
         }
-        setState((current) => current ? { ...current, session: nextSession } : current)
+        setState((current) =>
+          current && current.session.id === sendSessionId ? { ...current, session: nextSession } : current,
+        )
         onSessionUpdated?.(nextSession)
         setSourceErrorCode(nextSourceErrorCode)
       } else {
@@ -1641,7 +1725,7 @@ function SessionDetailView({
       if (shouldPrune) {
         setState((current) =>
           current && current.items.length > INITIAL_TIMELINE_LIMIT
-            ? { ...current, items: current.items.slice(-INITIAL_TIMELINE_LIMIT) }
+            ? { ...current, items: current.items.slice(-INITIAL_TIMELINE_LIMIT), hasMore: true }
             : current,
         )
       }
@@ -1658,7 +1742,7 @@ function SessionDetailView({
       if (!timelineFollowRef.current?.isFollowing() || distanceFromBottom() > SCROLL_TO_BOTTOM_PRUNE_DISTANCE) return false
       setState((current) =>
         current && current.items.length > INITIAL_TIMELINE_LIMIT
-          ? { ...current, items: current.items.slice(-INITIAL_TIMELINE_LIMIT) }
+          ? { ...current, items: current.items.slice(-INITIAL_TIMELINE_LIMIT), hasMore: true }
           : current,
       )
       return true

@@ -34,6 +34,9 @@ final class V2StreamCoordinator {
 
     private static let maximumBufferedEvents = 50
     private static let maximumBufferedSessions = 24
+    /// A handful of timeline snapshots can dwarf fifty token deltas, so a new
+    /// observer's replay is bounded by bytes as well as event count.
+    private static let maximumBufferedBytes = 512 * 1024
     /// One failed first connection disables the unified endpoint for the whole
     /// process. Consumers fall back to the legacy sockets and never retry.
     private static var processFallbackEngaged = false
@@ -45,14 +48,18 @@ final class V2StreamCoordinator {
 
     private var state = State.idle
     private var connectionTask: Task<Void, Never>?
+    private var connectionGeneration = 0
     private var dashboardObservers: [UUID: AsyncThrowingStream<V2DashboardSnapshot, Error>.Continuation] = [:]
     private var sessionObservers: [V2SessionID: [UUID: AsyncThrowingStream<V2SessionEvent, Error>.Continuation]] = [:]
     private var sessionBuffers: [V2SessionID: [V2SessionEvent]] = [:]
+    private var sessionBufferBytes: [V2SessionID: Int] = [:]
     private var bufferOrder: [V2SessionID] = []
     private var lastDashboardSnapshot: V2DashboardSnapshot?
     private var didRequestPrefetch = false
     private var hasEverConnected = false
     private var isInvalidated = false
+    private var isSuspended = false
+    private var isOffline = false
 
     /// Called once, when the first dashboard snapshot arrives.
     var prefetchSessions: (([V2SessionMeta]) -> Void)?
@@ -75,6 +82,26 @@ final class V2StreamCoordinator {
         isInvalidated || Self.processFallbackEngaged || state == .fallback
     }
 
+    /// Backgrounding drops the socket; returning to the foreground reconnects
+    /// and re-signals every session subscriber so they recover from their
+    /// cursors instead of waiting for the heartbeat watchdog.
+    func setActive(_ active: Bool) {
+        let suspended = !active
+        guard isSuspended != suspended else { return }
+        isSuspended = suspended
+        if isSuspended { stopConnection() } else { restartIfNeeded() }
+    }
+
+    /// Path changes are a scheduling hint. Offline drops the socket, and the
+    /// next usable path reconnects without settling the process on the legacy
+    /// sockets: a failed socket while offline says nothing about the endpoint.
+    func updateConnectivity(_ status: V2NetworkStatus) {
+        let offline = status.availability == .offline
+        guard isOffline != offline else { return }
+        isOffline = offline
+        if offline { stopConnection() } else { restartIfNeeded() }
+    }
+
     /// A dashboard snapshot stream. The first use waits for `stream.ready` and
     /// throws if the endpoint is unusable, so the caller can fall back to
     /// `/api/v2/dashboard/ws` exactly as before. Once the socket has been
@@ -95,6 +122,8 @@ final class V2StreamCoordinator {
         if let snapshot = lastDashboardSnapshot {
             continuation.yield(snapshot)
         }
+        // A resume that raced the registration has no observer to restart for.
+        start()
         return stream
     }
 
@@ -116,6 +145,7 @@ final class V2StreamCoordinator {
         if let buffered = sessionBuffers[id] {
             for event in buffered { continuation.yield(event) }
         }
+        start()
         return stream
     }
 
@@ -123,6 +153,7 @@ final class V2StreamCoordinator {
     /// lifetime ends, e.g. on sign-out.
     func invalidate() {
         isInvalidated = true
+        connectionGeneration &+= 1
         connectionTask?.cancel()
         connectionTask = nil
         state = .idle
@@ -133,6 +164,7 @@ final class V2StreamCoordinator {
         }
         sessionObservers.removeAll()
         sessionBuffers.removeAll()
+        sessionBufferBytes.removeAll()
         bufferOrder.removeAll()
         lastDashboardSnapshot = nil
         prefetchSessions = nil
@@ -165,6 +197,10 @@ final class V2StreamCoordinator {
         let deadline = ContinuousClock.now.advanced(by: readyTimeout)
         while ContinuousClock.now < deadline {
             if isInvalidated { throw V2StreamError.unavailable }
+            // A suspended app or an unusable path must not spend the ready
+            // window and then settle the process on the legacy sockets. The
+            // next attempt is free to use the unified endpoint again.
+            if isSuspended || isOffline { throw V2StreamError.unavailable }
             switch state {
             case .connected: return
             case .fallback: throw V2StreamError.unavailable
@@ -186,20 +222,44 @@ final class V2StreamCoordinator {
     }
 
     private func start() {
-        guard state == .idle, connectionTask == nil else { return }
+        guard state == .idle, connectionTask == nil, !isSuspended, !isOffline,
+              !isInvalidated, !Self.processFallbackEngaged else { return }
         state = .connecting
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
         connectionTask = Task { [weak self] in
             guard let self else { return }
-            await self.runConnectionLoop()
+            await self.runConnectionLoop(generation: generation)
         }
+    }
+
+    /// Drops the socket without declaring the endpoint unusable. Observers stay
+    /// attached; a resume or a recovered path starts a fresh connection.
+    private func stopConnection() {
+        connectionGeneration &+= 1
+        connectionTask?.cancel()
+        connectionTask = nil
+        if state != .fallback { state = .idle }
+    }
+
+    /// Reconnects only for a live consumer. Without one the next subscribe
+    /// starts the socket itself.
+    private func restartIfNeeded() {
+        guard !isInvalidated, !isSuspended, !isOffline, state == .idle,
+              connectionTask == nil, !Self.processFallbackEngaged,
+              !dashboardObservers.isEmpty || !sessionObservers.isEmpty else { return }
+        start()
     }
 
     // MARK: - Connection
 
-    private func runConnectionLoop() async {
+    private func runConnectionLoop(generation: Int) async {
         defer {
-            connectionTask = nil
-            if state != .fallback { state = .idle }
+            // A newer connection may already own the task and state.
+            if connectionGeneration == generation {
+                connectionTask = nil
+                if state != .fallback { state = .idle }
+            }
         }
         var attempt = 0
         var connectedOnce = false
@@ -249,7 +309,12 @@ final class V2StreamCoordinator {
                     if state != .fallback { state = .idle }
                     return
                 }
-                guard connectedOnce else {
+                // Retry only failures a new connection can fix. Expired
+                // credentials, a missing endpoint or a peer that never spoke
+                // the unified protocol are terminal for this process; those
+                // consumers fall back to the legacy sockets instead of
+                // reconnecting forever.
+                guard connectedOnce, Self.isRetryable(error) else {
                     engageFallback()
                     return
                 }
@@ -264,6 +329,15 @@ final class V2StreamCoordinator {
         }
     }
 
+    /// A reconnect can only repair transport failures. Auth/404 and a bad
+    /// handshake keep failing until the endpoint or credentials change.
+    private static func isRetryable(_ error: Error) -> Bool {
+        if let error = error as? V2StreamError {
+            return error == .disconnected || error == .readyTimeout
+        }
+        return V2ClientFailure(error).permitsAutomaticReconnect
+    }
+
     private func reconnectDelay(attempt: Int) -> Duration {
         let capped = min(pow(2.0, Double(min(attempt, 5))), 30.0)
         let jitter = Double.random(in: 0...(capped * 0.4))
@@ -273,6 +347,7 @@ final class V2StreamCoordinator {
     private func engageFallback() {
         Self.processFallbackEngaged = true
         state = .fallback
+        connectionGeneration &+= 1
         connectionTask?.cancel()
         connectionTask = nil
         for continuation in dashboardObservers.values { continuation.finish() }
@@ -319,18 +394,23 @@ final class V2StreamCoordinator {
     private func buffer(_ event: V2SessionEvent) {
         let id = event.sessionId
         var events = sessionBuffers[id] ?? []
+        var bytes = sessionBufferBytes[id] ?? 0
         if events.last?.eventId != event.eventId {
             events.append(event)
-            if events.count > Self.maximumBufferedEvents {
-                events.removeFirst(events.count - Self.maximumBufferedEvents)
+            bytes += event.wireBytes
+            while !events.isEmpty,
+                  events.count > Self.maximumBufferedEvents || bytes > Self.maximumBufferedBytes {
+                bytes -= events.removeFirst().wireBytes
             }
         }
         sessionBuffers[id] = events
+        sessionBufferBytes[id] = bytes
         bufferOrder.removeAll { $0 == id }
         bufferOrder.append(id)
         while bufferOrder.count > Self.maximumBufferedSessions {
             let evicted = bufferOrder.removeFirst()
             sessionBuffers.removeValue(forKey: evicted)
+            sessionBufferBytes.removeValue(forKey: evicted)
         }
     }
 

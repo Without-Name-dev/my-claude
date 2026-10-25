@@ -14,6 +14,11 @@ import (
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 )
 
+// connectorBeatTimeout is how long a connector socket may stay silent. The
+// connector beats every 20 seconds, so this is three missed beats; a half-open
+// socket that never delivers another frame is closed and taken offline.
+const connectorBeatTimeout = 60 * time.Second
+
 // connectorConn is one live connector socket.
 type connectorConn struct {
 	id           string
@@ -215,14 +220,29 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 		a.log.Warn("could not record connector presence", "error", err)
 	}
 
+	// A socket that stops sending beats without closing is still "online" to
+	// the hub. Close it so the web views learn the truth through the same
+	// disconnect path as a clean close.
+	watchdog := time.AfterFunc(connectorBeatTimeout, func() {
+		a.log.Warn("connector heartbeat timed out; closing socket", "connector", connector.ID)
+		conn.ws.CloseNow()
+	})
+	defer watchdog.Stop()
+
 	defer func() {
 		if a.connectors.unregister(conn) {
 			conn.close()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
+			// SetConnectorPresence also moves any session left mid-turn back
+			// to idle, because nothing can still be running on that machine.
 			if err := a.db.SetConnectorPresence(ctx, connector.ID, connectionID, false); err != nil {
 				a.log.Warn("could not clear connector presence", "error", err)
 			}
+			// unregister already removed the socket, so these views render the
+			// connector as offline.
+			a.publishConnectorPresence(ctx, conn.userID, connector.ID, false)
+			a.dashboards.notify(conn.userID)
 		}
 	}()
 
@@ -233,6 +253,7 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		watchdog.Reset(connectorBeatTimeout)
 		var env protocol.Envelope
 		if err := json.Unmarshal(data, &env); err != nil {
 			a.log.Debug("dropping malformed connector frame", "error", err)

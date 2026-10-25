@@ -449,12 +449,18 @@ func updateDiscoveredTx(
 	// Only a title the person typed is frozen. An automatic title keeps
 	// following the transcript, because the first scan of a fresh session
 	// often has nothing better than an auto-generated slug.
+	//
+	// Seeing the transcript again also brings the session back: a row marked
+	// missing when the file disappeared must not stay invisible forever.
 	_, err := tx.ExecContext(ctx, `
 		UPDATE sessions SET
 			project_id = coalesce(?, project_id),
 			title = CASE WHEN title_source = 'user' THEN title ELSE ? END,
 			title_source = CASE WHEN title_source = 'user' THEN 'user' ELSE 'connector' END,
 			cwd = coalesce(nullif(?, ''), cwd),
+			source_state = 'visible',
+			source_state_at = NULL,
+			source_state_reason = NULL,
 			sort_at = max(coalesce(sort_at, 0), ?),
 			updated_at = ?
 		WHERE id = ?`,
@@ -541,38 +547,48 @@ func (s *Store) MarkSessionMissing(ctx context.Context, connectorID, externalID 
 // running, stopping or error is a leftover from the previous connection, and
 // leaving it there shows the person a permanent error they cannot dismiss.
 func (s *Store) ResetStalledSessions(ctx context.Context, connectorID string) ([]string, error) {
-	rows, err := s.Read().QueryContext(ctx, `
-		SELECT id FROM sessions
-		WHERE connector_id = ? AND status IN ('running', 'stopping', 'error')`, connectorID)
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
 	now := time.Now().UnixMilli()
-	err = s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		for _, id := range ids {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?`,
-				now, id); err != nil {
+	var ids []string
+	// The read and the write share one transaction. Selecting first and
+	// updating afterwards let a turn that started in between be reset to idle,
+	// which stranded the running prompt.
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id FROM sessions
+			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error')`, connectorID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
 				return err
 			}
+			ids = append(ids, id)
 		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		reset := make([]string, 0, len(ids))
+		for _, id := range ids {
+			res, err := tx.ExecContext(ctx, `
+				UPDATE sessions SET status = 'idle', updated_at = ?
+				WHERE id = ? AND connector_id = ?
+				  AND status IN ('running', 'stopping', 'error')`,
+				now, id, connectorID)
+			if err != nil {
+				return err
+			}
+			// A conditional update keeps a row that changed after the read
+			// (for example a fresh turn) out of the reset list.
+			if n, _ := res.RowsAffected(); n > 0 {
+				reset = append(reset, id)
+			}
+		}
+		ids = reset
 		return nil
 	})
 	if err != nil {

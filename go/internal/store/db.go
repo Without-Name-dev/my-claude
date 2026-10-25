@@ -33,14 +33,19 @@ import (
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
+// sessionLockStripes bounds the per-session lock table. A fixed stripe set
+// replaces the old grow-only map: sessions that hash to the same stripe simply
+// serialise their writes, which is safe because the write pool already has a
+// single connection.
+const sessionLockStripes = 64
+
 // Store is the database handle shared by every part of the server.
 type Store struct {
 	read  *sql.DB
 	write *sql.DB
 	path  string
 
-	locksMu sync.Mutex
-	locks   map[string]*sync.Mutex
+	locks [sessionLockStripes]sync.Mutex
 }
 
 // Open prepares the database file, applies pending migrations, and returns the
@@ -84,7 +89,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	read.SetMaxOpenConns(8)
 	read.SetMaxIdleConns(8)
 
-	return &Store{read: read, write: write, path: path, locks: map[string]*sync.Mutex{}}, nil
+	return &Store{read: read, write: write, path: path}, nil
 }
 
 // Close releases both pools and folds the write-ahead log back into the main
@@ -132,14 +137,14 @@ func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *sql.
 // WithSession serialises work for one session, so revisions are handed out in
 // the order the events happened. Callers take this lock, then call Write.
 func (s *Store) WithSession(sessionID string, fn func() error) error {
-	s.locksMu.Lock()
-	lock, ok := s.locks[sessionID]
-	if !ok {
-		lock = &sync.Mutex{}
-		s.locks[sessionID] = lock
+	// FNV-1a, inlined so the hot path does not allocate a hasher.
+	var hash uint32 = 2166136261
+	for i := 0; i < len(sessionID); i++ {
+		hash ^= uint32(sessionID[i])
+		hash *= 16777619
 	}
-	s.locksMu.Unlock()
 
+	lock := &s.locks[hash%sessionLockStripes]
 	lock.Lock()
 	defer lock.Unlock()
 	return fn()

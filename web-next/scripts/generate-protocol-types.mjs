@@ -1,4 +1,5 @@
 import { readFile, readdir, mkdir, unlink, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
 
@@ -12,6 +13,21 @@ const generatedDir = path.join(webRoot, "src", "generated", "protocol", "v1")
 const checkOnly = process.argv.includes("--check")
 
 const manifest = JSON.parse(await readFile(path.join(contractDir, "manifest.json"), "utf8"))
+
+// The manifest pins each schema by digest. Without this check a schema edited
+// in place would silently regenerate different types from the same contract
+// version.
+for (const artifact of manifest.artifacts) {
+  const digest = createHash("sha256")
+    .update(await readFile(path.join(contractDir, artifact.path)))
+    .digest("hex")
+  if (digest !== artifact.sha256) {
+    throw new Error(
+      `${artifact.path} does not match its manifest sha256 (expected ${artifact.sha256}, got ${digest})`,
+    )
+  }
+}
+
 const artifacts = manifest.artifacts.filter((artifact) => artifact.direction !== "ingress")
 const expected = new Map()
 

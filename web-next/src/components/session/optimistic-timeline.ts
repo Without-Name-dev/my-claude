@@ -115,7 +115,9 @@ function optimisticUserMessageMatchesServerItem(
   if (!isOptimisticTimelineItem(optimisticItem)) return false
   if (optimisticItem.type !== "message" || optimisticItem.role !== "user") return false
   if (serverItem.type !== "message" || serverItem.role !== "user") return false
-  if (optimisticItem.status !== "pending") return false
+  // The send may have been accepted even though the response was lost, which
+  // marks the local copy failed. A matching client message id is the evidence
+  // that this is the same message, so a failed copy must be dismissed too.
   const optimisticClientMessageId = timelineClientMessageId(optimisticItem)
   return Boolean(serverClientMessageId && optimisticClientMessageId === serverClientMessageId)
 }

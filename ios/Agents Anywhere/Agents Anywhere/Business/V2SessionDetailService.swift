@@ -34,6 +34,12 @@ struct V2SessionDetailService {
         try await runtimeAPI.state(sessionId: sessionId).state
     }
 
+    /// The live `runtime.activity` event only reports changes, so a reconnected
+    /// view reads the current subagent set from the server's registry.
+    func activity(sessionId: V2SessionID) async throws -> [V2AgentRun] {
+        try await sessionAPI.activity(sessionId: sessionId).agents
+    }
+
     func sendMessage(
         sessionId: V2SessionID,
         content: String,

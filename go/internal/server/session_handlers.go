@@ -186,6 +186,9 @@ func (a *App) handlePatchSession(w http.ResponseWriter, r *http.Request, user st
 		httpx.Fail(w, err)
 		return
 	}
+	// The edit is only visible to another open window if it arrives as an
+	// event; the dashboard alone would not update the session being read.
+	a.publishSessionMeta(r.Context(), updated)
 	httpx.OK(w, map[string]any{"session": a.sessionView(r.Context(), updated), "serverTime": timestampNow()})
 }
 
@@ -213,7 +216,7 @@ func (a *App) handleTimeline(w http.ResponseWriter, r *http.Request, user store.
 	switch mode {
 	case "changes":
 		after, _ := strconv.ParseInt(query.Get("afterSeq"), 10, 64)
-		items, err = a.db.TimelineItemsAfter(r.Context(), a.db.Read(), session.ID, after, limit)
+		items, hasMore, err = a.timelineChangesPage(r.Context(), session.ID, after, limit)
 	case "history":
 		raw := query.Get("beforeOrderSeq")
 		before, parseErr := strconv.ParseInt(raw, 10, 64)
@@ -222,11 +225,9 @@ func (a *App) handleTimeline(w http.ResponseWriter, r *http.Request, user store.
 				"beforeOrderSeq is required for history mode"))
 			return
 		}
-		items, err = a.db.TimelineItemsBefore(r.Context(), a.db.Read(), session.ID, before, limit+1)
-		items, hasMore = trimTimelinePage(items, limit)
+		items, hasMore, err = a.timelineOlderPage(r.Context(), session.ID, before, limit)
 	default:
-		items, err = a.db.TimelineItemsLatest(r.Context(), a.db.Read(), session.ID, limit+1)
-		items, hasMore = trimTimelinePage(items, limit)
+		items, hasMore, err = a.timelineOlderPage(r.Context(), session.ID, 0, limit)
 	}
 	if err != nil {
 		httpx.Fail(w, err)
@@ -236,22 +237,93 @@ func (a *App) handleTimeline(w http.ResponseWriter, r *http.Request, user store.
 	for _, it := range items {
 		views = append(views, toView(it, session.Runtime))
 	}
+	nextSeq := session.Seq
+	if mode == "changes" && hasMore && len(items) > 0 {
+		// A paginated reader continues from the last revision it received;
+		// session.Seq would skip the rest of this page.
+		nextSeq = items[len(items)-1].UpdatedSeq
+	}
 	httpx.OK(w, map[string]any{
 		"sessionId":  session.ID,
 		"items":      views,
-		"nextSeq":    session.Seq,
+		"nextSeq":    nextSeq,
 		"hasMore":    hasMore,
 		"serverTime": timestampNow(),
 	})
 }
 
-// trimTimelinePage drops the oldest item fetched only to learn whether another
-// page exists. The store returns timeline windows oldest first.
-func trimTimelinePage(items []store.TimelineItem, limit int) ([]store.TimelineItem, bool) {
-	if len(items) <= limit {
-		return items, false
+// timelineOlderPage returns the newest items below beforeOrderSeq (zero means
+// the session head), in display order.
+//
+// A page stops at an order_seq boundary. The pagination cursor is a single
+// number, so a page that split a group of rows sharing one order_seq would make
+// the next request skip the rest of the group. Carrying the whole group with
+// the page keeps those rows readable and the next cursor safe; only a single
+// group larger than the store's window can still be cut.
+func (a *App) timelineOlderPage(ctx context.Context, sessionID string, before int64, limit int) ([]store.TimelineItem, bool, error) {
+	want := limit + 1
+	for {
+		var (
+			items []store.TimelineItem
+			err   error
+		)
+		if before > 0 {
+			items, err = a.db.TimelineItemsBefore(ctx, a.db.Read(), sessionID, before, want)
+		} else {
+			items, err = a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, want)
+		}
+		if err != nil || len(items) <= limit {
+			return items, false, err
+		}
+		group := items[len(items)-limit].OrderSeq
+		start := len(items) - limit
+		for start > 0 && items[start-1].OrderSeq == group {
+			start--
+		}
+		if start == 0 && len(items) >= want {
+			if want >= 2000 {
+				return items, true, nil
+			}
+			want = nextTimelinePageSize(want)
+			continue
+		}
+		return items[start:], start > 0, nil
 	}
-	return items[len(items)-limit:], true
+}
+
+// timelineChangesPage returns the items changed after a revision, oldest
+// change first, stopping at a revision boundary for the same reason: the
+// afterSeq cursor is a single revision, so a page must not split one.
+func (a *App) timelineChangesPage(ctx context.Context, sessionID string, after int64, limit int) ([]store.TimelineItem, bool, error) {
+	want := limit + 1
+	for {
+		items, err := a.db.TimelineItemsAfter(ctx, a.db.Read(), sessionID, after, want)
+		if err != nil || len(items) <= limit {
+			return items, false, err
+		}
+		group := items[limit-1].UpdatedSeq
+		end := limit
+		for end < len(items) && items[end].UpdatedSeq == group {
+			end++
+		}
+		if end == len(items) && len(items) >= want {
+			if want >= 2000 {
+				return items, true, nil
+			}
+			want = nextTimelinePageSize(want)
+			continue
+		}
+		return items[:end], end < len(items), nil
+	}
+}
+
+// nextTimelinePageSize doubles a page request, capped by the store's own
+// maximum window.
+func nextTimelinePageSize(want int) int {
+	if want >= 1000 {
+		return 2000
+	}
+	return want * 2
 }
 
 // handleSnapshot is the first hydration a client does.
@@ -266,12 +338,11 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request, user store.
 			limit = n
 		}
 	}
-	items, err := a.db.TimelineItemsLatest(r.Context(), a.db.Read(), session.ID, limit+1)
+	items, hasMore, err := a.timelineOlderPage(r.Context(), session.ID, 0, limit)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
-	items, hasMore := trimTimelinePage(items, limit)
 	views := make([]ItemView, 0, len(items))
 	for _, it := range items {
 		views = append(views, toView(it, session.Runtime))
@@ -584,6 +655,9 @@ func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user s
 		return
 	}
 	a.setSessionStatus(r.Context(), session.ID, "running")
+	// The decision is resolved for everyone, not only for the tab that sent
+	// it; the other open sessions keep the card open until this event.
+	a.publishNoticeUpdate(r.Context(), session.ID, noticeID, request, "resolved", 0)
 	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
 }
 
@@ -917,6 +991,9 @@ func (a *App) applyBulk(
 			continue
 		}
 		views = append(views, a.sessionView(ctx, session))
+		// A bulk edit is still a change per session: open windows and the
+		// dashboard have to learn about it, not just the caller's response.
+		a.publishSessionMeta(ctx, session)
 	}
 	return views, missing, nil
 }

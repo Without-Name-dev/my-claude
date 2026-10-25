@@ -165,6 +165,70 @@ func TestRequestAbortCarriesTheSessionOnTheSecondLine(t *testing.T) {
 	}
 }
 
+func TestSubmitCommandCarriesTheRuntimeSession(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if _, err := b.SubmitCommand("sess-1", "runtime-1", "cmd-1", "/compact", "keep the summary"); err != nil {
+		t.Fatalf("SubmitCommand: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "queue", "1.json"))
+	if err != nil {
+		t.Fatalf("read queue file: %v", err)
+	}
+	var msg QueueMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("queue file is not valid JSON: %v", err)
+	}
+	if msg.ExternalSessionID != "runtime-1" {
+		t.Fatalf("external session = %q, want runtime-1", msg.ExternalSessionID)
+	}
+	if msg.Command != "compact" || msg.Args != "keep the summary" || msg.Action != "command" {
+		t.Fatalf("unexpected command %+v", msg)
+	}
+}
+
+func TestCancelQueuedRemovesOnlyTheNamedMessage(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if _, err := b.Submit("s", "", "keep", "one", "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Submit("s", "", "drop", "two", "prompt"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.CancelQueued("drop"); err != nil {
+		t.Fatalf("CancelQueued: %v", err)
+	}
+	entries, err := os.ReadDir(b.QueueDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue has %d entries, want 1", len(entries))
+	}
+	raw, err := os.ReadFile(filepath.Join(b.QueueDir(), entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg QueueMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.ID != "keep" {
+		t.Fatalf("cancelled the wrong message: %q remains", msg.ID)
+	}
+
+	// A message the plugin already consumed, or one never queued, is not an
+	// error: there is simply nothing left to withdraw.
+	if err := b.CancelQueued("missing"); err != nil {
+		t.Fatalf("CancelQueued(missing): %v", err)
+	}
+	if err := b.CancelQueued(""); err != nil {
+		t.Fatalf("CancelQueued(empty): %v", err)
+	}
+}
+
 func TestSubmitFailsOnAnOutboxItCannotRead(t *testing.T) {
 	dir := t.TempDir()
 	b := New(dir)

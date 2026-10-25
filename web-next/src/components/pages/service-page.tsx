@@ -355,6 +355,12 @@ export function ServicePage({ section }: { section: AdminServiceSection }) {
           </Button>
         </PageHeader>
 
+        {error ? (
+          <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
         {page === "general" ? (
           <Card>
             <CardHeader>

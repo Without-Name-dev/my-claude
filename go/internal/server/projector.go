@@ -37,7 +37,11 @@ type turnState struct {
 	text    strings.Builder
 	chunks  int
 	session string
+	connID  string
 	itemID  string
+	// rev is the last delta revision applied; deltas arrive numbered from one
+	// and a replay must not be appended twice.
+	rev int
 	// lastWrite throttles persistence: the plugin emits a delta every ~120ms,
 	// and rewriting a growing payload that often is wasted work. Clients still
 	// see the stream, just in slightly coarser steps.
@@ -52,10 +56,10 @@ func newTurnRegistry() *turnRegistry {
 	return &turnRegistry{turns: map[string]*turnState{}}
 }
 
-func (r *turnRegistry) begin(turnID, sessionID, itemID string) *turnState {
+func (r *turnRegistry) begin(turnID, sessionID, connID, itemID string) *turnState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := &turnState{session: sessionID, itemID: itemID}
+	state := &turnState{session: sessionID, connID: connID, itemID: itemID}
 	r.turns[turnID] = state
 	return state
 }
@@ -72,6 +76,19 @@ func (r *turnRegistry) end(turnID string) *turnState {
 	state := r.turns[turnID]
 	delete(r.turns, turnID)
 	return state
+}
+
+// hasItem reports whether a running turn owns a timeline item. A history
+// import consults it so a call that is still streaming keeps the live row.
+func (r *turnRegistry) hasItem(itemID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, state := range r.turns {
+		if state.itemID == itemID {
+			return true
+		}
+	}
+	return false
 }
 
 // approveRegistry holds the questions a connector is waiting on.
@@ -109,11 +126,74 @@ func (r *approveRegistry) takeFor(
 	return req, connectorID, true
 }
 
-func (r *approveRegistry) remove(noticeID string) {
+// take removes one notice and returns it, so the caller can publish the
+// resolved state.
+func (r *approveRegistry) take(noticeID string) (protocol.ApprovalRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	req, ok := r.byID[noticeID]
+	if !ok {
+		return protocol.ApprovalRequest{}, false
+	}
 	delete(r.byID, noticeID)
 	delete(r.connOf, noticeID)
+	return req, true
+}
+
+// takeSession removes every notice for one session and returns them.
+func (r *approveRegistry) takeSession(sessionID string) []pendingApproval {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	removed := make([]pendingApproval, 0)
+	for noticeID, req := range r.byID {
+		if req.SessionID != sessionID {
+			continue
+		}
+		removed = append(removed, pendingApproval{noticeID: noticeID, request: req})
+		delete(r.byID, noticeID)
+		delete(r.connOf, noticeID)
+	}
+	return removed
+}
+
+// pendingApproval is one question retracted in bulk.
+type pendingApproval struct {
+	noticeID string
+	request  protocol.ApprovalRequest
+}
+
+// expireSessionApprovals retracts the questions a finished turn can no longer
+// answer. Leaving them pending would keep the session blocked on a decision the
+// connector is not waiting for anymore.
+func (a *App) expireSessionApprovals(ctx context.Context, sessionID string, seq int64) {
+	for _, pending := range a.approvals.takeSession(sessionID) {
+		a.publishNoticeUpdate(ctx, sessionID, pending.noticeID, pending.request, "expired", seq)
+	}
+}
+
+// publishNoticeUpdate tells clients a pending question changed state.
+//
+// A resolution is a new revision of the same notice, so clients replace the
+// card they drew instead of leaving it open forever.
+func (a *App) publishNoticeUpdate(
+	ctx context.Context, sessionID, noticeID string,
+	request protocol.ApprovalRequest, status string, seq int64,
+) {
+	if seq == 0 {
+		seq = a.currentSeq(ctx, sessionID)
+	}
+	notice := a.approvalNotice(noticeID, request)
+	notice["status"] = status
+	notice["responseRequired"] = false
+	notice["revision"] = 2
+	notice["updatedSeq"] = seq
+	notice["updatedAt"] = timestampNow()
+	notice["resolvedAt"] = timestampNow()
+	frame, err := newEnvelope(sessionID, seq, EventNoticeUpdated, map[string]any{"notice": notice})
+	if err != nil {
+		return
+	}
+	a.broker.Publish(sessionID, frame)
 }
 
 // onTurnBegin starts an assistant message item.
@@ -124,7 +204,7 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 		return
 	}
 	itemID := assistantItemID(msg.TurnID)
-	state := a.turns.begin(msg.TurnID, msg.SessionID, itemID)
+	state := a.turns.begin(msg.TurnID, msg.SessionID, conn.id, itemID)
 	orderSeq := store.NowMS()
 	state.mu.Lock()
 	state.orderSeq = orderSeq
@@ -159,6 +239,22 @@ func (a *App) onTurnDelta(ctx context.Context, conn *connectorConn, msg protocol
 	}
 	now := time.Now()
 	state.mu.Lock()
+	// The turn belongs to the connector that opened it. Another connector must
+	// not be able to append text to (or close) somebody else's message.
+	if state.connID != conn.id || state.session != msg.SessionID {
+		state.mu.Unlock()
+		return
+	}
+	// Rev is one past the revision already applied. A lower value is a replay
+	// after a reconnect and must not be appended again; a higher one means a
+	// gap, whose text turn.end heals from its full payload.
+	if msg.Rev != 0 && msg.Rev != state.rev+1 {
+		state.mu.Unlock()
+		return
+	}
+	if msg.Rev != 0 {
+		state.rev = msg.Rev
+	}
 	state.text.WriteString(msg.Text)
 	state.chunks++
 	text := state.text.String()
@@ -239,6 +335,20 @@ func (a *App) publishStreamingView(
 
 // onTurnEnd closes the assistant message and returns the session to idle.
 func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.TurnEnd) {
+	// Check ownership before touching the registry: otherwise a connector could
+	// end another connector's running turn by guessing its turn id.
+	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+		a.log.Warn("turn.end for an unknown session", "session", msg.SessionID)
+		return
+	}
+	if state := a.turns.get(msg.TurnID); state != nil {
+		state.mu.Lock()
+		owned := state.connID == conn.id && state.session == msg.SessionID
+		state.mu.Unlock()
+		if !owned {
+			return
+		}
+	}
 	state := a.turns.end(msg.TurnID)
 	itemID := assistantItemID(msg.TurnID)
 	if state != nil {
@@ -269,6 +379,18 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 		}
 	}
 	seq, err := a.writeTimeline(ctx, msg.SessionID, func(tx *sql.Tx, seq int64) error {
+		// The turn keeps the position it was given when it began. Restamping it
+		// here would move the answer below anything that arrived while it ran.
+		orderSeq := store.NowMS()
+		if state != nil {
+			state.mu.Lock()
+			orderSeq = state.orderSeq
+			state.mu.Unlock()
+		} else if existing, lookupErr := a.db.TimelineItemByID(ctx, tx, msg.SessionID, itemID); lookupErr == nil {
+			// The in-memory turn was lost to a restart; the row it already
+			// wrote still remembers where the message belongs.
+			orderSeq = existing.OrderSeq
+		}
 		payload := messageContent(text)
 		if msg.Error != "" {
 			payload = messageContentWithError(text, msg.Error)
@@ -279,7 +401,7 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			Type:       "message",
 			Status:     status,
 			Role:       "assistant",
-			OrderSeq:   store.NowMS(),
+			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
 			Payload:    payload,
 		}, store.NowMS())
@@ -289,6 +411,7 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 		return
 	}
 	a.publishItem(ctx, msg.SessionID, itemID, seq, false)
+	a.expireSessionApprovals(ctx, msg.SessionID, seq)
 
 	nextStatus := "idle"
 	if status == "failed" {
@@ -327,6 +450,9 @@ func (a *App) onToolBegin(ctx context.Context, conn *connectorConn, msg protocol
 func (a *App) onToolEnd(ctx context.Context, conn *connectorConn, msg protocol.ToolEnd) {
 	sessionID := msg.SessionID
 	if sessionID == "" {
+		return
+	}
+	if _, err := a.ownedSessionForConnector(ctx, conn, sessionID); err != nil {
 		return
 	}
 	itemID := toolItemID(msg.ToolUseID)
@@ -378,10 +504,15 @@ func (a *App) onApprovalRequest(ctx context.Context, conn *connectorConn, msg pr
 
 // onApprovalCancel retracts a question.
 func (a *App) onApprovalCancel(ctx context.Context, conn *connectorConn, msg protocol.ApprovalCancel) {
+	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+		return
+	}
 	noticeID := noticeIDFor(msg.ToolUseID)
-	a.approvals.remove(noticeID)
-	req, _ := json.Marshal(msg)
-	_ = req
+	request, ok := a.approvals.take(noticeID)
+	if !ok {
+		return
+	}
+	a.publishNoticeUpdate(ctx, msg.SessionID, noticeID, request, "cancelled", 0)
 }
 
 // ownedSessionForConnector loads a session and proves the connector owns it.

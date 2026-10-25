@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -56,7 +57,13 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 	return true
 }
 
-// applyHistory stores a transcript and replaces what the session shows.
+// applyHistory reconciles a transcript with what the session already shows.
+//
+// The connector answers with a window of the conversation, not the whole
+// transcript, so items missing from it are not deleted. Existing rows are only
+// rewritten when the transcript really differs: an unchanged item keeps its
+// revision, and a changed one keeps the position it already had, so a resync
+// cannot reorder or duplicate a conversation the person is reading.
 //
 // The whole import shares one revision: it is a single state change, and one
 // snapshot event tells every open client to replace its timeline in one go.
@@ -71,23 +78,56 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	}
 
 	var seq int64
+	changed := 0
 	err = a.db.WithSession(session.ID, func() error {
 		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			rows := make([]store.TimelineItem, 0, len(msg.Items))
+			for _, item := range msg.Items {
+				row := historyItemRow(session.ID, item, 0)
+				existing, err := a.db.TimelineItemByID(ctx, tx, session.ID, item.ID)
+				if err != nil && !errors.Is(err, store.ErrNotFound) {
+					return err
+				}
+				if err == nil {
+					if historyItemUnchanged(existing, row) {
+						continue
+					}
+					// A turn still streaming owns its row; its turn.end writes
+					// the final text and a transcript copy must not race it.
+					if a.turns.hasItem(item.ID) {
+						continue
+					}
+					row.OrderSeq = existing.OrderSeq
+					if existing.ItemTime != nil {
+						row.ItemTime = existing.ItemTime
+					}
+				}
+				rows = append(rows, row)
+			}
+			if len(rows) == 0 {
+				return nil
+			}
 			allocated, err := store.AllocateSeq(ctx, tx, session.ID, store.NowMS())
 			if err != nil {
 				return err
 			}
 			seq = allocated
-			for _, item := range msg.Items {
-				if err := store.UpsertTimelineItem(ctx, tx, historyItemRow(session.ID, item, allocated), store.NowMS()); err != nil {
+			for _, row := range rows {
+				row.UpdatedSeq = allocated
+				if err := store.UpsertTimelineItem(ctx, tx, row, store.NowMS()); err != nil {
 					return err
 				}
 			}
+			changed = len(rows)
 			return nil
 		})
 	})
 	if err != nil {
 		a.log.Warn("could not store history", "error", err)
+		return
+	}
+	if changed == 0 {
+		a.log.Debug("history already in sync", "session", session.ID, "items", len(msg.Items))
 		return
 	}
 
@@ -108,6 +148,18 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	a.broker.Publish(session.ID, frame)
 	a.notifySessionDashboard(ctx, session.ID)
 	a.log.Info("imported transcript", "session", session.ID, "items", len(views))
+}
+
+// historyItemUnchanged reports whether the stored row already carries the
+// transcript's state, so a resync does not bump a revision nobody can see.
+//
+// Position is not compared: the stored row already has one, and a transcript
+// timestamp only decides where a brand-new item goes.
+func historyItemUnchanged(existing, incoming store.TimelineItem) bool {
+	return existing.Type == incoming.Type &&
+		existing.Status == incoming.Status &&
+		existing.Role == incoming.Role &&
+		contentHash(existing.Payload) == contentHash(incoming.Payload)
 }
 
 // historyItemRow maps one transcript item onto the stored shape.

@@ -66,6 +66,13 @@ func (s *Store) CreateTerminal(ctx context.Context, t Terminal) (Terminal, error
 	}
 	t.CreatedAt, t.UpdatedAt = now, now
 	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		// A terminal may point at one of the caller's own sessions on this
+		// connector, or at the connector's synthetic browse session. Any other
+		// id must not become a row, or the terminal would claim a conversation
+		// that belongs to somebody else.
+		if err := checkTerminalSession(ctx, tx, t); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO connector_terminals (id, connector_id, user_id, session_id,
 				label, root, cwd, shell, cols, rows, status, exit_code, pid,
@@ -185,6 +192,25 @@ func (s *Store) UpdateTerminalScrollback(ctx context.Context, id string, seq uin
 			WHERE id = ?`, int64(seq), time.Now().UnixMilli(), id)
 		return err
 	})
+}
+
+// checkTerminalSession rejects a session id the caller does not own on this
+// connector. The connector's browse shell has no session row, so its
+// "browse_<connector>" id is the one accepted synthetic value.
+func checkTerminalSession(ctx context.Context, tx *sql.Tx, t Terminal) error {
+	if t.SessionID == "" || t.SessionID == "browse_"+t.ConnectorID {
+		return nil
+	}
+	var one int
+	err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM sessions s
+		JOIN connectors c ON c.id = s.connector_id
+		WHERE s.id = ? AND s.connector_id = ? AND c.user_id = ?`,
+		t.SessionID, t.ConnectorID, t.UserID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // DeleteTerminal removes the metadata row. The PTY is closed by the caller

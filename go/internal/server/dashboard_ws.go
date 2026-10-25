@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
 // dashboardRefresh is how often a dirty dashboard redraws. Streaming a long
@@ -100,15 +102,17 @@ func (a *App) handleDashboardWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if !a.writeDashboard(ws, ctx, user.ID) {
+	needsRefresh := false
+	if written, err := a.writeDashboard(ws, ctx, user.ID); err != nil {
 		return
+	} else if !written {
+		needsRefresh = true
 	}
 
 	refresh := time.NewTicker(dashboardRefresh)
 	defer refresh.Stop()
 	keepalive := time.NewTicker(keepaliveEvery)
 	defer keepalive.Stop()
-	needsRefresh := false
 
 	for {
 		select {
@@ -118,10 +122,13 @@ func (a *App) handleDashboardWS(w http.ResponseWriter, r *http.Request) {
 			needsRefresh = true
 		case <-refresh.C:
 			if needsRefresh {
-				needsRefresh = false
-				if !a.writeDashboard(ws, ctx, user.ID) {
+				written, err := a.writeDashboard(ws, ctx, user.ID)
+				if err != nil {
 					return
 				}
+				// A snapshot that could not be built is not a successful
+				// write; keep the refresh pending and retry on the next tick.
+				needsRefresh = !written
 			}
 		case <-keepalive.C:
 			body, _ := json.Marshal(map[string]any{
@@ -138,11 +145,39 @@ func (a *App) handleDashboardWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// listUserSessions returns every session the person owns, active and archived.
+// The dashboard snapshot and the unified stream's subscription reconcile need
+// the same list, so one call serves both instead of two full listings per
+// refresh.
+func (a *App) listUserSessions(ctx context.Context, userID string) ([]store.Session, error) {
+	sessions, err := a.db.ListAllSessions(ctx, userID, false)
+	if err != nil {
+		return nil, err
+	}
+	archived, err := a.db.ListAllSessions(ctx, userID, true)
+	if err != nil {
+		return nil, err
+	}
+	return append(sessions, archived...), nil
+}
+
 // dashboardSnapshot builds one dashboard.snapshot frame.
 //
 // The dashboard socket and the unified stream send exactly the same payload, so
 // it is built here once. A field added for one socket must show up on both.
 func (a *App) dashboardSnapshot(ctx context.Context, userID string) ([]byte, error) {
+	sessions, err := a.listUserSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return a.dashboardSnapshotFor(ctx, userID, sessions)
+}
+
+// dashboardSnapshotFor renders the snapshot from an already-listed session set.
+// A failing session listing is an error, not an empty dashboard: the caller
+// keeps the previous snapshot on screen and retries rather than replacing the
+// client's inventory with nothing.
+func (a *App) dashboardSnapshotFor(ctx context.Context, userID string, sessions []store.Session) ([]byte, error) {
 	connectors, err := a.db.ListConnectors(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -157,13 +192,6 @@ func (a *App) dashboardSnapshot(ctx context.Context, userID string) ([]byte, err
 		return nil, err
 	}
 
-	sessions, err := a.db.ListAllSessions(ctx, userID, false)
-	if err == nil {
-		archived, archErr := a.db.ListAllSessions(ctx, userID, true)
-		if archErr == nil {
-			sessions = append(sessions, archived...)
-		}
-	}
 	sessionViews := make([]SessionView, 0, len(sessions))
 	for _, s := range sessions {
 		sessionViews = append(sessionViews, a.sessionView(ctx, s))
@@ -185,14 +213,22 @@ func (a *App) dashboardSnapshot(ctx context.Context, userID string) ([]byte, err
 }
 
 // writeDashboard sends one full snapshot.
-func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID string) bool {
+//
+// It reports whether the frame was written. A snapshot that could not be built
+// returns (false, nil): the socket is still healthy and the caller should keep
+// its refresh pending so the next tick retries. A write failure is fatal.
+func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID string) (bool, error) {
 	body, err := a.dashboardSnapshot(ctx, userID)
 	if err != nil {
-		return true
+		a.log.Warn("could not build dashboard snapshot", "user", userID, "error", err)
+		return false, nil
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return ws.Write(writeCtx, websocket.MessageText, body) == nil
+	if err := ws.Write(writeCtx, websocket.MessageText, body); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // notifySessionDashboard refreshes the owner's dashboard after a session

@@ -13,6 +13,7 @@ protocol V2SessionAPIProtocol {
     func archive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func unarchive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot
+    func activity(sessionId: V2SessionID) async throws -> V2AgentActivity
     func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
     func timelineHistory(sessionId: V2SessionID, beforeOrderSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
@@ -89,6 +90,15 @@ struct V2SessionAPI: V2SessionAPIProtocol {
             queryItems: [URLQueryItem(name: "limit", value: String(limit))]
         )
         return try await transport.send(request)
+    }
+
+    /// The server's process-memory registry of subagents running now. The live
+    /// event carries only changes, so this is the resync after a reconnect.
+    func activity(sessionId: V2SessionID) async throws -> V2AgentActivity {
+        try await transport.send(HTTPRequest<EmptyRequestBody, V2AgentActivity>(
+            method: .get,
+            path: sessionPath(sessionId, suffix: "activity")
+        ))
     }
 
     func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage {

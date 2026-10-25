@@ -162,7 +162,12 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
     if (!authSession?.accessToken) return
     const unreadIds = sessions.filter((session) => session.unread).map((session) => session.id)
     if (unreadIds.length === 0) return
-    await dashboardApi.bulkMarkSessionsRead(authSession.accessToken, unreadIds)
+    try {
+      // The API splits ids into batches the server accepts.
+      await dashboardApi.bulkMarkSessionsRead(authSession.accessToken, unreadIds)
+    } catch {
+      // refreshData below reconciles whatever the server accepted.
+    }
     refreshData()
   }, [authSession?.accessToken, refreshData, sessions])
 

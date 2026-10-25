@@ -101,6 +101,7 @@ final class V2ClientServices {
         }
         sessionReads.updateConnectivity(.init(availability: .offline))
         connectivity.onChange = { [weak self] status in
+            self?.streamCoordinator.updateConnectivity(status)
             self?.sessionRepository.updateConnectivity(status)
             self?.newSession.updateNetwork(status)
             self?.dashboardRepository.updateNetwork(status)

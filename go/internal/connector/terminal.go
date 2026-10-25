@@ -494,7 +494,6 @@ type terminalLink struct {
 	// disconnect, so a waiter can tell "up now" from "up once, long ago".
 	connected chan struct{}
 
-	seq     atomic.Uint64
 	dropped atomic.Uint64
 
 	ctx    context.Context
@@ -544,13 +543,13 @@ func (l *terminalLink) ensure(ctx context.Context) error {
 	}
 }
 
-// encode builds one envelope with the next link sequence number.
+// encode builds one envelope.
 func (l *terminalLink) encode(frameType string, value any) ([]byte, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(protocol.Envelope{Type: frameType, Seq: l.seq.Add(1), Data: data})
+	return json.Marshal(protocol.Envelope{Type: frameType, Data: data})
 }
 
 // enqueue adds a frame, dropping the oldest when the queue is full. It reports

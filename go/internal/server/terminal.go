@@ -241,6 +241,36 @@ func (h *terminalHub) getStream(terminalID string) *terminalStream {
 	return stream
 }
 
+// evict drops a terminal's replay window and ownership once it can no longer
+// produce output. Viewers already attached were sent the exit frame before
+// this runs; without eviction the hub keeps every terminal ever opened in
+// memory (replay bytes included) for the life of the process.
+func (h *terminalHub) evict(terminalID string) {
+	h.mu.Lock()
+	delete(h.streams, terminalID)
+	delete(h.owners, terminalID)
+	h.mu.Unlock()
+}
+
+// evictIfUnused drops a deleted terminal's stream unless a viewer is still
+// attached. An attached viewer must receive the connector's exit frame first,
+// and that path evicts the stream itself.
+func (h *terminalHub) evictIfUnused(terminalID string) {
+	h.mu.Lock()
+	if stream := h.streams[terminalID]; stream != nil {
+		stream.mu.Lock()
+		watched := len(stream.subs) > 0
+		stream.mu.Unlock()
+		if watched {
+			h.mu.Unlock()
+			return
+		}
+	}
+	delete(h.streams, terminalID)
+	delete(h.owners, terminalID)
+	h.mu.Unlock()
+}
+
 // applyState folds a connector snapshot into the stream. It returns false when
 // the server already has newer output, so a stale snapshot cannot move the
 // replay cursor backwards.
@@ -813,6 +843,7 @@ func (a *App) closeTerminalV2(w http.ResponseWriter, r *http.Request, user store
 	}
 	if deleteRow {
 		_ = a.db.DeleteTerminal(r.Context(), terminal.ID, user.ID)
+		a.terminalHub().evictIfUnused(terminal.ID)
 	} else {
 		_ = a.db.MarkTerminalExited(r.Context(), terminal.ID, terminal.ExitCode)
 	}
@@ -991,6 +1022,7 @@ func (a *App) handleTerminalLinkFrame(ctx context.Context, connectorID string, e
 			hub.publishError(msg.TerminalID, terminalUnavailableCode, terminalUnavailableMessage)
 			hub.publishExit(msg.TerminalID, nil, "lost")
 			hub.resolveState(msg)
+			hub.evict(msg.TerminalID)
 			return
 		}
 		if _, err := base64.StdEncoding.DecodeString(msg.Data); err != nil {
@@ -1018,6 +1050,7 @@ func (a *App) handleTerminalLinkFrame(ctx context.Context, connectorID string, e
 			Message: "terminal exited before it finished starting",
 		})
 		hub.publishExit(msg.TerminalID, msg.ExitCode, msg.Reason)
+		hub.evict(msg.TerminalID)
 
 	case protocol.TypeTerminalError:
 		var msg protocol.TerminalError
@@ -1029,13 +1062,14 @@ func (a *App) handleTerminalLinkFrame(ctx context.Context, connectorID string, e
 		}
 		a.log.Warn("connector reported a terminal error",
 			"terminal", msg.TerminalID, "code", msg.Code, "error", msg.Message)
+		hub.resolveOpenError(msg.TerminalID, msg)
+		hub.publishError(msg.TerminalID, msg.Code, msg.Message)
 		// A failed open leaves no process behind. Errors on a live terminal
 		// (bad input, a failed write) must not mark it dead.
 		if msg.Code == "terminal_open_failed" {
 			_ = a.db.MarkTerminalExited(ctx, msg.TerminalID, nil)
+			hub.evict(msg.TerminalID)
 		}
-		hub.resolveOpenError(msg.TerminalID, msg)
-		hub.publishError(msg.TerminalID, msg.Code, msg.Message)
 
 	default:
 		a.log.Debug("ignoring unknown terminal link frame", "type", env.Type)

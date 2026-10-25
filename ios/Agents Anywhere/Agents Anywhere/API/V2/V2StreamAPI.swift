@@ -112,7 +112,9 @@ nonisolated struct V2StreamAPI {
         case "dashboard.snapshot":
             return .dashboard(try decoder.decode(V2DashboardSnapshot.self, from: data))
         default:
-            return .session(try decoder.decode(V2SessionEvent.self, from: data))
+            var event = try decoder.decode(V2SessionEvent.self, from: data)
+            event.wireBytes = data.count
+            return .session(event)
         }
     }
 

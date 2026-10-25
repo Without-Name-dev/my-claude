@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
 // streamResyncEvery re-lists the person's sessions even when no dashboard
@@ -84,48 +86,24 @@ func (a *App) handleStreamWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Every websocket write in this handler shares one mutex: the session pumps
-	// run alongside snapshots and keepalives, and a websocket permits only one
-	// writer at a time. lastWrite lets the keepalive skip busy periods.
-	var writeMu sync.Mutex
-	var lastWrite atomic.Int64
-	lastWrite.Store(time.Now().UnixNano())
-	writeFrame := func(body []byte, timeout time.Duration) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		writeCtx, stop := context.WithTimeout(ctx, timeout)
-		defer stop()
-		if err := ws.Write(writeCtx, websocket.MessageText, body); err != nil {
-			return err
-		}
-		lastWrite.Store(time.Now().UnixNano())
-		return nil
-	}
-
 	subs := map[string]*Subscriber{}
 	var pumps sync.WaitGroup
-	startPump := func(sessionID string, sub *Subscriber) {
+	var writer *streamWriter
+	startPump := func(sub *Subscriber) {
 		pumps.Add(1)
 		go func() {
 			defer pumps.Done()
-			pumpStreamSession(ctx, sub, writeFrame, cancel)
+			pumpStreamSession(ctx, sub, writer)
 		}()
-	}
-	// reconcile brings the subscription set in line with the database and starts
-	// a pump for each newly subscribed session. It reports whether anything
-	// moved so the caller knows a snapshot needs redrawing.
-	reconcile := func() bool {
-		added, changed := a.syncStreamSessions(ctx, user.ID, subs)
-		for _, sessionID := range added {
-			startPump(sessionID, subs[sessionID])
-		}
-		return changed
 	}
 
 	// Subscribe before the first frame so an event emitted while the snapshot
 	// is being built waits in the broker queue instead of being lost. Pumps
-	// start after stream.ready, which must be the first frame on the wire.
-	_, _ = a.syncStreamSessions(ctx, user.ID, subs)
+	// start only after the snapshot is on the wire.
+	initialSessions, listErr := a.listUserSessions(ctx, user.ID)
+	if listErr == nil {
+		a.syncStreamSessions(user.ID, initialSessions, subs)
+	}
 
 	// Cleanup runs before the deferred ws.CloseNow: cancel aborts blocked
 	// writes and reads, unsubscribing stops each pump, and the wait guarantees
@@ -139,29 +117,50 @@ func (a *App) handleStreamWS(w http.ResponseWriter, r *http.Request) {
 		<-readerDone
 	}()
 
+	// stream.ready and the snapshot are written before the writer goroutine
+	// starts, so nothing can overtake them. A websocket has one writer at a
+	// time; every later frame goes through the writer below.
 	ready, _ := json.Marshal(map[string]any{
 		"type":       "stream.ready",
 		"serverTime": timestampNow(),
 	})
-	if err := writeFrame(ready, 10*time.Second); err != nil {
+	writeCtx, stopWrite := context.WithTimeout(ctx, 10*time.Second)
+	err = ws.Write(writeCtx, websocket.MessageText, ready)
+	stopWrite()
+	if err != nil {
 		return
 	}
 	needsRefresh := false
-	if snapshot, err := a.dashboardSnapshot(ctx, user.ID); err == nil {
-		if err := writeFrame(snapshot, 15*time.Second); err != nil {
-			return
-		}
-	} else {
-		// The snapshot promised right after stream.ready could not be built.
+	if listErr != nil {
+		// The session listing failed, so there is nothing to snapshot yet.
 		// Retry on the next refresh tick rather than leaving the client without
 		// inventory until some unrelated change happens.
 		needsRefresh = true
+	} else if snapshot, buildErr := a.dashboardSnapshotFor(ctx, user.ID, initialSessions); buildErr == nil {
+		writeCtx, stopWrite := context.WithTimeout(ctx, 15*time.Second)
+		writeErr := ws.Write(writeCtx, websocket.MessageText, snapshot)
+		stopWrite()
+		if writeErr != nil {
+			return
+		}
+	} else {
+		needsRefresh = true
 	}
+
+	// One writer owns the socket from here on: control frames (keepalives) are
+	// written ahead of session data and dashboard snapshots coalesce, so a burst
+	// of session frames cannot delay them or queue stale snapshots.
+	writer = newStreamWriter(ctx, ws, cancel)
+	pumps.Add(1)
+	go func() {
+		defer pumps.Done()
+		writer.run()
+	}()
 
 	// The initial subscriptions were recorded before the snapshot; now that
 	// stream.ready and the snapshot are on the wire, start forwarding them.
-	for sessionID, sub := range subs {
-		startPump(sessionID, sub)
+	for _, sub := range subs {
+		startPump(sub)
 	}
 
 	refresh := time.NewTicker(dashboardRefresh)
@@ -184,7 +183,15 @@ func (a *App) handleStreamWS(w http.ResponseWriter, r *http.Request) {
 		case <-resync.C:
 			// This is how a session created after this socket connected gets a
 			// subscription even when no dashboard notification fires for it.
-			if reconcile() {
+			sessions, err := a.listUserSessions(ctx, user.ID)
+			if err != nil {
+				continue
+			}
+			added, changed := a.syncStreamSessions(user.ID, sessions, subs)
+			for _, sessionID := range added {
+				startPump(subs[sessionID])
+			}
+			if changed {
 				needsRefresh = true
 			}
 		case <-refresh.C:
@@ -192,56 +199,47 @@ func (a *App) handleStreamWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			needsRefresh = false
-			// Reconcile before redrawing so the snapshot lists the sessions this
-			// socket is actually subscribed to, including ones created since the
-			// last pass.
-			reconcile()
-			snapshot, err := a.dashboardSnapshot(ctx, user.ID)
+			// One listing serves both the subscription reconcile and the
+			// snapshot it feeds.
+			sessions, err := a.listUserSessions(ctx, user.ID)
 			if err != nil {
 				// Keep the redraw pending: a transient database error must not
 				// strand the client on a stale snapshot.
 				needsRefresh = true
 				continue
 			}
-			if err := writeFrame(snapshot, 15*time.Second); err != nil {
-				return
+			added, _ := a.syncStreamSessions(user.ID, sessions, subs)
+			for _, sessionID := range added {
+				startPump(subs[sessionID])
 			}
+			snapshot, err := a.dashboardSnapshotFor(ctx, user.ID, sessions)
+			if err != nil {
+				needsRefresh = true
+				continue
+			}
+			writer.sendSnapshot(snapshot)
 		case <-keepalive.C:
-			if !keepaliveDue(time.Unix(0, lastWrite.Load()), time.Now(), streamKeepaliveEvery) {
+			if !keepaliveDue(writer.lastWriteTime(), time.Now(), streamKeepaliveEvery) {
 				continue
 			}
 			body, _ := json.Marshal(map[string]any{
 				"type":       EventKeepalive,
 				"serverTime": timestampNow(),
 			})
-			if err := writeFrame(body, 10*time.Second); err != nil {
-				return
-			}
+			writer.sendControl(body)
 		}
 	}
 }
 
-// syncStreamSessions reconciles subs with the sessions the person owns, active
-// and archived. It returns the ids it newly subscribed and whether the set
-// changed at all (a removal counts); the caller starts pumps for the added ids
-// and redraws the snapshot when anything moved. A listing failure leaves the
-// existing set alone rather than tearing down subscriptions that may still be
-// correct.
-func (a *App) syncStreamSessions(ctx context.Context, userID string, subs map[string]*Subscriber) (added []string, changed bool) {
-	sessions, err := a.db.ListAllSessions(ctx, userID, false)
-	if err != nil {
-		return nil, false
-	}
-	archived, err := a.db.ListAllSessions(ctx, userID, true)
-	if err != nil {
-		return nil, false
-	}
-
-	wanted := make(map[string]struct{}, len(sessions)+len(archived))
+// syncStreamSessions reconciles subs with an already-listed set of sessions the
+// person owns, active and archived. It returns the ids it newly subscribed and
+// whether the set changed at all (a removal counts); the caller starts pumps
+// for the added ids and redraws the snapshot when anything moved. The caller
+// also passes the same listing to dashboardSnapshotFor, so one database read
+// feeds both the subscription set and the snapshot.
+func (a *App) syncStreamSessions(userID string, sessions []store.Session, subs map[string]*Subscriber) (added []string, changed bool) {
+	wanted := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
-		wanted[session.ID] = struct{}{}
-	}
-	for _, session := range archived {
 		wanted[session.ID] = struct{}{}
 	}
 
@@ -264,10 +262,11 @@ func (a *App) syncStreamSessions(ctx context.Context, userID string, subs map[st
 	return added, changed
 }
 
-// pumpStreamSession copies one session's frames to the socket. A failed write
-// means the connection is gone, so it cancels the handler instead of leaving
-// the other pumps to discover the same failure on their own.
-func pumpStreamSession(ctx context.Context, sub *Subscriber, write func([]byte, time.Duration) error, cancel context.CancelFunc) {
+// pumpStreamSession forwards one session's frames to the shared writer. The
+// writer's queue is the backpressure point: when the socket cannot keep up,
+// pumps block here and the broker's per-subscriber queue overflows into a
+// refetch marker rather than losing frames silently.
+func pumpStreamSession(ctx context.Context, sub *Subscriber, writer *streamWriter) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -275,10 +274,135 @@ func pumpStreamSession(ctx context.Context, sub *Subscriber, write func([]byte, 
 		case <-sub.Done():
 			return
 		case frame := <-sub.Frames():
-			if err := write(frame, 15*time.Second); err != nil {
-				cancel()
+			if !writer.sendData(frame) {
 				return
 			}
 		}
 	}
+}
+
+// streamWriter is the single owner of the unified stream's websocket writes.
+//
+// A websocket permits only one writer at a time. Giving every pump its own
+// goroutine plus a shared mutex made the write order arbitrary: a burst of
+// session frames could sit in front of a keepalive or a snapshot. Here control
+// frames are taken first, snapshots coalesce to the newest, and session frames
+// share one bounded queue.
+type streamWriter struct {
+	ctx       context.Context
+	ws        *websocket.Conn
+	cancel    context.CancelFunc
+	control   chan []byte
+	snapshot  chan []byte
+	data      chan []byte
+	lastWrite atomic.Int64
+}
+
+func newStreamWriter(ctx context.Context, ws *websocket.Conn, cancel context.CancelFunc) *streamWriter {
+	w := &streamWriter{
+		ctx:      ctx,
+		ws:       ws,
+		cancel:   cancel,
+		control:  make(chan []byte, 4),
+		snapshot: make(chan []byte, 1),
+		data:     make(chan []byte, subscriberQueue),
+	}
+	w.lastWrite.Store(time.Now().UnixNano())
+	return w
+}
+
+// lastWriteTime is when the writer last completed a frame.
+func (w *streamWriter) lastWriteTime() time.Time { return time.Unix(0, w.lastWrite.Load()) }
+
+// sendControl queues a control frame. Dropping a keepalive when the control
+// queue is full is harmless: the next tick sends another one.
+func (w *streamWriter) sendControl(body []byte) {
+	select {
+	case w.control <- body:
+	case <-w.ctx.Done():
+	default:
+	}
+}
+
+// sendSnapshot replaces any snapshot that has not been written yet. A client
+// that fell behind gets the newest dashboard state instead of a queue of stale
+// ones.
+func (w *streamWriter) sendSnapshot(body []byte) {
+	select {
+	case <-w.snapshot:
+	default:
+	}
+	select {
+	case w.snapshot <- body:
+	case <-w.ctx.Done():
+	default:
+	}
+}
+
+// sendData queues one session frame, reporting false once the socket is done.
+func (w *streamWriter) sendData(frame []byte) bool {
+	select {
+	case <-w.ctx.Done():
+		return false
+	case w.data <- frame:
+		return true
+	}
+}
+
+// run writes frames until the connection fails or the handler cancels.
+func (w *streamWriter) run() {
+	for {
+		// Control first: a keepalive must not wait behind session traffic.
+		select {
+		case <-w.ctx.Done():
+			return
+		case body := <-w.control:
+			if !w.write(body) {
+				w.cancel()
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case <-w.ctx.Done():
+			return
+		case body := <-w.control:
+			if !w.write(body) {
+				w.cancel()
+				return
+			}
+		case body := <-w.snapshot:
+			if !w.write(body) {
+				w.cancel()
+				return
+			}
+		case body := <-w.data:
+			// A snapshot that arrived while this frame waited is the newer
+			// statement of session state; write it first.
+			select {
+			case snap := <-w.snapshot:
+				if !w.write(snap) {
+					w.cancel()
+					return
+				}
+			default:
+			}
+			if !w.write(body) {
+				w.cancel()
+				return
+			}
+		}
+	}
+}
+
+// write sends one frame with the per-write deadline the old shared mutex used.
+func (w *streamWriter) write(body []byte) bool {
+	writeCtx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
+	defer cancel()
+	if err := w.ws.Write(writeCtx, websocket.MessageText, body); err != nil {
+		return false
+	}
+	w.lastWrite.Store(time.Now().UnixNano())
+	return true
 }

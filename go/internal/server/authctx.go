@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/agents-anywhere/agents-anywhere/internal/auth"
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
@@ -32,12 +33,24 @@ func HashToken(token string) string {
 }
 
 // NewToken mints a bearer with a recognisable prefix.
+//
+// Callers that can report a failure should use newToken: issuing a predictable
+// stand-in token would be worse than the failed request.
 func NewToken(prefix string) string {
+	token, err := newToken(prefix)
+	if err != nil {
+		panic("server: no entropy source for token: " + err.Error())
+	}
+	return token
+}
+
+// newToken mints a bearer and reports an entropy failure to the handler.
+func newToken(prefix string) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return prefix + "_" + hex.EncodeToString([]byte("fallback-token"))
+		return "", err
 	}
-	return prefix + "_" + base64.RawURLEncoding.EncodeToString(buf)
+	return prefix + "_" + base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // NewConnectionID identifies one socket, so a reconnect cannot be marked
@@ -45,7 +58,9 @@ func NewToken(prefix string) string {
 func NewConnectionID() string {
 	buf := make([]byte, 12)
 	if _, err := rand.Read(buf); err != nil {
-		return "conn-fallback"
+		// Same reasoning as NewToken: a shared constant would let one socket's
+		// cleanup mark another socket offline.
+		panic("server: no entropy source for connection id: " + err.Error())
 	}
 	return hex.EncodeToString(buf)
 }
@@ -65,12 +80,19 @@ func (a *App) userFromRequest(r *http.Request) (store.User, bool) {
 	if token == "" {
 		return store.User{}, false
 	}
-	userID, err := VerifyUserToken(token)
+	info, err := auth.VerifyUserAccessTokenInfo(token)
 	if err != nil {
 		return store.User{}, false
 	}
-	user, err := a.db.UserByID(r.Context(), userID)
+	user, err := a.db.UserByID(r.Context(), info.Subject)
 	if err != nil || user.Disabled {
+		return store.User{}, false
+	}
+	// A password change rewrites the stored hash and with it this fingerprint,
+	// so tokens minted before the change stop working. Tokens from before the
+	// claim existed carry no fingerprint and expire on their own.
+	if info.CredentialVersion != "" &&
+		info.CredentialVersion != auth.CredentialVersion(user.PasswordHash) {
 		return store.User{}, false
 	}
 	return user, true
