@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 @MainActor @Observable
 final class ChatTimelineRowModel: Identifiable {
@@ -14,6 +15,9 @@ final class ChatTimelineRowModel: Identifiable {
     @ObservationIgnored private var entryCache: (cwd: String?, entry: TimelineEntryPresentation)?
     /// False while a streaming batch withholds the final glyph of the received text.
     @ObservationIgnored private var displaysFullText = false
+    /// Captured by the Equatable row wrapper. The reference itself cannot be
+    /// compared for content changes because both sides see the same mutations.
+    @ObservationIgnored private(set) var contentRevision = 0
 
     init(_ value: V2TimelineItem, animate: Bool = false) {
         id = value.id; self.value = value
@@ -27,10 +31,11 @@ final class ChatTimelineRowModel: Identifiable {
         // Unchanged rows neither recompute their structure nor rescan their text.
         if hasFlushed && value == next && (animate || displaysFullText) { settle(now: now); return false }
         hasFlushed = true
+        var changed = false
         let received = next.displayText
         let appending = received.hasPrefix(text)
         // Snapshots/corrections are authoritative replacements, not token deltas.
-        if !appending { layoutGeneration += 1 }
+        if !appending { layoutGeneration += 1; changed = true }
         let safeText = animate && appending && next.isStreamingText && !received.isEmpty
             ? String(received.dropLast()) : received
         let displayed = safeText.hasPrefix(text) || !appending ? safeText : received
@@ -41,11 +46,15 @@ final class ChatTimelineRowModel: Identifiable {
             started = isRevealing
             if isRevealing { settlesAt = now + ReplyPresentation.revealSeconds + ReplyPresentation.drawSlack }
             text = displayed
+            changed = true
         }
-        if value != next { value = next; entryCache = nil }
+        if value != next { value = next; entryCache = nil; changed = true }
         let nextStructure = TimelineRowStructure(next)
-        if structure != nextStructure { structure = nextStructure }
+        if structure != nextStructure { structure = nextStructure; changed = true }
+        let wasRevealing = isRevealing
         if !animate || now >= settlesAt { isRevealing = false }
+        if wasRevealing != isRevealing { changed = true }
+        if changed { contentRevision &+= 1 }
         return started
     }
 
@@ -62,7 +71,10 @@ final class ChatTimelineRowModel: Identifiable {
     /// running status. A tool wait or thinking pause stops redrawing; the next
     /// appended text starts a new batch.
     func settle(now: TimeInterval) {
-        if now >= settlesAt { isRevealing = false }
+        if isRevealing && now >= settlesAt {
+            isRevealing = false
+            contentRevision &+= 1
+        }
     }
 }
 
@@ -74,11 +86,20 @@ final class SessionTimelinePresentation {
     private(set) var rows: [ChatTimelineRowModel] = []
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
+    /// The live subagent status line for the current turn, if the server has
+    /// reported one. It is presentation-only; the server does not replay the
+    /// event into a durable snapshot.
+    private(set) var subagentActivity: SubagentActivityPresentation?
+    /// Bumped only when an older page is prepended. The timeline disables
+    /// insertion animation for this value and restores the reader's offset.
+    private(set) var historyInsertionRevision = 0
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: ChatTimelineRowModel] = [:]
     @ObservationIgnored private var pending: [V2TimelineItem]?
     @ObservationIgnored private var animatePending = false
     @ObservationIgnored private var initialized = false
     @ObservationIgnored private var lastConnection: V2SessionConnectionState = .inactive
+    @ObservationIgnored private var lastActivityEventID: String?
+    @ObservationIgnored private var activityPendingBoundary: String?
     @ObservationIgnored private var wake: AsyncStream<Void>.Continuation?
     /// When the newest reveal batch ends and the buffer may publish again.
     @ObservationIgnored private(set) var nextBatchAt: TimeInterval = 0
@@ -91,9 +112,24 @@ final class SessionTimelinePresentation {
 
     func receive(_ observation: V2SessionObservation) {
         defer { lastConnection = observation.connection }
+        if let event = observation.data?.lastExtensionEvent { receiveActivity(event) }
         guard let data = observation.data else { return }
         stage(data.items, animate: initialized && lastConnection == .connected && observation.connection == .connected)
         initialized = true
+    }
+
+    /// `runtime.activity` is an extension event: the projection keeps the most
+    /// recent one in `lastExtensionEvent` and it is re-read on every emission.
+    /// Event identity, not observation ticks, decides when to rebuild the block.
+    private func receiveActivity(_ event: V2SessionEvent) {
+        guard event.type == "runtime.activity", event.eventId != lastActivityEventID else { return }
+        lastActivityEventID = event.eventId
+        guard let encoded = try? JSONEncoder().encode(event.payload),
+              let payload = try? JSONDecoder().decode(V2AgentActivity.self, from: encoded) else { return }
+        guard !payload.agents.isEmpty || subagentActivity != nil else { return }
+        var activity = subagentActivity ?? SubagentActivityPresentation()
+        activity.receive(payload.agents, at: event.receivedAt)
+        if subagentActivity != activity { subagentActivity = activity }
     }
 
     func stage(_ items: [V2TimelineItem], animate: Bool) {
@@ -109,6 +145,7 @@ final class SessionTimelinePresentation {
     func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let pending {
             let previousTail = rows.last?.value.orderSeq ?? Int.min
+            let previousFirst = rows.first?.value.orderSeq
             var started = false
             var updated: [ChatTimelineRowModel] = []
             updated.reserveCapacity(pending.count)
@@ -127,8 +164,28 @@ final class SessionTimelinePresentation {
             }
             if started { nextBatchAt = now + ReplyPresentation.batchInterval }
             if orderChanged {
-                rows = updated
-                rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                // An older page changes the first published row. Publish it in
+                // a transaction with animations disabled; even if a caller has
+                // an animation in flight, history insertion stays a jump that
+                // the explicit point restore then corrects.
+                let insertedOlder: Bool
+                if let previousFirst, let first = updated.first?.value.orderSeq, first < previousFirst {
+                    insertedOlder = true
+                } else {
+                    insertedOlder = false
+                }
+                if insertedOlder {
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        historyInsertionRevision &+= 1
+                        rows = updated
+                        rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                    }
+                } else {
+                    rows = updated
+                    rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                }
             }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
             self.pending = nil; pendingWasStaged = false
@@ -183,6 +240,14 @@ final class SessionTimelinePresentation {
         // avoiding a blank first user row between HTTP/realtime and UI clocks.
         let visible = messages.filter { message in
             !rows.contains { $0.value.role == .user && $0.value.source["clientMessageId"]?.stringValue == message.id }
+        }
+        // A pending message starts the next turn. A finished status line belongs
+        // to the previous turn and must not drift below the new one; a running
+        // block stays because the subagents still belong to this reply.
+        let boundary = visible.last?.id
+        if boundary != activityPendingBoundary {
+            activityPendingBoundary = boundary
+            if boundary != nil, subagentActivity?.isRunning == false { subagentActivity = nil }
         }
         if pendingMessages.map(\.id) != visible.map(\.id) { pendingMessages = visible }
     }

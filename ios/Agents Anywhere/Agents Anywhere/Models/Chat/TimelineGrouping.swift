@@ -5,8 +5,14 @@ struct ChatTimelineGroup: Identifiable, Equatable {
     enum Kind: Equatable { case single, tools, reconnect, agents(String) }
     let kind: Kind
     let rows: [ChatTimelineRowModel]
+    /// Captured when the group value is built. Row references mutate in place,
+    /// so identity comparison alone cannot tell an Equatable wrapper that the
+    /// content changed.
+    var revision = 0
+
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.kind == rhs.kind && lhs.rows.elementsEqual(rhs.rows, by: ===)
+        lhs.kind == rhs.kind && lhs.revision == rhs.revision && lhs.rows.count == rhs.rows.count
+            && lhs.rows.elementsEqual(rhs.rows, by: { left, right in left.id == right.id })
     }
     // The first row owns the group, even as the second tool arrives. A group
     // growing during a stream does not replace the scroll target or its state.
@@ -36,14 +42,18 @@ enum TimelineGrouping {
         var groups: [ChatTimelineGroup] = []
         var pending: [ChatTimelineRowModel] = []
         var pendingKind = ChatTimelineGroup.Kind.single
+        func make(_ kind: ChatTimelineGroup.Kind, _ rows: [ChatTimelineRowModel]) -> ChatTimelineGroup {
+            ChatTimelineGroup(kind: kind, rows: rows,
+                revision: rows.reduce(0) { $0 &+ $1.contentRevision })
+        }
         func flush() {
             guard !pending.isEmpty else { return }
-            groups.append(ChatTimelineGroup(kind: pending.count > 1 ? pendingKind : .single, rows: pending))
+            groups.append(make(pending.count > 1 ? pendingKind : .single, pending))
             pending = []
         }
         for row in rows {
             let kind: ChatTimelineGroup.Kind = interactionTargets.contains(row.id) ? .single : row.structure.groupKind
-            if kind == .single { flush(); groups.append(ChatTimelineGroup(kind: .single, rows: [row])); continue }
+            if kind == .single { flush(); groups.append(make(.single, [row])); continue }
             if pendingKind != kind { flush() }
             pendingKind = kind; pending.append(row)
         }

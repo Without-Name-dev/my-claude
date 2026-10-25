@@ -183,7 +183,7 @@ func (a *App) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.CreateUserAccessToken(userID, auth.DefaultUserExpiresIn)
+	token, err := auth.CreateUserAccessToken(userID, a.sessionTTL())
 	if err != nil {
 		httpx.Fail(w, err)
 		return
@@ -191,7 +191,7 @@ func (a *App) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	httpx.OK(w, map[string]any{
 		"access_token": token,
 		"token_type":   "Bearer",
-		"expires_in":   auth.DefaultUserExpiresIn,
+		"expires_in":   a.sessionTTL(),
 		"scope":        scope,
 	})
 }

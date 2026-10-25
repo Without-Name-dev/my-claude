@@ -14,15 +14,16 @@ final class ComposerEditorController {
         synchronize()
     }
 
-    /// Check native marked text before ending editing. unmarkText() only removes
-    /// the mark; it cannot select the user's intended Chinese candidate.
+    /// Check native marked text before submitting. Never end editing here: the
+    /// old implementation resigned first responder to force the IME to commit,
+    /// which dismissed the keyboard after every send. A marked composition
+    /// keeps ownership of the field, so the caller ignores this attempt and the
+    /// editor stays focused for the next message. UIKit exposes no public
+    /// dictation-active state; keeping first responder is what prevents the
+    /// keyboard from collapsing when dictation is in progress.
     func committedTextForSend() async -> String? {
         guard let textView else { return draft?.isComposing == false ? draft?.text : nil }
         guard textView.markedTextRange == nil else { synchronize(); return nil }
-        let originalDraft = draft
-        textView.resignFirstResponder()
-        await Task.yield()
-        guard !Task.isCancelled, draft === originalDraft, textView.markedTextRange == nil else { return nil }
         synchronize()
         return textView.text ?? ""
     }

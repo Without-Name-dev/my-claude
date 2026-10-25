@@ -47,6 +47,7 @@ struct SessionTimelineGroupView: View, Equatable {
                 SessionTimelineRow(row: row, chat: chat, onAttachment: onAttachment, cwd: chat.session.metadata?.cwd,
                     disclosures: chat.disclosures, onFile: onFile)
                     .equatable()
+                    .id(row.id)
                 ForEach(inlineNotices.filter { $0.timelineTargetID == row.id }) { notice in
                     SessionInteractionCard(item: notice, chat: chat)
                 }

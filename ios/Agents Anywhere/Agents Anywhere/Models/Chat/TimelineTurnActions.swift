@@ -4,6 +4,10 @@ struct TimelineTurnAction: Equatable {
     let replies: [ChatTimelineRowModel]
     var changes: [ChatTimelineRowModel] = []
     var startsMidTurn = false
+    /// Captured when the footer is built. Reply text and row status live on
+    /// mutable row references, so identity comparison alone would leave the
+    /// share button disabled after a row gains content.
+    var revision = 0
     /// Joined on demand (copy/share), never during timeline body evaluation.
     var copyText: String {
         replies.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -11,8 +15,10 @@ struct TimelineTurnAction: Equatable {
     }
     var hasReplyText: Bool { replies.contains { $0.text.contains { !$0.isWhitespace } } }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.startsMidTurn == rhs.startsMidTurn && lhs.replies.elementsEqual(rhs.replies, by: ===)
-            && lhs.changes.elementsEqual(rhs.changes, by: ===)
+        lhs.startsMidTurn == rhs.startsMidTurn && lhs.revision == rhs.revision
+            && lhs.replies.count == rhs.replies.count && lhs.changes.count == rhs.changes.count
+            && lhs.replies.elementsEqual(rhs.replies, by: { left, right in left.id == right.id })
+            && lhs.changes.elementsEqual(rhs.changes, by: { left, right in left.id == right.id })
     }
 }
 
@@ -30,7 +36,9 @@ enum TimelineTurnActions {
 
         func commit() {
             if let endGroupID, (!replies.isEmpty || !changes.isEmpty), !hasActiveItems {
-                actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes, startsMidTurn: startsMidTurn)
+                let revision = (replies + changes).reduce(0) { $0 &+ $1.contentRevision }
+                actions[endGroupID] = TimelineTurnAction(replies: replies, changes: changes,
+                    startsMidTurn: startsMidTurn, revision: revision)
             }
             replies = []; changes = []; endGroupID = nil; turnOpen = false; hasActiveItems = false
         }

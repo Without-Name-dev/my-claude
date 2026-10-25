@@ -8,12 +8,24 @@ struct SessionTimelineRow: View, Equatable {
     var cwd: String?
     let disclosures: TimelineDisclosureState
     let onFile: (String) -> Void
+    /// Snapshot of the row's content at view construction time. The row model
+    /// is a mutable reference, so comparing `row === row` alone cannot detect a
+    /// content change when a parent rebuild supplies a new view value.
+    private let contentRevision: Int
     @ScaledMetric(relativeTo: .body) private var lineHeight: CGFloat = 22
+
+    init(row: ChatTimelineRowModel, chat: SessionChatModel, onAttachment: @escaping (V2AttachmentContent) -> Void,
+         cwd: String? = nil, disclosures: TimelineDisclosureState, onFile: @escaping (String) -> Void) {
+        self.row = row; self.chat = chat; self.onAttachment = onAttachment
+        self.cwd = cwd; self.disclosures = disclosures; self.onFile = onFile
+        contentRevision = row.contentRevision
+    }
 
     /// Observation still re-evaluates this row when its own model changes; the
     /// comparison only stops sibling invalidations from reaching every row.
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row === rhs.row && lhs.chat === rhs.chat && lhs.cwd == rhs.cwd && lhs.disclosures === rhs.disclosures
+        lhs.row === rhs.row && lhs.contentRevision == rhs.contentRevision
+            && lhs.chat === rhs.chat && lhs.cwd == rhs.cwd && lhs.disclosures === rhs.disclosures
     }
 
     var body: some View {

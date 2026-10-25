@@ -243,9 +243,18 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	a.issueSession(w, user)
 }
 
+// sessionTTL is the configured bearer lifetime, falling back to the built-in
+// default when the environment leaves it unset.
+func (a *App) sessionTTL() int {
+	if a.cfg.SessionTTL > 0 {
+		return int(a.cfg.SessionTTL.Seconds())
+	}
+	return auth.DefaultUserExpiresIn
+}
+
 // issueSession mints the bearer and writes the login response.
 func (a *App) issueSession(w http.ResponseWriter, user store.User) {
-	token, err := auth.CreateUserAccessToken(user.ID, auth.DefaultUserExpiresIn)
+	token, err := auth.CreateUserAccessToken(user.ID, a.sessionTTL())
 	if err != nil {
 		httpx.Fail(w, err)
 		return

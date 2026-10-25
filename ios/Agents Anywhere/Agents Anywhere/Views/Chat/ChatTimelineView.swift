@@ -15,6 +15,7 @@ struct ChatTimelineView: View {
     @State private var viewportSample = ChatViewportSample()
     @State private var viewportUpdates = ChatLayoutUpdate<TimelineViewport>()
     @State private var historyUpdates = ChatLayoutUpdate<TimelineHistoryLayout>()
+    @State private var historyHeights = ChatLayoutUpdate<CGFloat>()
     @State private var latestPull = TimelineHistoryPull()
     @State private var olderPull = TimelineHistoryPull(edge: .older)
     @State private var olderPromptVisible = false
@@ -46,6 +47,7 @@ struct ChatTimelineView: View {
                     latestPullReady: latestPull.isReady, isLoadingLatest: latestLoadRequest != nil,
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
+                    subagentActivity: model.timeline.subagentActivity,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryLayout: historyDidLayOut,
                     onPromptVisibility: { latestPromptVisible = $0 },
@@ -61,7 +63,9 @@ struct ChatTimelineView: View {
             .scrollEdgeEffectStyle(.soft, for: .top)
             .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
-            .defaultScrollAnchor(.top, for: .sizeChanges)
+            // Do not pin a size-change anchor. The custom follow logic owns the
+            // bottom while streaming, and must not fight a top anchor when the
+            // reader has scrolled away.
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             .onScrollPhaseChange { _, phase, context in
@@ -133,6 +137,15 @@ struct ChatTimelineView: View {
                         if older != olderPull { olderPull = older }
                     }
                 }
+                // A lazy prepend may leave the measured anchor outside the
+                // viewport. The content-height delta is the exact distance the
+                // old content moved down, so it can complete the same point
+                // correction without measuring every inserted row.
+                if abs(value.contentHeight - previous.contentHeight) > 0.5 {
+                    historyHeights.submit(value.contentHeight) { height in
+                        applyHistoryHeight(height)
+                    }
+                }
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 viewportUpdates.cancel()
@@ -143,13 +156,20 @@ struct ChatTimelineView: View {
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
                     if let historyLayout { historyDidLayOut(historyLayout) }
+                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onChange(of: model.session.pendingMessages.last?.id) { _, id in
                 if model.isOpeningReady, id != nil && !hasInteractions { scrolling.requestBottom() }
             }
             .onChange(of: model.responseRevision) { _, _ in
-                if model.isOpeningReady { scrolling.requestBottom() }
+                // An approval response belongs to the current turn. Follow it
+                // only when the reader is still at the bottom; otherwise their
+                // reading position wins.
+                if model.isOpeningReady,
+                   (scrolling.mode == .following || scrolling.tail.isAtBottom) {
+                    scrolling.requestBottom()
+                }
             }
             .onChange(of: hasInteractions, initial: true) { _, presented in
                 scrolling.setInteractionPresented(presented)
@@ -182,16 +202,38 @@ struct ChatTimelineView: View {
                 await model.session.loadOlder()
                 guard !Task.isCancelled, historyPosition?.id == request else { return }
                 if !model.session.isValid { historyPosition = nil; olderLoadRequest = nil; return }
-                historyPosition?.receivedPage(firstRowID: model.session.timeline.first { $0.value.isVisibleInChat }?.id)
+                // Read the repository projection, not the presentation buffer:
+                // the 4 Hz flush can lag the HTTP response, and using the old
+                // first row would finish restoration before the page appears.
+                let firstRowID = model.repository.cached(sessionId: model.session.id)
+                    .flatMap { data in data.items.first { $0.isVisibleInChat }?.id }
+                historyPosition?.receivedPage(firstRowID: firstRowID
+                    ?? model.session.timeline.first { $0.value.isVisibleInChat }?.id)
+                // If presentation already published the page while the request
+                // was completing, no further geometry callback is guaranteed.
+                // One main-queue turn lets the coalesced geometry sample land.
+                do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
+                guard !Task.isCancelled else { return }
+                applyHistoryHeight(viewport.contentHeight)
             }
             .task(id: HistorySettlement(id: historyPosition?.id, ready: historyPosition?.isReadyToFinish == true,
-                offset: historyPosition?.restoredOffset)) {
-                guard let request = historyPosition?.id, historyPosition?.isReadyToFinish == true else { return }
+                offset: historyPosition?.restoredOffset, generation: scrolling.navigationGeneration)) {
+                guard let request = historyPosition?.id else { return }
+                // A gesture or an explicit return to bottom supersedes the
+                // restoration. The page may still arrive through the
+                // repository, but it must not hold the older prompt busy
+                // (especially when the lazy anchor never lays out again).
+                if scrolling.navigationGeneration != request {
+                    historyPosition = nil
+                    olderLoadRequest = nil
+                    return
+                }
+                guard historyPosition?.isReadyToFinish == true else { return }
                 // Let the point correction reach native layout before releasing
                 // its target or ending the spinner. A new measurement restarts this.
                 do { try await Task.sleep(for: .milliseconds(64)) } catch { return }
                 guard !Task.isCancelled, historyPosition?.id == request else { return }
-                if scrolling.navigationGeneration == request, historyPosition?.restoredOffset != nil {
+                if historyPosition?.restoredOffset != nil {
                     position.isPositionedByUser = true
                 }
                 historyPosition = nil; olderLoadRequest = nil
@@ -221,7 +263,7 @@ struct ChatTimelineView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .traceChatLayout("timeline-viewport")
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
+        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
         }
@@ -237,7 +279,11 @@ struct ChatTimelineView: View {
         position.isPositionedByUser = true
         let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
-            offsetY: viewport.offsetY, topInset: viewport.topInset)
+            offsetY: viewport.offsetY, topInset: viewport.topInset,
+            // A zero baseline would turn the first measured height into a
+            // scroll to the far end of the page; disable the fallback instead.
+            contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
+            originFirstRowID: model.timeline.rows.first?.id)
         hasRequestedOlder = true
         olderLoadRequest = scrolling.navigationGeneration
     }
@@ -278,10 +324,22 @@ struct ChatTimelineView: View {
             withTransaction(transaction) { position.scrollTo(y: offset) }
         }
     }
+
+    private func applyHistoryHeight(_ height: CGFloat) {
+        guard !navigationIsSuspended, var restoration = historyPosition else { return }
+        let offset = restoration.laidOutContentHeight(height, firstRowID: model.timeline.rows.first?.id,
+            generation: scrolling.navigationGeneration)
+        if historyPosition != restoration { historyPosition = restoration }
+        guard let offset else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(y: offset) }
+    }
     private struct HistorySettlement: Equatable {
         let id: Int?
         let ready: Bool
         let offset: CGFloat?
+        let generation: Int
     }
     private struct UserScrollSettlement: Equatable {
         let needed: Bool
@@ -328,17 +386,22 @@ private struct ChatTimelineContent: View, Equatable {
     let isLoadingOlder: Bool
     let keepsOlderPrompt: Bool
     let historyAnchor: TimelineHistoryLayout?
+    let subagentActivity: SubagentActivityPresentation?
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
     let onHistoryLayout: (TimelineHistoryLayout) -> Void
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
+    /// Only used to pick which single row carries the history measurement.
+    /// Visibility transitions are cheap; no geometry is measured per group.
+    @State private var visibleGroupIDs: Set<String> = []
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
+            && lhs.subagentActivity == rhs.subagentActivity
     }
     var body: some View {
         let visibleNotices = model.session.notices.notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
@@ -349,14 +412,16 @@ private struct ChatTimelineContent: View, Equatable {
         let noticesByTarget = Dictionary(grouping: visibleNotices.filter { $0.timelineTargetID != nil }) { $0.timelineTargetID! }
         let actions = TimelineTurnActions.build(groups: groups, suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
-        // Prefer a message whose start cannot move into a prefixed tool group.
-        // For an all-tools page, retain the existing group's trailing edge.
+        // Measure one row near the reader, never every group. During a history
+        // load the origin group is pinned so its coordinate remains comparable;
+        // otherwise use the first group currently on screen.
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
-            ?? groups.first { $0.rows.first?.structure.groupKind == .single } ?? groups.last
-        let anchorEdge = historyAnchor?.edge ?? (anchorGroup?.rows.first?.structure.groupKind == .single ? .top : .bottom)
-        // Keep actual row geometry available as Markdown grows and tool groups
-        // change height. Hidden tool details own their deferred work separately.
-        VStack(alignment: .leading, spacing: 20) {
+            ?? groups.first { visibleGroupIDs.contains($0.id) }
+            ?? groups.last
+        let anchorEdge = historyAnchorEdge(for: anchorGroup)
+        // A lazy column builds and lays out only the rows around the viewport.
+        // The spacing and row styling stay identical to the old eager stack.
+        LazyVStack(alignment: .leading, spacing: 20) {
             if model.session.hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {
@@ -385,7 +450,16 @@ private struct ChatTimelineContent: View, Equatable {
                     inlineNotices: group.rows.flatMap { noticesByTarget[$0.id] ?? [] })
                     .equatable()
                     .id(group.id)
+                    .onScrollVisibilityChange(threshold: 0.01) { visible in
+                        if visible {
+                            if !visibleGroupIDs.contains(group.id) { visibleGroupIDs.insert(group.id) }
+                        } else if visibleGroupIDs.contains(group.id) {
+                            visibleGroupIDs.remove(group.id)
+                        }
+                    }
                     .background {
+                        // One measurement for the anchor, not one per group. A
+                        // lazy row only runs this when it is actually realized.
                         if group.id == anchorGroup?.id, let firstRowID = model.timeline.rows.first?.id {
                             Color.clear.onGeometryChange(for: TimelineHistoryLayout.self) { geometry in
                                 let frame = geometry.frame(in: .named("chat.timeline.content"))
@@ -396,9 +470,16 @@ private struct ChatTimelineContent: View, Equatable {
                         }
                     }
             }
+            if let activity = subagentActivity {
+                // One extra lazy row in the normal transcript flow. The active
+                // turn's subagents stay above notices and the next pending
+                // message instead of becoming a separate panel.
+                SubagentActivityRow(activity: activity)
+                    .id(activity.id)
+            }
             ForEach(visibleNotices.filter { notice in
                 notice.timelineTargetID.map { !rowIDs.contains($0) } ?? true
-            }) { item in SessionInteractionCard(item: item, chat: model) }
+            }) { item in SessionInteractionCard(item: item, chat: model).id(item.id) }
             ForEach(model.timeline.pendingMessages) { pending in
                 PendingMessageRow(pending: pending, chat: model, onAttachment: onAttachment,
                     onDismiss: { model.session.dismissPendingMessage(id: pending.id) })
@@ -438,9 +519,28 @@ private struct ChatTimelineContent: View, Equatable {
                 }
                 .id("tail")
         }
+        // Prepending a page is a structural correction, not an animation. The
+        // explicit point restore below runs in a transaction with animations
+        // disabled; this also keeps the inserted rows from cross-fading.
+        .animation(nil, value: model.timeline.historyInsertionRevision)
         .modifier(ChatPageContentColumn(horizontalInset: nil))
         .coordinateSpace(name: "chat.timeline.content")
         .traceChatLayout("timeline-content", state: "groups=\(groups.count), footers=\(actions.count), running=\(model.isRunning)")
+    }
+
+    /// The top edge is stable as tool output or a turn footer grows below it.
+    /// The exception is the group that starts the document: older rows of the
+    /// same kind (tools, agents, reconnects) are prepended *into* that group,
+    /// so its first row and top edge stay put while the rows below move down.
+    /// Its trailing edge is the one that follows the inserted page, exactly
+    /// like the pre-lazy grouping logic.
+    private func historyAnchorEdge(for anchorGroup: ChatTimelineGroup?) -> TimelineHistoryLayout.Edge {
+        if let historyAnchor { return historyAnchor.edge }
+        guard let anchorGroup,
+              anchorGroup.id == model.timeline.rows.first?.id,
+              let firstRow = anchorGroup.rows.first,
+              firstRow.structure.groupKind != .single else { return .top }
+        return .bottom
     }
 
 }
