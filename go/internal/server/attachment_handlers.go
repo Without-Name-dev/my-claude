@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/agents-anywhere/agents-anywhere/internal/auth"
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
+	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
@@ -54,6 +57,10 @@ func (a *App) registerAttachmentRoutes(mux *http.ServeMux) {
 		a.requireUser(a.handleUploadAttachments))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/attachments/{file_id}/open",
 		a.requireAttachmentViewer(a.handleOpenAttachment))
+	// The connector has no user credential; it fetches the bytes with its own
+	// token on the route its Submit frame names.
+	mux.HandleFunc("GET /api/v2/connector/sessions/{session_id}/attachments/{file_id}/content",
+		a.handleConnectorAttachmentContent)
 
 	download := a.requireUser(a.handleDownloadAttachment)
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/{kind}/{file_id}",
@@ -300,6 +307,141 @@ func (a *App) handleLocalAttachment(w http.ResponseWriter, r *http.Request, sess
 	if disposition == "attachment" {
 		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	}
+	w.Header().Set("X-File-Name", safeHeaderValue(meta.Name))
+	w.Header().Set("X-File-Sha256", meta.SHA256)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
+}
+
+// messageAttachment is one file attached to an outgoing message. It is built
+// from the stored sidecar, never from the request: a client may only name the
+// files it uploaded to this session, not describe them.
+type messageAttachment struct {
+	FileID    string
+	Name      string
+	MediaType string
+	Size      int64
+	SHA256    string
+}
+
+// resolveSendAttachments turns the file ids a message carries into their
+// stored metadata. Every id must name a file the person uploaded to this
+// session; anything else is refused rather than silently dropped, because a
+// message that lost its image is worse than a visible error.
+func (a *App) resolveSendAttachments(
+	ctx context.Context, sessionID string, refs []json.RawMessage,
+) ([]messageAttachment, *httpx.Error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	if len(refs) > maxAttachmentFiles {
+		return nil, httpx.NewError(http.StatusUnprocessableEntity,
+			fmt.Sprintf("at most %d attachments per message", maxAttachmentFiles))
+	}
+	out := make([]messageAttachment, 0, len(refs))
+	seen := make(map[string]bool, len(refs))
+	for _, raw := range refs {
+		var ref struct {
+			FileID string `json:"fileId"`
+		}
+		if err := json.Unmarshal(raw, &ref); err != nil || strings.TrimSpace(ref.FileID) == "" {
+			return nil, httpx.NewError(http.StatusUnprocessableEntity,
+				"each attachment must name a fileId")
+		}
+		fileID := strings.TrimSpace(ref.FileID)
+		if seen[fileID] {
+			continue
+		}
+		seen[fileID] = true
+		meta, err := store.ReadAttachmentMeta(a.cfg.UploadDir, sessionID, fileID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, httpx.NewError(http.StatusUnprocessableEntity,
+					"attachment not found: "+fileID)
+			}
+			return nil, httpx.NewError(http.StatusInternalServerError, err.Error())
+		}
+		out = append(out, messageAttachment{
+			FileID:    meta.FileID,
+			Name:      meta.Name,
+			MediaType: meta.MediaType,
+			Size:      meta.Size,
+			SHA256:    meta.SHA256,
+		})
+	}
+	return out, nil
+}
+
+// submitAttachments renders attachments for the connector frame.
+func submitAttachments(sessionID string, attachments []messageAttachment) []protocol.SubmitAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]protocol.SubmitAttachment, 0, len(attachments))
+	for _, file := range attachments {
+		out = append(out, protocol.SubmitAttachment{
+			FileID:      file.FileID,
+			Name:        file.Name,
+			MediaType:   file.MediaType,
+			Size:        file.Size,
+			SHA256:      file.SHA256,
+			DownloadURL: connectorAttachmentContentPath(sessionID, file.FileID),
+		})
+	}
+	return out
+}
+
+// timelineAttachments renders the same files for the stored message content,
+// which is what every client draws under the bubble.
+func timelineAttachments(attachments []messageAttachment) []map[string]any {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(attachments))
+	for _, file := range attachments {
+		out = append(out, map[string]any{
+			"fileId":    file.FileID,
+			"name":      file.Name,
+			"mediaType": file.MediaType,
+			"size":      file.Size,
+			"sha256":    file.SHA256,
+		})
+	}
+	return out
+}
+
+// connectorAttachmentContentPath is the connector-authenticated download route.
+func connectorAttachmentContentPath(sessionID, fileID string) string {
+	return "/api/v2/connector/sessions/" + url.PathEscape(sessionID) +
+		"/attachments/" + url.PathEscape(fileID) + "/content"
+}
+
+// handleConnectorAttachmentContent serves one attachment to the connector
+// that runs its session.
+func (a *App) handleConnectorAttachmentContent(w http.ResponseWriter, r *http.Request) {
+	connector, ok := a.authenticateConnector(r)
+	if !ok {
+		httpx.Fail(w, httpx.Unauthorized("invalid connector token"))
+		return
+	}
+	sessionID := r.PathValue("session_id")
+	session, err := a.db.SessionByIDAny(r.Context(), a.db.Read(), sessionID)
+	if err != nil || session.ConnectorID != connector.ID {
+		httpx.Fail(w, httpx.NotFound("session not found"))
+		return
+	}
+	meta, data, err := store.ReadAttachment(a.cfg.UploadDir, sessionID, r.PathValue("file_id"))
+	if err != nil {
+		writeAttachmentError(w, err)
+		return
+	}
+	mediaType := meta.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mediaType)
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", meta.Name))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-File-Name", safeHeaderValue(meta.Name))
 	w.Header().Set("X-File-Sha256", meta.SHA256)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))

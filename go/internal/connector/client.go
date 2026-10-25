@@ -29,11 +29,15 @@ const approvalWait = 25 * time.Second
 
 // Client is the connector's link to the server.
 type Client struct {
-	URL    string
-	Token  string
-	Name   string
-	Bridge *bridge.Bridge
-	Log    *slog.Logger
+	URL   string
+	Token string
+	// ServerURL is the HTTP origin this connector was paired with. It is the
+	// base for the attachment downloads a message can ask for; when empty it
+	// is derived from URL.
+	ServerURL string
+	Name      string
+	Bridge    *bridge.Bridge
+	Log       *slog.Logger
 	// Discovery, when set, tells the server which sessions exist on this machine.
 	Discovery *Discovery
 
@@ -389,7 +393,14 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		}
 		return
 	}
-	sub, err := c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, msg.Text, action)
+	// Attached files reach the model as local paths: the bridge carries text,
+	// and Claude Code opens each path with its Read tool.
+	text := msg.Text
+	if len(msg.Attachments) > 0 {
+		files, failures := c.materializeAttachments(ctx, msg)
+		text = promptWithAttachments(text, files, failures)
+	}
+	sub, err := c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, text, action)
 	if err != nil {
 		// The server already acknowledged this message and painted the user's
 		// bubble; a log line would leave the phone waiting forever.

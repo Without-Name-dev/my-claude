@@ -197,6 +197,25 @@ type Submit struct {
 	// Action is "prompt" for ordinary text and "command" for a slash command,
 	// which the plugin executes without raising a turn.
 	Action string `json:"action,omitempty"`
+	// Attachments are the files the person picked on their phone or browser.
+	// The bytes stay on the server; the connector fetches them with its own
+	// bearer and hands the plugin local paths inside the prompt text, because
+	// the plugin protocol carries text only.
+	Attachments []SubmitAttachment `json:"attachments,omitempty"`
+}
+
+// SubmitAttachment is one file attached to an outgoing message.
+//
+// DownloadURL is a path on the connector's own server
+// ("/api/v2/connector/sessions/{id}/attachments/{fileId}/content") guarded by
+// the connector token, so the connector never needs a user credential.
+type SubmitAttachment struct {
+	FileID      string `json:"fileId"`
+	Name        string `json:"name"`
+	MediaType   string `json:"mediaType"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256,omitempty"`
+	DownloadURL string `json:"downloadUrl"`
 }
 
 // SessionOpen asks the connector to open a terminal for one conversation.

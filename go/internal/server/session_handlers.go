@@ -435,9 +435,9 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		httpx.Fail(w, err)
 		return
 	}
-	if len(body.Attachments) > 0 {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
-			"attachments are not supported by this server yet"))
+	files, apiErr := a.resolveSendAttachments(r.Context(), session.ID, body.Attachments)
+	if apiErr != nil {
+		httpx.Fail(w, apiErr)
 		return
 	}
 	if !a.connectors.Online(session.ConnectorID) {
@@ -453,7 +453,7 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		messageID = store.NewID("msg")
 	}
 
-	if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
+	if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt", files); err != nil {
 		if errors.Is(err, errSessionNotLive) {
 			failSessionNotLive(w, "the conversation is not live on the desktop; open it there to continue")
 			return
@@ -481,9 +481,9 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 		httpx.Fail(w, err)
 		return
 	}
-	if len(body.Attachments) > 0 {
-		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
-			"attachments are not supported by this server yet"))
+	files, apiErr := a.resolveSendAttachments(r.Context(), session.ID, body.Attachments)
+	if apiErr != nil {
+		httpx.Fail(w, apiErr)
 		return
 	}
 	if strings.TrimSpace(body.Content) == "" {
@@ -511,6 +511,7 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 		ExternalSessionID: session.ExternalID,
 		Text:              body.Content,
 		Action:            "steer",
+		Attachments:       submitAttachments(session.ID, files),
 	}) {
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
@@ -528,7 +529,7 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 // session status returns to what it was, so a reload does not show a phantom
 // delivered prompt.
 func (a *App) deliverMessage(
-	ctx context.Context, session store.Session, content, messageID, action string,
+	ctx context.Context, session store.Session, content, messageID, action string, files []messageAttachment,
 ) (store.Session, error) {
 	if action == "" {
 		action = "prompt"
@@ -540,6 +541,7 @@ func (a *App) deliverMessage(
 
 	userItemID := "msg_" + messageID + "_user"
 	orderSeq := store.NowMS()
+	payload := messageContentWithAttachments(content, timelineAttachments(files))
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
 		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
@@ -549,7 +551,7 @@ func (a *App) deliverMessage(
 			Role:       "user",
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
-			Payload:    messageContent(content),
+			Payload:    payload,
 		}, store.NowMS())
 	})
 	if err != nil {
@@ -560,11 +562,11 @@ func (a *App) deliverMessage(
 
 	session, opened, err := a.sessionOpenForDelivery(ctx, session)
 	if err != nil {
-		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		a.failMessageDelivery(ctx, session, userItemID, payload, orderSeq, previousStatus)
 		return session, err
 	}
 	if !opened {
-		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		a.failMessageDelivery(ctx, session, userItemID, payload, orderSeq, previousStatus)
 		return session, errSessionNotLive
 	}
 
@@ -574,8 +576,9 @@ func (a *App) deliverMessage(
 		ExternalSessionID: session.ExternalID,
 		Text:              content,
 		Action:            action,
+		Attachments:       submitAttachments(session.ID, files),
 	}) {
-		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		a.failMessageDelivery(ctx, session, userItemID, payload, orderSeq, previousStatus)
 		return session, httpx.Conflict("connector is offline")
 	}
 	return session, nil
@@ -584,7 +587,7 @@ func (a *App) deliverMessage(
 // failMessageDelivery rewrites a just-written user entry as failed and puts the
 // session back into the state it had before the send.
 func (a *App) failMessageDelivery(
-	ctx context.Context, session store.Session, userItemID, content string, orderSeq int64, previousStatus string,
+	ctx context.Context, session store.Session, userItemID string, payload json.RawMessage, orderSeq int64, previousStatus string,
 ) {
 	if failSeq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
 		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
@@ -595,7 +598,7 @@ func (a *App) failMessageDelivery(
 			Role:       "user",
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
-			Payload:    messageContent(content),
+			Payload:    payload,
 		}, store.NowMS())
 	}); err == nil {
 		a.publishItem(ctx, session.ID, userItemID, failSeq, false)
@@ -744,6 +747,9 @@ func (a *App) capabilitySet(session store.Session) map[string]any {
 		"session.steer",
 		"session.commands",
 		"session.interaction.approval",
+		// Images and files a person attaches travel with the message: the
+		// server stores them and the connector hands the desktop local paths.
+		"runtime.attachment",
 	}
 	caps := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -852,8 +858,9 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	if len(body.Attachments) > 0 {
+		// Uploads are session-scoped, and this session does not exist yet.
 		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity,
-			"attachments are not supported by this server yet"))
+			"attachments cannot accompany the first message; create the conversation first"))
 		return
 	}
 	connector, err := a.db.ConnectorByID(r.Context(), body.ConnectorID)
@@ -901,7 +908,7 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 	if messageID == "" {
 		messageID = store.NewID("msg")
 	}
-	session, err = a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt")
+	session, err = a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt", nil)
 	if err != nil {
 		a.setSessionStatus(r.Context(), session.ID, "error")
 		if errors.Is(err, errSessionNotLive) {

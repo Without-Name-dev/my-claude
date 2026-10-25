@@ -80,6 +80,8 @@ func main() {
 
 	client := connector.NewClient(wsURL(profile.ServerURL), profile.ConnectorToken,
 		profile.displayName(), b, log)
+	// Attachment downloads go over HTTP to the same server that was paired.
+	client.ServerURL = profile.ServerURL
 
 	client.Discovery = connector.NewDiscovery(log)
 

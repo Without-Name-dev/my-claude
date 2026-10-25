@@ -611,6 +611,18 @@ func messageContent(text string) json.RawMessage {
 	return body
 }
 
+// messageContentWithAttachments is the stored form of a person's message. The
+// attachment list is what every client draws under the bubble; the bytes stay
+// in the session attachment store and are fetched by fileId.
+func messageContentWithAttachments(text string, attachments []map[string]any) json.RawMessage {
+	body := map[string]any{"text": text}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
 func messageContentWithError(text, message string) json.RawMessage {
 	body, _ := json.Marshal(map[string]any{"text": text, "error": message})
 	return body
