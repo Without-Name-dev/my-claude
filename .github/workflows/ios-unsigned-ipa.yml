@@ -25,7 +25,9 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  # The build publishes the IPA as a release asset so it can be downloaded
+  # without signing in, unlike an Actions artifact.
+  contents: write
 
 jobs:
   build:
@@ -92,3 +94,15 @@ jobs:
           path: out/AgentsAnywhere-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish IPA as a public release asset
+        # Actions artifacts need a signed-in session to download; a release
+        # asset on a public repository does not, which is what makes it usable
+        # as a plain http URL from the self-hosted server.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete ios-latest --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-latest out/AgentsAnywhere-unsigned.ipa \
+            --title "iOS unsigned IPA (latest)" \
+            --notes "Built from ${GITHUB_SHA} on $(date -u +%Y-%m-%dT%H:%M:%SZ). Unsigned: sign it before installing."
