@@ -21,7 +21,7 @@ const pollInterval = 120 * time.Millisecond
 // session is answering waits for that answer to finish. Treating that wait as a
 // failure is what made the phone show "failed, retry" mid-conversation; the
 // deadline now only catches a session that never picks anything up at all.
-const pickupTimeout = 15 * time.Minute
+const pickupTimeout = 2 * time.Minute
 
 // turnSink receives what the watcher observes.
 type TurnSink interface {
