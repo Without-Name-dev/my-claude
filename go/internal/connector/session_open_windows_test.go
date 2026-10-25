@@ -15,7 +15,7 @@ func TestSessionTerminalCommandLine(t *testing.T) {
 	)
 
 	wtArgs, cmdArgs := sessionTerminalCommandLine(cwd, id, true)
-	wantWT := []string{"-w", "0", "new-tab", "-d", cwd, "--", "cmd.exe", "/k", "claude", "--resume", id}
+	wantWT := []string{"-w", "-1", "new-tab", "-d", cwd, "--", "cmd.exe", "/k", "claude", "--resume", id}
 	wantCmd := []string{"/c", "start", "", "cmd.exe", "/k", "claude", "--resume", id}
 	if !reflect.DeepEqual(wtArgs, wantWT) {
 		t.Fatalf("Windows Terminal args = %#v, want %#v", wtArgs, wantWT)

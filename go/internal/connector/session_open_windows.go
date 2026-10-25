@@ -68,7 +68,10 @@ func sessionTerminalCommandLine(cwd, externalSessionID string, resume bool) (wtA
 		flag = "--resume"
 	}
 	inner := []string{"cmd.exe", "/k", "claude", flag, externalSessionID}
-	wtArgs = append([]string{"-w", "0", "new-tab", "-d", windowsTerminalPath(cwd), "--"}, inner...)
+	// -w -1 always opens a new window. Joining the most recent window as a tab
+	// put two conversations side by side in one window, which is not what the
+	// person asked for when they opened a conversation from the phone.
+	wtArgs = append([]string{"-w", "-1", "new-tab", "-d", windowsTerminalPath(cwd), "--"}, inner...)
 	cmdArgs = append([]string{"/c", "start", ""}, inner...)
 	return wtArgs, cmdArgs
 }
