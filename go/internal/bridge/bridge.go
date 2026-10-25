@@ -84,6 +84,7 @@ func (b *Bridge) OutboxPath() string    { return filepath.Join(b.Dir, "outbox.js
 func (b *Bridge) HeartbeatPath() string { return filepath.Join(b.Dir, "heartbeat.txt") }
 func (b *Bridge) AbortPath() string     { return filepath.Join(b.Dir, "abort.txt") }
 func (b *Bridge) ToolsPath() string     { return filepath.Join(b.Dir, "tools.json") }
+func (b *Bridge) AgentsPath() string    { return filepath.Join(b.Dir, "agents.json") }
 func (b *Bridge) TokenPath() string     { return filepath.Join(b.Dir, "auth.json") }
 func (b *Bridge) ApprovalPath() string  { return filepath.Join(b.Dir, "approval.json") }
 func (b *Bridge) LiveDir() string       { return filepath.Join(b.Dir, "live") }
@@ -673,12 +674,17 @@ type AgentEntry struct {
 	Status    string `json:"status"`
 	StartedAt int64  `json:"startedAt"`
 	UpdatedAt int64  `json:"updatedAt"`
+	// Live activity the plugin captures from the agent's loop, absent when the
+	// runtime does not expose it.
+	Tool   string `json:"tool,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	Text   string `json:"text,omitempty"`
 }
 
 // Agents returns the subagents the plugin currently knows about. A snapshot
 // stamped with a different runtime session is skipped.
 func (b *Bridge) Agents(sessionIDs ...string) []AgentEntry {
-	raw, err := os.ReadFile(filepath.Join(b.Dir, "agents.json"))
+	raw, err := os.ReadFile(b.AgentsPath())
 	if err != nil {
 		return nil
 	}

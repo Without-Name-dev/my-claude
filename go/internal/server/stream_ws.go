@@ -175,10 +175,12 @@ func (a *App) handleStreamWS(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-dirty:
-			// The hub coalesces bursts into one signal, but a long answer still
-			// marks the dashboard dirty several times a second. Reconcile and
-			// redraw on the throttled refresh tick: doing two full inventory
-			// listings per signal would undo the throttle this hub exists for.
+			// The hub coalesces bursts into one signal. Inventory, session-summary,
+			// item-boundary and transcript-import changes reach it (see "What
+			// dirties a dashboard" in dashboard_ws.go); streamed deltas do not.
+			// Reconcile and redraw on the throttled refresh tick: doing two full
+			// inventory listings per signal would undo the throttle this hub exists
+			// for.
 			needsRefresh = true
 		case <-resync.C:
 			// This is how a session created after this socket connected gets a

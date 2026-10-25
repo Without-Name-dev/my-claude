@@ -315,12 +315,19 @@ func advance(prev, next string) string {
 // emitAgents reports the subagents running beside the main turn.
 //
 // The plugin writes them while they work; the connector forwards only when the
-// set changes, because a status line that redraws on every poll is noise.
+// snapshot changes, because a status line that redraws on every poll is noise.
+// The live fields are part of the comparison: a new tool, its detail, or more
+// streamed text is exactly what the phone needs to see update.
 func (w *TurnWatcher) emitAgents(turnID string) {
 	entries := w.bridge.Agents(w.sessionID, w.externalSessionID)
 	key := ""
 	for _, entry := range entries {
-		key += entry.AgentID + ":" + entry.Status + ":" + entry.Label + ";"
+		key += entry.AgentID + "\x00" +
+			entry.Status + "\x00" +
+			entry.Label + "\x00" +
+			entry.Tool + "\x00" +
+			entry.Detail + "\x00" +
+			entry.Text + "\x1e"
 	}
 	if key == w.agentsKey {
 		return
@@ -335,6 +342,9 @@ func (w *TurnWatcher) emitAgents(turnID string) {
 			Status:    entry.Status,
 			StartedAt: entry.StartedAt,
 			UpdatedAt: entry.UpdatedAt,
+			Tool:      entry.Tool,
+			Detail:    entry.Detail,
+			Text:      entry.Text,
 		})
 	}
 	w.sink.AgentActivity(protocol.AgentActivity{SessionID: w.sessionID, Agents: agents})

@@ -6,8 +6,13 @@ struct MarkdownBlockLayout: Layout {
     let dynamicType: DynamicTypeSize
     let displayScale: CGFloat
     let direction: LayoutDirection
+    /// Bumped by an authoritative text replacement. Including it in the cache
+    /// resets the height reservation without recreating the enclosing view, so
+    /// Textual's selection model (and any in-progress selection) survives.
+    let generation: Int
 
     struct Cache {
+        var generation: Int
         var dynamicType: DynamicTypeSize
         var displayScale: CGFloat
         var direction: LayoutDirection
@@ -16,19 +21,20 @@ struct MarkdownBlockLayout: Layout {
     }
 
     func makeCache(subviews: Subviews) -> Cache {
-        Cache(dynamicType: dynamicType, displayScale: displayScale, direction: direction)
+        Cache(generation: generation, dynamicType: dynamicType, displayScale: displayScale, direction: direction)
     }
 
     func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        if cache.dynamicType != dynamicType || cache.displayScale != displayScale || cache.direction != direction {
+        if cache.generation != generation || cache.dynamicType != dynamicType
+            || cache.displayScale != displayScale || cache.direction != direction {
             cache = makeCache(subviews: subviews)
         }
         // A subview change (including asynchronous attachments/highlighting)
         // invalidates actual measurements, while scroll/translation alone does not.
         cache.measurements.invalidate()
         // Appends and Textual's asynchronous highlighter/attachment updates
-        // retain the last real height. Authoritative replacements recreate the
-        // enclosing row's layout generation, and therefore this cache as well.
+        // retain the last real height. An authoritative replacement bumps the
+        // generation, which resets this cache without recreating the view.
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {

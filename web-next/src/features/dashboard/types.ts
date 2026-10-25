@@ -764,6 +764,25 @@ export type SessionRuntimeStateResponse = {
   serverTime: string;
 };
 
+/** One subagent as the connector's `agent.activity` frame and the activity
+ * endpoint report it. Mirror of `protocol.AgentRunning`; the three activity
+ * fields are absent when the runtime does not expose them. */
+export type AgentRun = {
+  agentId: string;
+  label: string;
+  status: string;
+  startedAt: number;
+  updatedAt: number;
+  tool?: string;
+  detail?: string;
+  text?: string;
+};
+
+export type SessionAgentActivityResponse = {
+  agents: AgentRun[];
+  serverTime: string;
+};
+
 export type SessionNoticesResponse = {
   notices: Notice[];
   serverTime: string;

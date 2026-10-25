@@ -245,7 +245,7 @@ function AssistantMarkdownText({
 
   return (
     <div ref={containerRef} className="relative min-w-0 max-w-full">
-      <MarkdownText text={renderedText} token={token} session={session} />
+      <MarkdownText text={renderedText} token={token} session={session} streaming={streaming} />
       {streaming ? <StreamingCaret containerRef={containerRef} revision={renderedText} /> : null}
     </div>
   )

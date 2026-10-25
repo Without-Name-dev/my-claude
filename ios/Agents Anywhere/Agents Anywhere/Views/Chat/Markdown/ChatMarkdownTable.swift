@@ -21,9 +21,15 @@ struct ChatMarkdownTable: View {
             .background(Color(uiColor: .secondarySystemBackground))
             .clipShape(.rect(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.12), lineWidth: 0.5).allowsHitTesting(false))
+            // Cells select locally; keep their layouts out of the message-wide
+            // collection so a drag cannot select across the table boundary.
+            .transformPreference(Text.LayoutKey.self) { $0 = [] }
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .fixedSize(horizontal: false, vertical: true)
+        // Like Textual's own overflow regions: the message selection overlay
+        // must not intercept this horizontal scroll view.
+        .textual.textSelectionExcluded()
     }
 
     private func cell(_ content: AttributedString, row: Int, column: Int, columnCount: Int) -> some View {

@@ -21,6 +21,10 @@ Semantic error and availability colors remain separate from the primary color.
   sending; the client does not force the Chinese input method to commit a guess.
 - The editor grows to `min(160, max(72, availableHeight * 0.30))` points, then
   scrolls internally. Controls preserve at least a 44-point touch target.
+- A tap anywhere in the transcript dismisses the keyboard. The tap is
+  simultaneous and lives on the transcript scroll view, so it does not cancel a
+  long-press text selection, replace a button action, or cover the return pill;
+  dragging still uses interactive keyboard dismissal.
 - The plus button opens a Liquid Glass options sheet with contrasting, borderless
   photo/file tiles and model/permission rows. Secondary selection pages use native
   lists and expand to the large detent. A picker is presented from the persistent
@@ -30,7 +34,12 @@ Semantic error and availability colors remain separate from the primary color.
   backend's inline first-message attachment contract. Downloads are explicit.
 - Textual is pinned to 0.5.0 and renders Markdown headings, lists, code, tables,
   quotes, links, images and math. Code copying and native selection remain
-  available. Completed Markdown blocks keep their identity and layout.
+  available: a message body enables selection across its text, while
+  attachments and nested code/table scroll regions publish exclusions and keep
+  selection local. Authoritative replacements reset measurement through a
+  layout generation instead of replacing the block's identity, so an
+  in-progress selection survives. Completed Markdown blocks keep their identity
+  and layout.
   Static blocks do not schedule delayed reveal-state changes. The glyph ledger
   stores settled text as a count and allocates birth times only for new glyphs,
   avoiding character-sized allocations when historical text is redrawn.
@@ -85,7 +94,10 @@ Semantic error and availability colors remain separate from the primary color.
   positioning retry loop. Network failures still offer Retry.
 - `TimelineScrollState` owns three navigation modes: reading, following and
   returning. Opening, sending, accepted responses and the bottom pill all request
-  the same return operation. SwiftUI resolves the bottom edge in its own inset
+  the same return operation. The send-triggered return is driven by the published
+  pending row in the presentation buffer, not by the local optimistic list or by
+  send start, so it measures a layout that already contains the new bubble.
+  SwiftUI resolves the bottom edge in its own inset
   coordinate system; completion releases the target so it cannot keep pulling
   later manual reading back down. Command IDs stop interrupted/old completions
   from releasing a newer target. Layout changes are
@@ -103,8 +115,13 @@ Semantic error and availability colors remain separate from the primary color.
 - A new vertical gesture cancels automatic navigation immediately. After idle,
   a 64 ms settlement reconciles native phase and visibility callbacks before
   granting auto-follow; stopping nearby remains reading mode. This never holds
-  opening behind a spinner. Explicit returns survive old deceleration
-  callbacks. Active interactions cancel queued following; a requested return with
+  opening behind a spinner. A live gesture or deceleration owns the offset:
+  a return requested mid-scroll (send, accepted response, pill, history) is
+  refused until the scroll view reports idle again, and history point
+  restoration observes the same guard. Opening and dismissing the last
+  interaction instead re-arm following directly, so a transient phase callback
+  cannot strand a stream in reading mode; the actual scroll still waits for
+  idle. Active interactions cancel queued following; a requested return with
   remaining cards finishes in reading mode. Removing the last interaction requests
   the new bottom. Loading older history retains its existing measured anchor.
 - The composer and approval dock use one native bottom `safeAreaInset`, which

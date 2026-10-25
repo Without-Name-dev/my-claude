@@ -128,6 +128,63 @@ func (s *toolSink) ToolEnd(msg protocol.ToolEnd) {
 	s.oks = append(s.oks, msg.OK)
 }
 
+// agentSink records the subagent snapshots the watcher emits.
+type agentSink struct {
+	activities []protocol.AgentActivity
+}
+
+func (s *agentSink) TurnBegin(protocol.TurnBegin) {}
+func (s *agentSink) TurnDelta(protocol.TurnDelta) {}
+func (s *agentSink) TurnEnd(protocol.TurnEnd)     {}
+func (s *agentSink) ToolBegin(protocol.ToolBegin) {}
+func (s *agentSink) ToolEnd(protocol.ToolEnd)     {}
+func (s *agentSink) AgentActivity(msg protocol.AgentActivity) {
+	s.activities = append(s.activities, msg)
+}
+
+func TestEmitAgentsCarriesLiveActivityAndForwardsChanges(t *testing.T) {
+	b := bridge.New(t.TempDir())
+	writeAgents := func(body string) {
+		if err := os.WriteFile(b.AgentsPath(), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink := &agentSink{}
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1", nil)
+
+	writeAgents(`{"sessionId":"runtime-sess","entries":[
+		{"agentId":"a1","label":"Explore","status":"running","startedAt":1,"updatedAt":2,
+		 "tool":"Bash","detail":"go test ./...","text":"checking the packages"}
+	]}`)
+	w.emitAgents("turn-1")
+	if len(sink.activities) != 1 || len(sink.activities[0].Agents) != 1 {
+		t.Fatalf("activities = %+v, want one agent", sink.activities)
+	}
+	got := sink.activities[0].Agents[0]
+	if got.Tool != "Bash" || got.Detail != "go test ./..." || got.Text != "checking the packages" {
+		t.Fatalf("agent = %+v, want tool, detail and text passed through", got)
+	}
+
+	// Only the streamed text changed: the phone must still see the update.
+	writeAgents(`{"sessionId":"runtime-sess","entries":[
+		{"agentId":"a1","label":"Explore","status":"running","startedAt":1,"updatedAt":3,
+		 "tool":"Bash","detail":"go test ./...","text":"checking the packages; all pass"}
+	]}`)
+	w.emitAgents("turn-1")
+	if len(sink.activities) != 2 {
+		t.Fatalf("activities = %d, want a frame for changed text", len(sink.activities))
+	}
+	if got := sink.activities[1].Agents[0]; got.Text != "checking the packages; all pass" {
+		t.Fatalf("changed agent text = %q", got.Text)
+	}
+
+	// An unchanged snapshot is not noise.
+	w.emitAgents("turn-1")
+	if len(sink.activities) != 2 {
+		t.Fatalf("activities = %d, want no frame for an unchanged snapshot", len(sink.activities))
+	}
+}
+
 func TestEmitToolsClosesAToolFirstSeenWhileRunning(t *testing.T) {
 	b := bridge.New(t.TempDir())
 	writeTools := func(body string) {

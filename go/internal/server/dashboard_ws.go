@@ -12,10 +12,38 @@ import (
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
-// dashboardRefresh is how often a dirty dashboard redraws. Streaming a long
-// answer marks it dirty many times a second; rebuilding the whole snapshot that
-// often would burn CPU for no visible benefit.
+// dashboardRefresh is how often a dirty dashboard redraws. Building the whole
+// session inventory is expensive; the throttle coalesces a burst of changes into
+// one frame on the wire.
 const dashboardRefresh = 1200 * time.Millisecond
+
+// What dirties a dashboard
+//
+// A dashboard snapshot is the session *inventory*: connectors, projects and one
+// summary row per session. It is rebuilt and sent when that inventory can have
+// changed:
+//
+//   - a socket connects (the first frame is always a snapshot),
+//   - connector inventory is applied (applyInventory),
+//   - a connector's presence changes (publishConnectorPresence),
+//   - a session's summary changes (setSessionStatus, publishSessionMeta: title,
+//     status, takeover, read/archive flags, pin, live),
+//   - an item is created or closed (publishItem), and
+//   - a transcript import replaces a timeline (applyHistory).
+//
+// The last two are not "timeline only". Every timeline write runs AllocateSeq,
+// which advances the session's seq, sort_at and last_activity_at; SessionView
+// derives the list's unread flag, ordering and relative time from exactly those
+// fields. Skipping these notifications leaves the list stale (and a newly
+// connected device would disagree with an already-open one). A *streamed delta*
+// is different: publishStreamingView does not allocate a revision and only
+// changes the open conversation, so it stays off this list. That is the
+// expensive path the throttle has to absorb; item boundaries are a handful per
+// turn and are coalesced into at most one frame per dashboardRefresh.
+//
+// dashboardHub therefore means "the session list may have changed". Call
+// notifySessionDashboard from every path that writes a session row or allocates
+// a revision for it, never from publishStreamingView.
 
 // dashboardHub tracks one socket per browsing client.
 type dashboardHub struct {
@@ -231,9 +259,15 @@ func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID str
 	return true, nil
 }
 
-// notifySessionDashboard refreshes the owner's dashboard after a session
-// changed. It resolves the owner from the session rather than threading the
-// user through every connector event.
+// notifySessionDashboard refreshes the owner's dashboard after anything the
+// list renders changed: the session's summary (status, title, read/archive/pin
+// flags, live), or the seq/sort_at/last_activity_at advanced by a timeline
+// write. It resolves the owner from the session rather than threading the user
+// through every connector event.
+//
+// Streamed deltas (publishStreamingView) must not call this: they change only
+// the open conversation. See the "What dirties a dashboard" note above
+// dashboardHub.
 func (a *App) notifySessionDashboard(ctx context.Context, sessionID string) {
 	var userID string
 	err := a.db.Read().QueryRowContext(ctx, `

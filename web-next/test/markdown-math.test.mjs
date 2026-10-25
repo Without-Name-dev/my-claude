@@ -9,12 +9,14 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { JSDOM } from "jsdom"
 import ts from "typescript"
 import { remarkStandaloneDisplayMath } from "../src/lib/markdown-math.ts"
+import { safeMarkdownSplitIndex } from "../src/lib/markdown-stream-split.ts"
 
 const require = createRequire(import.meta.url)
 const passthrough = ({ children }) => React.createElement("div", null, children)
 const stubs = {
   "@/components/mermaid-preview": { MermaidPreview: ({ code, children }) => React.createElement("div", { "data-mermaid-source": code }, children) },
   "@/lib/markdown-math": { remarkStandaloneDisplayMath },
+  "@/lib/markdown-stream-split": { safeMarkdownSplitIndex },
   "@/lib/clipboard": { copyText() {} },
   "@/lib/utils": { cn: (...args) => args.filter(Boolean).join(" ") },
   "@/lib/code-highlight": { highlightCode: code => code },
@@ -82,6 +84,38 @@ test("Mermaid fences route to the diagram renderer while preserving source", () 
   assert.equal(doc.querySelectorAll("pre").length, 2)
 })
 
+
+test("streaming Markdown keeps completed blocks mounted and appends only the tail", async () => {
+  const { window } = new JSDOM('<div id="root"></div>')
+  const previous = { window: globalThis.window, document: globalThis.document, act: globalThis.IS_REACT_ACT_ENVIRONMENT }
+  globalThis.window = window
+  globalThis.document = window.document
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  const root = createRoot(window.document.getElementById("root"))
+  const renderMessage = async text => act(() => root.render(React.createElement(context.exports.MarkdownText, { text, streaming: true })))
+  try {
+    await renderMessage("First paragraph.\n\nSecond")
+    const first = window.document.querySelector("p")
+    assert.match(first.textContent, /First paragraph/)
+    await renderMessage("First paragraph.\n\nSecond paragraph.\n\nThird")
+    // The completed first paragraph is the same DOM node: its chunk was not
+    // reparsed when the second paragraph completed and the third began.
+    assert.equal(window.document.querySelector("p"), first)
+    assert.deepEqual([...window.document.querySelectorAll("p")].map(node => node.textContent),
+      ["First paragraph.", "Second paragraph.", "Third"])
+    // A correction that no longer extends the cached prefix switches back to a
+    // whole-document parse instead of keeping stale completed blocks.
+    await renderMessage("Replaced opening.\n\nReplaced tail")
+    assert.deepEqual([...window.document.querySelectorAll("p")].map(node => node.textContent),
+      ["Replaced opening.", "Replaced tail"])
+  } finally {
+    await act(() => root.unmount())
+    globalThis.window = previous.window
+    globalThis.document = previous.document
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previous.act
+    window.close()
+  }
+})
 
 test("streaming Markdown preserves the mounted Mermaid subtree", async () => {
   const { window } = new JSDOM('<div id="root"></div>')

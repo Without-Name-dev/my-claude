@@ -146,6 +146,11 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		return
 	}
 	a.broker.Publish(session.ID, frame)
+	// The import allocated a revision, and AllocateSeq also moves the session's
+	// seq, sort key and last-activity time. Opening a discovered conversation
+	// must therefore reorder the list and flip its unread flag, which only a
+	// dashboard snapshot can express. A transcript import is an inventory
+	// change even though its payload is a timeline reset.
 	a.notifySessionDashboard(ctx, session.ID)
 	a.log.Info("imported transcript", "session", session.ID, "items", len(views))
 }

@@ -37,15 +37,24 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
             }
             .foregroundStyle(.secondary).padding(.horizontal, 14)
             .background(.primary.opacity(0.04))
+            // The header copy button is an embedded control: keep the message's
+            // selection overlay away from it.
+            .textual.textSelectionExcluded()
             Divider().opacity(0.5)
             ScrollView(.horizontal) {
                 highlightedCode()
                     .textual.textSelectionScope()
+                    // Keep the code's text layouts out of the message-wide
+                    // selection collection; this region selects locally.
+                    .transformPreference(Text.LayoutKey.self) { $0 = [] }
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(12)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .fixedSize(horizontal: false, vertical: true)
+            // Lets this horizontal scroll region keep receiving pans while
+            // the enclosing message body has selection enabled.
+            .textual.textSelectionExcluded()
         }
         .background(Color(uiColor: .secondarySystemBackground))
         .clipShape(.rect(cornerRadius: 10))

@@ -337,10 +337,18 @@ type AgentActivity struct {
 }
 
 // AgentRunning is one subagent's state.
+//
+// Tool, Detail and Text are the subagent's live activity, captured from the
+// loop's own events: the tool it is running now, the one-line argument the
+// terminal would show under it, and its latest visible text. Each is absent
+// when the runtime exposes no such fact; an empty value is not sent.
 type AgentRunning struct {
 	AgentID   string `json:"agentId"`
 	Label     string `json:"label"`
 	Status    string `json:"status"`
 	StartedAt int64  `json:"startedAt"`
 	UpdatedAt int64  `json:"updatedAt"`
+	Tool      string `json:"tool,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Text      string `json:"text,omitempty"`
 }

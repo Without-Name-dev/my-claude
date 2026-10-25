@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils"
 import { dashboardApi } from "@/features/dashboard/api"
 import { parseProtocolEventData } from "@/features/dashboard/stream"
 import type {
+  AgentRun,
   Notice,
   ProtocolCapabilitySet,
   ProtocolEventEnvelope,
@@ -38,6 +39,7 @@ import { useTranslations } from "next-intl"
 import { InteractionCard, NotificationCard } from "@/components/session/session-approval-card"
 import { SessionSkeleton, SessionSkeletonInline } from "@/components/session/session-skeleton"
 import { TimelineEntry } from "@/components/session/session-timeline-entry"
+import { SubagentActivityBlock } from "@/components/session/session-subagent-activity"
 import { TurnActions, type TurnAction } from "@/components/session/turn-actions"
 import {
   JsonBlock,
@@ -115,6 +117,11 @@ type SessionRemoteState = {
   state?: SessionRuntimeState | null
   items: TimelineItem[]
   notices: Notice[]
+  /** Live subagents; an empty array means none is running. */
+  agents: AgentRun[]
+  /** Whether `agents` came from a successful read or a live frame. A failed
+   * refetch must not wipe a set that is still valid. */
+  agentsLoaded: boolean
   nextSeq: number
   hasMore: boolean
   timelineResetVersion: number
@@ -132,6 +139,8 @@ function remoteStateFromOptimisticState(optimisticState: SessionLocalTimelineSta
   return {
     ...optimisticState,
     notices: optimisticState.notices ?? [],
+    agents: [],
+    agentsLoaded: false,
     timelineResetVersion: 0,
     eventCursor: `seq:${optimisticState.nextSeq}`,
     effectiveCapabilities: null,
@@ -168,11 +177,14 @@ async function loadInitialSessionState(
   options: { reason?: string } = {},
 ): Promise<SessionRemoteState> {
   const reason = options.reason ?? "session-detail.initial-load"
-  const [snapshot, noticesResponse] = await Promise.all([
+  const [snapshot, noticesResponse, activityResponse] = await Promise.all([
     dashboardApi.getSessionSnapshot(token, sessionId, INITIAL_TIMELINE_LIMIT, {
       reason,
     }),
     dashboardApi.getSessionNotices(token, sessionId).catch(() => null),
+    // Activity is live-only: a client that connects after the agents started
+    // learns them here, not from a replayed event.
+    dashboardApi.getSessionActivity(token, sessionId).catch(() => null),
   ])
   const state = sessionStateFromSnapshot(snapshot)
   if (noticesResponse) {
@@ -180,6 +192,13 @@ async function loadInitialSessionState(
       state.notices,
       serverNotices(noticesResponse.notices, noticesResponse.serverTime),
     )
+  }
+  if (activityResponse) {
+    const runs = readAgentRuns(activityResponse.agents)
+    if (runs !== null) {
+      state.agents = runs
+      state.agentsLoaded = true
+    }
   }
   console.info("[session_status_trace]", {
     layer: "frontend-snapshot",
@@ -202,6 +221,8 @@ function sessionStateFromSnapshot(snapshot: SessionSnapshotResponse): SessionRem
     state: snapshot.state ?? null,
     items: mergeTimelineItems([], snapshot.timeline.items),
     notices: serverNotices(snapshot.notices, snapshot.serverTime),
+    agents: [],
+    agentsLoaded: false,
     nextSeq: snapshot.timeline.nextSeq,
     hasMore: snapshot.timeline.hasMore,
     timelineResetVersion: 0,
@@ -210,6 +231,33 @@ function sessionStateFromSnapshot(snapshot: SessionSnapshotResponse): SessionRem
     effectiveCapabilities: snapshot.effectiveCapabilities,
     catalogs: snapshot.catalogs ?? {},
   }
+}
+
+/** Reads the activity endpoint/frame's agent list, dropping malformed rows. */
+function readAgentRuns(value: unknown): AgentRun[] | null {
+  if (!Array.isArray(value)) return null
+  const runs: AgentRun[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue
+    const record = raw as Record<string, unknown>
+    if (typeof record.agentId !== "string") continue
+    runs.push({
+      agentId: record.agentId,
+      label: typeof record.label === "string" ? record.label : "",
+      status: typeof record.status === "string" ? record.status : "",
+      startedAt: typeof record.startedAt === "number" ? record.startedAt : 0,
+      updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+      ...(typeof record.tool === "string" && record.tool ? { tool: record.tool } : {}),
+      ...(typeof record.detail === "string" && record.detail ? { detail: record.detail } : {}),
+      ...(typeof record.text === "string" && record.text ? { text: record.text } : {}),
+    })
+  }
+  return runs
+}
+
+function agentRunsEqual(left: AgentRun[], right: AgentRun[]): boolean {
+  if (left.length !== right.length) return false
+  return stableStringify(left) === stableStringify(right)
 }
 
 function mergeSessionSnapshot(
@@ -225,6 +273,10 @@ function mergeSessionSnapshot(
   return {
     ...incoming,
     items: timeline.items,
+    // A refetch whose activity read failed leaves `agents` empty without
+    // meaning "none"; keep the live set in that case.
+    agents: incoming.agentsLoaded ? incoming.agents : current.agents,
+    agentsLoaded: incoming.agentsLoaded || current.agentsLoaded,
     nextSeq: timeline.nextSeq,
     timelineResetVersion: nextTimelineResetVersion(current.timelineResetVersion, true),
     eventCursor: incoming.nextSeq >= current.nextSeq
@@ -1115,12 +1167,17 @@ function SessionDetailView({
             const bufferedBeforeLiveRead = bufferedEvents
             bufferedEvents = []
             const liveReadConnection = connectionSequence
-            const [stateResult, capabilitiesResult, noticesResult] = await Promise.allSettled([
+            const [stateResult, capabilitiesResult, noticesResult, activityResult] = await Promise.allSettled([
               dashboardApi.getSessionRuntimeState(token, sessionId),
               shouldReadLiveCapabilities
                 ? dashboardApi.getSessionRuntimeCapabilities(token, sessionId)
                 : Promise.resolve(null),
               dashboardApi.getSessionNotices(token, sessionId),
+              // Activity frames are live-only, so a recovery gap can lose them;
+              // the registry has the current set.
+              shouldReadLiveCapabilities
+                ? dashboardApi.getSessionActivity(token, sessionId)
+                : Promise.resolve(null),
             ])
             if (cancelled) return
             const liveReadIsCurrent = liveReadConnection === connectionSequence
@@ -1135,6 +1192,9 @@ function SessionDetailView({
                   notices: serverNotices(noticesResult.value.notices, noticesResult.value.serverTime),
                   serverTime: noticesResult.value.serverTime,
                 }
+              : null
+            const liveAgents = liveReadIsCurrent && activityResult.status === "fulfilled" && activityResult.value
+              ? readAgentRuns(activityResult.value.agents)
               : null
             bufferedEvents = bufferedEventsAfterLiveCapabilityRead(
               liveState
@@ -1167,15 +1227,23 @@ function SessionDetailView({
               const nextNotices = liveNotices
                 ? mergeNotices(current.notices, liveNotices.notices)
                 : current.notices
+              const nextAgents = liveAgents !== null && !agentRunsEqual(current.agents, liveAgents)
+                ? liveAgents
+                : current.agents
+              const nextAgentsLoaded = liveAgents !== null ? true : current.agentsLoaded
               return nextRuntimeState === current.state &&
                 nextCapabilities === current.effectiveCapabilities &&
-                nextNotices === current.notices
+                nextNotices === current.notices &&
+                nextAgents === current.agents &&
+                nextAgentsLoaded === current.agentsLoaded
                 ? current
                 : {
                     ...current,
                     state: nextRuntimeState,
                     effectiveCapabilities: nextCapabilities,
                     notices: nextNotices,
+                    agents: nextAgents,
+                    agentsLoaded: nextAgentsLoaded,
                     serverTime: liveState?.serverTime
                       ?? liveCapabilities?.serverTime
                       ?? liveNotices?.serverTime
@@ -1986,6 +2054,9 @@ function SessionDetailView({
                 </React.Fragment>
               )
             })}
+            {state && state.agents.length > 0 ? (
+              <SubagentActivityBlock agents={state.agents} />
+            ) : null}
             {detachedInteractions.map((notice) => (
               <InteractionCard
                 key={notice.noticeId}
@@ -2810,6 +2881,9 @@ function mergeSessionEvent(
   const catalogUpdate = event.type === "runtime.catalog.updated"
     ? catalogUpdateFromEvent(event)
     : null
+  const agentRuns = event.type === "runtime.activity"
+    ? readAgentRuns(event.payload.agents)
+    : null
 
   const nextNotices = noticeSnapshot
     ? noticeSnapshot
@@ -2870,6 +2944,10 @@ function mergeSessionEvent(
         [catalogUpdate.catalogType]: catalogUpdate.catalog,
       }
     : current.catalogs
+  const nextAgents = agentRuns !== null && !agentRunsEqual(current.agents, agentRuns)
+    ? agentRuns
+    : current.agents
+  const nextAgentsLoaded = agentRuns !== null ? true : current.agentsLoaded
   const nextSeq = Math.max(current.nextSeq, event.sequence)
   const nextEventCursor = event.sequence >= current.nextSeq ? event.cursor : current.eventCursor
 
@@ -2878,6 +2956,8 @@ function mergeSessionEvent(
     nextRuntimeState === current.state &&
     nextItems === current.items &&
     nextNotices === current.notices &&
+    nextAgents === current.agents &&
+    nextAgentsLoaded === current.agentsLoaded &&
     nextEffectiveCapabilities === current.effectiveCapabilities &&
     nextCatalogs === current.catalogs &&
     nextSeq === current.nextSeq &&
@@ -2893,6 +2973,8 @@ function mergeSessionEvent(
     state: nextRuntimeState,
     items: nextItems,
     notices: nextNotices,
+    agents: nextAgents,
+    agentsLoaded: nextAgentsLoaded,
     nextSeq,
     timelineResetVersion,
     eventCursor: nextEventCursor,
@@ -2908,6 +2990,7 @@ function sessionEventCanUpdateState(event: ProtocolEventEnvelope): boolean {
     event.type === "runtime.state.updated" ||
     event.type === "runtime.capability.updated" ||
     event.type === "runtime.catalog.updated" ||
+    event.type === "runtime.activity" ||
     event.type === "runtime.notice.updated" ||
     event.type === "runtime.notice.snapshot" ||
     event.type === "timeline.item_created" ||

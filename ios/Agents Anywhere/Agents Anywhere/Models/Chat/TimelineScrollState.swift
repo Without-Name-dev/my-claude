@@ -34,15 +34,46 @@ nonisolated struct TimelineScrollState: Equatable {
     var needsUserScrollSettlement: Bool {
         awaitsUserScrollSettlement && phase == .idle && tail.isMeasured && !navigationIsSuspended
     }
+    /// New content may move the viewport only when the reader is still parked
+    /// at the live tail and neither a gesture nor its pending settlement owns
+    /// the offset.
+    var mayFollowNewContent: Bool {
+        !userIsScrolling && !navigationIsSuspended && !needsUserScrollSettlement
+            && (mode == .following || tail.isAtBottom)
+    }
 
     mutating func open(interactionPresented: Bool = false) {
         guard !hasOpened else { return }
         hasOpened = true
         interactionIsPresented = interactionPresented
-        requestBottom()
+        // Opening is not a return the reader can be in the middle of: the view
+        // is not hit-testable until it is ready. A transient phase callback
+        // (for example deceleration reported while the first layout lands) must
+        // not swallow the one opening return, or the timeline stays in reading
+        // mode and never follows the reply that is already streaming. The
+        // actual scroll is still gated by pendingBottomRequest.
+        armBottomReturn()
     }
 
-    mutating func requestBottom() {
+    /// The choke point for an explicit return to the tail. A live gesture owns
+    /// the offset: callers that may run mid-scroll (sending, an accepted
+    /// response, history loading or the pill) must not arm a scroll while the
+    /// person is tracking or the offset is decelerating. Refusing here, and
+    /// not only at the command site, also prevents a request queued mid-gesture
+    /// from firing as soon as the gesture ends.
+    @discardableResult
+    mutating func requestBottom() -> Bool {
+        guard !userIsScrolling else { return false }
+        armBottomReturn()
+        return true
+    }
+
+    /// Arms the return without consulting the live phase. Reserved for state
+    /// transitions that must restore follow mode (opening, dismissing the last
+    /// interaction): they are not competing with a gesture the reader started,
+    /// and pendingBottomRequest still refuses to move the viewport until the
+    /// scroll view reports idle.
+    private mutating func armBottomReturn() {
         mode = .returning
         awaitsUserScrollSettlement = false
         invalidateNavigation()
@@ -58,7 +89,13 @@ nonisolated struct TimelineScrollState: Equatable {
         guard interactionIsPresented != presented else { return }
         interactionIsPresented = presented
         if presented { browseHistory() }
-        else { requestBottom() }
+        else {
+            // The reply resumes as soon as the last card is dismissed. A
+            // transient deceleration callback must not leave the timeline in
+            // reading mode for the rest of the stream; arm the return directly
+            // (the scroll itself still waits for idle in pendingBottomRequest).
+            armBottomReturn()
+        }
     }
 
     mutating func setNavigationSuspended(_ suspended: Bool) {
@@ -99,9 +136,13 @@ nonisolated struct TimelineScrollState: Equatable {
     }
 
     var pendingBottomRequest: BottomRequest? {
+        // A gesture sample can arrive between requestBottom() and this read.
+        // The hard guard applies even to an explicit return: the reader's
+        // finger or its inertia must never be fought by a forced scroll.
+        guard !userIsScrolling else { return nil }
         guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
               returningToBottom || tail.isMeasured,
-              mode != .reading, !userIsScrolling || returningToBottom,
+              mode != .reading,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
         // changes only need correction when they actually move away from bottom.

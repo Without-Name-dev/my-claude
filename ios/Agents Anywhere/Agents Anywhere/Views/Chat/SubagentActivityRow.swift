@@ -44,9 +44,29 @@ struct SubagentActivityRow: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(activity.agents) { agent in
-                        TimelineMarkerRow(title: activity.rowTitle(agent, now: now),
-                            symbol: "person.crop.circle", status: agent.markerStatus)
-                            .padding(.leading, 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            TimelineMarkerRow(title: activity.rowTitle(agent, now: now),
+                                symbol: "person.crop.circle", status: agent.markerStatus)
+                            if agent.isRunning, let toolLine = agent.toolLine {
+                                // What the terminal draws under the agent: the
+                                // tool it is in, and the one-line argument.
+                                Text(toolLine)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .padding(.leading, 26)
+                            }
+                            if let text = agent.latestText {
+                                Text(text)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(6)
+                                    .multilineTextAlignment(.leading)
+                                    .padding(.leading, 26)
+                            }
+                        }
+                        .padding(.leading, 24)
                     }
                 }
                 .transition(.identity)

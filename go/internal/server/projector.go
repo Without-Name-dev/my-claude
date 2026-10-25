@@ -559,6 +559,12 @@ func (a *App) publishItem(ctx context.Context, sessionID, itemID string, seq int
 		return
 	}
 	a.broker.Publish(sessionID, frame)
+	// This write allocated a revision, which also advanced the session's seq,
+	// sort key and last-activity time. Those are list fields (unread dot,
+	// ordering, relative time), so an item creation or completion is an
+	// inventory change even though the payload is a timeline item. Streamed
+	// deltas do not come through here: they use publishStreamingView and stay
+	// quiet.
 	a.notifySessionDashboard(ctx, sessionID)
 }
 

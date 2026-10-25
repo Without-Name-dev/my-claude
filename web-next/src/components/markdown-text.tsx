@@ -9,6 +9,7 @@ import remarkMath from "remark-math"
 import { MermaidPreview } from "@/components/mermaid-preview"
 import rehypeKatex from "rehype-katex"
 import { remarkStandaloneDisplayMath } from "@/lib/markdown-math"
+import { safeMarkdownSplitIndex } from "@/lib/markdown-stream-split"
 import { Copy, Check, ExternalLink, GitBranch, Maximize2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -29,13 +30,16 @@ export const MarkdownText = React.memo(function MarkdownText({
   token,
   session,
   inverted,
+  streaming = false,
 }: {
   text: string
   token?: string
   session?: SessionView
   inverted?: boolean
+  /** Live reply text: completed ranges are parsed once, only the tail re-parses. */
+  streaming?: boolean
 }) {
-  return <MarkdownBody text={text} token={token} session={session} inverted={inverted} />
+  return <MarkdownBody text={text} token={token} session={session} inverted={inverted} streaming={streaming} />
 })
 
 // Keep the component identity stable while streamed message text changes.
@@ -99,31 +103,29 @@ function MarkdownTableBlock({ children, ...props }: React.ComponentProps<"table"
   )
 }
 
-function MarkdownBody({
-  text,
-  token,
-  session,
-  inverted,
-}: {
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkStandaloneDisplayMath, remarkGitDirectiveBadges]
+const REHYPE_PLUGINS = [rehypeKatex]
+
+type MarkdownChunkProps = {
   text: string
   token?: string
   session?: SessionView
-  inverted?: boolean
-}) {
+}
+
+/**
+ * One range of Markdown parsed on its own. `React.memo` is what makes streamed
+ * tail-splitting pay off: when only the open tail grows, every completed range
+ * keeps the same `text` and is not handed to the parser again. The ranges are
+ * fragments, so their block elements remain direct children of the spacing
+ * wrapper in `MarkdownBody`.
+ */
+const MarkdownChunk = React.memo(function MarkdownChunk({ text, token, session }: MarkdownChunkProps) {
   const openFilePreview = useSessionFilePreviewOpener()
 
   return (
-    <div
-      className={cn(
-        "markdown-body min-w-0 space-y-3 text-sm leading-relaxed [&_a]:underline [&_blockquote]:border-l [&_blockquote]:pl-3 [&_code]:text-[1em] [&_li]:ml-5 [&_ol]:list-decimal [&_pre]:m-0 [&_ul]:list-disc",
-        inverted
-          ? "[&_pre]:border-primary-foreground/15"
-          : "[&_pre]:border-border",
-      )}
-    >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkStandaloneDisplayMath, remarkGitDirectiveBadges]}
-        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         components={{
           pre: MarkdownPre,
           code({ className, children, node: _node, ...props }) {
@@ -233,8 +235,63 @@ function MarkdownBody({
       >
         {text}
       </ReactMarkdown>
+  )
+})
+
+function MarkdownBody({
+  text,
+  token,
+  session,
+  inverted,
+  streaming,
+}: {
+  text: string
+  token?: string
+  session?: SessionView
+  inverted?: boolean
+  streaming: boolean
+}) {
+  const segments = useMarkdownSegments(text, streaming)
+
+  return (
+    <div
+      className={cn(
+        "markdown-body min-w-0 space-y-3 text-sm leading-relaxed [&_a]:underline [&_blockquote]:border-l [&_blockquote]:pl-3 [&_code]:text-[1em] [&_li]:ml-5 [&_ol]:list-decimal [&_pre]:m-0 [&_ul]:list-disc",
+        inverted
+          ? "[&_pre]:border-primary-foreground/15"
+          : "[&_pre]:border-border",
+      )}
+    >
+      {segments.map((segment, index) => segment ? (
+        <MarkdownChunk key={index} text={segment} token={token} session={session} />
+      ) : null)}
     </div>
   )
+}
+
+/**
+ * Split streamed text into ranges that were completed before the live tail.
+ * The cache is append-only: a text correction (reconnect recovery) resets it.
+ * Once a message stops streaming its ranges stay split, so the final frame does
+ * not re-parse (and remount) everything the person just read. A message that
+ * never streamed in this view has an empty cache and parses once as a whole.
+ */
+function useMarkdownSegments(text: string, streaming: boolean): string[] {
+  const cache = React.useRef<{ prefix: string; segments: string[] }>({ prefix: "", segments: [] })
+  const state = cache.current
+  if (!text.startsWith(state.prefix)) {
+    state.prefix = ""
+    state.segments = []
+  }
+  if (streaming) {
+    const split = safeMarkdownSplitIndex(text)
+    if (split !== null && split > state.prefix.length) {
+      state.segments.push(text.slice(state.prefix.length, split))
+      state.prefix = text.slice(0, split)
+    }
+  }
+  if (state.segments.length === 0) return [text]
+  return [...state.segments, text.slice(state.prefix.length)]
 }
 
 const GIT_DIRECTIVE_ACTIONS = [

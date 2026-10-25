@@ -8,6 +8,7 @@ const LIVE_PROJECTION_EVENT_TYPES = new Set<ProtocolEventEnvelope["type"]>([
   "runtime.state.updated",
   "runtime.capability.updated",
   "runtime.catalog.updated",
+  "runtime.activity",
 ])
 
 export class SessionEventSequenceCursor {

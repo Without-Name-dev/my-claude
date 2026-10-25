@@ -150,15 +150,65 @@ import Testing
         }
     }
 
-    @Test func explicitReturnSurvivesOldDecelerationButANewDragCancelsIt() throws {
+    @Test func forcedScrollIsIgnoredWhileAGestureOwnsTheOffset() throws {
+        for gesture in [TimelineScrollState.Phase.tracking, .interacting, .decelerating] {
+            var state = try openedAtBottom()
+            visibility(&state, end: false)
+            state.phaseChanged(.tracking, viewport: viewport(offset: 1000))
+            state.phaseChanged(gesture, viewport: viewport(offset: 900))
+            let generation = state.navigationGeneration
+            // No caller—send, response, history load or the pill—may arm a
+            // return while the reader is tracking or decelerating.
+            #expect(!state.requestBottom())
+            #expect(state.navigationGeneration == generation)
+            #expect(!state.returningToBottom && state.pendingBottomRequest == nil)
+            state.phaseChanged(.idle, viewport: viewport(offset: 900))
+            #expect(state.pendingBottomRequest == nil)
+            // Once the gesture has ended, an explicit return is allowed again.
+            #expect(state.requestBottom())
+            #expect(state.pendingBottomRequest != nil)
+        }
+    }
+
+    @Test func openingArmsTheReturnEvenWhenTheFirstPhaseIsStillBusy() throws {
+        var state = TimelineScrollState()
+        state.geometryChanged(viewport(offset: 0))
+        visibility(&state, end: false)
+        // A transient phase callback can arrive before the ready callback.
+        state.phaseChanged(.decelerating, viewport: viewport(offset: 0))
+        state.open()
+        // The opening intent survives, but the live phase still owns the
+        // offset: no scroll is issued while it is decelerating.
+        #expect(state.returningToBottom)
+        #expect(state.pendingBottomRequest == nil)
+        state.phaseChanged(.idle, viewport: viewport(offset: 0))
+        let command = try nextCommand(&state)
+        state.geometryChanged(viewport(offset: 1320))
+        visibility(&state, end: true)
+        #expect(state.complete(command))
+        #expect(state.mode == .following)
+    }
+
+    @Test func dismissingTheLastInteractionRearmsFollowAfterTheGesture() throws {
         var state = try openedAtBottom()
+        state.setInteractionPresented(true)
         state.phaseChanged(.tracking, viewport: viewport(offset: 1000))
         state.phaseChanged(.decelerating, viewport: viewport(offset: 900))
         visibility(&state, end: false)
+        state.setInteractionPresented(false)
+        // Removing the card restores the intent to follow the reply that
+        // resumes, but the deceleration still owns the offset.
+        #expect(state.returningToBottom)
+        #expect(state.pendingBottomRequest == nil)
+        state.phaseChanged(.idle, viewport: viewport(offset: 900))
+        #expect(state.pendingBottomRequest != nil)
+    }
+
+    @Test func aNewDragCancelsAnInFlightReturn() throws {
+        var state = try openedAtBottom()
+        visibility(&state, end: false)
         state.requestBottom()
         let command = try nextCommand(&state)
-        state.phaseChanged(.idle, viewport: viewport(offset: 850))
-        #expect(state.returningToBottom && state.activeCommand == command)
         state.phaseChanged(.animating, viewport: viewport(offset: 1000))
         let began = state.phaseChanged(.interacting, viewport: viewport(offset: 1000))
         let completed = state.complete(command)
@@ -292,9 +342,13 @@ import Testing
         let gesture = state.navigationGeneration
         state.phaseChanged(.interacting, viewport: viewport(offset: 700))
         #expect(state.navigationGeneration == gesture)
-        state.requestBottom()
+        // A request during the gesture is ignored rather than queued.
+        #expect(!state.requestBottom())
         state.phaseChanged(.idle, viewport: viewport(offset: 700))
-        #expect(state.returningToBottom && state.pendingBottomRequest != nil)
+        #expect(!state.returningToBottom && state.pendingBottomRequest == nil)
+        // Idle allows a fresh explicit return with its own generation.
+        #expect(state.requestBottom())
+        #expect(state.pendingBottomRequest?.generation == state.navigationGeneration)
     }
 
     @Test func eachHistoryEdgeNeedsOneFreshPullOnAnAlreadyVisiblePrompt() {

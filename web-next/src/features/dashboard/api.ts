@@ -35,6 +35,7 @@ import type {
   ProjectSessionListResponse,
   RpcResponse,
   RuntimeTypeListResponse,
+  SessionAgentActivityResponse,
   SessionCommandListResponse,
   SessionCreateAndStartRequest,
   SessionCreateRequest,
@@ -711,6 +712,18 @@ export class DashboardApi {
   ): Promise<SessionNoticesResponse> {
     return this.client.get<SessionNoticesResponse>(
       `/sessions/${encodeURIComponent(sessionId)}/runtime/notices`,
+      { token },
+    );
+  }
+
+  /** Live-only subagent activity; the `runtime.activity` event carries changes,
+   * this reads the current set after a (re)connect or a snapshot refetch. */
+  getSessionActivity(
+    token: string,
+    sessionId: string,
+  ): Promise<SessionAgentActivityResponse> {
+    return this.client.get<SessionAgentActivityResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/activity`,
       { token },
     );
   }

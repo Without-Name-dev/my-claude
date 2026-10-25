@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 #if DEBUG
 import OSLog
 #endif
@@ -68,6 +69,17 @@ struct ChatTimelineView: View {
             // reader has scrolled away.
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
+            // A tap in the transcript dismisses the keyboard. The gesture sits
+            // on the scroll view, not on the enclosing ZStack, so it can never
+            // cover the return pill (a sibling under the ZStack) or replace its
+            // button action. It is simultaneous, so message buttons, links,
+            // attachments and Textual's selection overlay still receive their
+            // taps; dragging keeps using .scrollDismissesKeyboard above.
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded { _ in dismissKeyboard() },
+                including: keyboardIsVisible ? .all : .none
+            )
             .onScrollPhaseChange { _, phase, context in
                 // A phase callback carries a newer authoritative sample.
                 viewportUpdates.cancel()
@@ -159,15 +171,21 @@ struct ChatTimelineView: View {
                     applyHistoryHeight(viewport.contentHeight)
                 }
             }
-            .onChange(of: model.session.pendingMessages.last?.id) { _, id in
+            .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
+                // The presentation buffer, not the session's optimistic list,
+                // is what the LazyVStack renders. Waiting for this id means the
+                // return is measured with the new bubble already in the layout;
+                // requesting it on `session.pendingMessages` (or at send start)
+                // could scroll to the previous bottom and leave the bubble one
+                // row below the viewport.
                 if model.isOpeningReady, id != nil && !hasInteractions { scrolling.requestBottom() }
             }
             .onChange(of: model.responseRevision) { _, _ in
                 // An approval response belongs to the current turn. Follow it
-                // only when the reader is still at the bottom; otherwise their
+                // only when the reader is still parked at the live tail and no
+                // drag or its settlement is in progress; otherwise their
                 // reading position wins.
-                if model.isOpeningReady,
-                   (scrolling.mode == .following || scrolling.tail.isAtBottom) {
+                if model.isOpeningReady, scrolling.mayFollowNewContent {
                     scrolling.requestBottom()
                 }
             }
@@ -243,7 +261,11 @@ struct ChatTimelineView: View {
                 await model.session.loadLatest()
                 guard !Task.isCancelled else { return }
                 // A drag during the fetch must not be undone when it finishes.
-                if scrolling.navigationGeneration == generation { scrolling.requestBottom() }
+                // requestBottom() additionally refuses while that drag is
+                // still tracking or decelerating.
+                if scrolling.navigationGeneration == generation, !scrolling.userIsScrolling {
+                    scrolling.requestBottom()
+                }
                 latestLoadRequest = nil
             }
             if !keyboardIsVisible, scrolling.showsBottomButton() {
@@ -271,6 +293,9 @@ struct ChatTimelineView: View {
             keyboardIsVisible = false
         }
     }
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
     private func loadOlder() {
         guard model.session.isValid, model.session.hasOlderItems,
               !model.session.isLoadingHistory, olderLoadRequest == nil, latestLoadRequest == nil else { return }
@@ -292,7 +317,10 @@ struct ChatTimelineView: View {
               !model.session.isLoadingHistory, latestLoadRequest == nil, olderLoadRequest == nil else { return }
         olderPull.cancel(); latestPull.cancel()
         historyPosition?.cancelRestoration()
-        scrolling.requestBottom()
+        // This is reached from the pull gesture while the offset is still
+        // decelerating. Do not request the tail here: the page lands first,
+        // and the fetch completion below returns only if the reader has not
+        // taken over the offset in the meantime.
         latestLoadRequest = scrolling.navigationGeneration
     }
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
@@ -315,7 +343,10 @@ struct ChatTimelineView: View {
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in
             if historyLayout != layout { historyLayout = layout }
-            guard !navigationIsSuspended, var restoration = historyPosition else { return }
+            // Point restoration is a forced scroll too: a live gesture always
+            // wins, even if a coalesced measurement arrives after it began.
+            guard !navigationIsSuspended, !scrolling.userIsScrolling,
+                  var restoration = historyPosition else { return }
             let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
             if historyPosition != restoration { historyPosition = restoration }
             guard let offset else { return }
@@ -326,7 +357,8 @@ struct ChatTimelineView: View {
     }
 
     private func applyHistoryHeight(_ height: CGFloat) {
-        guard !navigationIsSuspended, var restoration = historyPosition else { return }
+        guard !navigationIsSuspended, !scrolling.userIsScrolling,
+              var restoration = historyPosition else { return }
         let offset = restoration.laidOutContentHeight(height, firstRowID: model.timeline.rows.first?.id,
             generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }

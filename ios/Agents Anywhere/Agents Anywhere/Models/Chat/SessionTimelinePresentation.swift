@@ -178,6 +178,18 @@ final class SessionTimelinePresentation {
             var orderChanged = pending.count != rows.count
             for (index, value) in pending.enumerated() {
                 let existing = rowsByID[value.id]
+                // A streaming batch republishes the whole projection with one
+                // row changed. A row that is already published at this position
+                // and still carries the same version fields has nothing to do:
+                // skip it before `flush` deep-compares its JSON payload again.
+                // New rows are absent from `rows`, so they never take this path.
+                // Non-streaming batches take the full path on purpose: a final
+                // non-animated flush is how a withheld trailing glyph is shown.
+                if animatePending, let existing, index < rows.count, rows[index] === existing,
+                   existing.value.matchesPresentationVersion(of: value) {
+                    updated.append(existing)
+                    continue
+                }
                 let animate = animatePending && (existing != nil || value.orderSeq > previousTail)
                 let row: ChatTimelineRowModel
                 if let existing { row = existing } else {
@@ -285,6 +297,24 @@ final class SessionTimelinePresentation {
 }
 
 extension V2TimelineItem {
+    /// Whether `other` is the same published version of this item. An unchanged
+    /// row can be left alone without walking its retained JSON tree. The full
+    /// `==` still compares `raw`, so callers that need the whole value keep it.
+    ///
+    /// `displayText` is part of the comparison on purpose. A streamed token can
+    /// arrive with an unchanged revision and sequence (the server reuses one
+    /// revision for several deltas), and a version that does not refresh
+    /// `contentHash` would otherwise look unchanged: the row would be skipped
+    /// and the token would never reach the screen. Comparing the decoded text
+    /// is a cheap string check when it did not change and keeps the reveal
+    /// pipeline correct when it did.
+    nonisolated func matchesPresentationVersion(of other: Self) -> Bool {
+        id == other.id && revision == other.revision && updatedSeq == other.updatedSeq
+            && contentHash == other.contentHash && status == other.status
+            && type == other.type && role == other.role && orderSeq == other.orderSeq
+            && displayText == other.displayText
+    }
+
     var isAssistantText: Bool {
         isReasoning || type == .message && role == .assistant
     }

@@ -11,6 +11,10 @@ struct ChatMarkdownView: View {
     let text: String
     var isStreaming = false
     var resolvesFileReferences = false
+    /// Bumped only for an authoritative replacement (not for an appended
+    /// token). It resets measurement caches without changing this view's
+    /// identity, so an in-progress text selection survives the update.
+    var layoutGeneration = 0
     @State private var blocks: [MarkdownBlockSnapshot] = []
     /// When each block's newest glyphs finish revealing. A block's drawing
     /// clock runs only until then, so a stalled or finished block stops redrawing.
@@ -22,7 +26,8 @@ struct ChatMarkdownView: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id,
-                                  revealDeadline: revealDeadlines[block.id] ?? .distantPast)
+                                  revealDeadline: revealDeadlines[block.id] ?? .distantPast,
+                                  layoutGeneration: layoutGeneration)
                     .equatable()
             }
         }
@@ -108,6 +113,7 @@ private struct MarkdownBlockView: View, Equatable {
     let isStreaming: Bool
     let isTail: Bool
     let revealDeadline: Date
+    let layoutGeneration: Int
     @State private var hasSettled = false
     @State private var headingLedger = GlyphRevealLedger()
     @Environment(\.dynamicTypeSize) private var dynamicType
@@ -118,19 +124,21 @@ private struct MarkdownBlockView: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.block == rhs.block && lhs.isStreaming == rhs.isStreaming && lhs.isTail == rhs.isTail
-            && lhs.revealDeadline == rhs.revealDeadline
+            && lhs.revealDeadline == rhs.revealDeadline && lhs.layoutGeneration == rhs.layoutGeneration
     }
 
     var body: some View {
         // Only changed blocks reach Textual's parser. The complete document was
         // parsed above, so cross-block references and nested structures survive.
-        MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction) {
+        MarkdownBlockLayout(dynamicType: dynamicType, displayScale: displayScale, direction: direction,
+                            generation: layoutGeneration) {
             StructuredText(String(block.digest), parser: ParsedMarkdownText(content: block.content))
                 .textual.structuredTextStyle(ChatMarkdownStyle(headingLedger: headingLedger))
                 .textual.imageAttachmentLoader(ChatImageLoader())
-                // Controls own their gestures. Only paragraph/heading labels and
-                // the native code/table text areas install selection overlays.
-                .textual.textSelection(.disabled)
+                // Selection spans the whole message body. Interactive
+                // attachments publish exclusion rectangles, and nested
+                // code/table scroll views keep their own scoped overlays.
+                .textual.textSelection(.enabled)
                 .environment(\.streamingGlyphAnimation, isStreaming && !hasSettled)
                 .environment(\.streamingRevealDeadline, revealDeadline)
                 .font(font)
@@ -189,7 +197,6 @@ private struct ChatParagraphStyle: StructuredText.ParagraphStyle {
             .textual.lineSpacing(.fontScaled(0.23))
             .textual.blockSpacing(.fontScaled(top: 0.8))
             .modifier(StreamingGlyphReveal())
-            .textual.textSelectionScope()
     }
 }
 
@@ -217,7 +224,6 @@ private struct ChatHeadingStyle: StructuredText.HeadingStyle {
             // Textual identifies headings by their changing slug. Keep births
             // in the stable outer block so an append doesn't replay the heading.
             .modifier(StreamingGlyphReveal(ledger: ledger))
-            .textual.textSelectionScope()
     }
 }
 

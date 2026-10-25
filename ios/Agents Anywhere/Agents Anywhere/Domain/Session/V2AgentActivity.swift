@@ -30,19 +30,37 @@ nonisolated struct V2AgentRun: Decodable, Hashable, Identifiable {
     let status: String
     let startedAt: Int64
     let updatedAt: Int64
+    /// The tool the agent is running now, when the runtime exposes it.
+    let tool: String
+    /// The one-line argument the terminal shows beside the tool.
+    let detail: String
+    /// The agent's latest visible text, from its own streamed response.
+    let text: String
 
     var id: String { agentId }
 
     private enum CodingKeys: String, CodingKey {
-        case agentId, label, status, startedAt, updatedAt
+        case agentId, label, status, startedAt, updatedAt, tool, detail, text
     }
 
-    init(agentId: String, label: String, status: String, startedAt: Int64, updatedAt: Int64) {
+    init(
+        agentId: String,
+        label: String,
+        status: String,
+        startedAt: Int64,
+        updatedAt: Int64,
+        tool: String = "",
+        detail: String = "",
+        text: String = ""
+    ) {
         self.agentId = agentId
         self.label = label
         self.status = status
         self.startedAt = startedAt
         self.updatedAt = updatedAt
+        self.tool = tool
+        self.detail = detail
+        self.text = text
     }
 
     init(from decoder: Decoder) throws {
@@ -52,5 +70,8 @@ nonisolated struct V2AgentRun: Decodable, Hashable, Identifiable {
         status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
         startedAt = try container.decodeIfPresent(Int64.self, forKey: .startedAt) ?? 0
         updatedAt = try container.decodeIfPresent(Int64.self, forKey: .updatedAt) ?? 0
+        tool = try container.decodeIfPresent(String.self, forKey: .tool) ?? ""
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
     }
 }

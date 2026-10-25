@@ -9,6 +9,68 @@ import Testing
         return try decode(object)
     }
 
+    /// A token arriving in the last reply must not publish or re-flush any other
+    /// row. The presentation compares version fields before touching a row, so
+    /// the unchanged rows keep both their identity and their content revision.
+    @Test func streamingFlushOnlyTouchesTheChangedRow() throws {
+        let timeline = SessionTimelinePresentation()
+        let items: [V2TimelineItem] = try (1...120).map { index in
+            try decode(itemObject(id: "row-\(index)", order: index, revision: 1, seq: index, text: "Row \(index)"))
+        }
+        timeline.presentOpening(items, pendingMessages: [])
+        let published = timeline.rows
+        let revisions = published.map(\.contentRevision)
+        #expect(published.count == items.count)
+
+        var updated = items
+        updated[updated.count - 1] = try decode(itemObject(id: "row-120", order: 120, revision: 2, seq: 121,
+            text: "Row 120 with more text"))
+        timeline.stage(updated, animate: true)
+        timeline.flush(now: 1)
+
+        #expect(timeline.rows.count == items.count)
+        for index in 0..<(items.count - 1) {
+            #expect(timeline.rows[index] === published[index])
+            #expect(timeline.rows[index].contentRevision == revisions[index])
+        }
+        #expect(timeline.rows[items.count - 1] === published[items.count - 1])
+        #expect(timeline.rows[items.count - 1].contentRevision > revisions[items.count - 1])
+    }
+
+    /// Several streamed deltas share one revision; only the decoded text moves.
+    /// The row must still take the flush path so the token reaches the reveal
+    /// pipeline.
+    @Test func aTokenWithAnUnchangedRevisionStillReachesTheRow() throws {
+        let timeline = SessionTimelinePresentation()
+        timeline.stage([try item("Hello")], animate: false)
+        timeline.flush(now: 0)
+        let row = try #require(timeline.rows.first)
+        timeline.stage([try item("Hello world")], animate: true)
+        timeline.flush(now: 1)
+        // The reveal withholds the last glyph of a running reply.
+        #expect(row.text == "Hello worl")
+        timeline.stage([try item("Hello world", status: "done")], animate: true)
+        timeline.flush(now: 2)
+        #expect(row.text == "Hello world")
+    }
+
+    /// A new subagent step clears its text and detail. The snapshot is
+    /// authoritative; keeping the previous values would leave the old step's
+    /// text on screen for the rest of the run.
+    @Test func clearedSubagentFieldsReplaceThePreviousStep() {
+        var activity = SubagentActivityPresentation()
+        activity.receive([V2AgentRun(agentId: "a", label: "Explore", status: "running",
+            startedAt: 1, updatedAt: 2, tool: "Bash", detail: "go test ./...", text: "first step")],
+            at: Date(timeIntervalSince1970: 1))
+        #expect(activity.agents.first?.text == "first step")
+        #expect(activity.agents.first?.toolLine == "Bash · go test ./...")
+        activity.receive([V2AgentRun(agentId: "a", label: "Explore", status: "running",
+            startedAt: 1, updatedAt: 3, tool: "Read", detail: "", text: "")],
+            at: Date(timeIntervalSince1970: 2))
+        #expect(activity.agents.first?.text == "")
+        #expect(activity.agents.first?.toolLine == "Read")
+    }
+
     @Test func receptionPublishesOnlyAtFlushAndKeepsRowIdentity() throws {
         let timeline = SessionTimelinePresentation()
         timeline.stage([try item("Hello", status: "done")], animate: false)

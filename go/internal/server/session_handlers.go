@@ -822,6 +822,10 @@ func (a *App) handleCreateSession(w http.ResponseWriter, r *http.Request, user s
 		httpx.Fail(w, err)
 		return
 	}
+	// A session created on one device is inventory for every other device. The
+	// dashboard socket is not tied to this request, and the unified stream only
+	// re-lists on its slow resync tick, so tell the list now.
+	a.dashboards.notify(user.ID)
 	httpx.OK(w, map[string]any{
 		"session":         a.sessionView(r.Context(), session),
 		"connectorResult": nil,
@@ -883,6 +887,9 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 		httpx.Fail(w, err)
 		return
 	}
+	// The row exists now, even if the first message below fails; the list on
+	// every device (not just the caller's response) has to learn about it.
+	a.dashboards.notify(user.ID)
 	if err := a.applySelections(r.Context(), session.ID, body.Selections); err != nil {
 		httpx.Fail(w, err)
 		return

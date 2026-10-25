@@ -11,13 +11,44 @@ nonisolated struct SubagentActivityPresentation: Identifiable, Equatable {
         private(set) var status: String
         let startedAt: Date?
         private(set) var endedAt: Date?
+        /// Live activity from the runtime. Empty means the API did not expose
+        /// the fact; it is never filled with a guess.
+        private(set) var tool: String
+        private(set) var detail: String
+        private(set) var text: String
 
-        init(id: String, label: String, status: String, startedAt: Date?, endedAt: Date?) {
+        init(
+            id: String,
+            label: String,
+            status: String,
+            startedAt: Date?,
+            endedAt: Date?,
+            tool: String = "",
+            detail: String = "",
+            text: String = ""
+        ) {
             self.id = id
             self.label = label
             self.status = status
             self.startedAt = startedAt
             self.endedAt = endedAt
+            self.tool = tool
+            self.detail = detail
+            self.text = text
+        }
+
+        /// "Bash · go test ./...", the line the terminal draws under the agent.
+        var toolLine: String? {
+            let tool = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if tool.isEmpty { return detail.isEmpty ? nil : detail }
+            return detail.isEmpty ? tool : "\(tool) · \(detail)"
+        }
+
+        /// The agent's latest text, shown only when there is some.
+        var latestText: String? {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
 
         var isRunning: Bool {
@@ -100,8 +131,17 @@ nonisolated struct SubagentActivityPresentation: Identifiable, Equatable {
             let ended: Date? = Self.isTerminal(status)
                 ? Self.later(start, Self.date(from: run.updatedAt) ?? existing?.endedAt ?? date)
                 : nil
+            // Each frame carries the agent's live fields in full. An empty
+            // value is the runtime clearing it (a new model response clears the
+            // text, a new tool clears the previous detail), so the payload is
+            // authoritative. Keeping the previous value on an empty field
+            // would leave the last step's text on screen for the rest of the
+            // run. An older connector simply sends none and leaves these empty.
+            let tool = run.tool
+            let detail = run.detail
+            let text = run.text
             byID[run.agentId] = Agent(id: run.agentId, label: run.label, status: status,
-                startedAt: start, endedAt: ended)
+                startedAt: start, endedAt: ended, tool: tool, detail: detail, text: text)
         }
         let missing = byID.values
             .filter { !present.contains($0.id) && $0.endedAt == nil }
