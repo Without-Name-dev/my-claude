@@ -23,7 +23,11 @@ const sessionOpenThrottle = 60 * time.Second
 // the connector to treat a conversation as already running. It catches plugin
 // builds that predate the live stamps, which would otherwise look dead while
 // they are actively serving the conversation.
-const transcriptQuietWindow = 2 * time.Minute
+//
+// It is deliberately short: a conversation the person just closed from the
+// phone, or whose terminal exited, must be reopenable on the next message
+// instead of failing that request for minutes.
+const transcriptQuietWindow = 30 * time.Second
 
 // sessionOpenState is the per-connector spawn throttle.
 type sessionOpenState struct {
@@ -167,7 +171,9 @@ func (c *Client) openSession(msg protocol.SessionOpen) {
 	// and it writes no stamp. The transcript is rewritten whenever the
 	// conversation does anything, so a file touched moments ago is proof enough
 	// not to start a second process on the same session.
-	if c.Discovery != nil {
+	// A close the person asked for is authoritative: the process was ended on
+	// purpose, so the transcript being recent says nothing about it running.
+	if c.Discovery != nil && !c.sessionWasClosed(msg.SessionID) {
 		if path, ok := c.Discovery.PathFor(externalID); ok {
 			if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) <= transcriptQuietWindow {
 				c.refuseSessionOpen(msg, "the transcript was updated moments ago")

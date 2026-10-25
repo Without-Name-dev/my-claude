@@ -118,8 +118,7 @@ struct V2SessionDetailService {
         if let streamCoordinator, !streamCoordinator.isUsingFallback {
             do {
                 let events = try await streamCoordinator.sessionUpdates(id: sessionId)
-                return Self.withSubscriptionMarker(events, sessionId: sessionId,
-                    isReady: streamCoordinator.isReady)
+                return Self.withSubscriptionMarker(events, sessionId: sessionId)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -136,18 +135,17 @@ struct V2SessionDetailService {
     /// it ahead of the shared stream without inventing any server payload.
     private static func withSubscriptionMarker(
         _ events: AsyncThrowingStream<V2SessionEvent, Error>,
-        sessionId: V2SessionID,
-        isReady: Bool
+        sessionId: V2SessionID
     ) -> AsyncThrowingStream<V2SessionEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<V2SessionEvent, Error>.makeStream(
             bufferingPolicy: .bufferingNewest(2048)
         )
         let task = Task {
-            // A reconnecting socket delivers this marker itself once it is
-            // ready again; inventing one now would mark the page live early.
-            if isReady {
-                continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
-            }
+            // Always emitted: the marker is what tells the page a subscription
+            // exists and starts its recovery. Suppressing it while the shared
+            // socket reconnected left the page stuck at "connecting" with a
+            // disabled composer, which is worse than reporting a little early.
+            continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
             do {
                 for try await event in events {
                     continuation.yield(event)
