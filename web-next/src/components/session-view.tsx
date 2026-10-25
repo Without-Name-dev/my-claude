@@ -42,6 +42,7 @@ export function SessionView() {
   const t = useTranslations("dashboard.session")
   const [exporting, setExporting] = React.useState(false)
   const [openingOnComputer, setOpeningOnComputer] = React.useState(false)
+  const [closingTerminal, setClosingTerminal] = React.useState(false)
   const [memorySnapshot, setMemorySnapshot] = React.useState<SessionMemorySnapshot | null>(null)
   const isMobile = useIsMobile()
   const {
@@ -111,6 +112,20 @@ export function SessionView() {
       setOpeningOnComputer(false)
     }
   }, [openingOnComputer, session?.id, t, token])
+
+  const handleCloseTerminal = React.useCallback(async () => {
+    if (!token || !session?.id || closingTerminal) return
+    setClosingTerminal(true)
+    try {
+      const response = await dashboardApi.closeSessionRuntime(token, session.id)
+      if (response.result?.sent) toast.success(t("closeTerminalSent"))
+      else toast.error(t("closeTerminalFailed"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("closeTerminalFailed"))
+    } finally {
+      setClosingTerminal(false)
+    }
+  }, [closingTerminal, session?.id, t, token])
 
   const handleMemorySnapshotUpdated = React.useCallback((snapshot: SessionMemorySnapshot | null) => {
     if (!detailSessionId) {
@@ -253,6 +268,8 @@ export function SessionView() {
             exporting={exporting}
             openingOnComputer={openingOnComputer}
             onOpenOnComputer={handleOpenOnComputer}
+            closingTerminal={closingTerminal}
+            onCloseTerminal={handleCloseTerminal}
             toolsOpen={toolSidebar.open}
             onToggleTools={toolSidebar.toggleSidebar}
           />

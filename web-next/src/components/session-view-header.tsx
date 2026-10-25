@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Download, Loader2, Monitor } from "lucide-react"
+import { Download, Loader2, Monitor, Power } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -29,6 +29,9 @@ type SessionViewHeaderProps = {
   /** Opens this conversation in a terminal on its connector's computer. */
   onOpenOnComputer?: () => void
   openingOnComputer?: boolean
+  /** Stops the terminal running this conversation, so it can be restarted. */
+  onCloseTerminal?: () => void
+  closingTerminal?: boolean
   toolsOpen?: boolean
   onToggleTools?: () => void
 }
@@ -42,6 +45,8 @@ export function SessionViewHeader({
   exporting,
   onOpenOnComputer,
   openingOnComputer,
+  onCloseTerminal,
+  closingTerminal,
   toolsOpen,
   onToggleTools,
 }: SessionViewHeaderProps) {
@@ -151,6 +156,23 @@ export function SessionViewHeader({
             <Monitor className="size-3.5" />
           )}
           <span className="hidden sm:inline">{tSession("openOnComputer")}</span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5 rounded-xl px-2.5 text-muted-foreground"
+          onClick={onCloseTerminal}
+          disabled={!onCloseTerminal || closingTerminal || session.connectorStatus !== "online"}
+          aria-label={tSession("closeTerminal")}
+          title={tSession("closeTerminalConfirm")}
+        >
+          {closingTerminal ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Power className="size-3.5" />
+          )}
+          <span className="hidden sm:inline">{tSession("closeTerminal")}</span>
         </Button>
         {!toolsOpen ? (
           <WorkspaceSidebarToggleButton side="right" aria-expanded={false}

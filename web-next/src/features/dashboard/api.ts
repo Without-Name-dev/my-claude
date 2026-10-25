@@ -696,6 +696,17 @@ export class DashboardApi {
     );
   }
 
+  closeSessionRuntime(
+    token: string,
+    sessionId: string,
+  ): Promise<RpcResponse<SessionRuntimeOpenResult>> {
+    return this.client.post<RpcResponse<SessionRuntimeOpenResult>>(
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/close`,
+      {},
+      { token },
+    );
+  }
+
   getSessionRuntimeState(
     token: string,
     sessionId: string,
