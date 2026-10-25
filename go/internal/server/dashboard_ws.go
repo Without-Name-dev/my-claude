@@ -138,11 +138,14 @@ func (a *App) handleDashboardWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeDashboard sends one full snapshot.
-func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID string) bool {
+// dashboardSnapshot builds one dashboard.snapshot frame.
+//
+// The dashboard socket and the unified stream send exactly the same payload, so
+// it is built here once. A field added for one socket must show up on both.
+func (a *App) dashboardSnapshot(ctx context.Context, userID string) ([]byte, error) {
 	connectors, err := a.db.ListConnectors(ctx, userID)
 	if err != nil {
-		return true
+		return nil, err
 	}
 	connectorViews := make([]ConnectorView, 0, len(connectors))
 	for _, c := range connectors {
@@ -151,7 +154,7 @@ func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID str
 
 	projects, err := a.projectViews(ctx, userID)
 	if err != nil {
-		return true
+		return nil, err
 	}
 
 	sessions, err := a.db.ListAllSessions(ctx, userID, false)
@@ -178,7 +181,12 @@ func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID str
 		},
 		"serverTime": timestampNow(),
 	}
-	body, err := json.Marshal(payload)
+	return json.Marshal(payload)
+}
+
+// writeDashboard sends one full snapshot.
+func (a *App) writeDashboard(ws *websocket.Conn, ctx context.Context, userID string) bool {
+	body, err := a.dashboardSnapshot(ctx, userID)
 	if err != nil {
 		return true
 	}

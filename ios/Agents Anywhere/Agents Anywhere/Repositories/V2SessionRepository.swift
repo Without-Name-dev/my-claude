@@ -15,6 +15,7 @@ final class V2SessionRepository {
     private let interactions: V2RuntimeInteractionService
     private let localStore: V2LocalStore?
     private var persistenceTask: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
     private let policy: V2SessionCachePolicy
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
@@ -164,6 +165,49 @@ final class V2SessionRepository {
                 }
             }
             start(entry)
+        }
+    }
+
+    /// Warms the bounded cache from a dashboard snapshot so opening a recent
+    /// session paints from memory. Capped at the newest active sessions, at most
+    /// `concurrency` at a time, and superseded by the next prefetch or reset.
+    func prefetchSessions(_ sessions: [V2SessionMeta], limit: Int = 10, concurrency: Int = 3) {
+        guard network.availability != .offline, !suspended else { return }
+        // Never aim to warm more entries than the cache can hold. Loading in
+        // ascending activity order makes the most recently active sessions the
+        // newest entries, so the LRU eviction that fires as the cache fills
+        // drops the ones the user is least likely to open.
+        let newest = sessions
+            .filter { !$0.archived && !$0.userArchived && !$0.id.hasPrefix("local:") }
+            .sorted {
+                let left = V2Timestamp.seconds($0.sortAt ?? $0.lastActivityAt) ?? 0
+                let right = V2Timestamp.seconds($1.sortAt ?? $1.lastActivityAt) ?? 0
+                return left > right
+            }
+            .prefix(min(max(0, limit), policy.maximumSessions))
+            .map(\.id)
+            .filter { cached(sessionId: $0) == nil }
+        let candidates = Array(newest.reversed())
+        guard !candidates.isEmpty else { return }
+        prefetchTask?.cancel()
+        let width = max(1, concurrency)
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            var start = 0
+            while start < candidates.count {
+                if Task.isCancelled { return }
+                let batch = Array(candidates[start..<min(start + width, candidates.count)])
+                start += width
+                await withTaskGroup(of: Void.self) { group in
+                    for id in batch {
+                        group.addTask { @MainActor [weak self] in
+                            guard let self else { return }
+                            _ = try? await self.load(sessionId: id)
+                        }
+                    }
+                    await group.waitForAll()
+                }
+            }
         }
     }
 
@@ -365,6 +409,7 @@ final class V2SessionRepository {
 
     func suspend() {
         suspended = true
+        prefetchTask?.cancel(); prefetchTask = nil
         for entry in entries.values { stop(entry); emit(entry, persist: false) }
     }
 
@@ -409,6 +454,7 @@ final class V2SessionRepository {
     /// Cancellation plus identity checks prevent late responses from repopulating a signed-out cache.
     func reset() {
         persistenceTask?.cancel(); persistenceTask = nil
+        prefetchTask?.cancel(); prefetchTask = nil
         let old = Array(entries.values)
         entries.removeAll()
         for entry in old { dispose(entry) }

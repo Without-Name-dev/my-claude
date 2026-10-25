@@ -9,6 +9,7 @@ struct V2APIClient {
     let runtime: V2RuntimeAPI
     let attachments: V2AttachmentAPI
     let realtime: V2RealtimeAPI
+    let stream: V2StreamAPI
     private let ownedURLSession: URLSession?
 
     init(
@@ -30,11 +31,13 @@ struct V2APIClient {
         sessions = V2SessionAPI(transport: transport)
         runtime = V2RuntimeAPI(transport: transport)
         attachments = V2AttachmentAPI(transport: transport)
+        let webSocketTransport = URLSessionWebSocketTransport(urlSession: session)
         realtime = V2RealtimeAPI(
             serverURL: serverURL,
             transport: transport,
-            webSocketTransport: URLSessionWebSocketTransport(urlSession: session)
+            webSocketTransport: webSocketTransport
         )
+        stream = V2StreamAPI(serverURL: serverURL, webSocketTransport: webSocketTransport)
     }
 
     func cancelOutstandingRequests() { ownedURLSession?.invalidateAndCancel() }

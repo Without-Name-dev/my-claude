@@ -53,6 +53,23 @@ nonisolated struct V2SessionEvent: Decodable, Identifiable, Hashable {
     var isLiveProjection: Bool {
         ["session.meta.updated", "runtime.state.updated", "runtime.capability.updated", "runtime.catalog.updated"].contains(type)
     }
+
+    /// A client-side recovery signal for transports that do not carry the
+    /// server's `session.subscribed` frame (the unified stream). It uses the
+    /// wire protocol version the server emits and is never persisted or sent.
+    static func subscribedMarker(sessionId: V2SessionID, at date: Date = Date()) -> V2SessionEvent {
+        V2SessionEvent(
+            protocolVersion: "1.0",
+            eventId: "client-subscribed-\(sessionId)",
+            sequence: 0,
+            cursor: "seq:0",
+            type: "session.subscribed",
+            sessionId: sessionId,
+            emittedAt: date.ISO8601Format(),
+            payload: .null,
+            receivedAt: date
+        )
+    }
 }
 
 nonisolated struct V2EventRecoveryResponse: Decodable, Hashable {

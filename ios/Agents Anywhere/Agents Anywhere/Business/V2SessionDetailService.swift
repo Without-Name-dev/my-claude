@@ -4,6 +4,8 @@ struct V2SessionDetailService {
     let sessionAPI: any V2SessionAPIProtocol
     let runtimeAPI: any V2RuntimeAPIProtocol
     let realtimeAPI: any V2RealtimeAPIProtocol
+    /// Shared unified stream. Nil for HTTP-only callers and in tests.
+    var streamCoordinator: V2StreamCoordinator? = nil
 
     func load(sessionId: V2SessionID, itemLimit: Int = 100) async throws -> V2SessionSnapshot {
         try validatePageSize(itemLimit)
@@ -73,13 +75,51 @@ struct V2SessionDetailService {
         return response.state
     }
 
-    /// Opens the session push channel after obtaining a single-use ticket.
+    /// Opens the session push channel. The unified stream, when usable, serves
+    /// every session from one socket; otherwise this opens the legacy
+    /// per-session socket exactly as before.
     func updates(
         sessionId: V2SessionID,
         clientId: String
     ) async throws -> AsyncThrowingStream<V2SessionEvent, Error> {
+        if let streamCoordinator, !streamCoordinator.isUsingFallback {
+            do {
+                let events = try await streamCoordinator.sessionUpdates(id: sessionId)
+                return Self.withSubscriptionMarker(events, sessionId: sessionId)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if let urlError = error as? URLError, urlError.code == .cancelled { throw error }
+                // The coordinator already recorded the process-wide fallback.
+            }
+        }
         let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .session(sessionId))
         return try realtimeAPI.sessionEvents(sessionId: sessionId, ticket: ticket.ticket)
+    }
+
+    /// Broker envelopes carry no `session.subscribed` frame, but the repository
+    /// uses that signal to start recovery and mark the connection live. Re-emit
+    /// it ahead of the shared stream without inventing any server payload.
+    private static func withSubscriptionMarker(
+        _ events: AsyncThrowingStream<V2SessionEvent, Error>,
+        sessionId: V2SessionID
+    ) -> AsyncThrowingStream<V2SessionEvent, Error> {
+        let (stream, continuation) = AsyncThrowingStream<V2SessionEvent, Error>.makeStream(
+            bufferingPolicy: .bufferingNewest(2048)
+        )
+        let task = Task {
+            continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
+            do {
+                for try await event in events {
+                    continuation.yield(event)
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { _ in task.cancel() }
+        return stream
     }
 
     func recover(

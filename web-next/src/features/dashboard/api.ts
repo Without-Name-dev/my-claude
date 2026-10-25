@@ -393,6 +393,11 @@ export class DashboardApi {
     );
   }
 
+  /** Ticket for the multiplexed chat + dashboard stream; same dashboard scope. */
+  createStreamWsTicket(token: string, clientId: string): Promise<WsTicketResponse> {
+    return this.createDashboardWsTicket(token, clientId);
+  }
+
   sessionWebSocketUrl(sessionId: string, ticket: string): string {
     const path = `${apiPath(`/sessions/${encodeURIComponent(sessionId)}/ws`)}?ticket=${encodeURIComponent(ticket)}`;
     if (typeof window === "undefined") return path;
@@ -403,6 +408,14 @@ export class DashboardApi {
 
   dashboardWebSocketUrl(ticket: string): string {
     const path = `${apiPath("/dashboard/ws")}?ticket=${encodeURIComponent(ticket)}`;
+    if (typeof window === "undefined") return path;
+    const url = new URL(path, window.location.origin);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  }
+
+  streamWebSocketUrl(ticket: string): string {
+    const path = `${apiPath("/stream/ws")}?ticket=${encodeURIComponent(ticket)}`;
     if (typeof window === "undefined") return path;
     const url = new URL(path, window.location.origin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

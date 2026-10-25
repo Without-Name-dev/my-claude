@@ -21,6 +21,7 @@ import { createClientId } from "@/lib/id"
 import { isApiError, isAuthFailure } from "@/lib/api/errors"
 import { cn } from "@/lib/utils"
 import { dashboardApi } from "@/features/dashboard/api"
+import { parseProtocolEventData } from "@/features/dashboard/stream"
 import type {
   Notice,
   ProtocolCapabilitySet,
@@ -353,10 +354,16 @@ function SessionDetailView({
     isOptimisticSession,
     markOptimisticMessageFailed,
     replaceHome,
+    subscribeSessionStream,
+    whenRealtimeStreamResolved,
   } = useWorkspace()
   const { signOut } = useAuth()
   const signOutRef = React.useRef(signOut)
   signOutRef.current = signOut
+  const subscribeSessionStreamRef = React.useRef(subscribeSessionStream)
+  subscribeSessionStreamRef.current = subscribeSessionStream
+  const whenRealtimeStreamResolvedRef = React.useRef(whenRealtimeStreamResolved)
+  whenRealtimeStreamResolvedRef.current = whenRealtimeStreamResolved
   const initialOptimisticState = getOptimisticSessionState(sessionId)
   const [state, setState] = React.useState<SessionRemoteState | null>(() =>
     initialOptimisticState ? remoteStateFromOptimisticState(initialOptimisticState) : null,
@@ -1156,7 +1163,59 @@ function SessionDetailView({
       if (!cancelled && socketSubscribed && connection === connectionSequence) recoveredSubscriptions.recovered(connection)
     }
 
-    const connect = async () => {
+    const handleEvent = (event: ProtocolEventEnvelope, connection: number) => {
+      if (event.type === "session.subscribed") {
+        // The Server registers the broker subscription before emitting this
+        // event. Recover only after that point so a same-sequence live
+        // projection cannot fall between recovery and socket registration.
+        socketSubscribed = true
+        if (snapshotReady) {
+          void recoverAfterSubscription("websocket.subscribed", connection)
+        }
+        return
+      }
+      if (!snapshotReady || recoveryPromise || recoveryStarting) {
+        bufferedEvents.push(event)
+        return
+      }
+      applyEvent(event)
+    }
+
+    let unsubscribeShared: (() => void) | null = null
+
+    const connectSharedStream = () => {
+      unsubscribeShared?.()
+      unsubscribeShared = null
+      unsubscribeShared = subscribeSessionStreamRef.current(sessionId, {
+        onEvent: (event) => {
+          if (cancelled) return
+          handleEvent(event, connectionSequence)
+        },
+        onReady: () => {
+          if (cancelled) return
+          // The shared stream has no per-session subscribe ack; becoming ready
+          // (including after a reconnect) is the safe point to recover events.
+          const connection = ++connectionSequence
+          recoveredSubscriptions.observed(connection)
+          socketSubscribed = true
+          streamConnectedRef.current = true
+          void recoverAfterSubscription("websocket.shared-stream", connection)
+        },
+        onUnavailable: () => {
+          // The shared stream was abandoned (it never opened, or this attempt
+          // replaced a previous "unified" verdict). Continue on the legacy
+          // per-session socket so live events keep flowing.
+          if (cancelled) return
+          unsubscribeShared?.()
+          unsubscribeShared = null
+          socketSubscribed = false
+          streamConnectedRef.current = false
+          void connectSessionSocket()
+        },
+      })
+    }
+
+    const connectSessionSocket = async () => {
       const connection = ++connectionSequence
       recoveredSubscriptions.observed(connection)
       try {
@@ -1169,23 +1228,9 @@ function SessionDetailView({
         }
         socket.onmessage = (message) => {
           if (cancelled || typeof message.data !== "string") return
-          const event = parseProtocolEvent(message.data)
+          const event = parseProtocolEventData(message.data)
           if (!event) return
-          if (event.type === "session.subscribed") {
-            // The Server registers the broker subscription before emitting this
-            // event. Recover only after that point so a same-sequence live
-            // projection cannot fall between recovery and socket registration.
-            socketSubscribed = true
-            if (snapshotReady) {
-              void recoverAfterSubscription("websocket.subscribed", connection)
-            }
-            return
-          }
-          if (!snapshotReady || recoveryPromise || recoveryStarting) {
-            bufferedEvents.push(event)
-            return
-          }
-          applyEvent(event)
+          handleEvent(event, connection)
         }
         socket.onclose = () => {
           if (cancelled) return
@@ -1207,6 +1252,18 @@ function SessionDetailView({
           void connect()
         }, 2000)
       }
+    }
+
+    const connect = async () => {
+      // The shared stream is usable for this page lifetime or not; the answer
+      // never changes after the first resolution.
+      const mode = await whenRealtimeStreamResolvedRef.current()
+      if (cancelled) return
+      if (mode === "unified") {
+        connectSharedStream()
+        return
+      }
+      void connectSessionSocket()
     }
 
     void connect()
@@ -1265,6 +1322,7 @@ function SessionDetailView({
       renderBuffer.dispose()
       bufferedEvents = []
       streamConnectedRef.current = false
+      unsubscribeShared?.()
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
       if (initialRetryTimer !== null) window.clearTimeout(initialRetryTimer)
       socket?.close()
@@ -2869,36 +2927,6 @@ function mergeNotices(current: Notice[], incoming: Notice[]): Notice[] {
     if (!existing || existing.updatedSeq <= notice.updatedSeq) byId.set(notice.noticeId, notice)
   }
   return Array.from(byId.values()).sort((a, b) => a.updatedSeq - b.updatedSeq || a.noticeId.localeCompare(b.noticeId))
-}
-
-function parseProtocolEvent(data: string): ProtocolEventEnvelope | null {
-  try {
-    const event = JSON.parse(data) as Partial<ProtocolEventEnvelope>
-    if (!event || typeof event.type !== "string") return null
-    if (event.type === "keepalive") return null
-    if (
-      event.protocolVersion !== "1.0" ||
-      typeof event.eventId !== "string" ||
-      typeof event.emittedAt !== "string" ||
-      typeof event.sessionId !== "string" ||
-      typeof event.sequence !== "number" ||
-      typeof event.cursor !== "string"
-    ) {
-      return null
-    }
-    return {
-      protocolVersion: event.protocolVersion,
-      eventId: event.eventId,
-      sequence: event.sequence,
-      cursor: event.cursor,
-      type: event.type,
-      sessionId: event.sessionId,
-      emittedAt: event.emittedAt,
-      payload: event.payload ?? {},
-    }
-  } catch {
-    return null
-  }
 }
 
 function cursorSequence(cursor: string | null | undefined): number {

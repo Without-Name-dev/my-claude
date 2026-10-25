@@ -11,6 +11,8 @@ struct V2DashboardService {
     let projectAPI: V2ProjectAPI
     let sessionAPI: any V2SessionAPIProtocol
     let realtimeAPI: any V2RealtimeAPIProtocol
+    /// Shared unified stream. Nil for HTTP-only callers and in tests.
+    var streamCoordinator: V2StreamCoordinator? = nil
 
     /// Reads the durable dashboard resources concurrently.
     func load() async throws -> V2DashboardData {
@@ -24,8 +26,20 @@ struct V2DashboardService {
         )
     }
 
-    /// Opens the dashboard push channel after obtaining a single-use ticket.
+    /// Opens the dashboard push channel. The unified stream, when usable, is
+    /// shared with every other consumer; otherwise this opens the legacy
+    /// dashboard socket exactly as before.
     func updates(clientId: String) async throws -> AsyncThrowingStream<V2DashboardSnapshot, Error> {
+        if let streamCoordinator, !streamCoordinator.isUsingFallback {
+            do {
+                return try await streamCoordinator.dashboardUpdates()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if let urlError = error as? URLError, urlError.code == .cancelled { throw error }
+                // The coordinator already recorded the process-wide fallback.
+            }
+        }
         let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .dashboard)
         return try realtimeAPI.dashboardSnapshots(ticket: ticket.ticket)
     }

@@ -19,6 +19,12 @@ import {
 } from "@/features/admin/navigation"
 import { dashboardApi } from "@/features/dashboard/api"
 import { resolveWorkspaceProject } from "@/features/dashboard/project-workspaces"
+import { parseDashboardSnapshotMessage } from "@/features/dashboard/stream"
+import {
+  useRealtimeStream,
+  type RealtimeStreamMode,
+  type SessionStreamHandlers,
+} from "@/components/realtime-stream"
 import type {
   ConnectorView as RealConnectorView,
   DashboardSnapshotMessage,
@@ -232,19 +238,6 @@ function optimisticMessageMatchesSession(
   )
 }
 
-function parseDashboardSnapshotMessage(value: unknown): DashboardSnapshotMessage | null {
-  if (!value || typeof value !== "object") return null
-  const message = value as Partial<DashboardSnapshotMessage>
-  if (!(
-    message.type === "dashboard.snapshot" &&
-    Array.isArray(message.connectors) &&
-    Array.isArray(message.projects) &&
-    Array.isArray(message.sessions)
-  )) return null
-
-  return message as DashboardSnapshotMessage
-}
-
 function relativeSessionTime(session: RealSessionView): string {
   const raw =
     session.sortAt ||
@@ -340,6 +333,10 @@ export type WorkspaceState = {
   appendPathToComposer: (path: string) => boolean
   consumeComposerInsertion: (id: number) => void
   refreshData: () => void
+  /** One shared websocket per tab; "fallback" keeps the legacy per-view sockets. */
+  realtimeStreamMode: RealtimeStreamMode
+  subscribeSessionStream: (sessionId: string, handlers: SessionStreamHandlers) => () => void
+  whenRealtimeStreamResolved: () => Promise<RealtimeStreamMode>
 }
 
 const WorkspaceContext = React.createContext<WorkspaceState | null>(null)
@@ -655,6 +652,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     initialLoadDoneRef.current = true
   }, [reconcileSessionIndicator, sortSessions])
 
+  // ── Shared realtime stream ─────────────────────────────────
+  // One socket for the tab carries dashboard snapshots and every open session's
+  // events. The legacy dashboard/session sockets only run after it falls back.
+  const realtimeStream = useRealtimeStream({
+    token: authSession?.accessToken ?? null,
+    enabled: workspaceDataEnabled && Boolean(authSession?.accessToken),
+    onDashboardSnapshot: applyDashboardSnapshot,
+    onAuthFailure: signOut,
+  })
+
   const fetchDataInFlightRef = React.useRef<{ token: string | null; promise: Promise<boolean> } | null>(null)
   const fetchData = React.useCallback((): Promise<boolean> => {
     const token = authSession?.accessToken ?? null
@@ -741,25 +748,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   sessionsRef.current = sessions
   const readRequestsRef = React.useRef(new Set<string>())
 
+  // The shared stream normally delivers the first snapshot right away; keep
+  // the HTTP read as a safety net when no snapshot has arrived yet.
   React.useEffect(() => {
     if (!workspaceDataEnabled || !authSession?.accessToken) return
     let cancelled = false
-    let socket: WebSocket | null = null
-    let reconnectTimer: number | null = null
     let fallbackTimer: number | null = null
-    let snapshotFrame: number | null = null
-    let pendingSnapshot: DashboardSnapshotMessage | null = null
-
-    const scheduleDashboardSnapshot = (message: DashboardSnapshotMessage) => {
-      pendingSnapshot = message
-      if (snapshotFrame !== null) return
-      snapshotFrame = window.requestAnimationFrame(() => {
-        snapshotFrame = null
-        const snapshot = pendingSnapshot
-        pendingSnapshot = null
-        if (!cancelled && snapshot) applyDashboardSnapshot(snapshot)
-      })
-    }
 
     const scheduleInitialFallback = () => {
       if (cancelled || initialLoadDoneRef.current || fallbackTimer !== null) return
@@ -773,6 +767,37 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           })
         }
       }, 2500)
+    }
+
+    scheduleInitialFallback()
+
+    return () => {
+      cancelled = true
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+    }
+  }, [authSession?.accessToken, fetchData, workspaceDataEnabled])
+
+  // ── Legacy dashboard WebSocket (fallback only) ─────────────
+  // Runs only when the shared stream could not open, keeping the previous
+  // behaviour on servers without /api/v2/stream/ws.
+  React.useEffect(() => {
+    if (realtimeStream.mode !== "fallback") return
+    if (!workspaceDataEnabled || !authSession?.accessToken) return
+    let cancelled = false
+    let socket: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let snapshotFrame: number | null = null
+    let pendingSnapshot: DashboardSnapshotMessage | null = null
+
+    const scheduleDashboardSnapshot = (message: DashboardSnapshotMessage) => {
+      pendingSnapshot = message
+      if (snapshotFrame !== null) return
+      snapshotFrame = window.requestAnimationFrame(() => {
+        snapshotFrame = null
+        const snapshot = pendingSnapshot
+        pendingSnapshot = null
+        if (!cancelled && snapshot) applyDashboardSnapshot(snapshot)
+      })
     }
 
     const connect = async () => {
@@ -789,17 +814,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
             const message = JSON.parse(event.data) as unknown
             const snapshot = parseDashboardSnapshotMessage(message)
             if (!snapshot) return
-            if (fallbackTimer !== null) {
-              window.clearTimeout(fallbackTimer)
-              fallbackTimer = null
-            }
             scheduleDashboardSnapshot(snapshot)
           } catch { /* ignore malformed */ }
         }
         socket.onclose = () => {
           if (cancelled) return
           socket = null
-          scheduleInitialFallback()
           reconnectTimer = window.setTimeout(() => {
             reconnectTimer = null
             void connect()
@@ -814,7 +834,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           signOut()
           return
         }
-        scheduleInitialFallback()
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null
           void connect()
@@ -822,18 +841,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    scheduleInitialFallback()
     void connect()
 
     return () => {
       cancelled = true
       socket?.close()
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
-      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
       if (snapshotFrame !== null) window.cancelAnimationFrame(snapshotFrame)
       pendingSnapshot = null
     }
-  }, [applyDashboardSnapshot, authSession?.accessToken, fetchData, signOut, workspaceDataEnabled])
+  }, [applyDashboardSnapshot, authSession?.accessToken, realtimeStream.mode, signOut, workspaceDataEnabled])
 
   // ── Hash routing ──────────────────────────────────────────
   React.useEffect(() => {
@@ -1452,6 +1469,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     appendPathToComposer,
     consumeComposerInsertion,
     refreshData: fetchData,
+    realtimeStreamMode: realtimeStream.mode,
+    subscribeSessionStream: realtimeStream.subscribeSession,
+    whenRealtimeStreamResolved: realtimeStream.whenModeResolved,
   }
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>

@@ -9,6 +9,7 @@ final class V2ClientServices {
     var onConnectivityChange: ((V2NetworkStatus) -> Void)?
     let localStore: V2LocalStore
     let scope: V2ClientScope
+    let streamCoordinator: V2StreamCoordinator
     let sessionRepository: V2SessionRepository
     let sessionPreparation: V2SessionPreparationService
     let account: V2AccountService
@@ -34,11 +35,17 @@ final class V2ClientServices {
         localStore = V2LocalStore(directory: cacheDirectory)
         sessionPreparation = V2SessionPreparationService(connectorAPI: api.connectors)
         account = V2AccountService(accountAPI: api.account)
+        let streamCoordinator = V2StreamCoordinator(
+            realtimeAPI: api.realtime,
+            streamAPI: api.stream
+        )
+        self.streamCoordinator = streamCoordinator
         dashboard = V2DashboardService(
             connectorAPI: api.connectors,
             projectAPI: api.projects,
             sessionAPI: api.sessions,
-            realtimeAPI: api.realtime
+            realtimeAPI: api.realtime,
+            streamCoordinator: streamCoordinator
         )
         dashboardRepository = V2DashboardRepository(service: dashboard, localStore: localStore, scope: scope)
         sessionReads = V2SessionReadCoordinator { id in
@@ -49,12 +56,20 @@ final class V2ClientServices {
         sessionDetail = V2SessionDetailService(
             sessionAPI: api.sessions,
             runtimeAPI: api.runtime,
-            realtimeAPI: api.realtime
+            realtimeAPI: api.realtime,
+            streamCoordinator: streamCoordinator
         )
         sessionCreation = V2SessionCreationService(sessionAPI: api.sessions)
         attachments = V2AttachmentService(attachmentAPI: api.attachments)
         interactions = V2RuntimeInteractionService(runtimeAPI: api.runtime)
-        sessionRepository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, localStore: localStore)
+        let repository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, localStore: localStore)
+        sessionRepository = repository
+        // The first dashboard snapshot warms the most recent session caches so
+        // opening one paints from memory. The repository caps and cancels it.
+        streamCoordinator.prefetchSessions = { [weak repository] sessions in
+            guard let repository else { return }
+            repository.prefetchSessions(sessions)
+        }
         devicePairing = V2DevicePairingService(connectorAPI: api.connectors)
         agentSetup = AgentSetupCoordinator(service: devicePairing)
         deviceManagement = V2DeviceManagementService(connectorAPI: api.connectors)
@@ -139,6 +154,7 @@ final class V2ClientServices {
         Task { await localStore.close(removing: removingCache) }
         agentSetup.invalidate()
         agentModels.values.forEach { $0.invalidate() }; agentModels = [:]
+        streamCoordinator.invalidate()
         dashboardRepository.invalidate()
         sessionReads.invalidate()
         newSession.invalidate()

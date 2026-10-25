@@ -173,6 +173,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/ws", a.handleSessionWS)
 	mux.HandleFunc("GET /api/v2/connector/ws", a.ServeConnectorWS)
 	mux.HandleFunc("GET /api/v2/dashboard/ws", a.handleDashboardWS)
+	mux.HandleFunc("GET /api/v2/stream/ws", a.handleStreamWS)
 
 	// Anything under the API prefix that no route claimed answers in JSON.
 	// A plain-text 404 is what the client shows as "404 page not found".
