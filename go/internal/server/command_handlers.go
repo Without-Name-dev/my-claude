@@ -134,11 +134,20 @@ func (a *App) handleRunCommand(w http.ResponseWriter, r *http.Request, user stor
 		line += " " + strings.Join(body.Args, " ")
 	}
 
+	// A command is only run by a plugin that is already serving this exact
+	// conversation: the connector queues it without a watcher, so there is
+	// nothing to report and nothing to wait for when no plugin is live. Saying
+	// "queued" to a caller whose command will never run is a dead end.
+	if !a.connectors.Live(session.ConnectorID, session.ExternalID) {
+		httpx.Fail(w, httpx.Conflict("the conversation is not live on the desktop; open it there to run commands"))
+		return
+	}
 	sent := a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
-		RequestID: store.NewID("cmd"),
-		SessionID: session.ID,
-		Text:      line,
-		Action:    "command",
+		RequestID:         store.NewID("cmd"),
+		SessionID:         session.ID,
+		ExternalSessionID: session.ExternalID,
+		Text:              line,
+		Action:            "command",
 	})
 	if !sent {
 		httpx.Fail(w, httpx.Conflict("connector is offline"))

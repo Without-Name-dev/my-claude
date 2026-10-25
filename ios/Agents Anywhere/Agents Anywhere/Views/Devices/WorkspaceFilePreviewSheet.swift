@@ -42,6 +42,15 @@ struct WorkspaceFilePreviewSheet: View {
                     } description: { Text(error) } actions: { Button(String(localized: "重试")) { attempt += 1 }.disabled(!canRead) }
                     .background(Color(uiColor: .systemBackground))
                 } else if loading { ProgressView(String(localized: "加载预览…")).padding(20).background(.regularMaterial, in: .rect(cornerRadius: 18)) }
+                else if !canRead {
+                    // Offline: nothing was ever requested, so without this the
+                    // sheet is a blank page with a footer.
+                    ContentUnavailableView {
+                        Label(String(localized: "设备或网络已离线"), appSymbol: "wifi.slash")
+                    } description: {
+                        Text(String(localized: "恢复连接后再打开这个文件。"))
+                    }
+                }
             }
             .navigationTitle(name.isEmpty ? String(localized: "文件预览") : name).navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom, spacing: 0) {

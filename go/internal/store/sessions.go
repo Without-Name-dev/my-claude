@@ -580,7 +580,7 @@ func (s *Store) ResetStalledSessions(ctx context.Context, connectorID string) ([
 	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT id FROM sessions
-			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error')`, connectorID)
+			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error', 'waiting_approval')`, connectorID)
 		if err != nil {
 			return err
 		}
@@ -602,7 +602,7 @@ func (s *Store) ResetStalledSessions(ctx context.Context, connectorID string) ([
 			res, err := tx.ExecContext(ctx, `
 				UPDATE sessions SET status = 'idle', updated_at = ?
 				WHERE id = ? AND connector_id = ?
-				  AND status IN ('running', 'stopping', 'error')`,
+				  AND status IN ('running', 'stopping', 'error', 'waiting_approval')`,
 				now, id, connectorID)
 			if err != nil {
 				return err

@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "恢复连接后再打开这个文件。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnect and open this file again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复连接后再打开这个文件。"
+          }
+        }
+      }
+    },
+    "无法读取保存的登录凭据，请稍后重试。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not read the saved sign-in credential. Try again in a moment."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取保存的登录凭据，请稍后重试。"
+          }
+        }
+      }
+    },
     "会话连接已失效，请返回列表重新打开。": {
       "extractionState": "manual",
       "localizations": {

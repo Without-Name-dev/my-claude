@@ -183,7 +183,16 @@ func (a *App) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.CreateUserAccessToken(userID, a.sessionTTL())
+	// Bind the token to the credential fingerprint, exactly like a password
+	// login: a password change has to sign out the apps that were authorised
+	// through this endpoint too, not only the browser that signed in directly.
+	user, err := a.db.UserByID(r.Context(), userID)
+	if err != nil || user.Disabled {
+		httpx.Fail(w, httpx.BadRequest("the account is not available"))
+		return
+	}
+	token, err := auth.CreateUserAccessTokenVersion(
+		user.ID, auth.CredentialVersion(user.PasswordHash), a.sessionTTL())
 	if err != nil {
 		httpx.Fail(w, err)
 		return

@@ -392,6 +392,9 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 			if err := a.db.SetConnectorPresence(ctx, connector.ID, connectionID, false); err != nil {
 				a.log.Warn("could not clear connector presence", "error", err)
 			}
+			// Questions this connector was blocked on can no longer be
+			// answered; retract them instead of leaving dead cards behind.
+			a.expireConnectorApprovals(ctx, connector.ID)
 			// unregister already removed the socket, so these views render the
 			// connector as offline. publishConnectorPresence also wakes the
 			// dashboard lists, which read a snapshot rather than this broker.

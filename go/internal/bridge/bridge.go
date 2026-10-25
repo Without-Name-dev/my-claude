@@ -190,6 +190,14 @@ func (b *Bridge) tokenLocked() (string, error) {
 	if b.token != "" {
 		return b.token, nil
 	}
+	// Reuse the token already on disk. Minting a fresh one on every restart
+	// invalidated every message still waiting in the queue: the plugin checks
+	// each entry against auth.json, refused the survivors and moved its cursor
+	// past them, so a restart silently ate whatever was queued.
+	if existing := b.readTokenFile(); existing != "" {
+		b.token = existing
+		return existing, nil
+	}
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
@@ -200,6 +208,26 @@ func (b *Bridge) tokenLocked() (string, error) {
 	}
 	b.token = token
 	return token, nil
+}
+
+// readTokenFile returns the token already in auth.json, or "" when the file is
+// missing or unusable.
+func (b *Bridge) readTokenFile() string {
+	raw, err := os.ReadFile(b.TokenPath())
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	token := strings.TrimSpace(payload.Token)
+	if len(token) < 16 {
+		return ""
+	}
+	return token
 }
 
 // QueueMessage is one entry in queue/. The field names match the plugin.
@@ -470,6 +498,11 @@ func (o *Outbox) Running() bool { return o.Status == "streaming" }
 
 // Finished reports whether the turn completed.
 func (o *Outbox) Finished() bool { return o.Status == "done" }
+
+// Aborted reports whether the conversation was ended (or /cleared) while the
+// turn was still running. The plugin writes this once for the conversation it
+// is leaving, because no further snapshot will ever arrive.
+func (o *Outbox) Aborted() bool { return o.Status == "aborted" }
 
 // ReadOutbox returns the current snapshot, or nil when the plugin has not
 // written one yet. A read that catches the file mid-rewrite returns an error;

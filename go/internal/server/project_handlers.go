@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
@@ -226,21 +227,40 @@ func (a *App) handleProjectSessions(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	archived := r.URL.Query().Get("archived") == "true"
-	sessions, err := a.db.ListSessions(r.Context(), user.ID, archived, 100, nil)
+	// Select the project's own sessions, not the newest hundred of the whole
+	// account with the rest dropped: past a hundred sessions a project's
+	// conversations simply disappeared from this list.
+	all, err := a.db.ListAllSessions(r.Context(), user.ID, archived)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
+	sessions := make([]store.Session, 0, len(all))
+	for _, s := range all {
+		if s.ProjectID == project.ID {
+			sessions = append(sessions, s)
+		}
+	}
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if sessions[i].Pinned != sessions[j].Pinned {
+			return sessions[i].Pinned
+		}
+		if sessions[i].SortAt != sessions[j].SortAt {
+			return sessions[i].SortAt > sessions[j].SortAt
+		}
+		return sessions[i].CreatedAt > sessions[j].CreatedAt
+	})
+	hasMore := len(sessions) > 100
+	if hasMore {
+		sessions = sessions[:100]
+	}
 	views := make([]SessionView, 0, len(sessions))
 	for _, s := range sessions {
-		if s.ProjectID != project.ID {
-			continue
-		}
 		views = append(views, a.sessionView(r.Context(), s))
 	}
 	httpx.OK(w, map[string]any{
 		"sessions":   views,
-		"hasMore":    false,
+		"hasMore":    hasMore,
 		"nextCursor": nil,
 		"serverTime": timestampNow(),
 	})

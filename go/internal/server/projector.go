@@ -156,6 +156,25 @@ func (r *approveRegistry) takeSession(sessionID string) []pendingApproval {
 	return removed
 }
 
+// takeForConnector retracts every question one connector was waiting on.
+//
+// The connector is gone, so nobody can answer them any more; leaving the cards
+// pending kept the session blocked on a decision nothing was listening for.
+func (r *approveRegistry) takeForConnector(connectorID string) []pendingApproval {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	removed := make([]pendingApproval, 0)
+	for noticeID, id := range r.connOf {
+		if id != connectorID {
+			continue
+		}
+		removed = append(removed, pendingApproval{noticeID: noticeID, request: r.byID[noticeID]})
+		delete(r.byID, noticeID)
+		delete(r.connOf, noticeID)
+	}
+	return removed
+}
+
 // pendingApproval is one question retracted in bulk.
 type pendingApproval struct {
 	noticeID string
@@ -165,6 +184,14 @@ type pendingApproval struct {
 // expireSessionApprovals retracts the questions a finished turn can no longer
 // answer. Leaving them pending would keep the session blocked on a decision the
 // connector is not waiting for anymore.
+// expireConnectorApprovals retracts the questions a lost connector will never
+// answer.
+func (a *App) expireConnectorApprovals(ctx context.Context, connectorID string) {
+	for _, pending := range a.approvals.takeForConnector(connectorID) {
+		a.publishNoticeUpdate(ctx, pending.request.SessionID, pending.noticeID, pending.request, "expired", 0)
+	}
+}
+
 func (a *App) expireSessionApprovals(ctx context.Context, sessionID string, seq int64) {
 	for _, pending := range a.approvals.takeSession(sessionID) {
 		a.publishNoticeUpdate(ctx, sessionID, pending.noticeID, pending.request, "expired", seq)
@@ -246,9 +273,11 @@ func (a *App) onTurnDelta(ctx context.Context, conn *connectorConn, msg protocol
 		return
 	}
 	// Rev is one past the revision already applied. A lower value is a replay
-	// after a reconnect and must not be appended again; a higher one means a
-	// gap, whose text turn.end heals from its full payload.
-	if msg.Rev != 0 && msg.Rev != state.rev+1 {
+	// after a reconnect and must not be appended again. A higher value means
+	// one delta never arrived: the missing span is unrecoverable, but refusing
+	// the rest of the turn left the phone frozen on the last complete chunk
+	// until turn.end, so the gap is accepted and the stream continues.
+	if msg.Rev != 0 && msg.Rev <= state.rev {
 		state.mu.Unlock()
 		return
 	}

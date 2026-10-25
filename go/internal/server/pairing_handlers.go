@@ -168,13 +168,38 @@ func (a *App) handlePairingClaim(w http.ResponseWriter, r *http.Request, user st
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	// The app creates a connector before the person chooses how to pair. When
+	// they pick the CLI code, that placeholder is reused here: creating a
+	// second one left an offline "New device" orphan in the list. Only a
+	// connector that has never connected and is not revoked is eligible.
+	reuseID := ""
+	if body.ConnectorID != nil {
+		if candidate, err := a.db.ConnectorByID(r.Context(), strings.TrimSpace(*body.ConnectorID)); err == nil &&
+			candidate.UserID == user.ID && candidate.Revoked == 0 && candidate.LastSeenAt == nil {
+			reuseID = candidate.ID
+		}
+	}
+	if reuseID != "" {
+		connector.ID = reuseID
+		connector.CreatedAt = now
+	}
 
 	// The connector insert and the compare-and-swap share one transaction.
 	// The insert has to come first because pairing_codes.connector_id is a
 	// foreign key, but a lost race still leaves nothing behind: returning
 	// errPairingRace rolls the insert back with the rest of the transaction.
 	err = a.db.Write(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `
+		if reuseID != "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE connectors
+				SET name = ?, connector_kind = ?, status = 'offline',
+				    token_hash = ?, token_prefix = ?, revoked = 0, updated_at = ?
+				WHERE id = ? AND user_id = ? AND revoked = 0 AND last_seen_at IS NULL`,
+				connector.Name, connector.Kind, connector.TokenHash, connector.TokenPrefix,
+				now, reuseID, user.ID); err != nil {
+				return err
+			}
+		} else if _, err := tx.ExecContext(ctx, `
 			INSERT INTO connectors (id, user_id, name, connector_kind, device_os, status,
 			                        token_hash, token_prefix, revoked, created_at, updated_at)
 			VALUES (?, ?, ?, ?, NULL, 'offline', ?, ?, 0, ?, ?)`,

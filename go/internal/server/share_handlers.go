@@ -476,7 +476,7 @@ func (a *App) handleConnectorArchiveAll(w http.ResponseWriter, r *http.Request, 
 		httpx.Fail(w, err)
 		return
 	}
-	a.writeArchiveAll(w, r, sessions)
+	a.writeArchiveAll(w, r, user, sessions)
 }
 
 // handleProjectArchiveAll archives or restores the sessions of one project.
@@ -535,7 +535,7 @@ func (a *App) handleProjectArchiveAll(w http.ResponseWriter, r *http.Request, us
 	for i := range sessions {
 		sessions[i].Archived = archived
 	}
-	a.writeArchiveAll(w, r, sessions)
+	a.writeArchiveAll(w, r, user, sessions)
 }
 
 // handleAllSessionsArchiveAll is the cross-device variant.
@@ -550,14 +550,17 @@ func (a *App) handleAllSessionsArchiveAll(w http.ResponseWriter, r *http.Request
 		httpx.Fail(w, err)
 		return
 	}
-	a.writeArchiveAll(w, r, sessions)
+	a.writeArchiveAll(w, r, user, sessions)
 }
 
-func (a *App) writeArchiveAll(w http.ResponseWriter, r *http.Request, sessions []store.Session) {
+func (a *App) writeArchiveAll(w http.ResponseWriter, r *http.Request, user store.User, sessions []store.Session) {
 	views := make([]SessionView, 0, len(sessions))
 	for _, session := range sessions {
 		views = append(views, a.sessionView(r.Context(), session))
 	}
+	// Every path that writes a session row has to wake the dashboard lists:
+	// other tabs and the phone render a snapshot, not this response.
+	a.dashboards.notify(user.ID)
 	httpx.OK(w, map[string]any{
 		"sessions":   views,
 		"affected":   len(views),

@@ -50,6 +50,12 @@ func (a *App) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	sub := a.broker.Subscribe(session.ID)
 	defer a.broker.Unsubscribe(session.ID, sub)
+	// Read the row again, now that the subscription exists. Anything published
+	// between the first read and the subscription would otherwise sit below the
+	// cursor handed to the client and never be replayed on this socket.
+	if current, err := a.db.SessionByID(ctx, a.db.Read(), session.ID, ticket.UserID); err == nil {
+		session = current
+	}
 
 	// The client must learn the cursor before any event lands, so this frame is
 	// written before the pump starts.

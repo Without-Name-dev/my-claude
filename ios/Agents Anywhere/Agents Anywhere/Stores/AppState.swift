@@ -83,9 +83,25 @@ final class AppState {
     func restoreSession() async {
         let epoch = authenticationEpoch
         guard let serverValue = UserDefaults.standard.string(forKey: serverDefaultsKey),
-              let url = URL(string: serverValue), let token = accessToken(), !token.isEmpty else {
+              let url = URL(string: serverValue) else {
             route = .signedOut; return
         }
+        // Read the credential directly, not through accessToken(), so a
+        // keychain that is locked or temporarily inaccessible is reported as
+        // such. Treating that failure as "no saved session" showed the login
+        // screen to a signed-in account with no explanation.
+        let storedToken: String?
+        do {
+            storedToken = try keychain.readString(account: tokenAccount)
+        } catch {
+            authError = String(localized: "无法读取保存的登录凭据，请稍后重试。")
+            route = .signedOut
+            return
+        }
+        guard let token = storedToken, !token.isEmpty else {
+            route = .signedOut; return
+        }
+        cachedToken = token
         serverURL = url
         if let profile = restoration.profile(server: url, token: token) {
             me = profile

@@ -22,6 +22,11 @@ final class WorkspaceDirectoryModel {
         revision += 1
         let request = revision
         isLoading = true
+        // The previous directory's rows must not stay on screen — and stay
+        // tappable — while a different one is being read, or after it failed.
+        entries = []
+        resolvedPath = ""
+        isTruncated = false
         selectablePath = nil
         errorMessage = nil
         defer { if request == revision { isLoading = false } }

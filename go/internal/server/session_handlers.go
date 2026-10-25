@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
@@ -624,9 +625,31 @@ func (a *App) handleInterrupt(w http.ResponseWriter, r *http.Request, user store
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	a.setSessionStatus(r.Context(), session.ID, "stopping")
+	// Only a turn that is actually running has something to stop. Writing
+	// "stopping" over an idle session left it blocked there until a reconnect,
+	// because nothing else ever clears that status.
+	if current, err := a.db.SessionByIDAny(r.Context(), a.db.Read(), session.ID); err == nil &&
+		current.Status == "running" {
+		a.setSessionStatus(r.Context(), session.ID, "stopping")
+		sessionID := session.ID
+		time.AfterFunc(interruptSettleTimeout, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			stored, err := a.db.SessionByIDAny(ctx, a.db.Read(), sessionID)
+			if err != nil || stored.Status != "stopping" {
+				return
+			}
+			// The connector dropped or finished the turn without answering.
+			a.setSessionStatus(ctx, sessionID, "idle")
+		})
+	}
 	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
 }
+
+// interruptSettleTimeout is how long a stop may stay unanswered before the
+// session is released. A connector that accepted the abort ends the turn long
+// before this.
+const interruptSettleTimeout = 20 * time.Second
 
 // handleNoticeRespond delivers an approval decision.
 func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user store.User) {

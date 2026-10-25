@@ -24,6 +24,10 @@ struct RootView: View {
                 appState.activateSignedInRoute()
                 showingManualLogin = false
             }
+            // Once the account is signed in, the sheet owns the route change;
+            // swiping it away would leave a signed-in account on the login
+            // screen with no way forward except signing in again.
+            .interactiveDismissDisabled(appState.me != nil)
         }
         .onChange(of: scenePhase) { _, phase in
             // The unified realtime socket must not stay open in the background;

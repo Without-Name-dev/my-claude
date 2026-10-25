@@ -73,20 +73,36 @@ func (c *Client) fsList(raw json.RawMessage) (json.RawMessage, *protocol.RPCErro
 			return nil, &protocol.RPCError{Code: "bad_params", Message: err.Error()}
 		}
 	}
-	target := strings.TrimSpace(params.Path)
-	if target == "" || target == "." {
-		target = params.Root
+	pathRaw := strings.TrimSpace(params.Path)
+	root := strings.TrimSpace(params.Root)
+	var cleaned string
+	if root != "" {
+		// Resolve exactly like fs.read and fs.write. Listing used to pass a
+		// relative path straight to ReadDir, so `{root:"/repo", path:"src"}`
+		// listed the connector's own working directory, and an absolute path
+		// through a symlink was listed even though reading it was refused.
+		listPath := pathRaw
+		if listPath == "" {
+			listPath = "."
+		}
+		_, target, err := resolveFSPath(root, listPath)
+		if err != nil {
+			return nil, &protocol.RPCError{Code: "fs_error", Message: err.Error()}
+		}
+		cleaned = target
+	} else {
+		target := pathRaw
+		// The client sends "~" for the home directory, which Windows does not
+		// expand on its own.
+		if target == "~" || strings.HasPrefix(target, "~/") || strings.HasPrefix(target, "~\\") {
+			home, _ := os.UserHomeDir()
+			target = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(target, "~"), string(os.PathSeparator)))
+		}
+		if target == "" {
+			target, _ = os.UserHomeDir()
+		}
+		cleaned = filepath.Clean(target)
 	}
-	// The client sends "~" for the home directory, which Windows does not
-	// expand on its own.
-	if target == "~" || strings.HasPrefix(target, "~/") || strings.HasPrefix(target, "~\\") {
-		home, _ := os.UserHomeDir()
-		target = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(target, "~"), string(os.PathSeparator)))
-	}
-	if target == "" {
-		target, _ = os.UserHomeDir()
-	}
-	cleaned := filepath.Clean(target)
 
 	entries, err := os.ReadDir(cleaned)
 	if err != nil {

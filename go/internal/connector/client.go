@@ -851,9 +851,7 @@ func (c *Client) sendInventory() {
 				removed = append(removed, id)
 			}
 		}
-		c.lastFullInventory = time.Now()
 	}
-	c.seenSessions = seen
 	c.invMu.Unlock()
 
 	if len(changed) == 0 && len(removed) == 0 && !full {
@@ -862,9 +860,18 @@ func (c *Client) sendInventory() {
 	if err := c.send(protocol.TypeInventory, protocol.Inventory{
 		Sessions: changed, Full: full, Removed: removed,
 	}); err != nil {
+		// Not delivered, so not delivered: committing the records before the
+		// send acknowledged them lost whatever was discovered while the socket
+		// was down, until the next full scan ten minutes later.
 		c.Log.Debug("could not send inventory", "error", err)
 		return
 	}
+	c.invMu.Lock()
+	c.seenSessions = seen
+	if full {
+		c.lastFullInventory = time.Now()
+	}
+	c.invMu.Unlock()
 	c.Log.Info("reported sessions", "changed", len(changed), "removed", len(removed), "full", full)
 }
 

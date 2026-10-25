@@ -139,7 +139,7 @@ func (s *Store) SetConnectorPresence(ctx context.Context, id, connectionID strin
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions SET status = 'idle', updated_at = ?
-			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error')`, now, id)
+			WHERE connector_id = ? AND status IN ('running', 'stopping', 'error', 'waiting_approval')`, now, id)
 		return err
 	})
 }
