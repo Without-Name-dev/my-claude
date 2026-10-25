@@ -42,7 +42,7 @@ const DefaultHeartbeatTTL = 30 * time.Second
 // DefaultLiveTTL is how stale a per-session presence stamp may be. The plugin
 // refreshes it every five seconds while it can submit a prompt, so a process
 // that dies without cleaning up disappears from presence within this window.
-const DefaultLiveTTL = 30 * time.Second
+const DefaultLiveTTL = 5 * time.Second
 
 // outboxStateKeys are forwarded to the server as session state; "branch" is the
 // git branch, not a duplicate of the working directory.

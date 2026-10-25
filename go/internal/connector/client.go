@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -191,15 +192,30 @@ func (c *Client) session(ctx context.Context) (reachedHello bool, err error) {
 }
 
 // beat keeps the presence record fresh.
+// liveWatchInterval is how often presence is re-read between heartbeats.
+const liveWatchInterval = time.Second
+
 func (c *Client) beat(ctx context.Context) {
-	ticker := time.NewTicker(heartbeatInterval)
+	// The ticker runs faster than the heartbeat so a conversation that starts
+	// or stops shows up in the session list within seconds instead of waiting
+	// for the next periodic beat. A changed presence set is sent immediately;
+	// an unchanged one waits for the heartbeatInterval deadline.
+	ticker := time.NewTicker(liveWatchInterval)
 	defer ticker.Stop()
+	lastSent := time.Now()
+	lastKey := ""
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = c.send(protocol.TypeBeat, c.beatFrame())
+			frame := c.beatFrame()
+			key := strings.Join(frame.LiveSessions, ",") + "|" + strconv.FormatBool(frame.Bridge)
+			if key != lastKey || time.Since(lastSent) >= heartbeatInterval {
+				_ = c.send(protocol.TypeBeat, frame)
+				lastSent = time.Now()
+				lastKey = key
+			}
 		}
 	}
 }
