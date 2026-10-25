@@ -68,6 +68,12 @@ type Client struct {
 	// turns is drained by a single goroutine, so one turn runs at a time even
 	// though the server may submit several.
 	turns chan protocol.Submit
+
+	// spawnMu guards spawnRequests: runtime session ids the server asked us to
+	// open since the last submit for them. runTurn uses it to prime the new
+	// conversation's queue cursor before the message is written.
+	spawnMu       sync.Mutex
+	spawnRequests map[string]time.Time
 }
 
 // pendingAsk is one question awaiting an answer from the phone.
@@ -81,16 +87,17 @@ type pendingAsk struct {
 // NewClient prepares a client. Run opens the connection.
 func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Client {
 	return &Client{
-		URL:          url,
-		Token:        token,
-		Name:         name,
-		Bridge:       b,
-		Log:          log,
-		pending:      map[string]*pendingAsk{},
-		turnSessions: map[string]string{},
-		queued:       map[string]int{},
-		cancelled:    map[string]int{},
-		turns:        make(chan protocol.Submit, 32),
+		URL:           url,
+		Token:         token,
+		Name:          name,
+		Bridge:        b,
+		Log:           log,
+		pending:       map[string]*pendingAsk{},
+		turnSessions:  map[string]string{},
+		queued:        map[string]int{},
+		cancelled:     map[string]int{},
+		turns:         make(chan protocol.Submit, 32),
+		spawnRequests: map[string]time.Time{},
 	}
 }
 
@@ -145,12 +152,14 @@ func (c *Client) session(ctx context.Context) (reachedHello bool, err error) {
 		c.connMu.Unlock()
 	}()
 
+	bridgeReady, liveSessions := c.bridgeStatus()
 	if err := c.send(protocol.TypeHello, protocol.Hello{
 		Version:      protocol.ConnectorProtocolVersion,
 		Name:         c.Name,
 		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
-		Capabilities: map[string]bool{"bridge": c.Bridge != nil && c.Bridge.Available()},
+		Capabilities: c.capabilitySet(bridgeReady),
 		Runtimes:     []protocol.RuntimeInfo{{Type: "claude", Ready: c.Bridge != nil}},
+		LiveSessions: liveSessions,
 	}); err != nil {
 		return false, err
 	}
@@ -190,10 +199,48 @@ func (c *Client) beat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = c.send(protocol.TypeBeat, map[string]any{
-				"bridge": c.Bridge != nil && c.Bridge.Available(),
-			})
+			_ = c.send(protocol.TypeBeat, c.beatFrame())
 		}
+	}
+}
+
+// beatFrame is every heartbeat's payload, including the answer to a ping.
+func (c *Client) beatFrame() protocol.Beat {
+	bridgeReady, liveSessions := c.bridgeStatus()
+	return protocol.Beat{
+		Bridge:       bridgeReady,
+		LiveSessions: liveSessions,
+	}
+}
+
+// bridgeStatus reports whether the bridge can accept a delivery and, only if it
+// can, the sessions whose plugin stamped itself live.
+//
+// The two facts travel together: the server refuses a submit unless the bridge
+// heartbeat is fresh, so reporting a per-session stamp while that heartbeat is
+// stale would paint a green dot on a conversation the person cannot actually
+// send to. A nil bridge (delivery switched off) can make no session
+// deliverable, so nothing is reported in that case either.
+func (c *Client) bridgeStatus() (ready bool, live []string) {
+	if c.Bridge == nil {
+		return false, nil
+	}
+	if !c.Bridge.Available() {
+		return false, nil
+	}
+	return true, c.Bridge.LiveSessions(bridge.DefaultLiveTTL)
+}
+
+// capabilitySet is what hello advertises. "bridge" and "bridgeConfigured" are
+// separate on purpose: the first says a plugin would pick a submit up right
+// now, the second says this connector can queue one at all. A Server decides
+// whether a message with no live plugin can still be made to land from the
+// second, and whether asking for a terminal is worthwhile from the third.
+func (c *Client) capabilitySet(bridgeReady bool) map[string]bool {
+	return map[string]bool{
+		protocol.CapabilityBridge:           bridgeReady,
+		protocol.CapabilityBridgeConfigured: c.Bridge != nil,
+		protocol.CapabilitySessionOpen:      spawnAllowed() && sessionOpenSupported(),
 	}
 }
 
@@ -259,8 +306,10 @@ func (c *Client) dispatch(env protocol.Envelope) {
 		c.sendHistory(msg)
 	case protocol.TypeTerminal:
 		c.handleTerminalFrame(env.Data)
+	case protocol.TypeSessionOpen:
+		c.handleSessionOpen(env.Data)
 	case protocol.TypePing:
-		_ = c.send(protocol.TypeBeat, map[string]any{"pong": true})
+		_ = c.send(protocol.TypeBeat, c.beatFrame())
 	default:
 		c.Log.Debug("ignoring unknown frame", "type", env.Type)
 	}
@@ -283,6 +332,12 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 	defer c.finishQueued(msg.SessionID)
 	if c.Bridge == nil {
 		c.Log.Warn("submit received but the plugin bridge is not configured")
+		c.TurnEnd(protocol.TurnEnd{
+			SessionID: msg.SessionID,
+			TurnID:    msg.RequestID,
+			Status:    "error",
+			Error:     "the connector has no plugin bridge configured, so the message cannot run on the desktop",
+		})
 		return
 	}
 	// A stop that arrived while this message waited behind another turn is
@@ -294,6 +349,15 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 			Status:    "aborted",
 		})
 		return
+	}
+	// The server asked us to open this conversation and the first message for
+	// it is being queued now. Pin the new plugin's cursor to the current queue
+	// head so a later global-cursor advance cannot make it skip this message.
+	if c.consumeSpawnRequest(msg.ExternalSessionID) {
+		if err := c.Bridge.SeedSessionCursor(msg.ExternalSessionID); err != nil {
+			c.Log.Warn("could not prime the spawned session's queue cursor",
+				"session", msg.SessionID, "external", msg.ExternalSessionID, "error", err)
+		}
 	}
 	action := msg.Action
 	if action == "" {

@@ -83,6 +83,18 @@ Removed compatibility event types:
 Use `runtime.state.updated`, `runtime.capability.updated`,
 `runtime.notice.updated`, and `runtime.notice.snapshot` for live Runtime facts.
 
+### Per-session live presence
+
+Every `SessionView` (session list, snapshot, and `session.meta.updated` payload)
+carries a boolean `live`. It is true when the phone-pane plugin in that
+conversation is still refreshing its presence stamp on the desktop, which means
+the conversation can actually accept a prompt right now. It is false for a
+session whose plugin stopped stamping, whose connector is offline, or whose
+connector predates presence reporting.
+
+The Server republishes `session.meta.updated` for the sessions whose `live`
+value changed. A connector going offline clears its whole set.
+
 ### Recovery rules
 
 - Event cursor format is `seq:{number}`.
@@ -194,6 +206,29 @@ POST /api/v2/connector/ingest
 ```
 
 These endpoint names should not change as part of the runtime protocol refactor.
+
+Connector `hello` and `beat` frames may carry `liveSessions`, an array of runtime
+session ids whose phone-pane presence stamp is no older than 30 seconds. The
+Server remembers the last set per connector, clears it when the connector goes
+offline, and exposes it as `SessionView.live`. The field is additive: an older
+connector omits it, and an older Server ignores it. On `beat` the key is always
+present (possibly `null` or `[]`), so a Server can distinguish "nothing is
+live" from an older connector that cannot report presence at all.
+
+`hello.capabilities` may also carry:
+
+- `bridgeConfigured`: the connector has a phone-pane bridge directory, so a
+  queued submit has somewhere to land even if no plugin is running right now.
+- `sessionOpen`: the connector can start a terminal for a conversation
+  (`session.open`). A Server must not send `session.open` to a connector that
+  omits it, and must not report the open as sent; an older connector ignores an
+  unknown frame type.
+
+When a message is sent to a conversation with no live plugin, the Server asks
+its connector to open a terminal at most once per minute per session; retries
+inside that window reuse the terminal that is already starting. If the
+connector cannot open sessions, or has no bridge directory to deliver into, the
+send is refused with `session_not_live` instead of being acknowledged.
 
 ### Connector runtime RPC methods
 

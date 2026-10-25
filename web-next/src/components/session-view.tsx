@@ -41,6 +41,7 @@ export function SessionView() {
   const { session: authSession } = useAuth()
   const t = useTranslations("dashboard.session")
   const [exporting, setExporting] = React.useState(false)
+  const [openingOnComputer, setOpeningOnComputer] = React.useState(false)
   const [memorySnapshot, setMemorySnapshot] = React.useState<SessionMemorySnapshot | null>(null)
   const isMobile = useIsMobile()
   const {
@@ -96,6 +97,20 @@ export function SessionView() {
     },
     [setPanelMode, toolSidebar.openFilePreview],
   )
+
+  const handleOpenOnComputer = React.useCallback(async () => {
+    if (!token || !session?.id || openingOnComputer) return
+    setOpeningOnComputer(true)
+    try {
+      const response = await dashboardApi.openSessionRuntime(token, session.id)
+      if (response.result?.sent) toast.success(t("openOnComputerSent"))
+      else toast.error(t("openOnComputerFailed"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("openOnComputerFailed"))
+    } finally {
+      setOpeningOnComputer(false)
+    }
+  }, [openingOnComputer, session?.id, t, token])
 
   const handleMemorySnapshotUpdated = React.useCallback((snapshot: SessionMemorySnapshot | null) => {
     if (!detailSessionId) {
@@ -236,6 +251,8 @@ export function SessionView() {
             onExportMemoryTimeline={handleExportMemoryTimeline}
             onExportRemoteTimeline={handleExportRemoteTimeline}
             exporting={exporting}
+            openingOnComputer={openingOnComputer}
+            onOpenOnComputer={handleOpenOnComputer}
             toolsOpen={toolSidebar.open}
             onToggleTools={toolSidebar.toggleSidebar}
           />

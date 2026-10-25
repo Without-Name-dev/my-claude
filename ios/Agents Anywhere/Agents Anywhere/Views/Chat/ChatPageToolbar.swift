@@ -33,6 +33,8 @@ struct ChatPageToolbar: ViewModifier {
     var status: ChatHeaderStatus?
     var alignsTitleLeading = false
     let onMenu: () -> Void
+    /// A conversation whose plugin can accept a prompt gets a presence dot.
+    var live = false
 
     func body(content: Content) -> some View {
         content
@@ -54,17 +56,17 @@ struct ChatPageToolbar: ViewModifier {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(title).font(.headline).lineLimit(1)
                                 .accessibilityAddTraits(.isHeader)
-                            if subtitle != nil || status != nil {
-                                ChatToolbarSubtitle(subtitle: subtitle, status: status)
+                            if subtitle != nil || status != nil || live {
+                                ChatToolbarSubtitle(subtitle: subtitle, status: status, live: live)
                             }
                         }
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .sharedBackgroundVisibility(.hidden)
-                } else if subtitle != nil || status != nil {
+                } else if subtitle != nil || status != nil || live {
                     ToolbarItem(placement: .subtitle) {
-                        ChatToolbarSubtitle(subtitle: subtitle, status: status)
+                        ChatToolbarSubtitle(subtitle: subtitle, status: status, live: live)
                     }
                 }
             }
@@ -74,6 +76,7 @@ struct ChatPageToolbar: ViewModifier {
 private struct ChatToolbarSubtitle: View {
     let subtitle: String?
     let status: ChatHeaderStatus?
+    var live = false
     @ScaledMetric(relativeTo: .caption) private var lineHeight: CGFloat = 16
 
     private var text: String {
@@ -81,6 +84,10 @@ private struct ChatToolbarSubtitle: View {
     }
     var body: some View {
         HStack(spacing: 4) {
+            if live {
+                Circle().fill(.green).frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+            }
             if let status {
                 Group {
                     if status.isProgress { ProgressView().controlSize(.mini) }
@@ -92,7 +99,8 @@ private struct ChatToolbarSubtitle: View {
         .font(.caption).foregroundStyle(.secondary)
         .frame(height: lineHeight)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel([subtitle, status?.detail].compactMap { $0 }.joined(separator: " · "))
+        .accessibilityLabel([subtitle, live ? String(localized: "在线") : nil, status?.detail]
+            .compactMap { $0 }.joined(separator: " · "))
     }
 }
 

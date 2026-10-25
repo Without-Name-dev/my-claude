@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/auth"
@@ -34,6 +35,12 @@ type App struct {
 	history    *historyLimiter
 	rpc        *rpcClient
 	activity   *activityRegistry
+
+	// openMu guards lastAutoOpen: when the send path last asked each session's
+	// connector to open a terminal, so a retried message does not ask again
+	// while the first one is still starting.
+	openMu       sync.Mutex
+	lastAutoOpen map[string]time.Time
 }
 
 // New wires the application.
@@ -51,6 +58,8 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		history:    newHistoryLimiter(),
 		rpc:        newRPCClient(),
 		activity:   newActivityRegistry(),
+
+		lastAutoOpen: map[string]time.Time{},
 	}
 }
 
@@ -149,6 +158,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleTakeover))
 	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleReleaseTakeover))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/messages", a.requireUser(a.handleSendMessage))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/open", a.requireUser(a.handleOpenRuntime))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/interrupt", a.requireUser(a.handleInterrupt))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/steer", a.requireUser(a.handleSteer))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/state", a.requireUser(a.handleRuntimeState))

@@ -86,6 +86,10 @@ type SessionView struct {
 	LastItemOrderSeq            *int64  `json:"lastItemOrderSeq"`
 	SortAt                      *string `json:"sortAt"`
 	UpdatedSeq                  int64   `json:"updatedSeq"`
+	// Live reports that the phone-pane plugin in this conversation is currently
+	// able to accept a prompt, as last reported by its connector. It is false
+	// for older connectors and for an offline device.
+	Live bool `json:"live"`
 }
 
 // sessionView renders a stored session.
@@ -102,6 +106,7 @@ func (a *App) sessionView(ctx context.Context, s store.Session) SessionView {
 		RuntimeID:          s.RuntimeID,
 		Status:             s.Status,
 		Takeover:           s.Takeover,
+		Live:               a.connectors.Live(s.ConnectorID, s.ExternalID),
 		Pinned:             s.Pinned,
 		Archived:           s.Archived,
 		UserArchived:       s.Archived,

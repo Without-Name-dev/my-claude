@@ -6,6 +6,9 @@ struct ChatToast: Identifiable, Equatable {
     let title: String
     let message: String
     let canRetry: Bool
+    /// The failure was "this conversation has no live plugin", so a terminal on
+    /// the desktop is the way forward instead of a retry.
+    var offersOpenOnComputer = false
 }
 
 /// One current issue per source. Dismissing an issue does not change connection
@@ -26,7 +29,15 @@ struct ChatToast: Identifiable, Equatable {
         case .offline: heading = String(localized: "网络已断开")
         default: heading = String(localized: "操作未完成")
         }
-        items.append(ChatToast(id: source, title: title ?? heading, message: failure.message, canRetry: canRetry))
+        let notLive = failure.code == "session_not_live"
+            || failure.message.localizedCaseInsensitiveContains("no live Claude session")
+        items.append(ChatToast(
+            id: source,
+            title: title ?? heading,
+            message: failure.message,
+            canRetry: canRetry,
+            offersOpenOnComputer: notLive
+        ))
     }
     func dismiss(_ id: String) { items.removeAll { $0.id == id } }
 }

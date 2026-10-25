@@ -21,6 +21,7 @@ struct ChatSidebarSession: Identifiable, Equatable {
     let runtime: String
     let runtimeType: String?
     let status: V2RuntimeStatus
+    let live: Bool
     let unread: Bool
     let archived: Bool
     let pinned: Bool
@@ -35,6 +36,7 @@ struct ChatSidebarSession: Identifiable, Equatable {
         runtime = session.runtime
         runtimeType = session.runtimeType
         status = session.status
+        live = session.isLive
         unread = session.unread
         archived = session.archived
         pinned = session.pinned

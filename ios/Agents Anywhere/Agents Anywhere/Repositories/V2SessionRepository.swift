@@ -343,6 +343,17 @@ final class V2SessionRepository {
         try requireCurrent(entry)
     }
 
+    /// Opens the conversation in a terminal on its connector's computer. This
+    /// does not change the session projection; the connector republishes
+    /// presence when the new plugin starts.
+    func openOnComputer(sessionId: V2SessionID) async throws -> V2RuntimeOpenResult {
+        try requireNetwork()
+        let entry = entry(for: sessionId)
+        let result = try await detail.openOnComputer(sessionId: sessionId)
+        try requireCurrent(entry)
+        return result
+    }
+
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws {
         try requireNetwork()
         let entry = entry(for: sessionId)

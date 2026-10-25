@@ -44,6 +44,7 @@ import type {
   SessionNoticesResponse,
   SessionPatchRequest,
   SessionResponse,
+  SessionRuntimeOpenResult,
   SessionRuntimeStateResponse,
   SessionShareCreateRequest,
   SessionShareCreateResponse,
@@ -679,6 +680,17 @@ export class DashboardApi {
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
       },
+      { token },
+    );
+  }
+
+  openSessionRuntime(
+    token: string,
+    sessionId: string,
+  ): Promise<RpcResponse<SessionRuntimeOpenResult>> {
+    return this.client.post<RpcResponse<SessionRuntimeOpenResult>>(
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/open`,
+      {},
       { token },
     );
   }

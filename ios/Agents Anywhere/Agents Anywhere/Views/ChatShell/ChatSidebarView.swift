@@ -372,6 +372,10 @@ struct ChatSidebarSessionRow: View {
                 HStack(spacing: 8) {
                     SessionAgentIcon(runtime: session.runtime, runtimeType: session.runtimeType)
                         .foregroundStyle(.primary)
+                    if session.live {
+                        Circle().fill(.green).frame(width: 7, height: 7)
+                            .accessibilityLabel(String(localized: "在线"))
+                    }
                     Text(session.title ?? String(localized: "Untitled session"))
                         .font(.body).foregroundStyle(.primary)
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)

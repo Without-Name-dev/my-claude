@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Download, Loader2 } from "lucide-react"
+import { Download, Loader2, Monitor } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,9 @@ type SessionViewHeaderProps = {
   onExportMemoryTimeline?: () => void
   onExportRemoteTimeline?: () => void
   exporting?: boolean
+  /** Opens this conversation in a terminal on its connector's computer. */
+  onOpenOnComputer?: () => void
+  openingOnComputer?: boolean
   toolsOpen?: boolean
   onToggleTools?: () => void
 }
@@ -37,10 +40,13 @@ export function SessionViewHeader({
   onExportMemoryTimeline,
   onExportRemoteTimeline,
   exporting,
+  onOpenOnComputer,
+  openingOnComputer,
   toolsOpen,
   onToggleTools,
 }: SessionViewHeaderProps) {
   const { renameSession } = useWorkspace()
+  const t = useTranslations("dashboard")
   const tSession = useTranslations("dashboard.session")
   const [editingTitle, setEditingTitle] = React.useState(false)
   const [titleDraft, setTitleDraft] = React.useState(session.title ?? "")
@@ -113,6 +119,13 @@ export function SessionViewHeader({
           {session.title}
         </button>
       )}
+      {session.live ? (
+        <span
+          aria-label={t("sessionStatus.live")}
+          title={t("sessionStatus.live")}
+          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+        />
+      ) : null}
       <SessionMetaBadge
         session={session}
         connectorName={connectorName}
@@ -122,6 +135,23 @@ export function SessionViewHeader({
         exporting={exporting}
       />
       <div className="ml-auto flex items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5 rounded-xl px-2.5 text-muted-foreground"
+          onClick={onOpenOnComputer}
+          disabled={!onOpenOnComputer || openingOnComputer || session.connectorStatus !== "online"}
+          aria-label={tSession("openOnComputer")}
+          title={tSession("openOnComputer")}
+        >
+          {openingOnComputer ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Monitor className="size-3.5" />
+          )}
+          <span className="hidden sm:inline">{tSession("openOnComputer")}</span>
+        </Button>
         {!toolsOpen ? (
           <WorkspaceSidebarToggleButton side="right" aria-expanded={false}
             aria-label={tSession("tools.toggle")} title={tSession("tools.toggle")}

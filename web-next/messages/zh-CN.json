@@ -894,6 +894,9 @@
       "loadFailed": "无法加载会话。",
       "loadRuntimeSettingsFailed": "无法加载运行时设置。",
       "sendFailed": "无法发送消息。",
+      "openOnComputer": "在电脑上打开",
+      "openOnComputerSent": "正在电脑上打开此会话。",
+      "openOnComputerFailed": "无法在电脑上打开此会话。",
       "sourceUnavailablePlaceholder": "当前会话已无法继续对话",
       "sourceArchivedTitle": "会话已在 {client} 中归档",
       "sourceArchivedDescription": "当前会话已在本地 {client} 客户端中归档，无法继续对话。请在该客户端取消归档后继续。",
@@ -1087,7 +1090,8 @@
       "waitingApproval": "等待批准",
       "error": "出错",
       "unread": "未读",
-      "blocked": "阻塞"
+      "blocked": "阻塞",
+      "live": "在线"
     },
     "signOut": {
       "confirm": "退出登录",

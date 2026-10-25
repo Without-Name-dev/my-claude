@@ -13,6 +13,8 @@
 //	abort.txt        a stamp that asks the plugin to cancel its turn, followed
 //	                 by the runtime session it is addressed to
 //	tools.json       the tool calls seen in the running turn
+//	live/<id>.txt    when session <id>'s plugin last confirmed it can submit,
+//	                 as epoch milliseconds; stale stamps are not live
 //
 // The field names are frozen: a plugin build already installed on the desktop
 // reads them, so renaming anything silently breaks the bridge.
@@ -26,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +38,11 @@ import (
 // DefaultHeartbeatTTL is how stale the heartbeat may be before the bridge is
 // considered absent.
 const DefaultHeartbeatTTL = 30 * time.Second
+
+// DefaultLiveTTL is how stale a per-session presence stamp may be. The plugin
+// refreshes it every five seconds while it can submit a prompt, so a process
+// that dies without cleaning up disappears from presence within this window.
+const DefaultLiveTTL = 30 * time.Second
 
 // outboxStateKeys are forwarded to the server as session state; "branch" is the
 // git branch, not a duplicate of the working directory.
@@ -78,6 +86,74 @@ func (b *Bridge) AbortPath() string     { return filepath.Join(b.Dir, "abort.txt
 func (b *Bridge) ToolsPath() string     { return filepath.Join(b.Dir, "tools.json") }
 func (b *Bridge) TokenPath() string     { return filepath.Join(b.Dir, "auth.json") }
 func (b *Bridge) ApprovalPath() string  { return filepath.Join(b.Dir, "approval.json") }
+func (b *Bridge) LiveDir() string       { return filepath.Join(b.Dir, "live") }
+
+// maxLiveStamps bounds one presence scan. Stamps that stopped moving are
+// deleted as they are found (see expireLiveStamp), so a normal directory holds
+// one file per conversation that can accept a prompt; the cap only matters in a
+// pathological state and keeps one heartbeat from reading an unbounded set.
+const maxLiveStamps = 1024
+
+// LiveSessions returns the runtime session ids whose presence stamp is no older
+// than ttl, sorted so the wire frame is stable.
+//
+// The stamp is the file's content, not its mtime: the plugin rewrites the same
+// file every few seconds, and a stamp that stopped moving means the session can
+// no longer take a message. A missing, empty or unparsable file is therefore
+// simply not live, which also covers a plugin that could not delete its file on
+// shutdown. Those dead files are removed here, because nothing else expires a
+// stamp left behind by a process that was killed.
+func (b *Bridge) LiveSessions(ttl time.Duration) []string {
+	entries, err := os.ReadDir(b.LiveDir())
+	if err != nil {
+		return nil
+	}
+	cutoff := time.Now().Add(-ttl).UnixMilli()
+	ids := make([]string, 0, len(entries))
+	scanned := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".txt")
+		if id == "" {
+			continue
+		}
+		if scanned >= maxLiveStamps {
+			break
+		}
+		scanned++
+		path := filepath.Join(b.LiveDir(), name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		ms, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+		if err != nil || ms < cutoff {
+			expireLiveStamp(entry, path, cutoff)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// expireLiveStamp deletes a stamp no plugin refreshed inside the window.
+//
+// The mtime has to be old as well as the content: a plugin writing between our
+// read and this check would replace the stale stamp with a fresh one, and a
+// fresh write has a fresh mtime, so it is left alone. Deleting only when both
+// signals agree keeps a live conversation from losing its dot; the next scan
+// would report it again anyway, but not flicker it off.
+func expireLiveStamp(entry os.DirEntry, path string, cutoff int64) {
+	info, err := entry.Info()
+	if err != nil || info.ModTime().UnixMilli() >= cutoff {
+		return
+	}
+	_ = os.Remove(path)
+}
 
 // Token returns the queue token, creating it on first use. A queued message
 // must carry it or the plugin refuses to submit it as the person's words.
@@ -270,6 +346,65 @@ func readCursor(dir string) int {
 		return 0
 	}
 	return n
+}
+
+// SeedSessionCursor primes a session's reader with the current queue head.
+//
+// The plugin starts a conversation that has never polled from the global
+// cursor: the highest sequence any session has consumed. That is wrong while a
+// terminal is starting, because the first message for the new conversation is
+// queued before its plugin boots. If another live session consumes a later
+// message in the meantime, the global cursor moves past the new message and the
+// plugin starts beyond it, so the message is never submitted. Writing this
+// conversation's own cursor before its message is queued pins the reader to the
+// head and closes that window.
+//
+// Files are created only when absent with O_EXCL, so a running plugin's own
+// cursor is never lowered (lowering it would replay old submissions).
+func (b *Bridge) SeedSessionCursor(sessionID string) error {
+	id := sanitizeCursorID(sessionID)
+	if id == "" {
+		return nil
+	}
+	base := filepath.Join(b.Dir, "cursor."+id+".txt")
+	head := strconv.Itoa(highestSeq(b.QueueDir()))
+	for _, path := range []string{base, base + ".bak"} {
+		if err := writeExclusive(path, head); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// sanitizeCursorID mirrors the plugin's cursor filename: any character outside
+// the runtime-session-id alphabet becomes an underscore.
+func sanitizeCursorID(id string) string {
+	var out strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			out.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			out.WriteRune(r)
+		default:
+			out.WriteRune('_')
+		}
+	}
+	return out.String()
+}
+
+// writeExclusive creates path with body, reporting os.ErrExist when another
+// writer got there first.
+func writeExclusive(path, body string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 // Outbox is the plugin's snapshot of the turn it is running.

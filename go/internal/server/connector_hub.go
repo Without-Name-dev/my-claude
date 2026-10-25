@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -33,11 +34,19 @@ type connectorConn struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
+	// bridgeMu guards the capabilities this socket reported in its hello.
+	//
 	// bridgeOK reports whether the phone-pane plugin is loaded in a live
-	// session. Without it a queued message has nobody to pick it up, so the
-	// server refuses the send instead of letting the phone wait forever.
-	bridgeMu sync.RWMutex
-	bridgeOK bool
+	// session. bridgeConfigured is true when the connector has a bridge
+	// directory at all, even if no plugin answers right now, so its queued
+	// message would be picked up by a terminal this server asks it to open.
+	// sessionOpenOK is true only for connectors that can actually start a
+	// terminal; an older build omits the capability and must never be sent a
+	// session.open frame it would silently ignore.
+	bridgeMu         sync.RWMutex
+	bridgeOK         bool
+	bridgeConfigured bool
+	sessionOpenOK    bool
 }
 
 func (c *connectorConn) close() {
@@ -69,6 +78,28 @@ func (c *connectorConn) bridgeReady() bool {
 	return c.bridgeOK
 }
 
+// setCapabilities applies a hello. A beat only refreshes the live bridge flag;
+// the rest describe the build and stay as hello reported them.
+func (c *connectorConn) setCapabilities(capabilities map[string]bool) {
+	c.bridgeMu.Lock()
+	c.bridgeOK = capabilities[protocol.CapabilityBridge]
+	c.bridgeConfigured = capabilities[protocol.CapabilityBridgeConfigured]
+	c.sessionOpenOK = capabilities[protocol.CapabilitySessionOpen]
+	c.bridgeMu.Unlock()
+}
+
+func (c *connectorConn) bridgeQueueReady() bool {
+	c.bridgeMu.RLock()
+	defer c.bridgeMu.RUnlock()
+	return c.bridgeConfigured
+}
+
+func (c *connectorConn) sessionOpenReady() bool {
+	c.bridgeMu.RLock()
+	defer c.bridgeMu.RUnlock()
+	return c.sessionOpenOK
+}
+
 // ConnectorHub tracks the live connector sockets and delivers frames to them.
 //
 // One connector may only have one socket: a reconnect replaces the old one,
@@ -77,12 +108,91 @@ func (c *connectorConn) bridgeReady() bool {
 type ConnectorHub struct {
 	mu   sync.RWMutex
 	byID map[string]*connectorConn
+	// live holds the runtime session ids each connector last reported as able
+	// to accept a prompt. It belongs to the socket, not the database: a
+	// reconnect restates it on hello, and going offline clears it.
+	live map[string]map[string]struct{}
 	log  *slog.Logger
 }
 
 // NewConnectorHub returns an empty hub.
 func NewConnectorHub(log *slog.Logger) *ConnectorHub {
-	return &ConnectorHub{byID: map[string]*connectorConn{}, log: log}
+	return &ConnectorHub{
+		byID: map[string]*connectorConn{},
+		live: map[string]map[string]struct{}{},
+		log:  log,
+	}
+}
+
+// Live reports whether a message sent to this session now would actually be
+// picked up: the connector has to be the current socket, its bridge heartbeat
+// has to be fresh, and the session has to be in the last presence report. A
+// session without a runtime id can never be live.
+func (h *ConnectorHub) Live(connectorID, externalSessionID string) bool {
+	if connectorID == "" || externalSessionID == "" {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	conn := h.byID[connectorID]
+	if conn == nil || !conn.bridgeReady() {
+		return false
+	}
+	_, ok := h.live[connectorID][externalSessionID]
+	return ok
+}
+
+// SetLiveSessions replaces one connection's live set and returns the external
+// session ids whose membership changed, so the caller can publish just those.
+// It ignores a frame from a socket another connection has replaced.
+func (h *ConnectorHub) SetLiveSessions(conn *connectorConn, externalSessionIDs []string) []string {
+	next := make(map[string]struct{}, len(externalSessionIDs))
+	for _, id := range externalSessionIDs {
+		if id != "" {
+			next[id] = struct{}{}
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if conn == nil || h.byID[conn.id] != conn {
+		return nil
+	}
+	previous := h.live[conn.id]
+	if sameIDSet(previous, next) {
+		return nil
+	}
+	changed := make([]string, 0)
+	for id := range next {
+		if _, ok := previous[id]; !ok {
+			changed = append(changed, id)
+		}
+	}
+	for id := range previous {
+		if _, ok := next[id]; !ok {
+			changed = append(changed, id)
+		}
+	}
+	if len(next) == 0 {
+		delete(h.live, conn.id)
+	} else {
+		h.live[conn.id] = next
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+// sameIDSet reports whether two presence sets hold the same ids.
+func sameIDSet(left, right map[string]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for id := range left {
+		if _, ok := right[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // CanDeliver reports whether a message sent now would actually be picked up.
@@ -91,6 +201,26 @@ func (h *ConnectorHub) CanDeliver(connectorID string) bool {
 	conn := h.byID[connectorID]
 	h.mu.RUnlock()
 	return conn != nil && conn.bridgeReady()
+}
+
+// SupportsSessionOpen reports whether this connector's build can start a
+// terminal. It is false for a connector that predates session.open, so the
+// server must not report a terminal as opened when the frame would be ignored.
+func (h *ConnectorHub) SupportsSessionOpen(connectorID string) bool {
+	h.mu.RLock()
+	conn := h.byID[connectorID]
+	h.mu.RUnlock()
+	return conn != nil && conn.sessionOpenReady()
+}
+
+// CanQueue reports whether the connector has a bridge directory a submit could
+// be written into. Opening a terminal for a message is only useful when this is
+// true: the spawned Claude session would otherwise have nothing to read.
+func (h *ConnectorHub) CanQueue(connectorID string) bool {
+	h.mu.RLock()
+	conn := h.byID[connectorID]
+	h.mu.RUnlock()
+	return conn != nil && conn.bridgeQueueReady()
 }
 
 // Online reports whether a connector currently has a socket.
@@ -147,27 +277,47 @@ func (h *ConnectorHub) SendRaw(connectorID string, body []byte) bool {
 }
 
 // drop closes and removes a connector's socket, used when its credential is
-// revoked or the connector is deleted.
-func (h *ConnectorHub) drop(connectorID string) {
+// revoked or the connector is deleted. It returns the socket it removed so the
+// caller can republish the sessions it was making live.
+func (h *ConnectorHub) drop(connectorID string) *connectorConn {
 	h.mu.Lock()
 	conn := h.byID[connectorID]
 	delete(h.byID, connectorID)
+	// A revoked connector is offline; its presence set is no longer true.
+	delete(h.live, connectorID)
 	h.mu.Unlock()
 	if conn != nil {
 		conn.close()
 	}
+	return conn
 }
 
 // register installs a socket, replacing any previous one.
+//
+// The previous process's presence set is dropped here, not only in the old
+// socket's cleanup: that cleanup sees a replaced socket and does nothing, so a
+// reconnect would otherwise show the sessions of a process that is already gone
+// as live until the new hello arrives.
 func (h *ConnectorHub) register(conn *connectorConn) *connectorConn {
 	h.mu.Lock()
 	previous := h.byID[conn.id]
 	h.byID[conn.id] = conn
+	delete(h.live, conn.id)
 	h.mu.Unlock()
 	if previous != nil {
 		previous.close()
 	}
 	return previous
+}
+
+// isCurrent reports whether conn is still the registered socket for its
+// connector. A replaced socket can deliver a last buffered frame before its
+// reader unwinds; that frame describes the process the new socket replaced, so
+// it must not rewrite the new connection's state.
+func (h *ConnectorHub) isCurrent(conn *connectorConn) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.byID[conn.id] == conn
 }
 
 // unregister removes a socket only if it is still the current one.
@@ -178,6 +328,9 @@ func (h *ConnectorHub) unregister(conn *connectorConn) bool {
 		return false
 	}
 	delete(h.byID, conn.id)
+	// The connector is offline, so none of the sessions it reported can still
+	// accept a prompt. The caller republishes their views from the offline row.
+	delete(h.live, conn.id)
 	return true
 }
 
@@ -240,9 +393,9 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 				a.log.Warn("could not clear connector presence", "error", err)
 			}
 			// unregister already removed the socket, so these views render the
-			// connector as offline.
+			// connector as offline. publishConnectorPresence also wakes the
+			// dashboard lists, which read a snapshot rather than this broker.
 			a.publishConnectorPresence(ctx, conn.userID, connector.ID, false)
-			a.dashboards.notify(conn.userID)
 		}
 	}()
 
@@ -287,18 +440,28 @@ func (a *App) writeConnectorLoop(conn *connectorConn) {
 
 // handleConnectorFrame routes one inbound frame.
 func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env protocol.Envelope) {
+	// A replaced socket may still hand one buffered frame to its reader. The
+	// new socket is the only authority on bridge and presence state, so a stale
+	// hello, beat or pong must not overwrite what it reported.
+	if !a.connectors.isCurrent(conn) {
+		return
+	}
 	switch env.Type {
 	case protocol.TypeHello:
 		var hello protocol.Hello
 		if err := json.Unmarshal(env.Data, &hello); err != nil {
 			return
 		}
-		conn.setBridge(hello.Capabilities["bridge"])
+		conn.setCapabilities(hello.Capabilities)
 		a.log.Info("connector hello",
 			"connector", conn.id,
 			"version", hello.Version,
 			"platform", hello.Platform,
-			"bridge", hello.Capabilities["bridge"])
+			"bridge", hello.Capabilities[protocol.CapabilityBridge],
+			"bridgeConfigured", hello.Capabilities[protocol.CapabilityBridgeConfigured],
+			"sessionOpen", hello.Capabilities[protocol.CapabilitySessionOpen],
+			"liveSessions", len(hello.LiveSessions))
+		a.applyLiveSessions(ctx, conn, hello.LiveSessions)
 		a.publishConnectorPresence(ctx, conn.userID, conn.id, true)
 		a.healStalledSessions(ctx, conn.id, conn.userID)
 	case protocol.TypeInventory:
@@ -322,12 +485,28 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		}
 		a.applyHistory(ctx, conn, msg)
 	case protocol.TypeBeat:
+		// Both facts are optional on the wire. An older connector's ping reply
+		// is {"pong":true}: it carries no bridge flag and no presence list, and
+		// treating either absence as "false"/"empty" would clear the state its
+		// previous beat reported.
 		var beat struct {
-			Bridge bool `json:"bridge"`
+			Bridge       *bool           `json:"bridge"`
+			LiveSessions json.RawMessage `json:"liveSessions"`
 		}
 		if len(env.Data) > 0 {
 			if err := json.Unmarshal(env.Data, &beat); err == nil {
-				conn.setBridge(beat.Bridge)
+				if beat.Bridge != nil {
+					conn.setBridge(*beat.Bridge)
+				}
+				// The key itself is the signal, not its value: "liveSessions":
+				// null or [] means the connector confirms nothing is live,
+				// while an absent key is an older build that cannot say.
+				if len(beat.LiveSessions) > 0 {
+					var live []string
+					if err := json.Unmarshal(beat.LiveSessions, &live); err == nil {
+						a.applyLiveSessions(ctx, conn, live)
+					}
+				}
 			}
 		}
 		if err := a.db.TouchConnector(ctx, conn.id); err != nil {
@@ -397,6 +576,31 @@ func (a *App) authenticateConnector(r *http.Request) (connectorRecord, bool) {
 	return connectorRecord{ID: conn.ID, UserID: conn.UserID, Name: conn.Name}, true
 }
 
+// applyLiveSessions records the connector's latest presence report and tells
+// the sessions whose live flag moved. A beat that repeats the same set costs one
+// comparison and no frames.
+func (a *App) applyLiveSessions(ctx context.Context, conn *connectorConn, externalIDs []string) {
+	changed := a.connectors.SetLiveSessions(conn, externalIDs)
+	if len(changed) == 0 {
+		return
+	}
+	sessions, err := a.db.SessionsForConnector(ctx, conn.id)
+	if err != nil {
+		a.log.Debug("could not list sessions for presence", "connector", conn.id, "error", err)
+		return
+	}
+	changedSet := make(map[string]struct{}, len(changed))
+	for _, id := range changed {
+		changedSet[id] = struct{}{}
+	}
+	for _, session := range sessions {
+		if _, ok := changedSet[session.ExternalID]; !ok {
+			continue
+		}
+		a.publishSessionMeta(ctx, session)
+	}
+}
+
 // publishConnectorPresence tells every open session view that its connector
 // came online or went away, so the dashboard's status dot follows reality.
 func (a *App) publishConnectorPresence(ctx context.Context, userID, connectorID string, online bool) {
@@ -413,6 +617,10 @@ func (a *App) publishConnectorPresence(ctx context.Context, userID, connectorID 
 		}
 		a.broker.Publish(session.ID, frame)
 	}
+	// The list and sidebar read the dashboard snapshot, not a per-session
+	// socket. A connector coming online changes both connectorStatus and live,
+	// so the person's open lists have to be told to refetch as well.
+	a.dashboards.notify(userID)
 }
 
 // healStalledSessions clears turn state left behind by the previous connection.

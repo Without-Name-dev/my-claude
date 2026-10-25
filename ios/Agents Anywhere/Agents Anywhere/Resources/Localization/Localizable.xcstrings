@@ -8677,6 +8677,108 @@
         }
       }
     },
+    "在电脑上打开": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在电脑上打开"
+          }
+        }
+      }
+    },
+    "在电脑上打开此会话？": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open this conversation on the computer?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在电脑上打开此会话？"
+          }
+        }
+      }
+    },
+    "将在这台电脑上启动一个终端并打开此会话。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This starts a terminal on the computer and opens this conversation there."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将在这台电脑上启动一个终端并打开此会话。"
+          }
+        }
+      }
+    },
+    "已在这台电脑上打开此会话。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This conversation is open on the computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在这台电脑上打开此会话。"
+          }
+        }
+      }
+    },
+    "无法在这台电脑上打开此会话。": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not open this conversation on the computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在这台电脑上打开此会话。"
+          }
+        }
+      }
+    },
+    "正在打开…": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在打开…"
+          }
+        }
+      }
+    },
     "你的任务将在所选设备上运行": {
       "extractionState": "manual",
       "localizations": {

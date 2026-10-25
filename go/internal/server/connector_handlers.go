@@ -190,7 +190,19 @@ func (a *App) ownedConnector(w http.ResponseWriter, r *http.Request, user store.
 // was deleted, so the desktop stops using a credential that no longer works.
 func (a *App) disconnectConnector(connectorID string) {
 	a.connectors.Send(connectorID, "close", map[string]any{"reason": "revoked"})
-	a.connectors.drop(connectorID)
+	conn := a.connectors.drop(connectorID)
+	if conn == nil {
+		return
+	}
+	// The socket's own cleanup runs after the hub already removed it, so it
+	// publishes nothing. These views have to be republished here, or an open
+	// page keeps showing the green dot of a connector that cannot deliver.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.db.SetConnectorPresence(ctx, connectorID, conn.connectionID, false); err != nil {
+		a.log.Warn("could not clear connector presence", "connector", connectorID, "error", err)
+	}
+	a.publishConnectorPresence(ctx, conn.userID, connectorID, false)
 }
 
 func tokenPrefix(token string) string {

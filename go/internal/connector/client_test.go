@@ -5,7 +5,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/bridge"
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
@@ -101,5 +104,64 @@ func TestPendingTurnEndsAreKeptInOrder(t *testing.T) {
 		if c.pendingEnds[i].TurnID != want {
 			t.Fatalf("frame %d = %q, want %q", i, c.pendingEnds[i].TurnID, want)
 		}
+	}
+}
+
+// Presence is only reported while the bridge heartbeat is fresh: the server
+// refuses a submit if it is not, so a dot there would promise delivery the
+// connector cannot make.
+func TestBridgeStatusRequiresAFreshHeartbeat(t *testing.T) {
+	dir := t.TempDir()
+	b := bridge.New(dir)
+	if err := os.MkdirAll(b.LiveDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b.LiveDir(), "ext-1.txt"),
+		[]byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := testClient(b)
+	if ready, live := c.bridgeStatus(); ready || len(live) != 0 {
+		t.Fatalf("without a heartbeat: ready=%v live=%v, want false none", ready, live)
+	}
+
+	if err := os.WriteFile(b.HeartbeatPath(),
+		[]byte(strconv.FormatInt(time.Now().UnixMilli(), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ready, live := c.bridgeStatus()
+	if !ready || len(live) != 1 || live[0] != "ext-1" {
+		t.Fatalf("with a heartbeat: ready=%v live=%v, want true [ext-1]", ready, live)
+	}
+
+	// A nil bridge can drive nothing, so it reports no sessions either.
+	if ready, live := testClient(nil).bridgeStatus(); ready || len(live) != 0 {
+		t.Fatalf("nil bridge: ready=%v live=%v, want false none", ready, live)
+	}
+}
+
+// A connector with no bridge at all cannot run anything on the desktop. The
+// message must be closed as failed; the phone already drew the person's bubble
+// and would otherwise wait forever.
+func TestRunTurnWithoutABridgeReportsFailure(t *testing.T) {
+	c := testClient(nil)
+	c.runTurn(context.Background(), protocol.Submit{
+		RequestID: "msg-1",
+		SessionID: "sess-1",
+		Text:      "hello",
+	})
+
+	c.endMu.Lock()
+	defer c.endMu.Unlock()
+	if len(c.pendingEnds) != 1 {
+		t.Fatalf("queued %d final frames, want 1", len(c.pendingEnds))
+	}
+	end := c.pendingEnds[0]
+	if end.Status != "error" || end.SessionID != "sess-1" || end.TurnID != "msg-1" {
+		t.Fatalf("unexpected final frame %+v", end)
+	}
+	if end.Error == "" {
+		t.Fatal("the failure carried no explanation")
 	}
 }

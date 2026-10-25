@@ -65,6 +65,20 @@ struct V2SessionDetailService {
         try await runtimeAPI.interrupt(sessionId: sessionId).requireSuccess()
     }
 
+    /// Asks the desktop to bring this conversation up in a terminal. The
+    /// response is not a runtime action: it says whether the connector was
+    /// handed the request, not whether the terminal finished starting.
+    func openOnComputer(sessionId: V2SessionID) async throws -> V2RuntimeOpenResult {
+        let response = try await sessionAPI.openRuntime(sessionId: sessionId)
+        guard response.ok, let result = response.result else {
+            throw response.error ?? V2RuntimeError(
+                code: nil,
+                message: String(localized: "The connector did not accept the open request.")
+            )
+        }
+        return result
+    }
+
     func updateSelection(
         sessionId: V2SessionID,
         scope: V2RuntimeSelectionScope,

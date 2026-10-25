@@ -3,6 +3,8 @@ import Foundation
 protocol V2SessionAPIProtocol {
     func setTakeover(sessionId: V2SessionID, enabled: Bool) async throws -> V2SessionTakeoverResponse
     func sync(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse
+    /// Asks the desktop connector to open this conversation in a terminal.
+    func openRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse
     func listSessions(archived: Bool, cursor: String?) async throws -> V2SessionListResponse
     func sessionInventory() async throws -> V2SessionInventoryResponse
     func sessionMeta(sessionId: V2SessionID) async throws -> V2SessionMetaResponse
@@ -131,6 +133,12 @@ struct V2SessionAPI: V2SessionAPIProtocol {
     func sync(sessionId: V2SessionID) async throws -> V2RuntimeActionResponse {
         try await transport.send(HTTPRequest<EmptyRequestBody, V2RuntimeActionResponse>(
             method: .post, path: sessionPath(sessionId, suffix: "sync")
+        ))
+    }
+
+    func openRuntime(sessionId: V2SessionID) async throws -> V2RuntimeOpenResponse {
+        try await transport.send(HTTPRequest<EmptyRequestBody, V2RuntimeOpenResponse>(
+            method: .post, path: sessionPath(sessionId, suffix: "runtime/open")
         ))
     }
 

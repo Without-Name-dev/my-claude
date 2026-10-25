@@ -6,6 +6,10 @@ struct ChatErrorToasts: View {
     let store: ChatToastStore
     let isRetrying: Bool
     let onRetry: (String) async -> Void
+    /// Supplied by the session page. A toast that says the conversation is not
+    /// live offers this instead of a pointless retry.
+    var onOpenOnComputer: ((String) async -> Void)? = nil
+    var isOpeningOnComputer = false
     @State private var selected: String?
     @ScaledMetric(relativeTo: .footnote) private var lineHeight: CGFloat = 18
     private var height: CGFloat { min(220, max(136, lineHeight * 4 + 74)) }
@@ -31,7 +35,12 @@ struct ChatErrorToasts: View {
                                 Text(item.message).font(.footnote).foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                             }.scrollBounceBehavior(.basedOnSize)
-                            if item.canRetry {
+                            if item.offersOpenOnComputer, let onOpenOnComputer {
+                                Button(isOpeningOnComputer ? String(localized: "正在打开…") : String(localized: "在电脑上打开")) {
+                                    Task { await onOpenOnComputer(item.id) }
+                                }
+                                .font(.footnote.weight(.medium)).frame(minHeight: 36).disabled(isOpeningOnComputer)
+                            } else if item.canRetry {
                                 Button(isRetrying ? String(localized: "正在刷新…") : String(localized: "刷新状态")) { Task { await onRetry(item.id) } }
                                     .font(.footnote.weight(.medium)).frame(minHeight: 36).disabled(isRetrying)
                             }

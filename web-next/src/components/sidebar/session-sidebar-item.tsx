@@ -49,7 +49,7 @@ export function SessionSidebarItem({
   onToggleArchive,
   onRename,
 }: {
-  item: { runtime: string; runtimeType?: string; id: string; connectorId: string; projectId?: string | null; cwd?: string | null; title?: string | null; status: string; unread: boolean; pinned: boolean; archived: boolean }
+  item: { runtime: string; runtimeType?: string; id: string; connectorId: string; projectId?: string | null; cwd?: string | null; title?: string | null; status: string; unread: boolean; pinned: boolean; archived: boolean; live?: boolean }
   /** Optional `device · agent` identity line for sessions shown outside projects. */
   meta?: string | null
   inset?: boolean
@@ -144,6 +144,13 @@ export function SessionSidebarItem({
               >
                 <span className="flex min-w-0 w-full items-center gap-2">
                   <SessionAgentIcon runtime={item.runtime} runtimeType={item.runtimeType} />
+                  {item.live ? (
+                    <span
+                      aria-label={t("sessionStatus.live")}
+                      title={t("sessionStatus.live")}
+                      className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                    />
+                  ) : null}
                   <OverflowMarquee text={item.title ?? ""} active={nameHovered} />
                   <SessionSidebarIndicator
                     busy={isBusy}

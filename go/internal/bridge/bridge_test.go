@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSubmitWritesOneCompleteQueueFile(t *testing.T) {
@@ -143,6 +144,115 @@ func TestToolsDecodeThePluginShape(t *testing.T) {
 	}
 }
 
+func TestLiveSessionsKeepsOnlyFreshStamps(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	live := b.LiveDir()
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	files := map[string]string{
+		"fresh.txt":  strconv.FormatInt(now, 10),
+		"stale.txt":  strconv.FormatInt(now-31_000, 10),
+		"empty.txt":  "",
+		"broken.txt": "not a stamp",
+		"nested":     "ignored",
+	}
+	for name, body := range files {
+		path := filepath.Join(live, name)
+		if name == "nested" {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := b.LiveSessions(DefaultLiveTTL)
+	if len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("LiveSessions = %v, want [fresh]", got)
+	}
+}
+
+func TestLiveSessionsIsEmptyWithoutADirectory(t *testing.T) {
+	b := New(t.TempDir())
+	if got := b.LiveSessions(DefaultLiveTTL); len(got) != 0 {
+		t.Fatalf("LiveSessions = %v, want none", got)
+	}
+}
+
+// A stamp left behind by a process that died never moves again. The scan has to
+// delete it, or every killed plugin leaves a file that the connector rereads on
+// every heartbeat forever.
+func TestLiveSessionsExpiresDeadStamps(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := os.MkdirAll(b.LiveDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-31 * time.Second)
+	fresh := filepath.Join(b.LiveDir(), "fresh.txt")
+	stale := filepath.Join(b.LiveDir(), "stale.txt")
+	empty := filepath.Join(b.LiveDir(), "empty.txt")
+	for path, body := range map[string]string{
+		fresh: strconv.FormatInt(now.UnixMilli(), 10),
+		stale: strconv.FormatInt(old.UnixMilli(), 10),
+		empty: "",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// The dead files were last written when their stamp says they were.
+		if path != fresh {
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	got := b.LiveSessions(DefaultLiveTTL)
+	if len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("LiveSessions = %v, want [fresh]", got)
+	}
+	for _, path := range []string{stale, empty} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s was not expired (err = %v)", filepath.Base(path), err)
+		}
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh stamp was removed: %v", err)
+	}
+}
+
+// Deleting is only safe when the file is old too: a plugin that rewrites the
+// same path between the read and the expiry check has a fresh mtime, and its
+// live stamp must survive. A stale value with a recent mtime is left in place
+// (and is simply not live).
+func TestLiveSessionsKeepsRecentlyWrittenStamps(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := os.MkdirAll(b.LiveDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(b.LiveDir(), "rewritten.txt")
+	stale := time.Now().Add(-31 * time.Second).UnixMilli()
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(stale, 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := b.LiveSessions(DefaultLiveTTL); len(got) != 0 {
+		t.Fatalf("LiveSessions = %v, want none", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a recently written stamp was removed: %v", err)
+	}
+}
+
 func TestRequestAbortCarriesTheSessionOnTheSecondLine(t *testing.T) {
 	dir := t.TempDir()
 	b := New(dir)
@@ -268,5 +378,62 @@ func TestQueueNumberingRespectsPluginCursor(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("queued %v, want [74.json]", names)
+	}
+}
+
+// A conversation spawned into a fresh terminal must start reading at the queue
+// head, not at the global cursor another session may have advanced past its
+// first message. Its own cursor is created only when absent.
+func TestSeedSessionCursorPinsANewSessionToTheQueueHead(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := os.MkdirAll(b.QueueDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b.QueueDir(), "7.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.SeedSessionCursor("6f1f0d9c-9a4b-4d15-8c39-a1b2c3d4e5f6"); err != nil {
+		t.Fatalf("SeedSessionCursor: %v", err)
+	}
+	for _, name := range []string{
+		"cursor.6f1f0d9c-9a4b-4d15-8c39-a1b2c3d4e5f6.txt",
+		"cursor.6f1f0d9c-9a4b-4d15-8c39-a1b2c3d4e5f6.txt.bak",
+	} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.TrimSpace(string(raw)) != "7" {
+			t.Fatalf("%s = %q, want the queue head 7", name, raw)
+		}
+	}
+
+	// A live plugin's cursor is never lowered by a later spawn request.
+	primary := filepath.Join(dir, "cursor.6f1f0d9c-9a4b-4d15-8c39-a1b2c3d4e5f6.txt")
+	if err := os.WriteFile(primary, []byte("9"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SeedSessionCursor("6f1f0d9c-9a4b-4d15-8c39-a1b2c3d4e5f6"); err != nil {
+		t.Fatalf("SeedSessionCursor again: %v", err)
+	}
+	raw, err := os.ReadFile(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != "9" {
+		t.Fatalf("cursor = %q, want the plugin's 9", raw)
+	}
+}
+
+func TestSeedSessionCursorSanitizesLikeThePlugin(t *testing.T) {
+	dir := t.TempDir()
+	b := New(dir)
+	if err := b.SeedSessionCursor("a/b:c d"); err != nil {
+		t.Fatalf("SeedSessionCursor: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cursor.a_b_c_d.txt")); err != nil {
+		t.Fatalf("sanitized cursor file: %v", err)
 	}
 }

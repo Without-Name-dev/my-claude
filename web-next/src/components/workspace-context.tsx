@@ -164,6 +164,7 @@ function mapSession(session: RealSessionView): SessionView {
     runtimeName: session.runtimeName,
     runtimeTypeDisplayName: session.runtimeTypeDisplayName,
     externalSessionId: session.externalSessionId,
+    live: session.live ?? false,
     title: session.title || "Untitled session",
     cwd: session.cwd,
     status: session.status,

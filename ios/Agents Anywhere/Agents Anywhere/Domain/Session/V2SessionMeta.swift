@@ -47,8 +47,12 @@ nonisolated struct V2SessionMeta: Codable, Identifiable, Hashable {
     let sortAt: String?
     let updatedSeq: Int
     var createdAt: String? = nil
+    /// The phone-pane plugin in this conversation can accept a prompt right
+    /// now. Optional so a server that predates presence decodes as not live.
+    var live: Bool? = nil
 
     var effectiveRuntimeId: V2RuntimeID { runtimeId ?? runtime }
+    var isLive: Bool { live ?? false }
 }
 
 nonisolated struct V2SessionListResponse: Decodable, Hashable {
@@ -181,4 +185,20 @@ nonisolated struct V2SessionBulkActionResponse: Decodable, Hashable {
 
 nonisolated struct V2SessionTakeoverResponse: Decodable, Hashable {
     let session: V2SessionMeta
+}
+
+/// POST /sessions/{id}/runtime/open. `sent` is false only when the connector
+/// could not be handed the request, which is a separate state from the
+/// desktop refusing to start a terminal.
+nonisolated struct V2RuntimeOpenResponse: Decodable, Hashable {
+    let ok: Bool
+    let result: V2RuntimeOpenResult?
+    let error: V2RuntimeError?
+}
+
+nonisolated struct V2RuntimeOpenResult: Decodable, Hashable {
+    let sent: Bool
+    let externalSessionId: String?
+    let resume: Bool?
+    let live: Bool?
 }

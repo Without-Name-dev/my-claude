@@ -60,6 +60,7 @@ export type SessionView = {
   runtimeName?: string | null
   runtimeTypeDisplayName?: string | null
   externalSessionId?: string | null
+  live?: boolean
   title?: string | null
   cwd?: string | null
   status: SessionStatus

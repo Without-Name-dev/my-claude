@@ -278,6 +278,31 @@ func (s *Store) SetSessionTitle(ctx context.Context, id, title string) error {
 	})
 }
 
+// AssignSessionExternalID gives a session the runtime id it will run under.
+//
+// A conversation created from the phone has no transcript yet and therefore no
+// id. The first time it is opened on the desktop, the server mints one so
+// `claude --session-id` can create that exact transcript and later submits can
+// address it. The update is conditional: if another request (or the connector's
+// inventory) already supplied an id, that one wins and is returned instead.
+func (s *Store) AssignSessionExternalID(ctx context.Context, id, externalID string) (Session, error) {
+	if externalID == "" {
+		return Session{}, errors.New("empty runtime session id")
+	}
+	now := time.Now().UnixMilli()
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET external_session_id = ?, updated_at = ?
+			WHERE id = ? AND (external_session_id IS NULL OR external_session_id = '')`,
+			externalID, now, id)
+		return err
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return s.SessionByIDAny(ctx, s.Read(), id)
+}
+
 // AllocateSeq advances a session's revision and returns the new value.
 //
 // Call it inside a write transaction, with the session lock held, whenever a

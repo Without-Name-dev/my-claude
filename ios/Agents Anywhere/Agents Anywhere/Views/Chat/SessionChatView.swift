@@ -20,6 +20,7 @@ struct SessionChatView: View, Equatable {
     @State private var isDownloading = false
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
+    @State private var confirmsOpenOnComputer = false
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
@@ -97,9 +98,16 @@ struct SessionChatView: View, Equatable {
                         if requiresTakeover {
                             takeoverPill.frame(maxWidth: .infinity, alignment: .center)
                         }
-                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading, onRetry: { _ in await session.refresh() })
+                        ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
+                            onRetry: { _ in await session.refresh() },
+                            onOpenOnComputer: { _ in _ = await model.openOnComputer() },
+                            isOpeningOnComputer: model.isOpeningOnComputer)
                         if let success = model.commandSuccess {
                             CommandSuccessToast(feedback: success) { model.commandSuccess = nil }
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        if let confirmation = model.openOnComputerConfirmation {
+                            CommandSuccessToast(feedback: confirmation) { model.openOnComputerConfirmation = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }.padding(.top, 8)
@@ -108,13 +116,16 @@ struct SessionChatView: View, Equatable {
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? String(localized: "会话"),
             subtitle: [session.metadata?.runtimeName ?? session.metadata?.runtime ?? String(localized: "Agent"),
                 deviceName ?? session.metadata?.connectorId].compactMap { $0 }.joined(separator: " · "),
-            status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu))
+            status: model.headerStatus, alignsTitleLeading: true, onMenu: onMenu,
+            live: session.metadata?.isLive ?? false))
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { sheet = .files } label: { AppSymbol("folder") }
                     .accessibilityLabel(String(localized: "文件管理"))
                     .disabled(session.metadata?.cwd?.isEmpty != false)
                 Menu {
+                    Button(String(localized: "在电脑上打开"), systemImage: "display") { confirmsOpenOnComputer = true }
+                        .disabled(!model.canOpenOnComputer)
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
                 } label: { AppSymbol("ellipsis") }
@@ -125,6 +136,15 @@ struct SessionChatView: View, Equatable {
             model.error = nil
             if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
         })
+        .confirmationDialog(String(localized: "在电脑上打开此会话？"),
+            isPresented: $confirmsOpenOnComputer, titleVisibility: .visible) {
+            Button(String(localized: "在电脑上打开")) {
+                Task { await model.openOnComputer() }
+            }
+            Button(String(localized: "取消"), role: .cancel) {}
+        } message: {
+            Text(String(localized: "将在这台电脑上启动一个终端并打开此会话。"))
+        }
         .completionFeedback(trigger: model.isRunning) { wasRunning, isRunning in
             wasRunning && !isRunning && model.isOpeningReady && session.runtime.isFresh
                 && session.runtime.state?.status == .idle

@@ -894,6 +894,9 @@
       "loadFailed": "Failed to load session.",
       "loadRuntimeSettingsFailed": "Failed to load runtime settings.",
       "sendFailed": "Failed to send message.",
+      "openOnComputer": "Open on computer",
+      "openOnComputerSent": "Opening this conversation on the computer.",
+      "openOnComputerFailed": "Could not open this conversation on the computer.",
       "sourceUnavailablePlaceholder": "This session can no longer continue",
       "sourceArchivedTitle": "Session archived in {client}",
       "sourceArchivedDescription": "This session was archived in the local {client} client and cannot continue. Unarchive it to resume the conversation.",
@@ -1087,7 +1090,8 @@
       "waitingApproval": "Waiting approval",
       "error": "Error",
       "unread": "Unread",
-      "blocked": "Blocked"
+      "blocked": "Blocked",
+      "live": "Live"
     },
     "signOut": {
       "confirm": "Sign out",

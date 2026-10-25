@@ -86,6 +86,7 @@ bin/aa-connector --config ~/.agents-anywhere/connector.json
 | `AA_BRIDGE_DIR` | `~/.claude/phone-bridge` | the phone-pane plugin's directory |
 | `AGENT_CONNECTOR_CLAUDE_PLUGIN_BRIDGE` | unset | must be set to drive Claude through the plugin |
 | `AA_TRANSCRIPT_ROOT` | `~/.claude/projects` | where sessions are discovered |
+| `AA_ALLOW_SPAWN` | unset | set to `0` to refuse opening sessions in a terminal on this machine |
 
 ### What the connector does
 
@@ -95,6 +96,16 @@ bin/aa-connector --config ~/.agents-anywhere/connector.json
 - **Drives the phone-pane plugin.** A queued message is written to the bridge;
   the plugin submits it inside the running Claude session, and the answer is
   streamed back token by token.
+- **Opens a session on the desktop.** When the server asks (the "open on
+  computer" action) or a message is addressed to a conversation with no live
+  plugin, the connector starts a terminal with `claude --resume <id>` for an
+  existing transcript or `claude --session-id <id>` for a new one. Windows uses
+  Windows Terminal, falling back to `cmd /c start`; Linux tries `$TERMINAL` and
+  the common emulators; macOS opens Terminal.app. Spawns are throttled to one
+  per runtime session per minute, the server asks at most once a minute per
+  session, and `AA_ALLOW_SPAWN=0` disables them entirely. The connector
+  advertises `sessionOpen` in its hello, so a server never reports a terminal
+  as opened on a build that cannot start one.
 - **Answers approvals.** The plugin's permission hook calls a loopback endpoint
   the connector owns; the connector forwards the question to the phone and
   blocks until someone decides.

@@ -1414,6 +1414,19 @@ function SessionDetailView({
     token,
   ])
 
+  // Offered both from the header and from a send that found the conversation
+  // not live on the desktop.
+  const openSessionOnComputer = React.useCallback(async (targetSessionId: string) => {
+    if (!token || !targetSessionId) return
+    try {
+      const response = await dashboardApi.openSessionRuntime(token, targetSessionId)
+      if (response.result?.sent) toast.success(tSession("openOnComputerSent"))
+      else toast.error(tSession("openOnComputerFailed"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : tSession("openOnComputerFailed"))
+    }
+  }, [tSession, token])
+
   const handleSend = async (
     content: string,
     attachments: AttachedFile[],
@@ -1511,6 +1524,13 @@ function SessionDetailView({
         )
         onSessionUpdated?.(nextSession)
         setSourceErrorCode(nextSourceErrorCode)
+      } else if (isSessionNotLiveError(err)) {
+        toast.error(err instanceof Error ? err.message : tSession("sendFailed"), {
+          action: {
+            label: tSession("openOnComputer"),
+            onClick: () => { void openSessionOnComputer(sendSessionId) },
+          },
+        })
       } else {
         toast.error(err instanceof Error ? err.message : tSession("sendFailed"))
       }
@@ -2094,6 +2114,15 @@ function SessionDetailView({
 }
 
 export const SessionDetail = React.memo(SessionDetailView)
+
+// The server distinguishes "the conversation has nowhere to run" from a
+// transport failure so the person is offered a terminal instead of a retry.
+function isSessionNotLiveError(error: unknown): boolean {
+  if (!isApiError(error)) return false
+  if (error.code === "session_not_live") return true
+  const detail = error.detail.toLowerCase()
+  return detail.includes("no live claude session") || detail.includes("not live on the desktop")
+}
 
 function sessionSourceErrorCode(error: unknown): SessionSourceErrorCode | null {
   if (!isApiError(error)) return null
@@ -2916,6 +2945,7 @@ function sessionSemanticallyEqual(left: SessionView, right: SessionView): boolea
     connectorStatus: left.connectorStatus,
     runtime: left.runtime,
     externalSessionId: left.externalSessionId,
+    live: left.live,
     title: left.title,
     cwd: left.cwd,
     status: left.status,
@@ -2941,6 +2971,7 @@ function sessionSemanticallyEqual(left: SessionView, right: SessionView): boolea
     connectorStatus: right.connectorStatus,
     runtime: right.runtime,
     externalSessionId: right.externalSessionId,
+    live: right.live,
     title: right.title,
     cwd: right.cwd,
     status: right.status,

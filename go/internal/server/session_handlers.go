@@ -444,10 +444,6 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	if !a.connectors.CanDeliver(session.ConnectorID) {
-		httpx.Fail(w, httpx.Conflict("no live Claude session on the connector"))
-		return
-	}
 
 	messageID := ""
 	if body.ClientMessageID != nil {
@@ -457,7 +453,11 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		messageID = store.NewID("msg")
 	}
 
-	if err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
+	if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
+		if errors.Is(err, errSessionNotLive) {
+			failSessionNotLive(w, "the conversation is not live on the desktop; open it there to continue")
+			return
+		}
 		httpx.Fail(w, err)
 		return
 	}
@@ -521,13 +521,15 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 // deliverMessage records a person's message and hands it to the connector.
 //
 // The transcript entry is written first, so the phone shows what it typed even
-// if the desktop takes a while to pick it up. If the connector refuses the
-// frame anyway (the socket dropped after the pre-check, or its queue is full),
-// the entry is marked failed and the session status returns to what it was, so
-// a reload does not show a phantom delivered prompt.
+// if the desktop takes a while to pick it up. A conversation with no live
+// plugin is opened in a terminal on the desktop first: the message is queued
+// either way, but without the terminal the plugin that should run it does not
+// exist. If neither frame can be delivered, the entry is marked failed and the
+// session status returns to what it was, so a reload does not show a phantom
+// delivered prompt.
 func (a *App) deliverMessage(
 	ctx context.Context, session store.Session, content, messageID, action string,
-) error {
+) (store.Session, error) {
 	if action == "" {
 		action = "prompt"
 	}
@@ -551,10 +553,20 @@ func (a *App) deliverMessage(
 		}, store.NowMS())
 	})
 	if err != nil {
-		return err
+		return session, err
 	}
 	a.publishItem(ctx, session.ID, userItemID, seq, true)
 	a.setSessionStatus(ctx, session.ID, "running")
+
+	session, opened, err := a.sessionOpenForDelivery(ctx, session)
+	if err != nil {
+		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		return session, err
+	}
+	if !opened {
+		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		return session, errSessionNotLive
+	}
 
 	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
 		RequestID:         messageID,
@@ -563,24 +575,32 @@ func (a *App) deliverMessage(
 		Text:              content,
 		Action:            action,
 	}) {
-		if failSeq, writeErr := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
-			return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
-				SessionID:  session.ID,
-				ID:         userItemID,
-				Type:       "message",
-				Status:     "failed",
-				Role:       "user",
-				OrderSeq:   orderSeq,
-				UpdatedSeq: seq,
-				Payload:    messageContent(content),
-			}, store.NowMS())
-		}); writeErr == nil {
-			a.publishItem(ctx, session.ID, userItemID, failSeq, false)
-		}
-		a.setSessionStatus(ctx, session.ID, previousStatus)
-		return httpx.Conflict("connector is offline")
+		a.failMessageDelivery(ctx, session, userItemID, content, orderSeq, previousStatus)
+		return session, httpx.Conflict("connector is offline")
 	}
-	return nil
+	return session, nil
+}
+
+// failMessageDelivery rewrites a just-written user entry as failed and puts the
+// session back into the state it had before the send.
+func (a *App) failMessageDelivery(
+	ctx context.Context, session store.Session, userItemID, content string, orderSeq int64, previousStatus string,
+) {
+	if failSeq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
+		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
+			SessionID:  session.ID,
+			ID:         userItemID,
+			Type:       "message",
+			Status:     "failed",
+			Role:       "user",
+			OrderSeq:   orderSeq,
+			UpdatedSeq: seq,
+			Payload:    messageContent(content),
+		}, store.NowMS())
+	}); err == nil {
+		a.publishItem(ctx, session.ID, userItemID, failSeq, false)
+	}
+	a.setSessionStatus(ctx, session.ID, previousStatus)
 }
 
 // handleInterrupt stops the running turn.
@@ -841,10 +861,6 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	if !a.connectors.CanDeliver(body.ConnectorID) {
-		httpx.Fail(w, httpx.Conflict("no live Claude session on the connector"))
-		return
-	}
 
 	runtime := body.Runtime
 	if runtime == "" {
@@ -878,8 +894,13 @@ func (a *App) handleCreateAndStart(w http.ResponseWriter, r *http.Request, user 
 	if messageID == "" {
 		messageID = store.NewID("msg")
 	}
-	if err := a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt"); err != nil {
+	session, err = a.deliverMessage(r.Context(), session, body.Content, messageID, "prompt")
+	if err != nil {
 		a.setSessionStatus(r.Context(), session.ID, "error")
+		if errors.Is(err, errSessionNotLive) {
+			failSessionNotLive(w, "the conversation is not live on the desktop; open it there to continue")
+			return
+		}
 		httpx.Fail(w, err)
 		return
 	}

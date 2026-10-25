@@ -19,6 +19,10 @@ final class SessionChatModel {
     private(set) var isOpeningPrepared = false
     var isOpeningReady: Bool { isOpeningPrepared && timeline.hasPresentedSnapshot }
     private(set) var openingError: String?
+    /// True while the open-on-computer request is in flight.
+    private(set) var isOpeningOnComputer = false
+    /// Success is transient, like a command result.
+    var openOnComputerConfirmation: CommandFeedback?
     private(set) var responseRevision = 0
     private(set) var commands: [V2RuntimeCommand] = []
     private(set) var isLoadingCommands = false
@@ -86,6 +90,13 @@ final class SessionChatModel {
     var canBrowseFiles: Bool {
         session.isValid && session.metadata?.connectorStatus == .online && session.network.availability != .offline
             && session.metadata?.cwd?.isEmpty == false
+    }
+    /// The desktop connector is reachable, so it can be asked to start a
+    /// terminal. A missing working directory is refused by the connector; the
+    /// action stays available so the reason reaches the person.
+    var canOpenOnComputer: Bool {
+        session.isValid && session.metadata?.connectorStatus == .online && session.network.availability != .offline
+            && !isOpeningOnComputer
     }
 
     // MARK: Commands
@@ -306,6 +317,32 @@ final class SessionChatModel {
     func interrupt() async {
         guard !isWorking, session.runtime.allows("session.interrupt") else { return }
         await perform { try await self.repository.interrupt(sessionId: self.session.id) }
+    }
+
+    /// Explicit "open on computer": starts the conversation in a terminal on
+    /// the connector's machine. The send path uses the same server endpoint
+    /// automatically when the conversation has no live plugin.
+    @discardableResult func openOnComputer() async -> Bool {
+        guard canOpenOnComputer else { return false }
+        isOpeningOnComputer = true
+        defer { isOpeningOnComputer = false }
+        do {
+            let result = try await repository.openOnComputer(sessionId: session.id)
+            guard session.isValid else { return false }
+            if result.sent {
+                openOnComputerConfirmation = CommandFeedback(
+                    title: String(localized: "已在这台电脑上打开此会话。"),
+                    message: nil
+                )
+            } else {
+                error = String(localized: "无法在这台电脑上打开此会话。")
+            }
+            return result.sent
+        } catch {
+            guard session.isValid else { return false }
+            self.error = error.localizedDescription
+            return false
+        }
     }
 
     func respond(notice: SessionNoticeModel, action: V2RuntimeNoticeAction) async {

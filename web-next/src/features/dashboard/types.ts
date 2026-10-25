@@ -140,6 +140,8 @@ export type SessionView = {
   runtimeName?: string | null;
   runtimeTypeDisplayName?: string | null;
   externalSessionId: string | null;
+  /** The conversation's plugin can accept a prompt right now. */
+  live?: boolean;
   title: string | null;
   cwd: string | null;
   status: SessionStatusValue;
@@ -662,6 +664,14 @@ export type RpcResponse<T> = {
     code?: string;
     message?: string;
   };
+};
+
+/** POST /sessions/{id}/runtime/open: whether the connector was told to open a terminal. */
+export type SessionRuntimeOpenResult = {
+  sent: boolean;
+  externalSessionId: string;
+  resume: boolean;
+  live: boolean;
 };
 
 export type TerminalView = {

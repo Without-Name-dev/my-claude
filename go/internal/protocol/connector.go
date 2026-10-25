@@ -51,8 +51,28 @@ const (
 	TypeAbort = "abort"
 	// TypeApprovalAnswer delivers the person's decision.
 	TypeApprovalAnswer = "approval.answer"
+	// TypeSessionOpen asks the connector to bring a conversation up in a
+	// terminal on its machine, so a phone message sent to a conversation with
+	// no running plugin still has somewhere to land.
+	TypeSessionOpen = "session.open"
 	// TypePing is a liveness probe; the connector answers with TypeBeat.
 	TypePing = "ping"
+)
+
+// Capability names a connector may advertise in Hello.Capabilities.
+const (
+	// CapabilityBridge reports that a phone-pane plugin is answering now, so a
+	// queued submit would be picked up.
+	CapabilityBridge = "bridge"
+	// CapabilityBridgeConfigured reports that this connector has a bridge
+	// directory at all, even if no plugin is answering right now. A submit can
+	// be queued only when this is true; a terminal spawned on a connector
+	// without it would have nothing to read the message.
+	CapabilityBridgeConfigured = "bridgeConfigured"
+	// CapabilitySessionOpen reports that this connector can start a terminal
+	// running Claude Code. An older connector omits it and must not be sent a
+	// session.open frame it would silently ignore.
+	CapabilitySessionOpen = "sessionOpen"
 )
 
 // Hello is the connector's introduction.
@@ -63,6 +83,28 @@ type Hello struct {
 	Platform     string          `json:"platform"`
 	Runtimes     []RuntimeInfo   `json:"runtimes"`
 	Capabilities map[string]bool `json:"capabilities"`
+	// LiveSessions names the runtime sessions whose phone-pane plugin is
+	// currently able to accept a prompt. Absent from older connectors, which
+	// simply means none can be confirmed live.
+	LiveSessions []string `json:"liveSessions,omitempty"`
+}
+
+// Beat is the connector's periodic liveness frame. It repeats the live session
+// set so presence follows a plugin dying between heartbeats; a server that does
+// not know the field ignores it.
+type Beat struct {
+	// Bridge reports that a phone-pane plugin is loaded and its heartbeat is
+	// fresh, which is what lets the server accept a submit at all.
+	Bridge bool `json:"bridge"`
+	// LiveSessions is the current per-session presence set. It is a complete
+	// replacement, not a delta: a session that disappears from the list is no
+	// longer live, which is how a plugin stopping is noticed.
+	//
+	// It is deliberately always on the wire, even when empty or nil: a Server
+	// must be able to tell "this connector says no session is live" from "this
+	// frame did not carry the field at all" (an older connector's pong, whose
+	// absent field must not wipe the presence the previous beat reported).
+	LiveSessions []string `json:"liveSessions"`
 }
 
 // RuntimeInfo describes one engine the connector can drive. Only "claude"
@@ -155,6 +197,24 @@ type Submit struct {
 	// Action is "prompt" for ordinary text and "command" for a slash command,
 	// which the plugin executes without raising a turn.
 	Action string `json:"action,omitempty"`
+}
+
+// SessionOpen asks the connector to open a terminal for one conversation.
+//
+// Resume tells the connector which runtime flag to start Claude Code with: an
+// existing transcript is reopened with --resume, while a conversation that has
+// never run is created with --session-id so the id the server already stored
+// becomes the new transcript's name. The connector confirms this against its
+// own transcript tree: it can tell whether the file exists, while the server
+// only knows that it minted the id and that a previous open was requested.
+// CWD is resolved on the connector's own machine; the server only knows the
+// path the desktop reported.
+type SessionOpen struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId"`
+	CWD               string `json:"cwd"`
+	Title             string `json:"title"`
+	Resume            bool   `json:"resume"`
 }
 
 // Abort asks the connector to stop the running turn.
