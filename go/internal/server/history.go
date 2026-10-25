@@ -27,6 +27,13 @@ const historyCooldown = 20 * time.Second
 // mtime have not changed, so a quiet session costs one stat.
 const historyRefreshInterval = 15 * time.Second
 
+// historyQuietWindow is how long a transcript must have been untouched before
+// a periodic refresh imports it.
+const historyQuietWindow = 10 * time.Second
+
+// historyRefreshLimit bounds one periodic import.
+const historyRefreshLimit = 80
+
 // refreshLiveHistories keeps the server's timeline in step with every live
 // conversation's transcript.
 func (a *App) refreshLiveHistories(ctx context.Context) {
@@ -54,7 +61,10 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 				if _, ok := live[session.ExternalID]; !ok {
 					continue
 				}
-				a.maybeRequestHistory(ctx, session)
+				// Only the tail is needed: the refresh exists to pick up what
+				// was typed since the last look, and a smaller window keeps a
+				// long conversation cheap to re-import.
+				a.requestHistory(ctx, session, historyRefreshLimit)
 			}
 		}
 	}
@@ -63,6 +73,11 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 // maybeRequestHistory asks the connector for a transcript when the session's
 // timeline is empty but the session came from a local one.
 func (a *App) maybeRequestHistory(ctx context.Context, session store.Session) {
+	a.requestHistory(ctx, session, maxHistoryRequest)
+}
+
+// requestHistory sends one transcript request with an explicit window.
+func (a *App) requestHistory(ctx context.Context, session store.Session, limit int) {
 	if session.ExternalID == "" || !a.connectors.Online(session.ConnectorID) {
 		return
 	}
@@ -72,7 +87,7 @@ func (a *App) maybeRequestHistory(ctx context.Context, session store.Session) {
 	a.connectors.Send(session.ConnectorID, protocol.TypeHistoryRequest, protocol.HistoryRequest{
 		SessionID:  session.ID,
 		ExternalID: session.ExternalID,
-		Limit:      maxHistoryRequest,
+		Limit:      limit,
 	})
 }
 
@@ -156,6 +171,12 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		return
 	}
 	if len(msg.Items) == 0 {
+		return
+	}
+	// A transcript that is still being written belongs to a turn in progress.
+	// Importing it now would add a half-streamed answer beside the one the live
+	// turn is already showing, so the refresh waits for the file to settle.
+	if msg.UpdatedAt > 0 && time.Since(time.UnixMilli(msg.UpdatedAt)) < historyQuietWindow {
 		return
 	}
 

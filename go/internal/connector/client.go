@@ -917,7 +917,11 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 		c.Log.Warn("could not read transcript", "error", err)
 		return
 	}
-	if err := c.send(protocol.TypeHistory, protocol.History{SessionID: req.SessionID, Items: items}); err != nil {
+	frame := protocol.History{SessionID: req.SessionID, Items: items}
+	if haveStamp {
+		frame.UpdatedAt = stamp.modified
+	}
+	if err := c.send(protocol.TypeHistory, frame); err != nil {
 		c.Log.Debug("could not send history", "error", err)
 		return
 	}

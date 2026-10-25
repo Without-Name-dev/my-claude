@@ -311,9 +311,15 @@ type HistoryRequest struct {
 }
 
 // History is one session's transcript, oldest first.
+//
+// UpdatedAt is the transcript's modification time in epoch milliseconds. A
+// periodic refresh uses it to stay out of a conversation that is still being
+// written: importing a half-streamed answer would duplicate what the live turn
+// already shows. Zero means the connector did not report it.
 type History struct {
 	SessionID string        `json:"sessionId"`
 	Items     []HistoryItem `json:"items"`
+	UpdatedAt int64         `json:"updatedAt,omitempty"`
 }
 
 // HistoryItem is one message or tool call read from a transcript.
