@@ -208,7 +208,7 @@ final class V2SessionModel: Identifiable {
                 self.failure = failure
                 if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
                     draft = pending.content; committedDraft = pending.content
-        composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
+                    composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
                     pending.didRestoreDraft = true
                 }
             }

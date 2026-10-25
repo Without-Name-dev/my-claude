@@ -85,7 +85,7 @@ struct SessionChatView: View, Equatable {
                             settingsError: model.settingsError, sessionChat: model,
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                             onApplySettings: model.applySettings, applyError: { model.settingsError },
-                            onDraftChange: { model.draftDidChange() })
+                            onDraftChange: { model.session.draftDidChange() })
                             .traceChatLayout("composer-dock")
                     }
                     .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
