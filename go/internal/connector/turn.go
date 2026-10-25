@@ -21,7 +21,20 @@ const pollInterval = 120 * time.Millisecond
 // session is answering waits for that answer to finish. Treating that wait as a
 // failure is what made the phone show "failed, retry" mid-conversation; the
 // deadline now only catches a session that never picks anything up at all.
-const pickupTimeout = 2 * time.Minute
+//
+// It is a variable so a test can shorten a wait that would otherwise take two
+// minutes to observe.
+var pickupTimeout = 2 * time.Minute
+
+// turnStallTTL is how long a running turn may show no sign of life before the
+// connector declares it dead.
+//
+// The plugin's own heartbeat is the signal, and a long tool call can keep the
+// Claude Code process busy long enough to miss several beats while the turn is
+// genuinely still running. Ending the turn on the first missed heartbeat is what
+// made the phone stop mid-turn while the terminal kept working; the phone only
+// gives up once the desktop has been silent for this long.
+var turnStallTTL = 3 * time.Minute
 
 // turnSink receives what the watcher observes.
 type TurnSink interface {
@@ -86,8 +99,6 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 	// every later submit behind this watcher.
 	var unavailableSince time.Time
 	var stalledTS int64
-	var behindTurn string
-	var behindTS int64
 	stalled := func(box *bridge.Outbox) bool {
 		if w.turnID == "" {
 			return false
@@ -105,7 +116,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			stalledTS = ts
 			return false
 		}
-		return time.Since(unavailableSince) > bridge.DefaultHeartbeatTTL
+		return time.Since(unavailableSince) > turnStallTTL
 	}
 
 	for {
@@ -138,13 +149,15 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			}
 			continue
 		}
-		// While another turn is streaming, the queue is simply waiting its
-		// turn; that is activity, not a stalled pickup. Only a snapshot that
-		// changed counts, though: a turn that has stopped producing output
-		// must not hold this message behind it forever.
+		// While another turn is running, the queue is simply waiting its turn:
+		// sending a second message mid-answer is normal, and a long tool call
+		// can hold the plugin for many minutes without writing a byte. As long
+		// as the plugin still answers its heartbeat, that wait is not a
+		// failure and the deadline keeps sliding. A plugin that stopped
+		// answering keeps the old deadline, so a dead desktop is still
+		// reported instead of holding the message forever.
 		if box.Running() && box.TurnID != w.turnID {
-			if box.TurnID != behindTurn || box.TS != behindTS {
-				behindTurn, behindTS = box.TurnID, box.TS
+			if w.bridge.Available() {
 				lastActivity = time.Now()
 				deadline = lastActivity.Add(pickupTimeout)
 			}

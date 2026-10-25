@@ -39,10 +39,15 @@ import (
 // considered absent.
 const DefaultHeartbeatTTL = 30 * time.Second
 
-// DefaultLiveTTL is how stale a per-session presence stamp may be. The plugin
-// refreshes it every five seconds while it can submit a prompt, so a process
-// that dies without cleaning up disappears from presence within this window.
-const DefaultLiveTTL = 5 * time.Second
+// DefaultLiveTTL is how stale a per-session presence stamp may be.
+//
+// The plugin refreshes the stamp every two seconds while it can submit a
+// prompt, so a process that dies without cleaning up disappears from presence
+// within this window. The window is wider than the stamp cadence because the
+// Claude Code process occasionally holds its event loop through a long tool
+// call; a stamp that is a few seconds late is a busy session, not a dead one,
+// and dropping the dot then made a working conversation look offline.
+const DefaultLiveTTL = 12 * time.Second
 
 // outboxStateKeys are forwarded to the server as session state; "branch" is the
 // git branch, not a duplicate of the working directory.

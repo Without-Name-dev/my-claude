@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -217,5 +218,105 @@ func TestEmitToolsClosesAToolFirstSeenWhileRunning(t *testing.T) {
 	w.emitTools("turn-1")
 	if len(sink.begins) != 1 || len(sink.ends) != 1 {
 		t.Fatalf("another session's tool leaked: begins=%v ends=%v", sink.begins, sink.ends)
+	}
+}
+
+// writeBridgeFiles stages the two files the watcher reads: the heartbeat that
+// proves the plugin is alive and the outbox that describes the running turn.
+func writeBridgeFiles(t *testing.T, b *bridge.Bridge, heartbeat bool, outbox string) {
+	t.Helper()
+	if heartbeat {
+		stamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		if err := os.WriteFile(b.HeartbeatPath(), []byte(stamp), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if outbox != "" {
+		if err := os.WriteFile(b.OutboxPath(), []byte(outbox), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// runWatcher runs one watcher for d and returns the turn it closed, or nil.
+func runWatcher(t *testing.T, w *TurnWatcher, sink *turnSink, d time.Duration) *protocol.TurnEnd {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	<-done
+	select {
+	case msg := <-sink.ends:
+		return &msg
+	default:
+		return nil
+	}
+}
+
+// Sending while Claude is answering must not be treated as a failure: the
+// message waits in the queue until the running turn lets it through. A long
+// tool call writes nothing for minutes, and that silence used to cancel the
+// queued message two minutes in.
+func TestAQueuedMessageWaitsBehindALongTurnWhileTheBridgeAnswers(t *testing.T) {
+	defer func(previous time.Duration) { pickupTimeout = previous }(pickupTimeout)
+	pickupTimeout = 200 * time.Millisecond
+
+	b := bridge.New(t.TempDir())
+	writeBridgeFiles(t, b, true,
+		`{"sessionId":"runtime-sess","turnId":"turn-running","status":"streaming","text":"working","ts":1000}`)
+
+	sink := newTurnSink()
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1",
+		&bridge.Submission{QueuedAt: time.Now().UnixMilli()})
+	if end := runWatcher(t, w, sink, 900*time.Millisecond); end != nil {
+		t.Fatalf("a live session's waiting message was ended: %+v", end)
+	}
+}
+
+// The same wait must still be reported when the desktop has actually gone
+// away, otherwise a dead plugin would hold the message forever.
+func TestAQueuedMessageBehindADeadBridgeIsReported(t *testing.T) {
+	defer func(previous time.Duration) { pickupTimeout = previous }(pickupTimeout)
+	pickupTimeout = 200 * time.Millisecond
+
+	b := bridge.New(t.TempDir())
+	writeBridgeFiles(t, b, false,
+		`{"sessionId":"runtime-sess","turnId":"turn-running","status":"streaming","text":"working","ts":1000}`)
+
+	sink := newTurnSink()
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1",
+		&bridge.Submission{QueuedAt: time.Now().UnixMilli()})
+	end := runWatcher(t, w, sink, 900*time.Millisecond)
+	if end == nil || end.Status != "error" {
+		t.Fatalf("turn.end = %+v, want an error for a desktop that stopped answering", end)
+	}
+}
+
+// A missed heartbeat is not a dead turn. Claude Code can hold its event loop
+// through a long tool call while the turn is genuinely still running; ending
+// the turn then stopped the phone while the terminal kept working.
+func TestARunningTurnSurvivesASlowHeartbeat(t *testing.T) {
+	defer func(previous time.Duration) { turnStallTTL = previous }(turnStallTTL)
+	turnStallTTL = 400 * time.Millisecond
+
+	b := bridge.New(t.TempDir())
+	writeBridgeFiles(t, b, false,
+		`{"sessionId":"runtime-sess","turnId":"turn-1","status":"streaming","text":"working","ts":1000}`)
+
+	sink := newTurnSink()
+	w := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1", &bridge.Submission{QueuedAt: 500})
+	if end := runWatcher(t, w, sink, 250*time.Millisecond); end != nil {
+		t.Fatalf("a running turn was ended while its heartbeat was still recent: %+v", end)
+	}
+
+	// Once the desktop has been silent past the allowance, the phone is told.
+	fresh := NewTurnWatcher(b, sink, "sess", "runtime-sess", "msg-1", &bridge.Submission{QueuedAt: 500})
+	end := runWatcher(t, fresh, sink, 700*time.Millisecond)
+	if end == nil || end.Status != "error" {
+		t.Fatalf("turn.end = %+v, want an error after the desktop went silent", end)
 	}
 }
