@@ -935,9 +935,10 @@ func (a *App) serveFSTransfer(w http.ResponseWriter, r *http.Request, transfer f
 			a.writeFSError(w, err)
 			return
 		}
-		if len(chunk) == 0 {
+		if int64(len(chunk)) != chunkLength {
 			a.writeFSError(w, httpx.NewError(http.StatusBadGateway,
-				fmt.Sprintf("connector returned no data for %s", transfer.Path)))
+				fmt.Sprintf("connector returned %d bytes for %s; expected %d",
+					len(chunk), transfer.Path, chunkLength)))
 			return
 		}
 		first = chunk
@@ -1018,8 +1019,11 @@ func (a *App) pullFSTransfer(ctx context.Context, w http.ResponseWriter, transfe
 				"transfer", transfer.ID, "offset", offset, "error", err)
 			panic(http.ErrAbortHandler)
 		}
-		if len(data) == 0 {
-			return
+		if int64(len(data)) != chunkLength {
+			a.log.Warn("fs transfer returned a short chunk",
+				"transfer", transfer.ID, "offset", offset,
+				"received", len(data), "expected", chunkLength)
+			panic(http.ErrAbortHandler)
 		}
 		if _, err := w.Write(data); err != nil {
 			return
@@ -1028,9 +1032,6 @@ func (a *App) pullFSTransfer(ctx context.Context, w http.ResponseWriter, transfe
 		remaining -= int64(len(data))
 		if flusher != nil {
 			flusher.Flush()
-		}
-		if int64(len(data)) < chunkLength {
-			return
 		}
 	}
 }

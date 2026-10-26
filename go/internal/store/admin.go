@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 // This file holds the read-only queries behind the administration endpoints.
@@ -14,8 +15,16 @@ import (
 // remaining account, which is what the admin page does when it omits the
 // parameter.
 func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]User, error) {
-	query := `SELECT ` + userColumns + ` FROM users ORDER BY created_at ASC, id ASC`
-	args := make([]any, 0, 2)
+	return s.ListUsersFiltered(ctx, limit, offset, "", "")
+}
+
+// ListUsersFiltered returns one account page after optional role and text
+// filters have been applied, so pagination covers the full matching set.
+func (s *Store) ListUsersFiltered(
+	ctx context.Context, limit, offset int, role, search string,
+) ([]User, error) {
+	where, args := userListFilter(role, search)
+	query := `SELECT ` + userColumns + ` FROM users` + where + ` ORDER BY created_at ASC, id ASC`
 	if limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
 		args = append(args, limit, offset)
@@ -38,6 +47,35 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]User, error
 		out = append(out, user)
 	}
 	return out, rows.Err()
+}
+
+// CountUsersFiltered reports the number of accounts matching the same filters
+// as ListUsersFiltered.
+func (s *Store) CountUsersFiltered(ctx context.Context, role, search string) (int, error) {
+	where, args := userListFilter(role, search)
+	var count int
+	err := s.Read().QueryRowContext(ctx, `SELECT count(*) FROM users`+where, args...).Scan(&count)
+	return count, err
+}
+
+func userListFilter(role, search string) (string, []any) {
+	clauses := make([]string, 0, 2)
+	args := make([]any, 0, 3)
+	if role != "" {
+		clauses = append(clauses, `role = ?`)
+		args = append(args, role)
+	}
+	if search = strings.TrimSpace(search); search != "" {
+		search = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(search))
+		pattern := "%" + search + "%"
+		clauses = append(clauses,
+			`(lower(coalesce(email, '')) LIKE ? ESCAPE '!' OR lower(display_name) LIKE ? ESCAPE '!')`)
+		args = append(args, pattern, pattern)
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return ` WHERE ` + strings.Join(clauses, ` AND `), args
 }
 
 // CountSessions reports every session in the instance.

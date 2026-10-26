@@ -3,10 +3,13 @@ package connector
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 )
@@ -17,6 +20,12 @@ const maxHistoryItems = 400
 
 // maxItemText bounds one message so a pasted file cannot dominate the payload.
 const maxItemText = 20000
+
+const (
+	historyPageItems        = 20
+	historyValueMaxBytes    = 64 << 10
+	historyPendingToolLimit = 400
+)
 
 // historyRecord is the subset of a transcript line that becomes a timeline item.
 type historyRecord struct {
@@ -81,17 +90,60 @@ func (d *Discovery) PathFor(externalID string) (string, bool) {
 // Blocks are therefore accumulated per message id and emitted when the id
 // changes.
 func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
 	if limit <= 0 || limit > maxHistoryItems {
 		limit = maxHistoryItems
 	}
 
-	builder := &historyBuilder{toolIndex: map[string]int{}}
+	builder := &historyBuilder{toolIndex: map[string]int{}, limit: limit}
+	if err := readHistoryFile(path, builder); err != nil {
+		return nil, err
+	}
+	builder.flush()
+
+	return builder.items, nil
+}
+
+// ReadHistoryPages converts a transcript in one pass and emits bounded pages.
+// The final page is always marked complete, including an empty transcript.
+func ReadHistoryPages(
+	path string, pageSize int, write func([]protocol.HistoryItem, bool) error,
+) error {
+	if write == nil {
+		return fmt.Errorf("history page writer is required")
+	}
+	if pageSize <= 0 || pageSize > maxHistoryItems {
+		pageSize = historyPageItems
+	}
+	builder := &historyBuilder{
+		toolIndex:        map[string]int{},
+		pendingToolItems: map[string]protocol.HistoryItem{},
+		pageSize:         pageSize,
+		writePage:        write,
+	}
+	if err := readHistoryFile(path, builder); err != nil {
+		return err
+	}
+	builder.flush()
+	if builder.err != nil {
+		return builder.err
+	}
+	builder.flushFullPages()
+	if builder.err != nil {
+		return builder.err
+	}
+	if len(builder.items) == 0 {
+		return write([]protocol.HistoryItem{}, true)
+	}
+	return builder.flushPage(len(builder.items), true)
+}
+
+func readHistoryFile(path string, builder *historyBuilder) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
 	reader := bufio.NewReaderSize(file, 1<<16)
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -102,20 +154,20 @@ func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
 				// main conversation only.
 				if !record.IsSidechain && !record.IsMeta {
 					builder.add(record)
+					if builder.err != nil {
+						return builder.err
+					}
 				}
 			}
 		}
-		if readErr != nil {
-			break
+		if readErr == nil {
+			continue
 		}
+		if readErr == io.EOF {
+			return nil
+		}
+		return readErr
 	}
-	builder.flush()
-
-	items := builder.items
-	if len(items) > limit {
-		items = items[len(items)-limit:]
-	}
-	return items, nil
 }
 
 // historyBuilder assembles timeline items, merging the block-per-record
@@ -123,20 +175,31 @@ func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
 type historyBuilder struct {
 	items     []protocol.HistoryItem
 	toolIndex map[string]int
+	limit     int
+	pageSize  int
+	writePage func([]protocol.HistoryItem, bool) error
+	err       error
+
+	pendingToolItems map[string]protocol.HistoryItem
+	pendingToolOrder []string
 
 	pendingID    string
 	pendingStamp int64
 	pendingUUID  string
-	pendingText  []string
+	pendingText  strings.Builder
 	pendingTools []contentBlock
 	hasPending   bool
 }
 
 func (b *historyBuilder) add(record historyRecord) {
+	if b.err != nil {
+		return
+	}
 	if record.Type == "assistant" {
 		messageID := record.Message.ID
 		if b.hasPending && (messageID == "" || messageID != b.pendingID) {
 			b.flush()
+			b.flushFullPages()
 		}
 		if !b.hasPending {
 			b.hasPending = true
@@ -146,21 +209,42 @@ func (b *historyBuilder) add(record historyRecord) {
 		}
 		blocks, text := decodeContent(record.Message.Content)
 		if text != "" {
-			b.pendingText = append(b.pendingText, text)
+			b.appendText(text)
 		}
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.ID != "" {
 				b.pendingTools = append(b.pendingTools, block)
 			}
 		}
+		b.flushFullPages()
 		return
 	}
 
 	b.flush()
-	if record.Type != "user" {
-		return
+	if record.Type == "user" {
+		b.addUser(record)
 	}
-	b.addUser(record)
+	b.flushFullPages()
+}
+
+func (b *historyBuilder) append(item protocol.HistoryItem) int {
+	b.items = append(b.items, item)
+	if b.writePage != nil {
+		return len(b.items) - 1
+	}
+	if len(b.items) <= b.limit {
+		return len(b.items) - 1
+	}
+	b.items[0] = protocol.HistoryItem{}
+	b.items = b.items[1:]
+	for id, index := range b.toolIndex {
+		if index == 0 {
+			delete(b.toolIndex, id)
+		} else {
+			b.toolIndex[id] = index - 1
+		}
+	}
+	return len(b.items) - 1
 }
 
 // flush emits the assistant message accumulated so far.
@@ -168,9 +252,9 @@ func (b *historyBuilder) flush() {
 	if !b.hasPending {
 		return
 	}
-	text := strings.TrimSpace(strings.Join(b.pendingText, "\n\n"))
+	text := strings.TrimSpace(b.pendingText.String())
 	if text != "" {
-		b.items = append(b.items, protocol.HistoryItem{
+		b.append(protocol.HistoryItem{
 			ID:        "hist_" + firstNonEmpty(b.pendingUUID, b.pendingID),
 			Type:      "message",
 			Role:      "assistant",
@@ -180,22 +264,108 @@ func (b *historyBuilder) flush() {
 		})
 	}
 	for _, block := range b.pendingTools {
-		b.toolIndex[block.ID] = len(b.items)
-		b.items = append(b.items, protocol.HistoryItem{
+		index := b.append(protocol.HistoryItem{
 			ID:        "tool_" + block.ID,
 			Type:      "tool",
 			Role:      "tool",
 			Status:    "done",
 			Tool:      block.Name,
-			Input:     block.Input,
+			Input:     boundedHistoryJSON(block.Input),
 			Timestamp: b.pendingStamp,
 		})
+		b.toolIndex[block.ID] = index
 	}
 	b.hasPending = false
 	b.pendingID = ""
 	b.pendingUUID = ""
-	b.pendingText = nil
+	b.pendingText.Reset()
 	b.pendingTools = nil
+}
+
+func (b *historyBuilder) appendText(text string) {
+	separator := ""
+	if b.pendingText.Len() > 0 {
+		separator = "\n\n"
+	}
+	remaining := maxItemText + 1 - b.pendingText.Len() - len(separator)
+	if remaining <= 0 {
+		return
+	}
+	if len(text) > remaining {
+		end := remaining
+		for end > 0 && !utf8.ValidString(text[:end]) {
+			end--
+		}
+		text = text[:end]
+	}
+	if text == "" {
+		return
+	}
+	b.pendingText.WriteString(separator)
+	b.pendingText.WriteString(text)
+}
+
+func (b *historyBuilder) flushFullPages() {
+	if b.writePage == nil || b.err != nil {
+		return
+	}
+	for len(b.items) > b.pageSize {
+		if err := b.flushPage(b.pageSize, false); err != nil {
+			b.err = err
+			return
+		}
+	}
+}
+
+func (b *historyBuilder) flushPage(count int, complete bool) error {
+	if count < 0 || count > len(b.items) {
+		return fmt.Errorf("invalid history page size")
+	}
+	page := append([]protocol.HistoryItem(nil), b.items[:count]...)
+	for id, index := range b.toolIndex {
+		if index < count {
+			b.rememberPendingTool(id, page[index])
+			delete(b.toolIndex, id)
+		} else {
+			b.toolIndex[id] = index - count
+		}
+	}
+	if err := b.writePage(page, complete); err != nil {
+		return err
+	}
+	copy(b.items, b.items[count:])
+	for i := len(b.items) - count; i < len(b.items); i++ {
+		if i >= 0 {
+			b.items[i] = protocol.HistoryItem{}
+		}
+	}
+	b.items = b.items[:len(b.items)-count]
+	return nil
+}
+
+func (b *historyBuilder) rememberPendingTool(id string, item protocol.HistoryItem) {
+	if _, exists := b.pendingToolItems[id]; !exists {
+		b.pendingToolOrder = append(b.pendingToolOrder, id)
+	}
+	b.pendingToolItems[id] = item
+	for len(b.pendingToolOrder) > historyPendingToolLimit {
+		oldest := b.pendingToolOrder[0]
+		b.pendingToolOrder = b.pendingToolOrder[1:]
+		delete(b.pendingToolItems, oldest)
+	}
+}
+
+func boundedHistoryJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) <= historyValueMaxBytes {
+		return raw
+	}
+	preview := string(raw[:historyValueMaxBytes])
+	encoded, _ := json.Marshal(map[string]any{
+		"truncated":     true,
+		"originalBytes": len(raw),
+		"preview":       preview,
+	})
+	return encoded
 }
 
 // addUser handles a person's line: either their words, or the tool results for
@@ -214,10 +384,16 @@ func (b *historyBuilder) addUser(record historyRecord) {
 		for _, block := range results {
 			index, ok := b.toolIndex[block.ToolUseID]
 			if !ok {
-				continue
+				item, found := b.pendingToolItems[block.ToolUseID]
+				if !found {
+					continue
+				}
+				delete(b.pendingToolItems, block.ToolUseID)
+				index = b.append(item)
+				b.toolIndex[block.ToolUseID] = index
 			}
 			item := &b.items[index]
-			item.Output = block.Content
+			item.Output = boundedHistoryJSON(block.Content)
 			if block.IsError {
 				item.Status = "failed"
 			}
@@ -228,7 +404,7 @@ func (b *historyBuilder) addUser(record historyRecord) {
 	if text == "" {
 		return
 	}
-	b.items = append(b.items, protocol.HistoryItem{
+	b.append(protocol.HistoryItem{
 		ID:        "hist_" + record.UUID,
 		Type:      "message",
 		Role:      "user",
@@ -273,7 +449,11 @@ func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "\n\n… (truncated)"
+	end := limit
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end] + "\n\n… (truncated)"
 }
 
 // Transcript text arrives with terminal control sequences and slash-command

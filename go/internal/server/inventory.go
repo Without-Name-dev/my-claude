@@ -48,10 +48,10 @@ func (a *App) applyInventory(ctx context.Context, conn *connectorConn, inv proto
 		if !existed {
 			created++
 		}
-		// A full inventory can follow a disconnect while the server missed
-		// transcript changes. The connector deduplicates unchanged versions.
+		// Changed records refresh the recent tail. A periodic full inventory
+		// repairs gaps that may have accumulated while the server was offline.
 		if existed {
-			a.requestChangedHistory(session, maxHistoryRequest)
+			a.requestChangedHistory(ctx, session, maxHistoryRequest, inv.Full)
 		}
 	}
 	for _, externalID := range inv.Removed {

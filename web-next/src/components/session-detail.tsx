@@ -206,18 +206,6 @@ async function loadInitialSessionState(
       state.agentsLoaded = true
     }
   }
-  console.info("[session_status_trace]", {
-    layer: "frontend-snapshot",
-    reason,
-    sessionId,
-    sessionStatus: state.session.status,
-    runtimeStatus: state.state?.status ?? null,
-    effectiveStatus: effectiveRuntimeStatus(state.state, state.session),
-    sessionUpdatedSeq: state.session.updatedSeq,
-    runtimeUpdatedSeq: state.state?.updatedSeq ?? null,
-    runtimeSource: state.state?.metadata?.source ?? null,
-    eventCursor: state.eventCursor,
-  })
   return state
 }
 
@@ -519,12 +507,6 @@ function SessionDetailView({
     || runtimeStatus === "running"
     || runtimeStatus === "stopping"
     || runtimeStatus === "waiting_approval"
-  const previousStatusTraceRef = React.useRef<{
-    sessionId: string
-    sessionStatus: string
-    runtimeStatus: string | null
-    effectiveStatus: string
-  } | null>(null)
   const sessionRuntime = session ? sessionRuntimeId(session) : null
   const sessionRuntimeScope = session
     ? { runtimeId: sessionRuntimeId(session), runtimeType: sessionRuntimeType(session) }
@@ -549,37 +531,6 @@ function SessionDetailView({
     token, sessionId: commandSessionId, open: commandQuery !== null,
     available: commandAvailable, catalogRevision, runtimeStatus, recoveryGeneration: catalogRecoveryGeneration,
   })
-
-  React.useEffect(() => {
-    if (!session) return
-    const next = {
-      sessionId: session.id,
-      sessionStatus: session.status,
-      runtimeStatus: runtimeState?.status ?? null,
-      effectiveStatus: runtimeStatus,
-    }
-    const previous = previousStatusTraceRef.current
-    if (
-      previous === null ||
-      previous.sessionId !== next.sessionId ||
-      previous.sessionStatus !== next.sessionStatus ||
-      previous.runtimeStatus !== next.runtimeStatus ||
-      previous.effectiveStatus !== next.effectiveStatus
-    ) {
-      console.info("[session_status_trace]", {
-        layer: "frontend-render",
-        sessionId: session.id,
-        previous,
-        next,
-        sessionUpdatedSeq: session.updatedSeq,
-        runtimeUpdatedSeq: runtimeState?.updatedSeq ?? null,
-        runtimeSource: runtimeState?.metadata?.source ?? null,
-        eventCursor: state?.eventCursor ?? null,
-        serverTime: state?.serverTime ?? null,
-      })
-      previousStatusTraceRef.current = next
-    }
-  }, [runtimeState, runtimeStatus, session, state?.eventCursor, state?.serverTime])
 
   const composerDraft = composerDraftState.sessionId === sessionId ? composerDraftState.value : ""
   const isLocalOptimisticSession = isOptimisticSession(sessionId)
@@ -1508,6 +1459,7 @@ function SessionDetailView({
     content: string,
     attachments: AttachedFile[],
     selections: { model?: string; permission?: string },
+    route: "message" | "steer",
   ): Promise<boolean> => {
     if (!session || (!content.trim() && attachments.length === 0)) return false
     const sendSessionId = session.id
@@ -1574,10 +1526,15 @@ function SessionDetailView({
             : current,
         )
       }
-      await dashboardApi.sendSessionMessage(token, sendSessionId, messageText, {
+      const messageOptions = {
         attachments: uploadedAttachments.map((attachment) => ({ fileId: attachment.fileId })),
         clientMessageId,
-      })
+      }
+      if (route === "steer") {
+        await dashboardApi.steerSessionMessage(token, sendSessionId, messageText, messageOptions)
+      } else {
+        await dashboardApi.sendSessionMessage(token, sendSessionId, messageText, messageOptions)
+      }
       batch.accepted += 1
       return true
     } catch (err) {
@@ -2932,6 +2889,9 @@ function mergeSessionEvent(
     : item
       ? mergeTimelineItems(current.items, [item])
       : current.items
+  const nextHasMore = timelineSnapshot !== null && typeof event.payload.hasMore === "boolean"
+    ? event.payload.hasMore
+    : current.hasMore
   const timelineResetVersion = nextTimelineResetVersion(
     current.timelineResetVersion,
     timelineSnapshot !== null,
@@ -2940,31 +2900,6 @@ function mergeSessionEvent(
   const nextSession = acceptsSession && session && !sessionSemanticallyEqual(current.session, session)
     ? session
     : current.session
-  const acceptsRuntimeState = Boolean(
-    runtimeState &&
-      runtimeState.sessionId === current.session.id &&
-      runtimeState.updatedSeq >= (current.state?.updatedSeq ?? 0),
-  )
-  if (session || runtimeState) {
-    console.info("[session_status_trace]", {
-      layer: "frontend-event",
-      sessionId: event.sessionId,
-      eventType: event.type,
-      eventId: event.eventId,
-      eventSequence: event.sequence,
-      currentSessionStatus: current.session.status,
-      incomingSessionStatus: session?.status ?? null,
-      currentRuntimeStatus: current.state?.status ?? null,
-      incomingRuntimeStatus: runtimeState?.status ?? null,
-      incomingRuntimeSource: runtimeState?.metadata?.source ?? null,
-      currentSessionUpdatedSeq: current.session.updatedSeq,
-      incomingSessionUpdatedSeq: session?.updatedSeq ?? null,
-      currentRuntimeUpdatedSeq: current.state?.updatedSeq ?? null,
-      incomingRuntimeUpdatedSeq: runtimeState?.updatedSeq ?? null,
-      acceptsSession,
-      acceptsRuntimeState,
-    })
-  }
   const nextRuntimeState = mergeRuntimeState(current.state, runtimeState, current.session.id)
   const nextEffectiveCapabilities = mergeEffectiveCapabilities(
     current.effectiveCapabilities,
@@ -3008,6 +2943,7 @@ function mergeSessionEvent(
     agents: nextAgents,
     agentsLoaded: nextAgentsLoaded,
     nextSeq,
+    hasMore: nextHasMore,
     timelineResetVersion,
     eventCursor: nextEventCursor,
     effectiveCapabilities: nextEffectiveCapabilities,

@@ -49,6 +49,8 @@ const DefaultHeartbeatTTL = 30 * time.Second
 // and dropping the dot then made a working conversation look offline.
 const DefaultLiveTTL = 12 * time.Second
 
+const requestOutboxCapabilityTTL = DefaultLiveTTL
+
 // outboxStateKeys are forwarded to the server as session state; "branch" is the
 // git branch, not a duplicate of the working directory.
 var outboxStateKeys = []string{"model", "effort", "cwd", "branch", "usage", "context", "costUsd"}
@@ -98,6 +100,58 @@ func (b *Bridge) OutboxPath(sessionIDs ...string) string {
 		return filepath.Join(b.Dir, "outbox."+id+".json")
 	}
 	return filepath.Join(b.Dir, "outbox.json")
+}
+func (b *Bridge) RequestOutboxPath(sessionID, requestID string) string {
+	return filepath.Join(b.Dir, "outbox."+sanitizeCursorID(sessionID)+"."+sanitizeCursorID(requestID)+".json")
+}
+func (b *Bridge) RequestToolsPath(sessionID, requestID string) string {
+	return filepath.Join(b.Dir, "tools."+sanitizeCursorID(sessionID)+"."+sanitizeCursorID(requestID)+".json")
+}
+func (b *Bridge) RequestAgentsPath(sessionID, requestID string) string {
+	return filepath.Join(b.Dir, "agents."+sanitizeCursorID(sessionID)+"."+sanitizeCursorID(requestID)+".json")
+}
+func (b *Bridge) RequestReceiptPath(sessionID, requestID string) string {
+	return filepath.Join(b.Dir, "receipt."+sanitizeCursorID(sessionID)+"."+sanitizeCursorID(requestID)+".json")
+}
+func (b *Bridge) RequestOutboxSupported(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(b.Dir, "capabilities."+sanitizeCursorID(sessionID)+".txt"))
+	if err != nil {
+		return false
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(raw)), "\n", 2)
+	if len(parts) != 2 || parts[0] != "request-outbox-v1" {
+		return false
+	}
+	stamp, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if err != nil {
+		return false
+	}
+	age := time.Since(time.UnixMilli(stamp))
+	return age >= 0 && age <= requestOutboxCapabilityTTL
+}
+
+type RequestReceipt struct {
+	SessionID string `json:"sessionId"`
+	RequestID string `json:"requestId"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (b *Bridge) ReadRequestReceipt(sessionID, requestID string) (*RequestReceipt, error) {
+	if sessionID == "" || requestID == "" {
+		return nil, nil
+	}
+	var receipt RequestReceipt
+	if !readJSONFile(b.RequestReceiptPath(sessionID, requestID), &receipt) {
+		return nil, nil
+	}
+	if receipt.SessionID != sessionID || receipt.RequestID != requestID {
+		return nil, nil
+	}
+	return &receipt, nil
 }
 func (b *Bridge) HeartbeatPath() string { return filepath.Join(b.Dir, "heartbeat.txt") }
 func (b *Bridge) AbortPath() string     { return filepath.Join(b.Dir, "abort.txt") }
@@ -508,6 +562,7 @@ type Outbox struct {
 	// builds did not write it, so it can be empty.
 	SessionID string
 	TurnID    string
+	RequestID string
 	Status    string
 	Text      string
 	TS        int64
@@ -565,6 +620,30 @@ func (b *Bridge) ReadOutbox(sessionIDs ...string) (*Outbox, error) {
 		}
 		return nil, err
 	}
+	return parseOutbox(raw, sessionIDs...)
+}
+
+// ReadRequestOutbox reads the durable stream for one submitted message. Each
+// response remains available even when a later queued turn starts quickly.
+func (b *Bridge) ReadRequestOutbox(sessionID, requestID string) (*Outbox, error) {
+	if sessionID == "" || requestID == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(b.RequestOutboxPath(sessionID, requestID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out, err := parseOutbox(raw, sessionID)
+	if err != nil || out == nil || out.RequestID != requestID {
+		return out, err
+	}
+	return out, nil
+}
+
+func parseOutbox(raw []byte, sessionIDs ...string) (*Outbox, error) {
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, fmt.Errorf("parse outbox: %w", err)
@@ -575,6 +654,9 @@ func (b *Bridge) ReadOutbox(sessionIDs ...string) (*Outbox, error) {
 	}
 	if v, ok := data["turnId"].(string); ok {
 		out.TurnID = v
+	}
+	if v, ok := data["requestId"].(string); ok {
+		out.RequestID = v
 	}
 	if v, ok := data["status"].(string); ok {
 		out.Status = v
@@ -625,6 +707,20 @@ func (b *Bridge) Tools(sessionIDs ...string) []ToolEntry {
 		return nil
 	}
 	if !matchesSession(payload.SessionID, sessionIDs) {
+		return nil
+	}
+	return payload.Entries
+}
+
+func (b *Bridge) RequestTools(sessionID, requestID string) []ToolEntry {
+	if sessionID == "" || requestID == "" {
+		return nil
+	}
+	var payload struct {
+		SessionID string      `json:"sessionId"`
+		Entries   []ToolEntry `json:"entries"`
+	}
+	if !readJSONFile(b.RequestToolsPath(sessionID, requestID), &payload) || !matchesSession(payload.SessionID, []string{sessionID}) {
 		return nil
 	}
 	return payload.Entries
@@ -806,6 +902,20 @@ func (b *Bridge) Agents(sessionIDs ...string) []AgentEntry {
 		return nil
 	}
 	if !matchesSession(payload.SessionID, sessionIDs) {
+		return nil
+	}
+	return payload.Entries
+}
+
+func (b *Bridge) RequestAgents(sessionID, requestID string) []AgentEntry {
+	if sessionID == "" || requestID == "" {
+		return nil
+	}
+	var payload struct {
+		SessionID string       `json:"sessionId"`
+		Entries   []AgentEntry `json:"entries"`
+	}
+	if !readJSONFile(b.RequestAgentsPath(sessionID, requestID), &payload) || !matchesSession(payload.SessionID, []string{sessionID}) {
 		return nil
 	}
 	return payload.Entries

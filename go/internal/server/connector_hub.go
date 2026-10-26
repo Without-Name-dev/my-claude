@@ -504,10 +504,13 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
 			return
 		}
-		if a.applyHistory(ctx, conn, msg) && msg.Version != "" {
+		complete := msg.Complete == nil || *msg.Complete
+		if a.applyHistory(ctx, conn, msg) && msg.Version != "" && complete {
 			a.connectors.Send(conn.id, protocol.TypeHistoryAck, protocol.HistoryAck{
 				SessionID: msg.SessionID,
 				Version:   msg.Version,
+				Full:      msg.Full,
+				Complete:  true,
 			})
 		}
 	case protocol.TypeBeat:

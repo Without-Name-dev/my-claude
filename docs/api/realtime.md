@@ -134,6 +134,29 @@ to `running` when processing starts and to `done`, `failed` or `cancelled` when
 the request finishes. Clients can keep accepting messages while a turn runs and
 show these states on each submitted bubble independently.
 
+### Connector transcript reconciliation
+
+The Connector inventory includes a transcript version derived from file size
+and modification time. The Server requests a full import when a conversation
+is opened or during a periodic full inventory. Ordinary inventory changes
+request only a recent tail. An empty server timeline sets `force: true`, which
+bypasses a connector's confirmed-version cache so a server-side history reset
+can be repaired. The
+Connector waits until a transcript has been quiet for
+ten seconds, then reads it on a bounded background queue so a large file
+cannot block the connector WebSocket receive loop. Full imports are sent as
+ordered `session.history` chunks with stable item IDs; `complete` is false on
+intermediate chunks and true on the final chunk. Tool outputs that arrive
+after their call was sent are emitted as an update to the same item ID. Each
+chunk stays below the connector WebSocket frame limit.
+
+The Server persists intermediate chunks without publishing partial timelines.
+After the final chunk it publishes one timeline reset and returns
+`session.history.ack` with `complete: true` and the `full` mode echoed from the
+request. The Connector tracks full and tail versions separately, so
+acknowledging a recent tail cannot suppress a later full import. It retries an
+unacknowledged version after reconnect or on the next refresh.
+
 ## Dashboard realtime
 
 Primary realtime channel:

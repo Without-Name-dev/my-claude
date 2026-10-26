@@ -673,9 +673,28 @@ export class DashboardApi {
     content: string,
     options: MessageSendOptions = {},
   ): Promise<RpcResponse<unknown>> {
+    return this.submitSessionMessage("messages", token, sessionId, content, options);
+  }
+
+  steerSessionMessage(
+    token: string,
+    sessionId: string,
+    content: string,
+    options: MessageSendOptions = {},
+  ): Promise<RpcResponse<unknown>> {
+    return this.submitSessionMessage("steer", token, sessionId, content, options);
+  }
+
+  private submitSessionMessage(
+    action: "messages" | "steer",
+    token: string,
+    sessionId: string,
+    content: string,
+    options: MessageSendOptions,
+  ): Promise<RpcResponse<unknown>> {
     const { attachments, clientMessageId } = options;
     return this.client.post<RpcResponse<unknown>>(
-      `/sessions/${encodeURIComponent(sessionId)}/runtime/messages`,
+      `/sessions/${encodeURIComponent(sessionId)}/runtime/${action}`,
       {
         content,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),

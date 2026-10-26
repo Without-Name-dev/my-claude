@@ -23,10 +23,9 @@ const (
 	// huge frame, and large enough that a fast compiler log is not chopped into
 	// thousands of tiny websocket messages.
 	terminalReadChunk = 32 * 1024
-	// terminalLinkQueue bounds the output waiting for the link socket. A
-	// terminal that produces faster than the link can drain drops its oldest
-	// output rather than blocking the PTY reader; the server's replay buffer
-	// has the same policy.
+	// terminalLinkQueue bounds output waiting for the link socket. A terminal
+	// that produces faster than the link can drain drops old output rather than
+	// blocking the PTY reader; lifecycle frames stay queued for delivery.
 	terminalLinkQueue = 512
 	// terminalOpenTimeout covers dialing the link and starting the shell. It
 	// stays under the server's 10 second create wait so a failure is reported
@@ -469,11 +468,12 @@ func clampTerminalSize(cols, rows int) (int, int) {
 	return cols, rows
 }
 
-// terminalOutFrame is one queued envelope. Frames that must not be lost (a
-// probe answer) carry an ack so the sender learns whether the write landed.
+// terminalOutFrame is one queued envelope. Droppable frames are terminal
+// output; lifecycle and probe frames remain queued across output pressure.
 type terminalOutFrame struct {
-	body []byte
-	ack  chan error
+	body      []byte
+	ack       chan error
+	droppable bool
 }
 
 // terminalLink is the connector-opened websocket that carries terminal output.
@@ -482,7 +482,10 @@ type terminalOutFrame struct {
 type terminalLink struct {
 	client *Client
 
-	out      chan terminalOutFrame
+	outMu    sync.Mutex
+	out      []terminalOutFrame
+	outWake  chan struct{}
+	outCount int
 	startOne sync.Once
 	// onConnect runs after each successful dial, before the queue drains. It
 	// is how live terminals restate their scrollback to a new server.
@@ -504,7 +507,7 @@ func newTerminalLink(c *Client) *terminalLink {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &terminalLink{
 		client:    c,
-		out:       make(chan terminalOutFrame, terminalLinkQueue),
+		outWake:   make(chan struct{}, 1),
 		connected: make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -552,38 +555,31 @@ func (l *terminalLink) encode(frameType string, value any) ([]byte, error) {
 	return json.Marshal(protocol.Envelope{Type: frameType, Data: data})
 }
 
-// enqueue adds a frame, dropping the oldest when the queue is full. It reports
-// false only when the new frame itself could not be queued.
-func (l *terminalLink) enqueue(frame terminalOutFrame) bool {
-	select {
-	case l.out <- frame:
-		return true
-	default:
-	}
-	// Make room by dropping the oldest queued frame.
-	select {
-	case old := <-l.out:
-		l.dropped.Add(1)
-		if old.ack != nil {
-			select {
-			case old.ack <- errors.New("terminal link queue is full"):
-			default:
+// enqueue adds a frame, dropping the oldest output when the output queue is
+// full. Control frames are not displaced by terminal output.
+func (l *terminalLink) enqueue(frame terminalOutFrame) {
+	l.outMu.Lock()
+	if frame.droppable && l.outCount >= terminalLinkQueue {
+		for i, queued := range l.out {
+			if !queued.droppable {
+				continue
 			}
+			copy(l.out[i:], l.out[i+1:])
+			l.out[len(l.out)-1] = terminalOutFrame{}
+			l.out = l.out[:len(l.out)-1]
+			l.outCount--
+			l.dropped.Add(1)
+			break
 		}
-	default:
 	}
+	l.out = append(l.out, frame)
+	if frame.droppable {
+		l.outCount++
+	}
+	l.outMu.Unlock()
 	select {
-	case l.out <- frame:
-		return true
+	case l.outWake <- struct{}{}:
 	default:
-		l.dropped.Add(1)
-		if frame.ack != nil {
-			select {
-			case frame.ack <- errors.New("terminal link queue is full"):
-			default:
-			}
-		}
-		return false
 	}
 }
 
@@ -595,7 +591,10 @@ func (l *terminalLink) emit(frameType string, value any) {
 	if err != nil {
 		return
 	}
-	l.enqueue(terminalOutFrame{body: body})
+	l.enqueue(terminalOutFrame{
+		body:      body,
+		droppable: frameType == protocol.TypeTerminalOutput,
+	})
 }
 
 // emitAwait queues a frame and waits until it was written to a live socket.
@@ -691,24 +690,67 @@ func (l *terminalLink) readLoop(conn *websocket.Conn, done chan struct{}) {
 // writeLoop drains the queue into one socket until it fails.
 func (l *terminalLink) writeLoop(conn *websocket.Conn, done <-chan struct{}) {
 	for {
-		select {
-		case <-l.ctx.Done():
+		frame, ok := l.nextFrame(done)
+		if !ok {
 			return
-		case <-done:
+		}
+		ctx, cancel := context.WithTimeout(l.ctx, 10*time.Second)
+		err := conn.Write(ctx, websocket.MessageText, frame.body)
+		cancel()
+		if frame.ack != nil {
+			select {
+			case frame.ack <- err:
+			default:
+			}
+		}
+		if err != nil {
+			if frame.ack == nil && !frame.droppable {
+				l.requeueFront(frame)
+			}
 			return
-		case frame := <-l.out:
-			ctx, cancel := context.WithTimeout(l.ctx, 10*time.Second)
-			err := conn.Write(ctx, websocket.MessageText, frame.body)
-			cancel()
-			if frame.ack != nil {
+		}
+	}
+}
+
+func (l *terminalLink) requeueFront(frame terminalOutFrame) {
+	l.outMu.Lock()
+	l.out = append(l.out, terminalOutFrame{})
+	copy(l.out[1:], l.out[:len(l.out)-1])
+	l.out[0] = frame
+	l.outMu.Unlock()
+	select {
+	case l.outWake <- struct{}{}:
+	default:
+	}
+}
+
+func (l *terminalLink) nextFrame(done <-chan struct{}) (terminalOutFrame, bool) {
+	for {
+		l.outMu.Lock()
+		if len(l.out) > 0 {
+			frame := l.out[0]
+			l.out[0] = terminalOutFrame{}
+			l.out = l.out[1:]
+			if frame.droppable {
+				l.outCount--
+			}
+			hasMore := len(l.out) > 0
+			l.outMu.Unlock()
+			if hasMore {
 				select {
-				case frame.ack <- err:
+				case l.outWake <- struct{}{}:
 				default:
 				}
 			}
-			if err != nil {
-				return
-			}
+			return frame, true
+		}
+		l.outMu.Unlock()
+		select {
+		case <-l.ctx.Done():
+			return terminalOutFrame{}, false
+		case <-done:
+			return terminalOutFrame{}, false
+		case <-l.outWake:
 		}
 	}
 }

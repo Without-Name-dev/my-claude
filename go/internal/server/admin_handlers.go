@@ -135,13 +135,29 @@ func (a *App) handleAdminListUsers(w http.ResponseWriter, r *http.Request, _ sto
 		}
 		offset = parsed
 	}
+	role := ""
+	switch strings.ToLower(strings.TrimSpace(query.Get("role"))) {
+	case "", "all":
+	case "admin", "admins":
+		role = "admin"
+	case "member", "members":
+		role = "member"
+	default:
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity, "role must be all, admins, or members"))
+		return
+	}
+	search := strings.TrimSpace(query.Get("search"))
+	if len(search) > maxEmailLength {
+		httpx.Fail(w, httpx.NewError(http.StatusUnprocessableEntity, "search must be at most 320 characters"))
+		return
+	}
 
-	users, err := a.db.ListUsers(r.Context(), limit, offset)
+	users, err := a.db.ListUsersFiltered(r.Context(), limit, offset, role, search)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
-	total, err := a.db.CountUsers(r.Context())
+	total, err := a.db.CountUsersFiltered(r.Context(), role, search)
 	if err != nil {
 		httpx.Fail(w, err)
 		return

@@ -1283,8 +1283,8 @@ Web 旧面板仍调用 list/create；新代码走 v2。
 ### 15.3 `GET /api/v2/admin/users`
 
 - 鉴权：admin。
-- Query：`limit:int|null`（1..1000；省略时返回全部）、`offset:int=0`（≥0）。
-- 响应 `AdminUserListResponse`：`users: UserView[]`、`total:int|null`（实现总是填总数）、`serverTime`。
+- Query：`limit:int|null`（1..1000；省略时返回全部）、`offset:int=0`（≥0）、`role:all|admins|members`（可选）、`search:string`（可选，最多 320 字符；匹配邮箱或显示名）。角色与搜索过滤先于分页。
+- 响应 `AdminUserListResponse`：`users: UserView[]`、`total:int|null`（实现总是填符合过滤条件的数量）、`serverTime`。
 - 实现：`api/admin.py:58-69`。
 
 ### 15.4 `POST /api/v2/admin/users`

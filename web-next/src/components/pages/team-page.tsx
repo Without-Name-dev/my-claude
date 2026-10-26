@@ -120,6 +120,7 @@ export function TeamPage() {
   const [page, setPage] = React.useState(0)
   // Undefined when the server predates paging and returned every user.
   const [total, setTotal] = React.useState<number | undefined>(undefined)
+  const deferredSearch = React.useDeferredValue(search)
   const isAdmin = me?.role === "admin"
 
   const loadUsers = React.useCallback(() => {
@@ -133,7 +134,12 @@ export function TeamPage() {
     setLoading(true)
     setError(null)
     authApi
-      .listUsers(session.accessToken, { limit: USERS_PAGE_SIZE, offset: page * USERS_PAGE_SIZE })
+      .listUsers(session.accessToken, {
+        limit: USERS_PAGE_SIZE,
+        offset: page * USERS_PAGE_SIZE,
+        role: filterTab,
+        search: deferredSearch,
+      })
       .then((res) => {
         if (cancelled) return
         setUsers(res.users)
@@ -153,21 +159,21 @@ export function TeamPage() {
     return () => {
       cancelled = true
     }
-  }, [page, session?.accessToken, t])
+  }, [deferredSearch, filterTab, page, session?.accessToken, t])
 
   React.useEffect(() => loadUsers(), [loadUsers])
 
   const pageCount = typeof total === "number" ? Math.max(1, Math.ceil(total / USERS_PAGE_SIZE)) : 1
 
   const filtered = React.useMemo(() => {
-    const query = search.trim().toLowerCase()
+    const query = deferredSearch.trim().toLowerCase()
     return users.filter((user) => {
       if (filterTab === "admins" && user.role !== "admin") return false
       if (filterTab === "members" && user.role !== "member") return false
       if (query && !`${accountDisplayName(user)} ${user.email ?? ""}`.toLowerCase().includes(query)) return false
       return true
     })
-  }, [filterTab, search, users])
+  }, [deferredSearch, filterTab, users])
 
   const counts = React.useMemo(
     () => ({
@@ -248,7 +254,11 @@ export function TeamPage() {
             <Input
               placeholder={t("searchPlaceholder")}
               value={search}
-              onChange={(event) => setSearch(event.currentTarget.value)}
+              maxLength={320}
+              onChange={(event) => {
+                setSearch(event.currentTarget.value)
+                setPage(0)
+              }}
               className="pl-9"
             />
           </div>
@@ -257,7 +267,10 @@ export function TeamPage() {
             type="single"
             value={filterTab}
             onValueChange={(value: string) => {
-              if (value) setFilterTab(value as FilterTab)
+              if (value) {
+                setFilterTab(value as FilterTab)
+                setPage(0)
+              }
             }}
             variant="outline"
             spacing={0}

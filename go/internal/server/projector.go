@@ -405,7 +405,8 @@ func (a *App) publishStreamingView(
 func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.TurnEnd) {
 	// Check ownership before touching the registry: otherwise a connector could
 	// end another connector's running turn by guessing its turn id.
-	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
+	if err != nil {
 		a.log.Warn("turn.end for an unknown session", "session", msg.SessionID)
 		return
 	}
@@ -495,10 +496,29 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 	a.expireSessionApprovals(ctx, msg.SessionID, seq)
 
 	nextStatus := "idle"
-	if status == "failed" {
+	if a.hasPendingUserMessages(ctx, msg.SessionID) {
+		nextStatus = "waiting"
+	} else if status == "failed" {
 		nextStatus = "error"
 	}
 	a.setSessionStatus(ctx, msg.SessionID, nextStatus)
+	// A desktop prompt does not pass through the server's turn watcher. Once a
+	// watched turn closes, ask the connector to reconcile the now-settled
+	// transcript so those terminal-origin messages reach every client promptly.
+	a.requestChangedHistory(ctx, session, maxHistoryRequest, false)
+}
+
+func (a *App) hasPendingUserMessages(ctx context.Context, sessionID string) bool {
+	var count int
+	err := a.db.Read().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM timeline_items WHERE session_id = ? AND type = 'message' AND role = 'user' AND status = 'pending'`,
+		sessionID,
+	).Scan(&count)
+	if err != nil {
+		a.log.Debug("could not check queued messages", "session", sessionID, "error", err)
+		return false
+	}
+	return count > 0
 }
 
 // onToolBegin records a tool call as its own timeline item.

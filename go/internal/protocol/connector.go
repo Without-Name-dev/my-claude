@@ -310,15 +310,22 @@ const TypeHistoryAck = "session.history.ack"
 type HistoryRequest struct {
 	SessionID  string `json:"sessionId"`
 	ExternalID string `json:"externalId"`
-	// Limit caps how many recent records are converted. A long session can be
-	// tens of thousands of lines; the phone only needs the tail.
-	Limit int `json:"limit,omitempty"`
+	// Limit caps a recent-tail refresh. Full requests transfer every item in
+	// bounded chunks, so the transcript size does not set one frame's size.
+	Limit int  `json:"limit,omitempty"`
+	Full  bool `json:"full,omitempty"`
+	// Force bypasses a connector's confirmed full-version cache when the server
+	// knows it has no transcript rows for this session.
+	Force bool `json:"force,omitempty"`
 }
 
-// History is one session's transcript, oldest first.
+// History is one session's transcript, oldest first. Full imports carry a
+// completion marker so the server can publish once after all chunks commit.
 type History struct {
 	SessionID string        `json:"sessionId"`
 	Version   string        `json:"version,omitempty"`
+	Full      bool          `json:"full,omitempty"`
+	Complete  *bool         `json:"complete,omitempty"`
 	Items     []HistoryItem `json:"items"`
 }
 
@@ -326,6 +333,8 @@ type History struct {
 type HistoryAck struct {
 	SessionID string `json:"sessionId"`
 	Version   string `json:"version"`
+	Full      bool   `json:"full,omitempty"`
+	Complete  bool   `json:"complete,omitempty"`
 }
 
 // HistoryItem is one message or tool call read from a transcript.

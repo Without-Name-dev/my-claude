@@ -125,7 +125,7 @@ export type AdminUser = {
 
 export type AdminUserListResponse = {
   users: AdminUser[];
-  /** Total users regardless of paging; missing on servers older than 2.0.1. */
+  /** Total accounts matching the active filters, regardless of paging. */
   total?: number;
   serverTime: string;
 };

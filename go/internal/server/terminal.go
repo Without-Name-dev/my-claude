@@ -447,8 +447,11 @@ func (h *terminalHub) subscribe(terminalID string, afterSeq uint64) (*terminalSu
 	stream.subs[sub] = struct{}{}
 
 	seq := stream.lastSeq
-	if seq < afterSeq {
-		seq = afterSeq
+	if afterSeq > seq {
+		// A stale or corrupt client cursor must not make the server report a
+		// sequence it has never produced; the client would then discard every
+		// subsequent output frame as old.
+		afterSeq = seq
 	}
 	var data []byte
 	for _, chunk := range stream.replay {

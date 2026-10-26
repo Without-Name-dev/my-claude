@@ -66,10 +66,9 @@ struct ChatTimelineView: View {
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .defaultScrollAnchor(.top, for: .initialOffset)
-            .defaultScrollAnchor(.top, for: .alignment)
-            // Do not pin a size-change anchor. The custom follow logic owns the
-            // bottom while streaming, and must not fight a top anchor when the
-            // reader has scrolled away.
+            .defaultScrollAnchor(.bottom, for: .alignment)
+            // Short timelines still belong at the newest message if SwiftUI
+            // resolves an unset position after the parent view is updated.
             .allowsHitTesting(model.isOpeningReady)
             .accessibilityHidden(!model.isOpeningReady)
             // A tap in the transcript dismisses the keyboard. It is installed
@@ -332,7 +331,7 @@ struct ChatTimelineView: View {
     /// position is only released when it actually holds a target, and only
     /// `isPositionedByUser` is set. Writing a fresh, empty `ScrollPosition` — or
     /// marking an already-empty one — reads as "no position" under this view's
-    /// `.defaultScrollAnchor(.top)`, and the page snapped to the very top the
+    /// `.defaultScrollAnchor(.bottom)`, and the page snapped to the very top the
     /// moment a swipe began.
     private func releaseScrollPosition() {
         guard position.edge != nil || position.point != nil else { return }

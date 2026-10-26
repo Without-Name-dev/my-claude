@@ -1,40 +1,6 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "开启滚动诊断": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Turn on scroll diagnostics"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开启滚动诊断"
-          }
-        }
-      }
-    },
-    "关闭滚动诊断": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Turn off scroll diagnostics"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关闭滚动诊断"
-          }
-        }
-      }
-    },
     "恢复连接后再打开这个文件。": {
       "extractionState": "manual",
       "localizations": {

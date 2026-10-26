@@ -125,7 +125,9 @@ struct PendingMessageRow: View {
     var body: some View {
         UserMessageBubble(text: pending.content,
             attachments: chat.session.attachmentPreviews.resolve(pending.attachments.map(\.content), clientID: pending.id),
-            onAttachment: onAttachment, loadThumbnail: chat.thumbnail, isPending: pending.delivery == .sending || pending.delivery == .accepted,
+            onAttachment: onAttachment, loadThumbnail: chat.thumbnail,
+            isPending: pending.delivery == .sending,
+            dispatchStatus: pending.delivery == .accepted ? .pending : nil,
             onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             Button(String(localized: "返回编辑")) {

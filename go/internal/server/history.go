@@ -67,44 +67,50 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 				// Only the tail is needed: the refresh exists to pick up what
 				// was typed since the last look, and a smaller window keeps a
 				// long conversation cheap to re-import.
-				a.requestHistory(ctx, session, historyRefreshLimit)
+				a.requestHistory(ctx, session, historyRefreshLimit, false, false)
 			}
 		}
 	}
 }
 
-// maybeRequestHistory asks the connector for a transcript when the session's
-// timeline is empty but the session came from a local one.
+// maybeRequestHistory requests a full reconciliation when a session is opened.
+// The connector skips a version it has already sent and the server committed.
 func (a *App) maybeRequestHistory(ctx context.Context, session store.Session) {
-	a.requestHistory(ctx, session, maxHistoryRequest)
+	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 1)
+	force := err != nil || len(items) == 0
+	a.requestHistory(ctx, session, maxHistoryRequest, true, force)
 }
 
 // requestHistory sends one transcript request with an explicit window.
-func (a *App) requestHistory(ctx context.Context, session store.Session, limit int) {
+func (a *App) requestHistory(ctx context.Context, session store.Session, limit int, full, force bool) {
 	if session.ExternalID == "" || !a.connectors.Online(session.ConnectorID) {
 		return
 	}
 	if !a.history.allow(session.ID, historyCooldown) {
 		return
 	}
-	a.sendHistoryRequest(session, limit)
+	a.sendHistoryRequest(session, limit, full, force)
 }
 
 // requestChangedHistory bypasses the periodic request limiter because a new
 // transcript version is a one-shot signal for a session that may stop being
 // live before the next poll.
-func (a *App) requestChangedHistory(session store.Session, limit int) {
+func (a *App) requestChangedHistory(ctx context.Context, session store.Session, limit int, full bool) {
 	if session.ExternalID == "" || !a.connectors.Online(session.ConnectorID) {
 		return
 	}
-	a.sendHistoryRequest(session, limit)
+	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 1)
+	force := err != nil || len(items) == 0
+	a.sendHistoryRequest(session, limit, full || force, force)
 }
 
-func (a *App) sendHistoryRequest(session store.Session, limit int) {
+func (a *App) sendHistoryRequest(session store.Session, limit int, full, force bool) {
 	a.connectors.Send(session.ConnectorID, protocol.TypeHistoryRequest, protocol.HistoryRequest{
 		SessionID:  session.ID,
 		ExternalID: session.ExternalID,
 		Limit:      limit,
+		Full:       full,
+		Force:      force,
 	})
 }
 
@@ -148,7 +154,7 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 // Claude writes for messages sent through this server.
 func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]int {
 	known := map[string]int{}
-	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, 300)
+	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, maxHistoryRequest)
 	if err != nil {
 		return known
 	}
@@ -256,6 +262,15 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		a.log.Warn("could not store history", "error", err)
 		return false
 	}
+	if msg.Full && msg.Complete != nil {
+		if !*msg.Complete {
+			return true
+		}
+		if seq == 0 {
+			seq = session.Seq
+		}
+		return a.publishHistoryReset(ctx, session, seq)
+	}
 	if changed == 0 {
 		a.log.Debug("history already in sync", "session", session.ID, "items", len(msg.Items))
 		return true
@@ -274,7 +289,11 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		return true
 	}
 
-	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 500)
+	return a.publishHistoryReset(ctx, session, seq)
+}
+
+func (a *App) publishHistoryReset(ctx context.Context, session store.Session, seq int64) bool {
+	items, hasMore, err := a.timelineOlderPage(ctx, session.ID, 0, 500)
 	if err != nil {
 		return false
 	}
@@ -283,7 +302,8 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		views = append(views, toView(item, session.Runtime))
 	}
 	frame, err := newEnvelope(session.ID, seq, EventTimelineReset, map[string]any{
-		"items": views,
+		"items":   views,
+		"hasMore": hasMore,
 	})
 	if err != nil {
 		return false
@@ -295,7 +315,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	// dashboard snapshot can express. A transcript import is an inventory
 	// change even though its payload is a timeline reset.
 	a.notifySessionDashboard(ctx, session.ID)
-	a.log.Info("imported transcript", "session", session.ID, "items", len(views))
+	a.log.Info("imported transcript", "session", session.ID, "items", len(views), "mode", "reset")
 	return true
 }
 

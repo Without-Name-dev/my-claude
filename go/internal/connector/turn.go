@@ -54,9 +54,10 @@ type TurnWatcher struct {
 	externalSessionID string
 	// messageID is the submit's request id; the queue entry carries it as its
 	// id, so it is how an undelivered prompt is withdrawn again.
-	messageID  string
-	previousID string
-	queuedAt   int64
+	messageID     string
+	previousID    string
+	queuedAt      int64
+	requestScoped bool
 	// Closed, when set, reports that the person ended this conversation's
 	// terminal from the phone. The watcher then closes the turn instead of
 	// polling for an answer that can never arrive.
@@ -134,6 +135,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		// so it is ended now rather than three minutes later when the missing
 		// heartbeat would have been noticed.
 		if w.Closed != nil && w.Closed() {
+			w.cancelQueued()
 			w.sink.TurnEnd(protocol.TurnEnd{
 				SessionID: w.sessionID,
 				TurnID:    w.currentTurnID(),
@@ -143,8 +145,29 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			})
 			return w.currentText()
 		}
+		if receipt, err := w.bridge.ReadRequestReceipt(w.externalSessionID, w.messageID); err == nil &&
+			receipt != nil && receipt.Status == "failed" {
+			w.cancelQueued()
+			w.sink.TurnEnd(protocol.TurnEnd{
+				SessionID: w.sessionID,
+				TurnID:    w.messageID,
+				RequestID: w.messageID,
+				Status:    "error",
+				Error:     firstNonEmpty(receipt.Error, "Claude Code did not accept the message"),
+			})
+			return ""
+		}
 
-		box, err := w.bridge.ReadOutbox(w.externalSessionID)
+		box, err := w.readOutbox()
+		if w.requestScoped && box == nil && err == nil {
+			// A prompt may wait behind a long-running terminal turn. Keep its
+			// pickup window open while the live plugin is still processing it.
+			current, currentErr := w.bridge.ReadOutbox(w.externalSessionID)
+			if currentErr == nil && current != nil && current.Running() && w.bridge.Available() {
+				lastActivity = time.Now()
+				deadline = lastActivity.Add(pickupTimeout)
+			}
+		}
 		if err != nil || box == nil {
 			if stalled(nil) {
 				w.sink.TurnEnd(protocol.TurnEnd{
@@ -186,7 +209,8 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		// The outbox still shows the turn that was running when this message
 		// was queued, another plugin instance wrote it, or it predates the
 		// message itself; none of those is this message's answer.
-		stale := box.TurnID == "" || box.TurnID == w.previousID ||
+		stale := box.TurnID == "" || (!w.requestScoped && box.TurnID == w.previousID) ||
+			(w.requestScoped && box.RequestID != w.messageID) ||
 			!box.BelongsTo(w.sessionID, w.externalSessionID) ||
 			(w.turnID == "" && box.TS > 0 && box.TS < w.queuedAt)
 		if stale {
@@ -252,6 +276,15 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			})
 			return w.full
 		}
+		if box.Aborted() {
+			w.sink.TurnEnd(protocol.TurnEnd{
+				SessionID: w.sessionID,
+				TurnID:    box.TurnID,
+				RequestID: w.messageID,
+				Status:    "aborted",
+			})
+			return w.currentText()
+		}
 
 		if stalled(box) {
 			w.sink.TurnEnd(protocol.TurnEnd{
@@ -283,7 +316,8 @@ func (w *TurnWatcher) currentTurnID() string {
 	if w.turnID != "" {
 		return w.turnID
 	}
-	if box, err := w.bridge.ReadOutbox(w.externalSessionID); err == nil && box != nil &&
+	box, err := w.readOutbox()
+	if err == nil && box != nil &&
 		box.BelongsTo(w.sessionID, w.externalSessionID) && box.TurnID != w.previousID {
 		return box.TurnID
 	}
@@ -297,11 +331,18 @@ func (w *TurnWatcher) currentText() string {
 	if w.full != "" {
 		return w.full
 	}
-	box, err := w.bridge.ReadOutbox(w.externalSessionID)
+	box, err := w.readOutbox()
 	if err != nil || box == nil || !box.BelongsTo(w.sessionID, w.externalSessionID) {
 		return w.sent
 	}
 	return box.Text
+}
+
+func (w *TurnWatcher) readOutbox() (*bridge.Outbox, error) {
+	if w.requestScoped {
+		return w.bridge.ReadRequestOutbox(w.externalSessionID, w.messageID)
+	}
+	return w.bridge.ReadOutbox(w.externalSessionID)
 }
 
 // emitTools reports tool calls the plugin recorded since the last poll.
@@ -310,7 +351,11 @@ func (w *TurnWatcher) currentText() string {
 // when it finishes, so begin and end are tracked separately: an entry first
 // seen while running must still be closed on a later poll.
 func (w *TurnWatcher) emitTools(turnID string) {
-	for _, entry := range w.bridge.Tools(w.sessionID, w.externalSessionID) {
+	entries := w.bridge.Tools(w.sessionID, w.externalSessionID)
+	if w.requestScoped {
+		entries = w.bridge.RequestTools(w.externalSessionID, w.messageID)
+	}
+	for _, entry := range entries {
 		if entry.ID == "" {
 			continue
 		}
@@ -370,6 +415,9 @@ func advance(prev, next string) string {
 // streamed text is exactly what the phone needs to see update.
 func (w *TurnWatcher) emitAgents(turnID string) {
 	entries := w.bridge.Agents(w.sessionID, w.externalSessionID)
+	if w.requestScoped {
+		entries = w.bridge.RequestAgents(w.externalSessionID, w.messageID)
+	}
 	key := ""
 	for _, entry := range entries {
 		key += entry.AgentID + "\x00" +

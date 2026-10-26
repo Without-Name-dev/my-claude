@@ -112,6 +112,7 @@ export function SessionComposer({
     content: string,
     attachments: AttachedFile[],
     selections: { model?: string; permission?: string },
+    route: "message" | "steer",
   ) => Promise<boolean>
   onInterrupt: () => void
   onCommand: (command: string, options: { args: string[]; raw: string }) => Promise<CommandOutcome>
@@ -173,6 +174,7 @@ export function SessionComposer({
     !isWaitingApproval &&
     !isBlocked
   const canUseSendMessage = capabilityIsUsable(effectiveCapabilities, CAPABILITY.sendMessage, runtimeScope)
+  const canUseSteer = capabilityIsUsable(effectiveCapabilities, CAPABILITY.steer, runtimeScope)
   const canUseCommands = capabilityIsUsable(effectiveCapabilities, CAPABILITY.commands, runtimeScope)
   const canUseInterrupt = capabilityIsUsable(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
   const interruptCapability = findCapability(effectiveCapabilities, CAPABILITY.interrupt, runtimeScope)
@@ -202,7 +204,7 @@ export function SessionComposer({
     onDrop,
   } = useAttachments({ sessionId: creatingSession ? undefined : session.id, token, enabled: canUseAttachments, allowedMimeTypes })
   const canSend =
-    canUseSendMessage &&
+    (canUseSendMessage || (isRunning && canUseSteer)) &&
     !creatingSession &&
     !commandPending &&
     !interrupting &&
@@ -504,7 +506,7 @@ export function SessionComposer({
     const sent = await onSend(text, files, {
       ...(selectedModelSelection ? { model: selectedModelSelection } : {}),
       ...(selectedPermissionSelection ? { permission: selectedPermissionSelection } : {}),
-    })
+    }, isRunning && canUseSteer ? "steer" : "message")
     if (!sent && messageSubmissionSequenceRef.current === submissionId && valueRef.current === "") {
       updateValue(text)
     }

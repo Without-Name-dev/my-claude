@@ -367,7 +367,6 @@ export type SessionCreateResponse = {
 
 export type TakeoverResponse = {
   session: SessionView;
-  serverTime: string;
 };
 
 export type TimelineType =

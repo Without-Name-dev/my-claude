@@ -465,9 +465,8 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 	httpx.OK(w, map[string]any{"ok": true, "result": map[string]any{"messageId": messageID}, "error": nil})
 }
 
-// handleSteer delivers text into a turn that is already running. The Go
-// connector forwards it as a submit with action "steer"; the plugin queues it
-// like a normal prompt, which is the closest behaviour this stack offers.
+// handleSteer queues text for a live turn using the same durable timeline
+// lifecycle as an ordinary message.
 func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.User) {
 	session, ok := a.ownedSession(w, r, user)
 	if !ok {
@@ -495,7 +494,7 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	if !a.connectors.CanDeliver(session.ConnectorID) {
+	if !a.connectors.Live(session.ConnectorID, session.ExternalID) {
 		httpx.Fail(w, httpx.Conflict("no live Claude session on the connector"))
 		return
 	}
@@ -506,18 +505,17 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 	if requestID == "" {
 		requestID = store.NewID("msg")
 	}
-	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
-		RequestID:         requestID,
-		SessionID:         session.ID,
-		ExternalSessionID: session.ExternalID,
-		Text:              body.Content,
-		Action:            "steer",
-		Attachments:       submitAttachments(session.ID, files),
-	}) {
-		httpx.Fail(w, httpx.Conflict("connector is offline"))
+	if _, err := a.deliverMessage(r.Context(), session, body.Content, requestID, "steer", files); err != nil {
+		if errors.Is(err, errSessionNotLive) {
+			failSessionNotLive(w, "the conversation is not live on the desktop; open it there to continue")
+			return
+		}
+		httpx.Fail(w, err)
 		return
 	}
-	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
+	httpx.OK(w, map[string]any{
+		"ok": true, "result": map[string]any{"messageId": requestID}, "error": nil,
+	})
 }
 
 // deliverMessage records a person's message and hands it to the connector.
@@ -559,7 +557,9 @@ func (a *App) deliverMessage(
 		return session, err
 	}
 	a.publishItem(ctx, session.ID, userItemID, seq, true)
-	a.setSessionStatus(ctx, session.ID, "running")
+	if previousStatus != "running" {
+		a.setSessionStatus(ctx, session.ID, "waiting")
+	}
 
 	session, opened, err := a.sessionOpenForDelivery(ctx, session)
 	if err != nil {

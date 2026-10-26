@@ -95,9 +95,11 @@ bin/aa-connector --config ~/.agents-anywhere/connector.json
   incremental: only changed transcripts are re-sent.
 - **Drives the phone-pane plugin.** A queued message is written to the bridge;
   the plugin submits it inside the running Claude session, and the answer is
-  streamed back token by token. Messages sent during a turn stay in FIFO order;
-  `turn.begin` and `turn.end` include the submit `requestId`, so the Server can
-  publish each user's message as queued, processing, and complete independently.
+  streamed back token by token. Messages are written to Claude's durable FIFO
+  queue immediately, including while another answer streams. The plugin stores
+  each reply in a request-scoped outbox, and `turn.begin` / `turn.end` carry the
+  submit `requestId` so each user's message moves through queued, processing,
+  and complete independently.
 - **Opens a session on the desktop.** When the server asks (the "open on
   computer" action) or a message is addressed to a conversation with no live
   plugin, the connector starts a terminal with `claude --resume <id>` for an

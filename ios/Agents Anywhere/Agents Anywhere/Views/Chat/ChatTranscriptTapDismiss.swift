@@ -18,10 +18,11 @@ struct ChatTranscriptTapDismiss: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         // Only a anchor in the hierarchy: the recogniser goes on the scroll
         // view found above it, and this view never receives touches.
-        let view = UIView()
+        let view = ChatTranscriptTapAnchor()
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         context.coordinator.host = view
+        view.didMove = { [weak coordinator = context.coordinator] in coordinator?.attach() }
         context.coordinator.attach()
         return view
     }
@@ -29,7 +30,28 @@ struct ChatTranscriptTapDismiss: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.onTap = onTap
         context.coordinator.host = uiView
+        (uiView as? ChatTranscriptTapAnchor)?.didMove = { [weak coordinator = context.coordinator] in
+            coordinator?.attach()
+        }
         context.coordinator.attach()
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    private final class ChatTranscriptTapAnchor: UIView {
+        var didMove: (() -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            didMove?()
+        }
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            didMove?()
+        }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -40,25 +62,40 @@ struct ChatTranscriptTapDismiss: UIViewRepresentable {
 
         init(onTap: @escaping () -> Void) { self.onTap = onTap }
 
-        /// Installs the recogniser once the host is in the hierarchy. The
-        /// scroll view is an ancestor, so it only exists after layout.
+        /// Rebind after SwiftUI replaces the scroll view and keep native
+        /// scroll-to-top disabled for the current chat transcript.
         func attach() {
-            guard recognizer == nil, let host else { return }
+            guard let host else { return }
             DispatchQueue.main.async { [weak self, weak host] in
-                guard let self, let host, self.recognizer == nil,
+                guard let self, let host,
                       let scrollView = Self.enclosingScrollView(from: host) else { return }
+                if self.scrollView !== scrollView {
+                    if let previous = self.scrollView, let recognizer = self.recognizer {
+                        previous.removeGestureRecognizer(recognizer)
+                    }
+                    self.scrollView = scrollView
+                    self.recognizer = nil
+                }
                 // The session title/status bar is not a navigation command.
-                // UIKit's default scroll-to-top action would discard the
-                // reader's position when that area is tapped.
+                // Reapply this after SwiftUI replaces or reconfigures the
+                // underlying scroll view.
                 scrollView.scrollsToTop = false
+                guard self.recognizer == nil else { return }
                 let recognizer = UITapGestureRecognizer(target: self, action: #selector(self.handleTap))
                 // The content keeps every touch it would otherwise have had.
                 recognizer.cancelsTouchesInView = false
                 recognizer.delegate = self
                 scrollView.addGestureRecognizer(recognizer)
-                self.scrollView = scrollView
                 self.recognizer = recognizer
             }
+        }
+
+        func detach() {
+            if let scrollView, let recognizer {
+                scrollView.removeGestureRecognizer(recognizer)
+            }
+            scrollView = nil
+            recognizer = nil
         }
 
         @objc private func handleTap() {

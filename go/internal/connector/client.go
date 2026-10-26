@@ -71,21 +71,21 @@ type Client struct {
 	endMu       sync.Mutex
 	pendingEnds []protocol.TurnEnd
 
-	// activeMu guards the work this connector has accepted: the session whose
-	// message is being followed, the sessions still queued behind it, and the
-	// cancels that arrived before their message started.
-	activeMu       sync.Mutex
-	activeSession  string
-	activeExternal string
-	queued         map[string]int
-	cancelled      map[string]int
+	// activeMu guards accepted session work and cancels that arrive before a
+	// message reaches the plugin queue.
+	activeMu  sync.Mutex
+	active    map[string]string
+	queued    map[string]int
+	cancelled map[string]int
 
-	// turns is drained by a single goroutine, so one turn runs at a time even
-	// though the server may submit several.
-	turns chan protocol.Submit
+	// turns preserves server arrival order while messages are written to the
+	// plugin bridge. Watch jobs are routed separately so a streaming response
+	// never blocks later submissions.
+	turns       chan protocol.Submit
+	turnWatches chan turnWatchJob
 
 	// spawnMu guards spawnRequests: runtime session ids the server asked us to
-	// open since the last submit for them. runTurn uses it to prime the new
+	// open since the last submit for them. queueTurn uses it to prime the new
 	// conversation's queue cursor before the message is written.
 	spawnMu       sync.Mutex
 	spawnRequests map[string]time.Time
@@ -93,6 +93,7 @@ type Client struct {
 	// historyMu guards historyStamps: versions the server confirmed committing.
 	historyMu          sync.Mutex
 	historyStamps      map[string]string
+	historyFullStamps  map[string]string
 	historyRetryTimers map[string]*time.Timer
 	historyRetryReqs   map[string]protocol.HistoryRequest
 	historyQueue       chan string
@@ -112,6 +113,15 @@ type historyJob struct {
 	rerun   bool
 }
 
+type turnWatchJob struct {
+	msg protocol.Submit
+	sub *bridge.Submission
+}
+
+const turnWatchQueueSize = 256
+const sessionTurnWatchQueueSize = 128
+const pluginProtocolWait = 30 * time.Second
+
 // pendingAsk is one question awaiting an answer from the phone.
 type pendingAsk struct {
 	answers chan protocol.ApprovalAnswer
@@ -130,12 +140,15 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		Log:                log,
 		pending:            map[string]*pendingAsk{},
 		turnSessions:       map[string]string{},
+		active:             map[string]string{},
 		queued:             map[string]int{},
 		cancelled:          map[string]int{},
 		turns:              make(chan protocol.Submit, 32),
+		turnWatches:        make(chan turnWatchJob, turnWatchQueueSize),
 		spawnRequests:      map[string]time.Time{},
 		closed:             map[string]time.Time{},
 		historyStamps:      map[string]string{},
+		historyFullStamps:  map[string]string{},
 		historyRetryTimers: map[string]*time.Timer{},
 		historyRetryReqs:   map[string]protocol.HistoryRequest{},
 		historyQueue:       make(chan string, historyQueueSize),
@@ -146,6 +159,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 // Run connects and stays connected until ctx ends, backing off between tries.
 func (c *Client) Run(ctx context.Context) {
 	go c.runTurns(ctx)
+	go c.runTurnWatchers(ctx)
 	for range historyWorkerCount {
 		go c.runHistory(ctx)
 	}
@@ -369,11 +383,16 @@ func (c *Client) dispatch(env protocol.Envelope) {
 		c.queueHistory(msg)
 	case protocol.TypeHistoryAck:
 		var msg protocol.HistoryAck
-		if err := json.Unmarshal(env.Data, &msg); err != nil || msg.SessionID == "" || msg.Version == "" {
+		if err := json.Unmarshal(env.Data, &msg); err != nil ||
+			msg.SessionID == "" || msg.Version == "" || !msg.Complete {
 			return
 		}
 		c.historyMu.Lock()
-		c.historyStamps[msg.SessionID] = msg.Version
+		if msg.Full {
+			c.historyFullStamps[msg.SessionID] = msg.Version
+		} else {
+			c.historyStamps[msg.SessionID] = msg.Version
+		}
 		c.historyMu.Unlock()
 	case protocol.TypeTerminal:
 		c.handleTerminalFrame(env.Data)
@@ -400,6 +419,12 @@ func (c *Client) queueHistory(req protocol.HistoryRequest) {
 	if job := c.historyJobs[req.SessionID]; job != nil {
 		if req.Limit > job.req.Limit {
 			job.req.Limit = req.Limit
+		}
+		if req.Full {
+			job.req.Full = true
+		}
+		if req.Force {
+			job.req.Force = true
 		}
 		if job.running {
 			job.rerun = true
@@ -467,23 +492,29 @@ func (c *Client) runHistory(ctx context.Context) {
 	}
 }
 
-// runTurns processes submitted messages one at a time.
+// runTurns preserves FIFO order while writing every accepted prompt into the
+// durable plugin queue. Reply polling happens on a separate worker.
 func (c *Client) runTurns(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg := <-c.turns:
-			c.runTurn(ctx, msg)
+			c.queueTurn(ctx, msg)
 		}
 	}
 }
 
-// runTurn queues one message into the plugin and follows it to completion.
-func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
-	defer c.finishQueued(msg.SessionID)
+// queueTurn submits into Claude immediately and leaves a request-scoped
+// watcher to stream the matching response without blocking later submissions.
+func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			c.finishQueued(msg.SessionID)
+		}
+	}()
 	if c.Bridge == nil {
-		c.Log.Warn("submit received but the plugin bridge is not configured")
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
 			TurnID:    msg.RequestID,
@@ -493,8 +524,6 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		})
 		return
 	}
-	// A stop that arrived while this message waited behind another turn is
-	// answered here; the prompt never reaches the plugin.
 	if c.consumeAbort(msg.SessionID) {
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
@@ -504,9 +533,6 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		})
 		return
 	}
-	// Prime a session's cursor once before its first message is queued. This
-	// also covers an already-running terminal whose plugin predates per-session
-	// cursors; later calls leave its cursor untouched.
 	c.consumeSpawnRequest(msg.ExternalSessionID)
 	if err := c.Bridge.SeedSessionCursor(msg.ExternalSessionID); err != nil {
 		c.Log.Warn("could not prime the session's queue cursor",
@@ -517,17 +543,12 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		action = "prompt"
 	}
 	if action == "command" {
-		// A command carries a name and an argument tail; the plugin runs it
-		// through $.command.run instead of submitting it as prompt text. It
-		// never writes a turn to the outbox, so there is nothing to watch.
 		name, args := splitCommand(msg.Text)
 		if _, err := c.Bridge.SubmitCommand(msg.SessionID, msg.ExternalSessionID, msg.RequestID, name, args); err != nil {
 			c.Log.Warn("could not queue the command", "error", err)
 		}
 		return
 	}
-	// Attached files reach the model as local paths: the bridge carries text,
-	// and Claude Code opens each path with its Read tool.
 	text := msg.Text
 	if len(msg.Attachments) > 0 {
 		files, failures := c.materializeAttachments(ctx, msg)
@@ -535,8 +556,6 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 	}
 	sub, err := c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, text, action)
 	if err != nil {
-		// The server already acknowledged this message and painted the user's
-		// bubble; a log line would leave the phone waiting forever.
 		c.Log.Warn("could not queue the message", "error", err)
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
@@ -548,20 +567,106 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		return
 	}
 	c.setActive(msg.SessionID, msg.ExternalSessionID)
-	defer c.clearActive(msg.SessionID)
-	// A stop that landed while the message was being written was recorded
-	// rather than sent, because the plugin was not running the turn yet.
+	c.clearSessionClosed(msg.SessionID)
 	if c.consumeAbort(msg.SessionID) {
 		if err := c.Bridge.RequestAbort(msg.ExternalSessionID); err != nil {
 			c.Log.Warn("could not write the abort request", "error", err)
 		}
 	}
-	watcher := NewTurnWatcher(c.Bridge, c, msg.SessionID, msg.ExternalSessionID, msg.RequestID, sub)
-	// This message is the request to run again; a close recorded for the
-	// previous terminal must not end it.
-	c.clearSessionClosed(msg.SessionID)
-	watcher.Closed = func() bool { return c.sessionWasClosed(msg.SessionID) }
-	watcher.Run(ctx)
+	select {
+	case c.turnWatches <- turnWatchJob{msg: msg, sub: sub}:
+		handedOff = true
+	case <-ctx.Done():
+		c.TurnEnd(protocol.TurnEnd{
+			SessionID: msg.SessionID,
+			TurnID:    msg.RequestID,
+			RequestID: msg.RequestID,
+			Status:    "error",
+			Error:     "the connector stopped before it could track the desktop reply",
+		})
+	}
+}
+
+// runTurnWatchers keeps reply tracking independent across sessions. Each
+// session has one FIFO watcher so its turn lifecycle stays ordered.
+func (c *Client) runTurnWatchers(ctx context.Context) {
+	queues := make(map[string]chan turnWatchJob)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-c.turnWatches:
+			queue := queues[job.msg.SessionID]
+			if queue == nil {
+				queue = make(chan turnWatchJob, sessionTurnWatchQueueSize)
+				queues[job.msg.SessionID] = queue
+				go c.runSessionTurnWatchers(ctx, job.msg.SessionID, queue)
+			}
+			select {
+			case queue <- job:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) runSessionTurnWatchers(ctx context.Context, sessionID string, jobs <-chan turnWatchJob) {
+	lastTurnIDs := make(map[string]string)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-jobs:
+			requestScoped := c.waitForRequestOutbox(ctx, job.msg.ExternalSessionID)
+			watcher := NewTurnWatcher(c.Bridge, c, job.msg.SessionID, job.msg.ExternalSessionID,
+				job.msg.RequestID, job.sub)
+			watcher.Closed = func() bool { return c.sessionWasClosed(job.msg.SessionID) }
+			if requestScoped {
+				watcher.requestScoped = true
+				go func() {
+					watcher.Run(ctx)
+					c.clearActive(sessionID)
+					c.finishQueued(sessionID)
+				}()
+				continue
+			}
+			if previous := lastTurnIDs[job.msg.SessionID]; previous != "" {
+				watcher.previousID = previous
+			}
+			watcher.Run(ctx)
+			if !requestScoped && watcher.turnID != "" {
+				lastTurnIDs[job.msg.SessionID] = watcher.turnID
+			}
+			c.clearActive(sessionID)
+			c.finishQueued(sessionID)
+		}
+	}
+}
+
+func (c *Client) waitForRequestOutbox(ctx context.Context, sessionID string) bool {
+	if c.Bridge == nil || sessionID == "" {
+		return false
+	}
+	deadline := time.NewTimer(pluginProtocolWait)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if c.Bridge.RequestOutboxSupported(sessionID) {
+			return true
+		}
+		if sessionIsLive(c.Bridge, sessionID) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 // TurnBegin implements TurnSink.
@@ -661,6 +766,7 @@ func (c *Client) finishQueued(sessionID string) {
 	if c.queued[sessionID] <= 1 {
 		delete(c.queued, sessionID)
 		delete(c.cancelled, sessionID)
+		delete(c.active, sessionID)
 	} else {
 		c.queued[sessionID]--
 	}
@@ -671,8 +777,7 @@ func (c *Client) finishQueued(sessionID string) {
 // the runtime id the plugin knows it by.
 func (c *Client) setActive(sessionID, externalSessionID string) {
 	c.activeMu.Lock()
-	c.activeSession = sessionID
-	c.activeExternal = externalSessionID
+	c.active[sessionID] = externalSessionID
 	c.activeMu.Unlock()
 }
 
@@ -680,8 +785,8 @@ func (c *Client) setActive(sessionID, externalSessionID string) {
 // it.
 func (c *Client) clearActive(sessionID string) {
 	c.activeMu.Lock()
-	if c.activeSession == sessionID {
-		c.activeSession, c.activeExternal = "", ""
+	if c.queued[sessionID] <= 1 {
+		delete(c.active, sessionID)
 	}
 	c.activeMu.Unlock()
 }
@@ -695,11 +800,11 @@ func (c *Client) abortTarget(sessionID, externalSessionID string) (target string
 	}
 	c.activeMu.Lock()
 	defer c.activeMu.Unlock()
-	if c.activeSession == sessionID {
+	if activeExternal, active := c.active[sessionID]; active {
 		if externalSessionID != "" {
 			return externalSessionID, false, true
 		}
-		return c.activeExternal, false, true
+		return activeExternal, false, true
 	}
 	if _, ok := c.queued[sessionID]; !ok {
 		return "", false, false
@@ -1026,11 +1131,36 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 			return
 		}
 		c.historyMu.Lock()
-		previous, seen := c.historyStamps[req.SessionID]
+		previousTail := c.historyStamps[req.SessionID]
+		previousFull := c.historyFullStamps[req.SessionID]
 		c.historyMu.Unlock()
-		if seen && previous == version {
+		if (!req.Force && req.Full && previousFull == version) ||
+			(!req.Full && (previousTail == version || previousFull == version)) {
 			return
 		}
+	}
+	if req.Full {
+		sentItems := 0
+		err := ReadHistoryPages(path, historyPageItems, func(items []protocol.HistoryItem, complete bool) error {
+			frame := protocol.History{
+				SessionID: req.SessionID,
+				Version:   version,
+				Full:      true,
+				Complete:  &complete,
+				Items:     items,
+			}
+			if err := c.send(protocol.TypeHistory, frame); err != nil {
+				return err
+			}
+			sentItems += len(items)
+			return nil
+		})
+		if err != nil {
+			c.Log.Debug("could not send full history", "session", req.SessionID, "error", err)
+			return
+		}
+		c.Log.Info("sent full history", "session", req.SessionID, "items", sentItems)
+		return
 	}
 	items, err := ReadHistory(path, req.Limit)
 	if err != nil {
@@ -1059,6 +1189,12 @@ func (c *Client) scheduleHistoryRetry(req protocol.HistoryRequest, delay time.Du
 		pending := c.historyRetryReqs[req.SessionID]
 		if req.Limit > pending.Limit {
 			pending.Limit = req.Limit
+		}
+		if req.Full {
+			pending.Full = true
+		}
+		if req.Force {
+			pending.Force = true
 		}
 		c.historyRetryReqs[req.SessionID] = pending
 		c.historyMu.Unlock()

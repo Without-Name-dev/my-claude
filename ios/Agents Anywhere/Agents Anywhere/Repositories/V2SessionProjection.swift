@@ -83,7 +83,7 @@ struct V2SessionProjection {
         case "timeline.item_created", "timeline.item_updated":
             merge([try item("item", in: event)], history: false)
         case "timeline.snapshot":
-            replaceTimeline(try items("items", in: event), hasMore: false)
+            replaceTimeline(try items("items", in: event), hasMore: event.payload["hasMore"]?.boolValue ?? false)
         case "runtime.notice.snapshot":
             data.notices = try payload("notices", in: event)
         case "runtime.notice.updated":

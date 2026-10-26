@@ -188,10 +188,20 @@ export class AuthApi {
     return this.client.delete<AuthMe>("/auth/me/avatar", { token });
   }
 
-  listUsers(token: string, page?: { limit: number; offset: number }): Promise<AdminUserListResponse> {
+  listUsers(
+    token: string,
+    page?: { limit: number; offset: number; role?: string; search?: string },
+  ): Promise<AdminUserListResponse> {
+    const query: Record<string, string> = {}
+    if (page) {
+      query.limit = String(page.limit)
+      query.offset = String(page.offset)
+      if (page.role && page.role !== "all") query.role = page.role
+      if (page.search?.trim()) query.search = page.search.trim()
+    }
     return this.client.get<AdminUserListResponse>("/admin/users", {
       token,
-      ...(page ? { query: { limit: String(page.limit), offset: String(page.offset) } } : {}),
+      ...(page ? { query } : {}),
     });
   }
 
