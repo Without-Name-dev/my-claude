@@ -34,6 +34,10 @@ const historyQuietWindow = 10 * time.Second
 // historyRefreshLimit bounds one periodic import.
 const historyRefreshLimit = 80
 
+// historyItemPublishLimit is the number of imported rows above which a full
+// timeline reset is published instead of one event per item.
+const historyItemPublishLimit = 12
+
 // refreshLiveHistories keeps the server's timeline in step with every live
 // conversation's transcript.
 func (a *App) refreshLiveHistories(ctx context.Context) {
@@ -186,6 +190,8 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	known := a.knownMessages(ctx, session.ID)
 	var seq int64
 	changed := 0
+	written := make([]store.TimelineItem, 0, len(msg.Items))
+	created := make([]bool, 0, len(msg.Items))
 	err = a.db.WithSession(session.ID, func() error {
 		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			rows := make([]store.TimelineItem, 0, len(msg.Items))
@@ -198,6 +204,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 				if err != nil && !errors.Is(err, store.ErrNotFound) {
 					return err
 				}
+				isNew := errors.Is(err, store.ErrNotFound)
 				if err == nil {
 					if historyItemUnchanged(existing, row) {
 						continue
@@ -213,6 +220,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 					}
 				}
 				rows = append(rows, row)
+				created = append(created, isNew)
 			}
 			if len(rows) == 0 {
 				return nil
@@ -227,6 +235,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 				if err := store.UpsertTimelineItem(ctx, tx, row, store.NowMS()); err != nil {
 					return err
 				}
+				written = append(written, row)
 			}
 			changed = len(rows)
 			return nil
@@ -238,6 +247,19 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	}
 	if changed == 0 {
 		a.log.Debug("history already in sync", "session", session.ID, "items", len(msg.Items))
+		return
+	}
+
+	// A periodic refresh usually brings one or two messages. Publishing those
+	// as item events keeps the phone's list intact; a full timeline reset for
+	// every import made the page rebuild and jump while the reader was
+	// scrolling. A first import (a whole page) still resets, which is cheaper
+	// than hundreds of events and is the one case where the list is new anyway.
+	if changed <= historyItemPublishLimit {
+		for i, row := range written {
+			a.publishItem(ctx, session.ID, row.ID, row.UpdatedSeq, created[i])
+		}
+		a.log.Info("imported transcript", "session", session.ID, "items", changed, "mode", "items")
 		return
 	}
 

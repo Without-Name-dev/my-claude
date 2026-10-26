@@ -28,6 +28,9 @@ nonisolated struct TimelineScrollState: Equatable {
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
+    /// The offset the page settled at while it owned the tail. Nil until the
+    /// first return completes.
+    private var bottomOffset: CGFloat?
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
@@ -36,11 +39,26 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// The end marker is authoritative: content height is only estimated for a
-    /// lazy column, and gating following on that estimate stopped the page from
-    /// ever re-arming — a new message then arrived below the fold with no way
-    /// back except the pill. The marker's own callback is the reliable signal.
-    var atContentBottom: Bool { tail.isAtBottom }
+    /// Neither the end marker nor the content height can answer this on their
+    /// own. The marker's visibility callback does not fire reliably for a small
+    /// clear overlay, so it can keep claiming "visible" long after the reader
+    /// swiped up — which made every streamed chunk pull the page back to the
+    /// bottom. Content height is only an estimate for a lazy column, so using it
+    /// stopped the page from ever re-arming.
+    ///
+    /// The offset itself is exact: the tail offset is the largest one the page
+    /// settles at while it owns the tail, and the reader is at the tail when the
+    /// current offset is still that one.
+    var atContentBottom: Bool {
+        guard let bottomOffset, viewport.isMeasured else { return tail.isAtBottom }
+        return viewport.offsetY >= bottomOffset - Self.bottomTolerance
+    }
+    /// How far above the remembered tail still counts as being at it.
+    ///
+    /// A few points of rounding and one inset adjustment, no more: anything
+    /// larger would keep following alive after a deliberate small swipe, which
+    /// is the bug this remembers the offset to avoid.
+    static let bottomTolerance: CGFloat = 12
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
@@ -173,7 +191,12 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func complete(_ command: BottomCommand) -> Bool {
         guard activeCommand == command else { return false }
         activeCommand = nil
-        if returningToBottom { mode = interactionIsPresented ? .reading : .following }
+        if returningToBottom {
+            mode = interactionIsPresented ? .reading : .following
+            // The return landed on the tail: this offset is the bottom, whether
+            // it is higher or lower than the one remembered before.
+            if viewport.isMeasured { bottomOffset = viewport.offsetY }
+        }
         return true
     }
 

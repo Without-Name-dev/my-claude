@@ -330,7 +330,11 @@ struct ChatTimelineView: View {
         latestLoadRequest = scrolling.navigationGeneration
     }
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
-        withAnimation(reduceMotion ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
+        // While a reply streams, the content grows several times a second. An
+        // animation per growth never settles and reads as the page jittering,
+        // so the correction is instant; an explicit return still animates.
+        let streaming = model.isRunning
+        withAnimation(reduceMotion || streaming ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
             completionCriteria: .removed) {
             // Let the scroll view resolve its own safe-area/inset coordinate
             // system. The edge target is released when this animation finishes
@@ -431,9 +435,6 @@ private struct ChatTimelineContent: View, Equatable {
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
-    /// Only used to pick which single row carries the history measurement.
-    /// Visibility transitions are cheap; no geometry is measured per group.
-    @State private var visibleGroupIDs: Set<String> = []
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
@@ -450,11 +451,13 @@ private struct ChatTimelineContent: View, Equatable {
         let noticesByTarget = Dictionary(grouping: visibleNotices.filter { $0.timelineTargetID != nil }) { $0.timelineTargetID! }
         let actions = TimelineTurnActions.build(groups: groups, suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
-        // Measure one row near the reader, never every group. During a history
-        // load the origin group is pinned so its coordinate remains comparable;
-        // otherwise use the first group currently on screen.
+        // Measure one row, never every group. During a history load the origin
+        // group is pinned so its coordinate stays comparable; at any other time
+        // the newest group is enough, and it costs nothing to find. Tracking
+        // which groups are on screen meant a state write for every row on every
+        // scroll frame, which re-evaluated this whole body — the main source of
+        // jank while scrolling.
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
-            ?? groups.first { visibleGroupIDs.contains($0.id) }
             ?? groups.last
         let anchorEdge = historyAnchorEdge(for: anchorGroup)
         // A lazy column builds and lays out only the rows around the viewport.
@@ -488,13 +491,6 @@ private struct ChatTimelineContent: View, Equatable {
                     inlineNotices: group.rows.flatMap { noticesByTarget[$0.id] ?? [] })
                     .equatable()
                     .id(group.id)
-                    .onScrollVisibilityChange(threshold: 0.01) { visible in
-                        if visible {
-                            if !visibleGroupIDs.contains(group.id) { visibleGroupIDs.insert(group.id) }
-                        } else if visibleGroupIDs.contains(group.id) {
-                            visibleGroupIDs.remove(group.id)
-                        }
-                    }
                     .background {
                         // One measurement for the anchor, not one per group. A
                         // lazy row only runs this when it is actually realized.
