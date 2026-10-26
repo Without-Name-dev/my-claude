@@ -45,6 +45,12 @@ func InsertSubmitOutbox(ctx context.Context, tx *sql.Tx, item SubmitOutboxItem) 
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
 		item.SessionID, item.RequestID, item.ConnectorID, item.ExternalSessionID,
 		string(item.Payload), item.PayloadHash, item.PreviousStatus, item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE submit_outbox SET enqueue_seq = rowid
+		WHERE session_id = ? AND request_id = ?`, item.SessionID, item.RequestID)
 	return err
 }
 
