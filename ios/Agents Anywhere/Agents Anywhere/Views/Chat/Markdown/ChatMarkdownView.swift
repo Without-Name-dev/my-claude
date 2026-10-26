@@ -68,7 +68,9 @@ struct ChatMarkdownView: View {
             guard !Task.isCancelled, case .success(let parsed) = result else { return }
             parseState = parsed.state
             if !isStreaming {
-                ChatMarkdownCache.shared.store(parsed, for: text, resolvesFileReferences: resolvesFileReferences)
+                ChatMarkdownCache.shared.store(
+                    ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
+                    for: text, resolvesFileReferences: resolvesFileReferences)
             }
             let next = parsed.blocks
             guard blocks != next else { return }
