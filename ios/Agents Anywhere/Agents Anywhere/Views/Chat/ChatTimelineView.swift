@@ -629,7 +629,7 @@ private extension TimelineViewport {
     var value: TimelineHistoryLayout?
 }
 
-private struct TimelineHistoryRowFrame: Equatable {
+private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
     let minY: CGFloat
     let maxY: CGFloat
 }
