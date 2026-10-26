@@ -307,6 +307,9 @@ final class SessionChatModel {
     }
 
     func send(_ text: String) async {
+        let selectedAttachments = session.composer.attachments
+        guard session.canSend, !session.composer.isComposing,
+              selectedAttachments.isEmpty || canAttach else { return }
         if let command = await catalogCommand(for: text) {
             // Do not write the tap-time snapshot back: the catalog read can
             // await, and a keystroke that landed meanwhile must survive.
@@ -321,14 +324,8 @@ final class SessionChatModel {
             fail(String(localized: "暂时读不到指令列表，请稍后重试。"))
             return
         }
-        guard !isWorking, session.canSend, !session.composer.isComposing else { return }
-        let draft = session.composer
-        let selected = draft.attachments
-        guard selected.isEmpty || canAttach else { return }
-        isWorking = true
         error = nil
-        defer { isWorking = false }
-        _ = await session.sendDraft { pending in
+        _ = await session.sendDraft(content: text, attachments: selectedAttachments) { pending in
                 for attachment in pending.attachments where attachment.uploaded == nil {
                     let uploaded = try await self.attachments.upload(sessionId: self.session.id, attachments: [attachment.local])
                     guard self.session.isValid, !Task.isCancelled else { throw CancellationError() }

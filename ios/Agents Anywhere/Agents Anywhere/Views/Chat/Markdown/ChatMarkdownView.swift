@@ -2,7 +2,6 @@ import SwiftUI
 import Textual
 
 extension EnvironmentValues {
-    @Entry var chatLayoutTraceOwner = "markdown"
     /// One Dynamic Type step below body; every block scales from this.
     @Entry var chatMarkdownFont: Font = .callout
 }
@@ -145,7 +144,6 @@ private struct MarkdownBlockView: View, Equatable {
     @Environment(\.dynamicTypeSize) private var dynamicType
     @Environment(\.displayScale) private var displayScale
     @Environment(\.layoutDirection) private var direction
-    @Environment(\.chatLayoutTraceOwner) private var traceOwner
     @Environment(\.chatMarkdownFont) private var font
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -172,7 +170,6 @@ private struct MarkdownBlockView: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .traceChatLayout("markdown:\(traceOwner):\(block.id):layout")
         .task(id: RevealPhase(isStreaming: isStreaming, isTail: isTail)) {
             // Opening static history must not schedule delayed state changes
             // for every paragraph. A live append still settles completed blocks.

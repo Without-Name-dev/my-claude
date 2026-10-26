@@ -18,17 +18,15 @@ struct SessionTimelineGroupView: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             content
-                .traceChatLayout("group-content:\(group.id)")
             if let turnAction {
                 SessionTurnReviewFooter(action: turnAction, root: chat.session.metadata?.cwd,
                     hasOlderItems: chat.session.hasOlderItems, onFile: onFile)
                     .equatable()
                 if !turnAction.replies.isEmpty {
-                    SessionTurnActions(action: turnAction).equatable().traceChatLayout("actions:\(group.id)")
+                    SessionTurnActions(action: turnAction).equatable()
                 }
             }
         }
-        .traceChatLayout("group:\(group.id)", state: "footer=\(turnAction != nil)")
     }
     @ViewBuilder private var content: some View {
         if group.kind == .single { rows }
@@ -70,7 +68,7 @@ struct SessionTimelineEventView: View {
                 TimelineMarkerRow(title: value.title, symbol: value.symbol, status: row.value.status)
             } else {
                 TimelineFold(id: row.id, title: value.title, symbol: value.symbol, status: row.value.status, disclosures: disclosures) {
-                    ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true,
+                    ChatMarkdownView(text: row.text, isStreaming: row.value.isStreamingText, resolvesFileReferences: true,
                                      layoutGeneration: row.layoutGeneration)
                         .padding(.leading, 24).foregroundStyle(.secondary)
                         // Reasoning stays well below the reply text.

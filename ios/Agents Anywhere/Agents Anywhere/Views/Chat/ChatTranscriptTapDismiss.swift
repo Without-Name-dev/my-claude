@@ -47,6 +47,10 @@ struct ChatTranscriptTapDismiss: UIViewRepresentable {
             DispatchQueue.main.async { [weak self, weak host] in
                 guard let self, let host, self.recognizer == nil,
                       let scrollView = Self.enclosingScrollView(from: host) else { return }
+                // The session title/status bar is not a navigation command.
+                // UIKit's default scroll-to-top action would discard the
+                // reader's position when that area is tapped.
+                scrollView.scrollsToTop = false
                 let recognizer = UITapGestureRecognizer(target: self, action: #selector(self.handleTap))
                 // The content keeps every touch it would otherwise have had.
                 recognizer.cancelsTouchesInView = false

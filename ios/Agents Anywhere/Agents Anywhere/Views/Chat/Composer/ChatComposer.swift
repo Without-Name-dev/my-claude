@@ -49,18 +49,18 @@ struct ChatComposer: View {
                         NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
                     }
 
-                    Button(action: isStreaming ? onStop : onSend) {
-                        AppSymbol(isStreaming ? "stop.fill" : "arrow.up", size: isStreaming ? 13 : 18)
+                    Button(action: onSend) {
+                        AppSymbol("arrow.up", size: 18)
                             .contentTransition(.symbolEffect(.replace))
                             .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background(AppTheme.primaryControlBackground(colorScheme).opacity((isStreaming ? canStop : canSend && draft.canAttemptSend) && !isBusy ? 1 : 0.42), in: Circle())
+                            .background(AppTheme.primaryControlBackground(colorScheme).opacity((canSend && draft.canAttemptSend) && !isBusy ? 1 : 0.42), in: Circle())
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(isBusy || (isStreaming ? !canStop : !canSend || !draft.canAttemptSend))
-                    .accessibilityLabel(isStreaming ? String(localized: "停止生成") : String(localized: "发送消息"))
+                    .disabled(isBusy || !canSend || !draft.canAttemptSend)
+                    .accessibilityLabel(String(localized: "发送消息"))
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
                     .accessibilityIdentifier("chat.composer.send")
 
@@ -75,6 +75,18 @@ struct ChatComposer: View {
                         .accessibilityLabel(String(localized: "指令"))
                         .accessibilityAddTraits(commandsActive ? .isSelected : [])
                         .accessibilityIdentifier("chat.composer.commands")
+                    }
+                    if isStreaming {
+                        Button(action: onStop) {
+                            AppSymbol("stop.fill", size: 13)
+                                .foregroundStyle(.red)
+                                .frame(width: controls.touchTarget, height: controls.touchTarget)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canStop || isBusy)
+                        .accessibilityLabel(String(localized: "停止生成"))
+                        .accessibilityIdentifier("chat.composer.stop")
                     }
                 }
             }

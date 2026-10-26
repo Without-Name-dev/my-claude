@@ -34,7 +34,8 @@ struct SessionTimelineRow: View, Equatable {
             case let .message(message):
                 let files = chat.session.attachmentPreviews.resolve(message.attachments, clientID: row.value.source["clientMessageId"]?.stringValue)
                 if row.value.role == .user {
-                    UserMessageBubble(text: row.text, attachments: files, onAttachment: onAttachment, loadThumbnail: chat.thumbnail)
+                    UserMessageBubble(text: row.text, attachments: files, onAttachment: onAttachment,
+                        loadThumbnail: chat.thumbnail, dispatchStatus: row.value.status)
                 } else {
                     VStack(alignment: .leading, spacing: 14) {
                         markdown
@@ -57,15 +58,13 @@ struct SessionTimelineRow: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .traceChatLayout("row:\(row.id)", state: "generation=\(row.layoutGeneration), status=\(row.value.status.rawValue)")
         // Long presses belong to the text selection interaction inside the row.
         // A row-wide context menu would intercept them and highlight the item.
     }
 
     private var markdown: some View {
-        ChatMarkdownView(text: row.text, isStreaming: row.isRevealing, resolvesFileReferences: true,
+        ChatMarkdownView(text: row.text, isStreaming: row.value.isStreamingText, resolvesFileReferences: true,
                          layoutGeneration: row.layoutGeneration)
-            .environment(\.chatLayoutTraceOwner, row.id)
             .frame(minHeight: row.value.isStreamingText ? lineHeight : nil, alignment: .topLeading)
     }
 }
@@ -76,6 +75,7 @@ struct UserMessageBubble: View {
     var onAttachment: (V2AttachmentContent) -> Void = { _ in }
     var loadThumbnail: (V2AttachmentContent) async throws -> Data? = { _ in nil }
     var isPending = false
+    var dispatchStatus: V2TimelineItemStatus?
     var onDeliveryIssue: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
     var body: some View {
@@ -97,6 +97,15 @@ struct UserMessageBubble: View {
                 if isPending {
                     ProgressView().progressViewStyle(.circular).controlSize(.small)
                         .frame(width: 18, height: 44).offset(x: -26).accessibilityLabel(String(localized: "正在发送消息"))
+                } else if dispatchStatus == .pending || dispatchStatus == .running {
+                    Text(dispatchStatus == .pending ? String(localized: "排队中") : String(localized: "处理中"))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                        .frame(width: 44, height: 44, alignment: .trailing).offset(x: -48)
+                        .accessibilityLabel(dispatchStatus == .pending ? String(localized: "消息等待处理") : String(localized: "消息正在处理"))
+                } else if dispatchStatus == .failed || dispatchStatus == .cancelled {
+                    Text(dispatchStatus == .failed ? String(localized: "发送失败") : String(localized: "已取消"))
+                        .font(.caption2).foregroundStyle(.red).lineLimit(1).fixedSize()
+                        .frame(width: 44, height: 44, alignment: .trailing).offset(x: -48)
                 } else if let onDeliveryIssue {
                     Button(action: onDeliveryIssue) {
                         AppSymbol("exclamationmark.circle").foregroundStyle(.red).frame(width: 24, height: 44)

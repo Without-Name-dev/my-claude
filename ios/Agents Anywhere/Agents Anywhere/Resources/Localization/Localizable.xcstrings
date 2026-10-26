@@ -11010,6 +11010,41 @@
         }
       }
     },
+    "排队中": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Queued" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "排队中" } }
+      }
+    },
+    "处理中": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Processing" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "处理中" } }
+      }
+    },
+    "发送失败": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Send failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "发送失败" } }
+      }
+    },
+    "消息等待处理": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Message waiting to be processed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "消息等待处理" } }
+      }
+    },
+    "消息正在处理": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Message is processing" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "消息正在处理" } }
+      }
+    },
     "已复制": {
       "comment": "Shared with Web: common.copied. Sync with ios/scripts/web_copy.py.",
       "extractionState": "manual",

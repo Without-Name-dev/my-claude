@@ -73,7 +73,6 @@ struct SessionChatView: View, Equatable {
                     VStack(spacing: 0) {
                         SessionInteractionDock(chat: model,
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
-                            .traceChatLayout("interaction-dock")
                         ChatComposerDock(draft: session.composer, settings: model.settings,
                             maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
                             canSend: session.canSend, canAttach: model.canAttach,
@@ -86,7 +85,6 @@ struct SessionChatView: View, Equatable {
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
                             onApplySettings: model.applySettings, applyError: { model.settingsError },
                             onDraftChange: { model.session.draftDidChange() })
-                            .traceChatLayout("composer-dock")
                     }
                     .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
                     // Native safe-area layout owns both the visible scroll
@@ -135,13 +133,6 @@ struct SessionChatView: View, Equatable {
                         .disabled(!model.canCloseTerminal)
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
-                    Button(ChatScrollLog.shared.isEnabled
-                        ? String(localized: "关闭滚动诊断")
-                        : String(localized: "开启滚动诊断"),
-                        systemImage: "waveform.path.ecg") {
-                        ChatScrollLog.shared.isEnabled.toggle()
-                        ChatScrollLog.shared.clear()
-                    }
                 } label: { AppSymbol("ellipsis") }
                 .accessibilityLabel(String(localized: "会话菜单"))
             }

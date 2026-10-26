@@ -33,7 +33,7 @@ struct ChatComposerDock: View {
     @State private var picker: AttachmentPicker?
     @State private var photos: [PhotosPickerItem] = []
     @State private var attachmentError: String?
-    @State private var isSending = false
+    @State private var isPreparingSend = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
 
@@ -45,7 +45,7 @@ struct ChatComposerDock: View {
                 CommandSuggestionPanel(chat: sessionChat, draft: draft, forced: $showsCommandMenu)
             }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                canSend: canSend, canStop: canStop, isBusy: isBusy || isSending || importCount > 0,
+                canSend: canSend, canStop: canStop, isBusy: isBusy || isPreparingSend || importCount > 0,
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
@@ -85,11 +85,14 @@ struct ChatComposerDock: View {
     }
 
     private func send() {
-        guard !isSending, !isBusy, importCount == 0, canSend, !isStreaming else { return }
-        isSending = true
+        guard !isPreparingSend, !isBusy, importCount == 0, canSend else { return }
+        isPreparingSend = true
         Task { @MainActor in
-            defer { isSending = false }
-            guard let text = await editor.committedTextForSend() else { return }
+            guard let text = await editor.committedTextForSend() else {
+                isPreparingSend = false
+                return
+            }
+            isPreparingSend = false
             await onSend(text)
         }
     }

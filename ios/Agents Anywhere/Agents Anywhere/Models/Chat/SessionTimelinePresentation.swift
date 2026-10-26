@@ -8,54 +8,35 @@ final class ChatTimelineRowModel: Identifiable {
     private(set) var value: V2TimelineItem
     private(set) var structure: TimelineRowStructure
     private(set) var text: String
-    private(set) var isRevealing = false
     private(set) var layoutGeneration = 0
-    @ObservationIgnored private(set) var settlesAt: TimeInterval = 0
     @ObservationIgnored private var hasFlushed = false
     @ObservationIgnored private var entryCache: (cwd: String?, entry: TimelineEntryPresentation)?
-    /// False while a streaming batch withholds the final glyph of the received text.
-    @ObservationIgnored private var displaysFullText = false
     /// Captured by the Equatable row wrapper. The reference itself cannot be
     /// compared for content changes because both sides see the same mutations.
     @ObservationIgnored private(set) var contentRevision = 0
 
-    init(_ value: V2TimelineItem, animate: Bool = false) {
+    init(_ value: V2TimelineItem) {
         id = value.id; self.value = value
         structure = TimelineRowStructure(value)
-        text = animate ? "" : value.displayText
+        text = value.displayText
     }
 
-    /// Returns true when newly displayed text starts a reveal batch.
-    @discardableResult
-    func flush(_ next: V2TimelineItem, animate: Bool, now: TimeInterval) -> Bool {
+    func flush(_ next: V2TimelineItem) {
         // Unchanged rows neither recompute their structure nor rescan their text.
-        if hasFlushed && value == next && (animate || displaysFullText) { settle(now: now); return false }
+        if hasFlushed && value == next { return }
         hasFlushed = true
         var changed = false
         let received = next.displayText
-        let appending = received.hasPrefix(text)
         // Snapshots/corrections are authoritative replacements, not token deltas.
-        if !appending { layoutGeneration += 1; changed = true }
-        let safeText = animate && appending && next.isStreamingText && !received.isEmpty
-            ? String(received.dropLast()) : received
-        let displayed = safeText.hasPrefix(text) || !appending ? safeText : received
-        displaysFullText = displayed == received
-        var started = false
-        if displayed != text {
-            isRevealing = animate && appending
-            started = isRevealing
-            if isRevealing { settlesAt = now + ReplyPresentation.revealSeconds + ReplyPresentation.drawSlack }
-            text = displayed
+        if !received.hasPrefix(text) { layoutGeneration += 1; changed = true }
+        if received != text {
+            text = received
             changed = true
         }
         if value != next { value = next; entryCache = nil; changed = true }
         let nextStructure = TimelineRowStructure(next)
         if structure != nextStructure { structure = nextStructure; changed = true }
-        let wasRevealing = isRevealing
-        if !animate || now >= settlesAt { isRevealing = false }
-        if wasRevealing != isRevealing { changed = true }
         if changed { contentRevision &+= 1 }
-        return started
     }
 
     /// Tool/marker rows parse their payload once per item version instead of
@@ -67,20 +48,11 @@ final class ChatTimelineRowModel: Identifiable {
         return entry
     }
 
-    /// The drawing clock follows the last revealed batch, not the item's
-    /// running status. A tool wait or thinking pause stops redrawing; the next
-    /// appended text starts a new batch.
-    func settle(now: TimeInterval) {
-        if isRevealing && now >= settlesAt {
-            isRevealing = false
-            contentRevision &+= 1
-        }
-    }
 }
 
 /// Receives full repository projections without exposing each transport frame to
-/// SwiftUI. Only flush() publishes rows. Received text waits in `pending` while
-/// the previous batch reveals; the next batch goes on screen when it ends.
+/// SwiftUI. Only flush() publishes rows. Transport updates are coalesced in
+/// `pending`, and the visible row advances to the latest text on the next tick.
 @MainActor @Observable
 final class SessionTimelinePresentation {
     private(set) var rows: [ChatTimelineRowModel] = []
@@ -95,19 +67,15 @@ final class SessionTimelinePresentation {
     private(set) var historyInsertionRevision = 0
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: ChatTimelineRowModel] = [:]
     @ObservationIgnored private var pending: [V2TimelineItem]?
-    @ObservationIgnored private var animatePending = false
-    @ObservationIgnored private var initialized = false
     @ObservationIgnored private var lastConnection: V2SessionConnectionState = .inactive
     @ObservationIgnored private var lastActivityEventID: String?
     @ObservationIgnored private var activityPendingBoundary: String?
     @ObservationIgnored private weak var repository: V2SessionRepository?
     @ObservationIgnored private var activityResyncTask: Task<Void, Never>?
     @ObservationIgnored private var wake: AsyncStream<Void>.Continuation?
-    /// When the newest reveal batch ends and the buffer may publish again.
-    @ObservationIgnored private(set) var nextBatchAt: TimeInterval = 0
 
     func presentOpening(_ items: [V2TimelineItem], pendingMessages: [V2PendingMessage]) {
-        stage(items, animate: false)
+        stage(items)
         flush()
         synchronizePending(pendingMessages)
     }
@@ -116,8 +84,7 @@ final class SessionTimelinePresentation {
         defer { lastConnection = observation.connection }
         if let event = observation.data?.lastExtensionEvent { receiveActivity(event) }
         guard let data = observation.data else { return }
-        stage(data.items, animate: initialized && lastConnection == .connected && observation.connection == .connected)
-        initialized = true
+        stage(data.items)
         // `lastExtensionEvent` can be a running snapshot from before the view
         // reopened, and the server replays neither it nor the final empty
         // update on a reconnect. Ask for the authoritative set on every fresh
@@ -158,49 +125,38 @@ final class SessionTimelinePresentation {
         if subagentActivity != activity { subagentActivity = activity }
     }
 
-    func stage(_ items: [V2TimelineItem], animate: Bool) {
+    func stage(_ items: [V2TimelineItem]) {
         pending = items.filter(\.isVisibleInChat)
-        // Once a recovery snapshot is staged, preserve its snap semantics until
-        // that tick even if a live event arrives immediately afterwards.
-        animatePending = pendingWasStaged ? animatePending && animate : animate
-        pendingWasStaged = true
         wake?.yield(())
     }
-    @ObservationIgnored private var pendingWasStaged = false
 
-    func flush(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    func flush() {
         if let pending {
-            let previousTail = rows.last?.value.orderSeq ?? Int.min
             let previousFirst = rows.first?.value.orderSeq
-            var started = false
             var updated: [ChatTimelineRowModel] = []
             updated.reserveCapacity(pending.count)
             var orderChanged = pending.count != rows.count
             for (index, value) in pending.enumerated() {
                 let existing = rowsByID[value.id]
-                // A streaming batch republishes the whole projection with one
+                // A live batch republishes the whole projection with one
                 // row changed. A row that is already published at this position
                 // and still carries the same version fields has nothing to do:
                 // skip it before `flush` deep-compares its JSON payload again.
                 // New rows are absent from `rows`, so they never take this path.
-                // Non-streaming batches take the full path on purpose: a final
-                // non-animated flush is how a withheld trailing glyph is shown.
-                if animatePending, let existing, index < rows.count, rows[index] === existing,
+                if let existing, index < rows.count, rows[index] === existing,
                    existing.value.matchesPresentationVersion(of: value) {
                     updated.append(existing)
                     continue
                 }
-                let animate = animatePending && (existing != nil || value.orderSeq > previousTail)
                 let row: ChatTimelineRowModel
                 if let existing { row = existing } else {
-                    row = ChatTimelineRowModel(value, animate: animate && value.isAssistantText)
+                    row = ChatTimelineRowModel(value)
                     rowsByID[value.id] = row
                 }
-                if row.flush(value, animate: animate, now: now) { started = true }
+                row.flush(value)
                 if !orderChanged, rows[index] !== row { orderChanged = true }
                 updated.append(row)
             }
-            if started { nextBatchAt = now + ReplyPresentation.batchInterval }
             if orderChanged {
                 // An older page changes the first published row. Publish it in
                 // a transaction with animations disabled; even if a caller has
@@ -226,9 +182,8 @@ final class SessionTimelinePresentation {
                 }
             }
             if !hasPresentedSnapshot { hasPresentedSnapshot = true }
-            self.pending = nil; pendingWasStaged = false
+            self.pending = nil
         }
-        for row in rows where row.isRevealing { row.settle(now: now) }
     }
 
     func run(sessionID: V2SessionID, repository: V2SessionRepository) async {
@@ -253,30 +208,16 @@ final class SessionTimelinePresentation {
                 for await _ in signal.stream {
                     guard !Task.isCancelled, let self else { return }
                     repeat {
-                        // Text received during a reveal waits for it to end, then
-                        // goes on screen as one batch. Text after a pause shows at
-                        // once. Without new text, poll briefly to notice arrivals
-                        // and settle rows whose reveal has ended.
-                        let now = ProcessInfo.processInfo.systemUptime
-                        // Without new text, sleep until the earliest reveal ends
-                        // instead of waking at a fixed cadence.
-                        let wait = self.pending != nil ? self.nextBatchAt - now
-                            : max(Self.minimumIdleWait, (self.rows.filter(\.isRevealing).map(\.settlesAt).min() ?? now) - now)
-                        if wait > 0 {
-                            do { try await Task.sleep(for: .seconds(wait)) } catch { return }
-                        }
-                        let current = ProcessInfo.processInfo.systemUptime
-                        guard self.pending == nil || current >= self.nextBatchAt else { continue }
-                        self.flush(now: current)
+                        // Transport frames are coalesced, then presented in one
+                        // main-actor update without an artificial reveal delay.
+                        self.flush()
                         self.synchronizePending(session.pendingMessages)
-                    } while !Task.isCancelled && (self.pending != nil || self.rows.contains { $0.isRevealing })
+                    } while !Task.isCancelled && self.pending != nil
                 }
             }
             await group.waitForAll()
         }
     }
-
-    private static let minimumIdleWait: TimeInterval = 1.0 / 60
 
     func synchronizePending(_ messages: [V2PendingMessage]) {
         // Change optimistic membership in the same tick that publishes echoes,

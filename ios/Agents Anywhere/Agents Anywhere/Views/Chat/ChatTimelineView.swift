@@ -1,8 +1,5 @@
 import SwiftUI
 import UIKit
-#if DEBUG
-import OSLog
-#endif
 
 struct ChatTimelineView: View {
     let model: SessionChatModel
@@ -30,9 +27,6 @@ struct ChatTimelineView: View {
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
     @ScaledMetric(relativeTo: .caption) private var returnPillHeight: CGFloat = 32
-#if DEBUG
-    private static let drawerLayoutLog = Logger(subsystem: "agents.anywhere", category: "drawer-layout")
-#endif
 
     /// The same predicate the interaction dock renders with. A notice that is
     /// visible but does not block this session draws no card, so it must not
@@ -96,7 +90,6 @@ struct ChatTimelineView: View {
                 @unknown default: mapped = .idle
                 }
                 let current = TimelineViewport(geometry: context.geometry)
-                ChatScrollLog.shared.record("ph=\(mapped) y=\(Int(current.offsetY)) ch=\(Int(current.contentHeight)) vh=\(Int(current.visibleHeight))")
                 let wasInteracting = scrolling.phase == .interacting
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
@@ -126,17 +119,6 @@ struct ChatTimelineView: View {
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
             } action: { previous, value in
-#if DEBUG
-                // A device recording cannot distinguish a changed native
-                // offset from an upstream reflow. Record only vertical changes
-                // during drawer navigation, without logging message contents.
-                if ChatLayoutDiagnostics.isEnabled, navigationIsSuspended,
-                   abs(value.contentHeight - previous.contentHeight) > 1
-                    || abs(value.visibleHeight - previous.visibleHeight) > 1
-                    || abs(value.offsetY - previous.offsetY) > 1 {
-                    Self.drawerLayoutLog.debug("Drawer geometry: content \(previous.contentHeight, privacy: .public) -> \(value.contentHeight, privacy: .public), viewport \(previous.visibleHeight, privacy: .public) -> \(value.visibleHeight, privacy: .public), offset \(previous.offsetY, privacy: .public) -> \(value.offsetY, privacy: .public)")
-                }
-#endif
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
                     // the rendered page. Publish only dimensions used by following.
@@ -203,9 +185,6 @@ struct ChatTimelineView: View {
                 releaseScrollPosition()
             }
             .task(id: scrolling.pendingBottomRequest) {
-                if scrolling.pendingBottomRequest != nil {
-                    ChatScrollLog.shared.record("ask-bottom mode=\(scrolling.mode) atBottom=\(scrolling.atContentBottom) tail=\(scrolling.tail.isAtBottom)")
-                }
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
                 // Coalesce actual layout changes. Scrolling through the same
                 // layout cannot restart this animation on every offset callback.
@@ -290,25 +269,7 @@ struct ChatTimelineView: View {
                 .padding(.bottom, 2)
             }
         }
-        .overlay(alignment: .topLeading) {
-            if ChatScrollLog.shared.isEnabled {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(ChatScrollLog.shared.visibleLines.enumerated()), id: \.offset) { _, line in
-                        Text(verbatim: line)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .padding(4)
-                .background(Color.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.leading, 6)
-                .padding(.top, 6)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .traceChatLayout("timeline-viewport")
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
@@ -374,7 +335,6 @@ struct ChatTimelineView: View {
     /// `.defaultScrollAnchor(.top)`, and the page snapped to the very top the
     /// moment a swipe began.
     private func releaseScrollPosition() {
-        ChatScrollLog.shared.record("release edge=\(position.edge != nil) point=\(position.point != nil)")
         guard position.edge != nil || position.point != nil else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -392,7 +352,6 @@ struct ChatTimelineView: View {
             guard let offset else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            ChatScrollLog.shared.record("restore-anchor y=\(Int(offset))")
             withTransaction(transaction) { position.scrollTo(y: offset) }
         }
     }
@@ -406,7 +365,6 @@ struct ChatTimelineView: View {
         guard let offset else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        ChatScrollLog.shared.record("restore-height y=\(Int(offset))")
         withTransaction(transaction) { position.scrollTo(y: offset) }
     }
     private struct HistorySettlement: Equatable {
@@ -572,7 +530,6 @@ private struct ChatTimelineContent: View, Equatable {
                     }
                 } else { Color.clear }
             }.frame(height: 32)
-                .traceChatLayout("tail-spacer")
                 .overlay(alignment: .bottom) {
                     Color.clear.frame(height: 96)
                         .onScrollVisibilityChange(threshold: 0.01) { onTailVisibility(.near, $0) }
@@ -596,7 +553,6 @@ private struct ChatTimelineContent: View, Equatable {
         .animation(nil, value: model.timeline.historyInsertionRevision)
         .modifier(ChatPageContentColumn(horizontalInset: nil))
         .coordinateSpace(name: "chat.timeline.content")
-        .traceChatLayout("timeline-content", state: "groups=\(groups.count), footers=\(actions.count), running=\(model.isRunning)")
     }
 
     /// The top edge is stable as tool output or a turn footer grows below it.

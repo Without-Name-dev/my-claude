@@ -5,10 +5,6 @@ nonisolated enum ReplyPresentation {
     /// of the blur-and-rise reveal.
     static let plainFadeKey = "aa.native.chat.reveal.plain-fade"
     static let revealSeconds: TimeInterval = 0.24
-    /// Streamed text waits in a buffer while the previous batch reveals. The
-    /// next batch is published once that reveal ends, plus one 60 Hz frame, so
-    /// at most one batch animates and layout lands between animations.
-    static let batchInterval: TimeInterval = revealSeconds + 1.0 / 60
     /// A published batch starts drawing after its Markdown parse and the next
     /// frame. Drawing clocks stay alive this much longer than the reveal.
     static let drawSlack: TimeInterval = 0.1

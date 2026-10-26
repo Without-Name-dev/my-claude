@@ -106,6 +106,8 @@ final class V2SessionModel: Identifiable {
     var draftAttachmentIDs: [V2AttachmentID] = []
     @ObservationIgnored private weak var repository: V2SessionRepository?
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
+    @ObservationIgnored private var sendTail: Task<Void, Never>?
+    @ObservationIgnored private var sendGeneration = 0
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
         self.id = id; self.scope = scope; self.repository = repository
@@ -155,35 +157,55 @@ final class V2SessionModel: Identifiable {
 
     /// Explicit user action only. No outbox replay: clientMessageId correlates an echo
     /// but is not a promise of backend idempotency.
-    @discardableResult func sendDraft(upload: ((V2PendingMessage) async throws -> Void)? = nil) async -> V2PendingMessage? {
+    @discardableResult func sendDraft(
+        content: String? = nil,
+        attachments selectedAttachments: [ChatAttachment]? = nil,
+        upload: ((V2PendingMessage) async throws -> Void)? = nil
+    ) async -> V2PendingMessage? {
         guard let repository, canSend else {
             failure = V2ClientFailure(kind: .unavailable, message: String(localized: "Wait for the session to reconnect before sending."))
             return nil
         }
-        let content = draft
+        let content = content ?? draft
+        let localAttachments = selectedAttachments ?? composer.attachments
         // The tray is the truth. `draftAttachmentIDs` is a mirror kept for
         // restored drafts, and removing a tile only touches the tray; sending
         // the mirror would deliver the file the person just deleted, and the
         // upload pass below cannot correct it once every file is uploaded.
-        let attachments = composer.attachments.compactMap { $0.uploaded?.fileId }
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || !composer.attachments.isEmpty else {
+        let attachments = localAttachments.compactMap { $0.uploaded?.fileId }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || !localAttachments.isEmpty else {
             failure = V2ClientFailure(V2BusinessError.emptyMessage)
             return nil
         }
-        // Avoid a repeated tap while this exact draft's outcome remains unresolved.
-        guard !pendingMessages.contains(where: {
-            guard $0.content == content && $0.attachmentIDs == attachments else { return false }
-            if case .rejected = $0.delivery { return false }
-            return true
-        }) else { return nil }
         let pending = V2PendingMessage(id: UUID().uuidString, content: content, attachmentIDs: attachments,
-                                      localAttachmentIDs: composer.attachments.map(\.id), attachments: composer.attachments)
+                                      localAttachmentIDs: localAttachments.map(\.id), attachments: localAttachments)
         attachmentPreviews.remember(pending.attachments, clientID: pending.id)
         pendingMessages.append(pending); awaitingReplyID = pending.id
-        // Commit the local bubble and release the editor immediately. A failed
-        // write restores this snapshot only if the user has not started a new draft.
-        composer.clear(); draftAttachmentIDs = []
+        // Detach only the submitted snapshot. A newer draft may already belong
+        // to the editor by the time its upload or HTTP request finishes.
+        if draft == content && composer.attachments.map(\.id) == pending.localAttachmentIDs && !composer.isComposing {
+            composer.clear(); draftAttachmentIDs = []
+        }
         repository.localWorkDidChange(sessionID: id)
+        sendGeneration &+= 1
+        let generation = sendGeneration
+        let previousSend = sendTail
+        let currentSend = Task { @MainActor in
+            await previousSend?.value
+            await deliver(pending, content: content, repository: repository, upload: upload, generation: generation)
+        }
+        sendTail = currentSend
+        await currentSend.value
+        return pending
+    }
+
+    private func deliver(
+        _ pending: V2PendingMessage,
+        content: String,
+        repository: V2SessionRepository,
+        upload: ((V2PendingMessage) async throws -> Void)?,
+        generation: Int
+    ) async {
         var didSubmit = false
         do {
             try await upload?(pending)
@@ -195,18 +217,18 @@ final class V2SessionModel: Identifiable {
             guard isValid, !Task.isCancelled else { throw CancellationError() }
             didSubmit = true
             _ = try await repository.send(sessionId: id, content: content, attachmentIDs: pending.attachmentIDs, clientMessageID: pending.id)
-            guard isValid else { return pending }
+            guard isValid else { return }
             pending.update(.accepted)
             clearDraft(ifMatching: pending)
         } catch {
-            guard isValid else { return pending }
+            guard isValid else { return }
             if awaitingReplyID == pending.id { awaitingReplyID = nil }
             let failure = V2ClientFailure(error)
             pending.update(!didSubmit || V2ClientFailure.isDefiniteWriteRejection(error) ? .rejected(failure) : .uncertain(failure))
             if pending.delivery == .confirmed { clearDraft(ifMatching: pending) }
             else {
                 self.failure = failure
-                if draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
+                if generation == sendGeneration && draft.isEmpty && composer.attachments.isEmpty && !composer.isComposing {
                     draft = pending.content; committedDraft = pending.content
                     composer.attachments = pending.attachments; draftAttachmentIDs = pending.attachmentIDs
                     pending.didRestoreDraft = true
@@ -214,7 +236,6 @@ final class V2SessionModel: Identifiable {
             }
         }
         repository.localWorkDidChange(sessionID: id)
-        return pending
     }
 
     /// An explicit UI action may dismiss a reviewed outcome; it never resends it.
