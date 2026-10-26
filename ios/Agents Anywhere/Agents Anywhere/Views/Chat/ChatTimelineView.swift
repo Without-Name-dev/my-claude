@@ -37,14 +37,6 @@ struct ChatTimelineView: View {
     }
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
-    /// Keep the native target for explicit history restoration, but ignore
-    /// per-frame user-owned positions so a drag does not invalidate this view.
-    private var scrollPositionBinding: Binding<ScrollPosition> {
-        Binding(get: { self.position }, set: { next in
-            guard !self.scrolling.userIsScrolling, !next.isPositionedByUser else { return }
-            self.position = next
-        })
-    }
     var body: some View {
         ScrollViewReader { scrollProxy in
             timelineBody(using: scrollProxy)
@@ -74,9 +66,10 @@ struct ChatTimelineView: View {
                         ChatTranscriptTapDismiss(onTap: dismissKeyboard)
                     }
             }
-            // Keep the binding for exact history-prepend restoration. Tail
-            // navigation uses one-shot ScrollViewReader commands below.
-            .scrollPosition(scrollPositionBinding)
+            // Keep this binding bidirectional so native user positions are not
+            // replaced by a stale target under the top initial anchor.
+            // Tail navigation uses one-shot ScrollViewReader commands below.
+            .scrollPosition($position)
             .environment(\.streamingGlyphAnimationPaused, scrolling.userIsScrolling)
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
