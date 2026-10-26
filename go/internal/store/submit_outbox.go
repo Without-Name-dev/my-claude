@@ -19,10 +19,12 @@ type SubmitOutboxItem struct {
 	State             string
 	Error             string
 	PreviousStatus    string
-	Attempts          int
-	LastAttemptAt     *int64
-	CreatedAt         int64
-	UpdatedAt         int64
+	// EnqueueSeq is the session revision assigned when the submit was persisted.
+	EnqueueSeq    int64
+	Attempts      int
+	LastAttemptAt *int64
+	CreatedAt     int64
+	UpdatedAt     int64
 }
 
 // SubmitOutboxByID reads a submit by its stable client identity.
@@ -30,7 +32,7 @@ func (s *Store) SubmitOutboxByID(ctx context.Context, q Querier, sessionID, requ
 	return scanSubmitOutbox(q.QueryRowContext(ctx, `
 		SELECT session_id, request_id, connector_id, external_session_id,
 		       coalesce(payload_json, ''), payload_hash, state, coalesce(error, ''),
-		       previous_status, attempts, last_attempt_at, created_at, updated_at
+		       previous_status, enqueue_seq, attempts, last_attempt_at, created_at, updated_at
 		FROM submit_outbox WHERE session_id = ? AND request_id = ?`, sessionID, requestID))
 }
 
@@ -39,10 +41,10 @@ func InsertSubmitOutbox(ctx context.Context, tx *sql.Tx, item SubmitOutboxItem) 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO submit_outbox
 			(session_id, request_id, connector_id, external_session_id, payload_json,
-			 payload_hash, state, previous_status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+			 payload_hash, state, previous_status, enqueue_seq, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
 		item.SessionID, item.RequestID, item.ConnectorID, item.ExternalSessionID,
-		string(item.Payload), item.PayloadHash, item.PreviousStatus, item.CreatedAt, item.UpdatedAt)
+		string(item.Payload), item.PayloadHash, item.PreviousStatus, item.EnqueueSeq, item.CreatedAt, item.UpdatedAt)
 	return err
 }
 
@@ -54,11 +56,20 @@ func (s *Store) PendingSubmitOutbox(ctx context.Context, connectorID string, bef
 	rows, err := s.read.QueryContext(ctx, `
 		SELECT session_id, request_id, connector_id, external_session_id,
 		       coalesce(payload_json, ''), payload_hash, state, coalesce(error, ''),
-		       previous_status, attempts, last_attempt_at, created_at, updated_at
+		       previous_status, enqueue_seq, attempts, last_attempt_at, created_at, updated_at
 		FROM submit_outbox
 		WHERE connector_id = ? AND state = 'pending'
 		  AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
-		ORDER BY created_at, request_id LIMIT ?`, connectorID, before, limit)
+		  AND NOT EXISTS (
+			SELECT 1 FROM submit_outbox earlier
+			WHERE earlier.connector_id = submit_outbox.connector_id
+			  AND earlier.session_id = submit_outbox.session_id
+			  AND earlier.state = 'pending'
+			  AND (earlier.enqueue_seq < submit_outbox.enqueue_seq
+				OR (earlier.enqueue_seq = submit_outbox.enqueue_seq
+					AND earlier.request_id < submit_outbox.request_id))
+		  )
+		ORDER BY session_id, enqueue_seq, request_id LIMIT ?`, connectorID, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +105,7 @@ func ResolveSubmitAck(ctx context.Context, tx *sql.Tx, connectorID, sessionID, e
 	item, err := scanSubmitOutbox(tx.QueryRowContext(ctx, `
 		SELECT session_id, request_id, connector_id, external_session_id,
 		       coalesce(payload_json, ''), payload_hash, state, coalesce(error, ''),
-		       previous_status, attempts, last_attempt_at, created_at, updated_at
+		       previous_status, enqueue_seq, attempts, last_attempt_at, created_at, updated_at
 		FROM submit_outbox
 		WHERE connector_id = ? AND session_id = ? AND request_id = ?`,
 		connectorID, sessionID, requestID))
@@ -131,7 +142,7 @@ func scanSubmitOutbox(row interface{ Scan(...any) error }) (SubmitOutboxItem, er
 	var payload string
 	err := row.Scan(&item.SessionID, &item.RequestID, &item.ConnectorID,
 		&item.ExternalSessionID, &payload, &item.PayloadHash, &item.State, &item.Error,
-		&item.PreviousStatus, &item.Attempts, &item.LastAttemptAt, &item.CreatedAt, &item.UpdatedAt)
+		&item.PreviousStatus, &item.EnqueueSeq, &item.Attempts, &item.LastAttemptAt, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubmitOutboxItem{}, ErrNotFound
 	}

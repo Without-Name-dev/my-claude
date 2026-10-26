@@ -64,6 +64,23 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 	return err
 }
 
+// NextTimelineOrderSeq returns a sort key newer than every item already stored
+// for the session, while preserving the millisecond timestamp scale used by
+// imported transcript rows.
+func NextTimelineOrderSeq(ctx context.Context, tx *sql.Tx, sessionID string, now int64) (int64, error) {
+	var latest sql.NullInt64
+	err := tx.QueryRowContext(ctx, `
+		SELECT max(max(order_seq, coalesce(item_time, order_seq)))
+		FROM timeline_items WHERE session_id = ?`, sessionID).Scan(&latest)
+	if err != nil {
+		return 0, err
+	}
+	if !latest.Valid || now > latest.Int64 {
+		return now, nil
+	}
+	return latest.Int64 + 1, nil
+}
+
 const timelineColumns = `session_id, id, type, status, coalesce(role, ''), order_seq,
 	updated_seq, item_time, payload_json`
 

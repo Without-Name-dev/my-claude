@@ -17,18 +17,22 @@ nonisolated struct TimelineHistoryPosition: Equatable {
     let id: Int
     let origin: TimelineHistoryLayout?
     private let originOffset: CGFloat
+    private let originContentHeight: CGFloat?
     private let originFirstRowID: String?
-    private var latestLayout: TimelineHistoryLayout?
+    private var prePublicationContentHeight: CGFloat?
     private var hasReceivedPage = false
     private var expectedFirstRowID: String?
     private var restorationCancelled = false
     private(set) var restoredOffset: CGFloat?
+    private var restoredByAnchor = false
+    private var restoredByHeight = false
 
     init(id: Int, layout: TimelineHistoryLayout?, offsetY: CGFloat, topInset: CGFloat,
+         contentHeight: CGFloat? = nil,
          originFirstRowID: String? = nil) {
         self.id = id
         origin = layout
-        latestLayout = layout
+        originContentHeight = contentHeight
         self.originFirstRowID = originFirstRowID ?? layout?.firstRowID
         // An outward pull can still be bouncing when the request starts.
         originOffset = max(-topInset, offsetY)
@@ -36,9 +40,8 @@ nonisolated struct TimelineHistoryPosition: Equatable {
 
     func isReadyToFinish() -> Bool {
         guard hasReceivedPage else { return false }
-        guard origin != nil, let expectedFirstRowID else { return true }
-        return expectedFirstRowID == originFirstRowID
-            || latestLayout?.firstRowID == expectedFirstRowID
+        guard let expectedFirstRowID else { return true }
+        return restoredByHeight || restoredByAnchor || expectedFirstRowID == originFirstRowID
     }
 
     mutating func receivedPage(firstRowID: String?) {
@@ -49,13 +52,35 @@ nonisolated struct TimelineHistoryPosition: Equatable {
     mutating func cancelRestoration() { restorationCancelled = true }
 
     mutating func laidOut(_ layout: TimelineHistoryLayout, generation: Int) -> CGFloat? {
-        latestLayout = layout
         guard !restorationCancelled, generation == id, let origin,
               layout.anchorRowID == origin.anchorRowID, layout.edge == origin.edge,
               layout.firstRowID != origin.firstRowID else { return nil }
+        guard expectedFirstRowID == nil || layout.firstRowID == expectedFirstRowID else { return nil }
+        restoredByAnchor = true
         let offset = originOffset + layout.y - origin.y
         guard abs(offset - (restoredOffset ?? originOffset)) > 0.5 else { return nil }
         restoredOffset = offset
+        return offset
+    }
+
+    mutating func laidOutContentHeight(_ height: CGFloat, firstRowID: String?, generation: Int) -> CGFloat? {
+        guard !restorationCancelled, !restoredByHeight, generation == id,
+              let originContentHeight, originContentHeight > 0 else { return nil }
+        guard hasReceivedPage, let expectedFirstRowID else {
+            if firstRowID == originFirstRowID { prePublicationContentHeight = height }
+            return nil
+        }
+        guard expectedFirstRowID != originFirstRowID else { return nil }
+        guard firstRowID == expectedFirstRowID else {
+            prePublicationContentHeight = height
+            return nil
+        }
+        guard !restoredByAnchor else { return nil }
+        let baseline = prePublicationContentHeight ?? originContentHeight
+        let offset = originOffset + height - baseline
+        guard abs(offset - (restoredOffset ?? originOffset)) > 0.5 else { return nil }
+        restoredOffset = offset
+        restoredByHeight = true
         return offset
     }
 }

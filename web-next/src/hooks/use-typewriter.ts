@@ -153,10 +153,12 @@ export function useTypewriter(target: string, streaming: boolean): string {
     const step = Math.floor(fractionalGraphemesRef.current)
     if (step > 0) {
       fractionalGraphemesRef.current -= step
+      const previousCount = countRef.current
       countRef.current = Math.min(graphemes.length, countRef.current + step)
       remaining = graphemes.length - countRef.current
+      const revealed = graphemes.slice(previousCount, countRef.current).join("")
       commitVisibleText(
-        remaining === 0 ? targetRef.current : graphemes.slice(0, countRef.current).join(""),
+        remaining === 0 ? targetRef.current : visibleTextRef.current + revealed,
       )
     }
 
@@ -176,7 +178,7 @@ export function useTypewriter(target: string, streaming: boolean): string {
   React.useLayoutEffect(() => {
     const previousTarget = previousTargetRef.current
     const previousGraphemes = graphemesRef.current
-    const nextGraphemes = splitGraphemes(target)
+    const nextGraphemes = targetGraphemes
     const targetChanged = target !== previousTarget
 
     if (targetChanged) {
@@ -219,7 +221,7 @@ export function useTypewriter(target: string, streaming: boolean): string {
       const visiblePrefix = countRef.current === 0
         ? ""
         : nextGraphemes.slice(0, countRef.current).join("")
-      if (!target.startsWith(visibleTextRef.current)) {
+      if (visiblePrefix !== visibleTextRef.current) {
         commitVisibleText(visiblePrefix)
       }
     }
@@ -233,6 +235,7 @@ export function useTypewriter(target: string, streaming: boolean): string {
     stopAnimation,
     streaming,
     target,
+    targetGraphemes,
   ])
 
   React.useEffect(() => () => stopAnimation(), [stopAnimation])

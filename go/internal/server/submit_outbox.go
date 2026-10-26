@@ -72,15 +72,21 @@ func (a *App) persistSubmit(
 				return err
 			}
 
-			seq, err = store.AllocateSeq(ctx, tx, session.ID, store.NowMS())
+			now := store.NowMS()
+			seq, err = store.AllocateSeq(ctx, tx, session.ID, now)
 			if err != nil {
 				return err
 			}
-			item.UpdatedSeq = seq
-			if err := store.UpsertTimelineItem(ctx, tx, item, store.NowMS()); err != nil {
+			orderSeq, err := store.NextTimelineOrderSeq(ctx, tx, session.ID, now)
+			if err != nil {
 				return err
 			}
-			now := store.NowMS()
+			item.OrderSeq = orderSeq
+			item.ItemTime = &item.OrderSeq
+			item.UpdatedSeq = seq
+			if err := store.UpsertTimelineItem(ctx, tx, item, now); err != nil {
+				return err
+			}
 			if err := store.InsertSubmitOutbox(ctx, tx, store.SubmitOutboxItem{
 				SessionID:         session.ID,
 				RequestID:         msg.RequestID,
@@ -89,6 +95,7 @@ func (a *App) persistSubmit(
 				Payload:           frame,
 				PayloadHash:       payloadHash,
 				PreviousStatus:    previousStatus,
+				EnqueueSeq:        seq,
 				CreatedAt:         now,
 				UpdatedAt:         now,
 			}); err != nil {
@@ -135,6 +142,7 @@ func (a *App) replayPendingSubmits(ctx context.Context, connectorID string, forc
 		}
 		if !a.connectors.SendRaw(connectorID, item.Payload) {
 			a.log.Debug("connector submit remains pending", "connector", connectorID, "session", item.SessionID, "request", item.RequestID)
+			return
 		}
 	}
 }

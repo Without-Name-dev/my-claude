@@ -14,6 +14,7 @@ struct ChatTimelineView: View {
     @State private var viewportSample = ChatViewportSample()
     @State private var viewportUpdates = ChatLayoutUpdate<TimelineViewport>()
     @State private var historyUpdates = ChatLayoutUpdate<TimelineHistoryLayout>()
+    @State private var historyHeights = ChatLayoutUpdate<CGFloat>()
     @State private var latestPull = TimelineHistoryPull()
     @State private var olderPull = TimelineHistoryPull(edge: .older)
     @State private var olderPromptVisible = false
@@ -140,11 +141,12 @@ struct ChatTimelineView: View {
                     // anchor after the gesture settles so the prepend cannot
                     // leave the reader at a shifted point.
                     if let layout = historyLayout.value { applyHistoryLayout(layout) }
+                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
-            } action: { _, value in
+            } action: { previous, value in
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
                     // the rendered page. Publish only dimensions used by following.
@@ -165,6 +167,9 @@ struct ChatTimelineView: View {
                         if older != olderPull { olderPull = older }
                     }
                 }
+                if abs(value.contentHeight - previous.contentHeight) > 0.5 {
+                    historyHeights.submit(value.contentHeight) { applyHistoryHeight($0) }
+                }
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 viewportUpdates.cancel()
@@ -175,6 +180,7 @@ struct ChatTimelineView: View {
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
                     if let layout = historyLayout.value { historyDidLayOut(layout) }
+                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
@@ -250,6 +256,7 @@ struct ChatTimelineView: View {
                         applyHistoryLayout(layout)
                     }
                 }
+                applyHistoryHeight(viewport.contentHeight)
             }
             .task(id: HistorySettlement(id: historyPosition?.id,
                 ready: historyPosition?.isReadyToFinish() == true,
@@ -301,7 +308,7 @@ struct ChatTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
+        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
             // The keyboard covers the newest rows. A reader who was following
@@ -328,6 +335,7 @@ struct ChatTimelineView: View {
         historyLayout.value = layout
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
+            contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
             originFirstRowID: model.timeline.rows.first?.id)
         hasRequestedOlder = true
         olderLoadRequest = scrolling.navigationGeneration
@@ -377,6 +385,19 @@ struct ChatTimelineView: View {
         guard !navigationIsSuspended, !scrolling.userIsScrolling,
               var restoration = historyPosition else { return }
         let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
+        if historyPosition != restoration { historyPosition = restoration }
+        guard let offset else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { position.scrollTo(y: offset) }
+    }
+
+    private func applyHistoryHeight(_ height: CGFloat) {
+        guard !navigationIsSuspended, !scrolling.userIsScrolling,
+              var restoration = historyPosition else { return }
+        let offset = restoration.laidOutContentHeight(height,
+            firstRowID: model.timeline.rows.first?.id,
+            generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
         var transaction = Transaction(animation: nil)

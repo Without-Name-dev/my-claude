@@ -58,11 +58,13 @@ jobs:
       - name: Build unsigned archive
         working-directory: ios
         run: |
-          set -euo pipefail
+          set -uo pipefail
           EXTRA=()
           if [ -n "${{ inputs.deployment_target }}" ]; then
             EXTRA+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}")
           fi
+          BUILD_LOG="$RUNNER_TEMP/ios-archive.log"
+          set +e
           xcodebuild \
             -project "Agents Anywhere/Agents Anywhere.xcodeproj" \
             -scheme "Agents Anywhere" \
@@ -74,7 +76,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             ${EXTRA[@]+"${EXTRA[@]}"} \
-            archive
+            archive 2>&1 | tee "$BUILD_LOG"
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(grep -E '(^|[[:space:]])error:|fatal error:' "$BUILD_LOG" | tail -n 40)
+          fi
+          exit "$BUILD_STATUS"
 
       - name: Package IPA
         run: |
@@ -107,6 +117,8 @@ jobs:
           fi
           install -m 600 /dev/null ~/.ssh/deploy_key
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            deploy@8.166.138.207 'mkdir -p /opt/agents-anywhere/web/dl'
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
             out/AgentsAnywhere-unsigned.ipa \
             deploy@8.166.138.207:/opt/agents-anywhere/web/dl/MyClaude.ipa
