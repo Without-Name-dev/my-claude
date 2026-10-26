@@ -112,7 +112,7 @@ def create_app(
 
     Production deployments migrate the database before starting the Server
     (see the Compose ``migrate-next`` step), so ``migrate_database`` is off by
-    default; the test suite migrates its own database once per session.
+    default.
     """
     process_settings = ProcessSettings.from_environment()
     resolved_redis_url = redis_url
@@ -249,13 +249,6 @@ def create_app(
         ),
         revision_lease_size=int(
             os.environ.get("AGENT_SERVER_TIMELINE_REVISION_LEASE_SIZE", "4096")
-        ),
-        profile_hotpath=os.environ.get(
-            "AGENT_SERVER_TIMELINE_PROFILE", ""
-        ).strip().lower()
-        in {"1", "true", "yes"},
-        profile_min_ms=float(
-            os.environ.get("AGENT_SERVER_TIMELINE_PROFILE_MIN_MS", "0")
         ),
         single_instance=process_settings.single_instance,
         lane_idle_seconds=float(

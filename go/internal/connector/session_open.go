@@ -306,7 +306,7 @@ func sessionIsLive(b *bridge.Bridge, externalID string) bool {
 			return true
 		}
 	}
-	if box, err := b.ReadOutbox(); err == nil && box != nil && box.SessionID == externalID && box.TS > 0 {
+	if box, err := b.ReadOutbox(externalID); err == nil && box != nil && box.SessionID == externalID && box.TS > 0 {
 		if time.Since(time.UnixMilli(box.TS)) <= bridge.DefaultLiveTTL {
 			return true
 		}

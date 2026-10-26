@@ -23,15 +23,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "fakeredis[lua]>=2.30.0",
-    "httpx>=0.28.1",
-    "psycopg[binary]>=3.2",
-    "pytest>=9.0.3",
     "ruff>=0.15.13",
 ]
-
-[tool.pytest.ini_options]
-pythonpath = ["."]
 
 [tool.uv.sources]
 httpx-s3-client = { git = "https://github.com/t4wefan/httpx-s3-client.git" }

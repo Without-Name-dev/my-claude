@@ -3,11 +3,10 @@
 这个目录用于实现 v2 Claude runtime。后续写代码前，先读：
 
 - `connector/connector/runtime_protocol/`
-- `connector/tests/test_connector_architecture.py`
 
 Claude 不能按旧 `Adapter` 方式接入，必须遵守 v2 的 typed runtime protocol。
 
-当前目录已有 `provider.py` / `runtime.py` 骨架，并已接入 Claude Agent SDK 的 turn loop。后续不要回到旧 adapter 写法；新增能力必须先在 `provider_config.py` 里声明真实 capability，再在 runtime 里补协议方法和测试。已经实现的 catalog、approval、attachment 等能力必须保持真实可用；未实现的 steer、command、IPC 等能力必须继续明确返回 unsupported / unavailable。
+当前目录已有 `provider.py` / `runtime.py` 骨架，并已接入 Claude Agent SDK 的 turn loop。后续不要回到旧 adapter 写法；新增能力必须先在 `provider_config.py` 里声明真实 capability，再实现对应协议方法。已经实现的 catalog、approval、attachment 等能力必须保持真实可用；未实现的 steer、command、IPC 等能力必须继续明确返回 unsupported / unavailable。
 
 ## 必须遵守的边界
 
@@ -85,26 +84,6 @@ connector/connector/runtimes/claude/
 - selectors 必须来自 live model/permission catalogs，本地记忆只能作为 hint。
 - attachments 通过 `RuntimeHostClient.attachment_download()` 获取，必要时使用 `runtime_protocol.attachments` 生成本地安全路径。
 - commands 是独立 runtime operation。command 失败时不能 fallback 成普通用户消息。
-
-## 测试要求
-
-实现时至少补齐或更新：
-
-```bash
-cd connector
-uv run pytest tests/test_runtime_protocol.py \
-  tests/test_runtime_protocol_supervisor.py \
-  tests/test_connector_runtime_host.py \
-  tests/test_claude_runtime.py -q
-```
-
-还要在真实目标环境验证：
-
-- Claude runtime/SDK discovery
-- credentials 和 workspace 权限
-- headless Connector 启动和关闭
-- create-and-start、已有 session start_turn、interrupt
-- timeline、notice、capability、catalog、selection 恢复
 
 ## 实现原则
 

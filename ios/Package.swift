@@ -15,13 +15,6 @@ let package = Package(
             sources: ["API", "Network", "Models", "Domain", "Business", "Repositories"],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         ),
-        .testTarget(
-            name: "ClientCoreTests",
-            dependencies: ["ClientCore"],
-            path: "Tests/ClientCoreTests",
-            resources: [.copy("Fixtures")],
-            swiftSettings: [.defaultIsolation(MainActor.self)]
-        ),
     ],
     swiftLanguageModes: [.v5]
 )

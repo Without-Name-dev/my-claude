@@ -118,14 +118,7 @@ Docker 入口使用 `agent_server.main`，读取服务进程数、计算进程�
 - 无界面集成回放覆盖“连接端消息出口与合并器 → HTTP 接入 → 服务端 WebSocket → 重连 → 快照”，分别测试进程内处理、真实计算子进程、容量拒绝及恢复，最终正文、哈希和分配的版本序号保持一致。
 - Compose 与仓库 PostgreSQL 定义及当时已有生产定义的合并检查通过，只用占位凭证完成变量替换。该阶段没有启动容器、开发服务或真实运行实例，没有采集生产数据库计划或 CPU 样本；后续独立 PostgreSQL 容器验证记录在另一份报告。
 
-从仓库根目录运行可移植基准脚本：
-
-```bash
-uv run --project server python server/scripts/bench_session_pipeline.py --offload-workers 2
-uv run --project server python server/scripts/bench_worker_scaling.py --layouts 1x0,4x1,4x2 --repeats 3
-```
-
-`bench_session_pipeline.py --repo /path/to/baseline` 可指定另一份对照代码，无需替换当前工作区。CPU 对照不应与测试或编译同时运行。真实 Uvicorn 连接分配和数据库负载应单独验证，避免与纯 CPU 测试混为一谈。
+以上 CPU 数据和测试结果是历史记录；相关基准脚本与测试源文件已按项目要求移除，当前版本不能从仓库重放这些实验。
 
 ## 五、持久化与测试边界
 

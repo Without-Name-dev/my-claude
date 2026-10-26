@@ -165,6 +165,12 @@ type ComposerDraftState = {
   sessionId: string
   value: string
 }
+type SessionSendBatch = {
+  pending: number
+  accepted: number
+  previousRuntimeState: SessionRuntimeState | null
+  tail: Promise<void>
+}
 type SessionSourceErrorCode =
   | "session_archived"
   | "session_unavailable"
@@ -450,6 +456,9 @@ function SessionDetailView({
   const [loading, setLoading] = React.useState(() => !initialOptimisticState)
   const [error, setError] = React.useState<string | null>(null)
   const [sending, setSending] = React.useState(false)
+  const activeSessionIdRef = React.useRef(sessionId)
+  activeSessionIdRef.current = sessionId
+  const sendBatchesRef = React.useRef(new Map<string, SessionSendBatch>())
   const [interrupting, setInterrupting] = React.useState(false)
   const [takeoverBusy, setTakeoverBusy] = React.useState(false)
   const [resolvingNoticeId, setResolvingNoticeId] = React.useState<string | null>(null)
@@ -959,7 +968,7 @@ function SessionDetailView({
       window.clearTimeout(initialScrollFallbackTimerRef.current)
       initialScrollFallbackTimerRef.current = null
     }
-    setSending(false)
+    setSending((sendBatchesRef.current.get(sessionId)?.pending ?? 0) > 0)
     setInterrupting(false)
     setError(null)
     // Only a not-yet-bound local session is hydrated from the optimistic store.
@@ -1508,6 +1517,22 @@ function SessionDetailView({
     if (uploadedAttachments.length !== attachments.length) return false
     const clientMessageId = createClientId("msg")
     const messageText = content.trim() || tNew("attachmentOnlyPrompt")
+    let batch = sendBatchesRef.current.get(sendSessionId)
+    if (!batch) {
+      batch = {
+        pending: 0,
+        accepted: 0,
+        previousRuntimeState: state?.state ?? null,
+        tail: Promise.resolve(),
+      }
+      sendBatchesRef.current.set(sendSessionId, batch)
+    }
+    const previousRequest = batch.tail
+    let releaseRequest!: () => void
+    const currentRequest = new Promise<void>((resolve) => { releaseRequest = resolve })
+    batch.pending += 1
+    batch.tail = previousRequest.catch(() => undefined).then(() => currentRequest)
+    if (activeSessionIdRef.current === sendSessionId) setSending(true)
     timelineFollowRef.current?.resume()
     const optimisticMessage = buildOptimisticUserMessage({
       sessionId: sendSessionId,
@@ -1522,7 +1547,6 @@ function SessionDetailView({
       sessionId: sendSessionId,
       item: optimisticMessage,
     })
-    const previousRuntimeState = state?.state ?? null
     setState((current) => {
       if (!current || current.session.id !== sendSessionId) return current
       return {
@@ -1531,8 +1555,8 @@ function SessionDetailView({
         items: mergeTimelineItems(current.items, [optimisticMessage]),
       }
     })
-    setSending(true)
     try {
+      await previousRequest.catch(() => undefined)
       const selectionPatch = selectionPatchFromComposerSelections(runtimeState?.selections ?? {}, selections)
       if (Object.keys(selectionPatch).length > 0) {
         const selectionResult = await dashboardApi.updateSessionSelections(token, sendSessionId, selectionPatch)
@@ -1554,6 +1578,7 @@ function SessionDetailView({
         attachments: uploadedAttachments.map((attachment) => ({ fileId: attachment.fileId })),
         clientMessageId,
       })
+      batch.accepted += 1
       return true
     } catch (err) {
       const nextSourceErrorCode = sessionSourceErrorCode(err)
@@ -1567,10 +1592,6 @@ function SessionDetailView({
         if (!current || current.session.id !== sendSessionId) return current
         return {
           ...current,
-          state:
-            current.state?.status === "waiting"
-              ? previousRuntimeState
-              : current.state,
           items: current.items.map((item) =>
             timelineClientMessageId(item) === clientMessageId && isOptimisticTimelineItem(item)
               ? markOptimisticItemFailed(item, message)
@@ -1604,7 +1625,18 @@ function SessionDetailView({
       }
       return false
     } finally {
-      setSending(false)
+      releaseRequest()
+      batch.pending -= 1
+      if (batch.pending === 0) {
+        if (batch.accepted === 0) {
+          setState((current) => {
+            if (!current || current.session.id !== sendSessionId || current.state?.status !== "waiting") return current
+            return { ...current, state: batch.previousRuntimeState }
+          })
+        }
+        if (sendBatchesRef.current.get(sendSessionId) === batch) sendBatchesRef.current.delete(sendSessionId)
+      }
+      if (activeSessionIdRef.current === sendSessionId) setSending(batch.pending > 0)
     }
   }
 

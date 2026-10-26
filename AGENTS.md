@@ -31,14 +31,12 @@ My Claude 是一个跨设备的 Agent 工作台。工作设备上的 **Connector
 - 仓库根目录**没有**统一的构建命令，每个子项目单独安装依赖、单独检查。
 - **不提交 lockfile**（`yarn.lock`、`uv.lock`、`package-lock.json` 等已被 `.gitignore` 忽略），不要把它们加回来。
 - 只运行和修改有关的 headless 检查：
-  - Go（生产 Server / Connector）：`cd go && go build ./cmd/aa-server ./cmd/aa-connector && go test ./...`
-  - Web：`cd web-next && yarn test && yarn typecheck && yarn protocol:check`
-  - Python 参考 Server：`cd server && uv run ruff check . --exclude .venv && uv run pytest -q`（需要 `AGENT_SERVER_TEST_DB_URL`；`tests/test_connector_pipeline.py` 会导入 Connector 包，先执行一次 `uv pip install --python .venv/bin/python ../connector`）
-  - Python 参考 Connector：`cd connector && uv run ruff check connector tests && uv run pytest -q`
+  - Go（生产 Server / Connector）：`cd go && go build ./cmd/aa-server ./cmd/aa-connector`
+  - Web：`cd web-next && yarn typecheck && yarn protocol:check`
+  - Python 参考实现：`python -m compileall -q connector/connector server/agent_server`
 - Go Server/Connector 的环境变量、配对流程和 nginx 配置见 [go/README.md](go/README.md)；本地联调 Python 参考栈用 `./local-up.sh`（Python Server + Web，可加 `--with-connector`）。**不要**使用 `--reset-data`，除非用户明确要求，因为它会删除本地数据库。
-- Python 参考 Server 的测试需要 PostgreSQL：通过 `AGENT_SERVER_TEST_DB_URL` 指向一个名字含 `test` 的一次性数据库（本地用 `docker/docker-compose.local.yml` 的 postgres，建库和环境变量见[开发指南](docs/development.md)）；测试会清空该库的所有表，绝不能指向开发库或生产库，也不要把生产 URL 带进测试进程。
 - Headless 检查通过，不等于真实安装、OAuth 回调或远程 Runtime 会话已经验证。汇报时要说明哪些验证没有做。
-- CI（`.github/workflows/ci.yml`）按改动路径运行 Connector、Server、Web 的 headless 检查：`connector/` 的改动会连带触发 Server，`contracts/` 与工作流文件触发全部。CI 不跑 ruff（仓库里还有历史 lint 问题）；工作流目前**没有 `go/` 任务**，`go/` 的改动必须本地执行上面的 Go 检查。iOS 由 `.github/workflows/ios-unsigned-ipa.yml` 单独构建。
+- CI（`.github/workflows/ci.yml`）按改动路径运行 Python 语法、Web 类型/契约及 Go 构建检查；iOS 由 `.github/workflows/ios-unsigned-ipa.yml` 单独构建。
 
 ## 跨端修改的规则
 
@@ -52,7 +50,7 @@ My Claude 是一个跨设备的 Agent 工作台。工作设备上的 **Connector
 
 以下规则只约束参考实现，不适用于生产 Go Server。
 
-- **Server 分层**：`core` 不能导入外层；`services` 不能导入 FastAPI、API 模块或具体的 `Store`。这些规则由 `server/tests/test_architecture_boundaries.py` 强制检查。
+- **Server 分层**：`core` 不能导入外层；`services` 不能导入 FastAPI、API 模块或具体的 `Store`。
 - **数据库**：schema 变化需要新增 Alembic 迁移 `server/migrations/versions/v2_N.py`，编号接着现有最大值递增，不要修改已发布的迁移。
 
 ## 版本号

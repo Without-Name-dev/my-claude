@@ -46,15 +46,19 @@ class RuntimeLogStore:
             with os.fdopen(fd, "rb+") as lock:
                 if os.name == "nt":
                     import msvcrt
-                    if not lock.read(1):
-                        lock.write(b"0")
-                        lock.flush()
                     lock.seek(0)
                     msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
                 else:
                     import fcntl
                     fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
+                    if os.name == "nt":
+                        # A read before locking can fail while another handle
+                        # owns this byte range on Windows.
+                        lock.seek(0, os.SEEK_END)
+                        if lock.tell() == 0:
+                            lock.write(b"0")
+                            lock.flush()
                     state, recovered = self._read_state()
                     if recovered or state["version"] != self._version:
                         self._load(state)

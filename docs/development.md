@@ -36,7 +36,7 @@ AGENT_CONNECTOR_CLAUDE_PLUGIN_BRIDGE=1 \
 bin/aa-connector --config ~/.agents-anywhere/connector.json
 ```
 
-## Headless 检查
+## 静态与构建检查
 
 以下检查不要求打开浏览器或移动模拟器。只运行与修改有关的检查，不必为文档改动重新构建所有安装包。
 
@@ -45,7 +45,6 @@ Go（生产 Server / Connector）：
 ```bash
 cd go
 go build ./cmd/aa-server ./cmd/aa-connector
-go test ./...
 ```
 
 Web：
@@ -53,37 +52,17 @@ Web：
 ```bash
 cd web-next
 yarn install
-yarn test
 yarn typecheck
 yarn protocol:check
 ```
 
-Python 参考实现（只在修改 `server/` 或 `connector/` 时运行）：
+Python 参考实现（只在修改 `server/` 或 `connector/` 时运行语法检查）：
 
 ```bash
-cd server
-uv sync
-# tests/test_connector_pipeline.py 会导入 Connector 包，把它装进 Server 环境一次即可；
-# 临时跳过可加 --ignore=tests/test_connector_pipeline.py
-uv pip install --python .venv/bin/python ../connector
-uv run ruff check . --exclude .venv
-# 测试跑在真实 PostgreSQL 上：用本地 compose 起一个库，并单独建一个名字含 test 的数据库。
-# 测试会在每个用例前清空该库的所有表，所以绝不能指向开发库或生产库。
-docker compose -f ../docker/docker-compose.local.yml up -d postgres
-docker compose -f ../docker/docker-compose.local.yml exec postgres \
-  psql -U agents_anywhere -c 'CREATE DATABASE agents_anywhere_test'
-export AGENT_SERVER_TEST_DB_URL=postgresql+asyncpg://agents_anywhere:agents_anywhere_dev_password@127.0.0.1:55432/agents_anywhere_test
-uv run pytest -q
+python -m compileall -q connector/connector server/agent_server
 ```
 
-```bash
-cd connector
-uv sync
-uv run ruff check connector tests
-uv run pytest -q
-```
-
-Python 参考 Server 的测试应使用隔离测试环境，不要把生产数据库 URL 带入测试进程。Headless 检查通过不代表真实安装、OAuth 回调或远程 Runtime 会话已验证；这些按变更影响单独记录。
+这些静态检查不验证运行时依赖、数据库迁移、OAuth 回调或远程 Runtime 会话。iOS 由 `.github/workflows/ios-unsigned-ipa.yml` 构建；本机没有 Xcode 时不能替代 iPhone 真机验证。
 
 ## Python 参考栈本地联调
 

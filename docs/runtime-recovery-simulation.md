@@ -1,13 +1,13 @@
 # Runtime 增量恢复模拟验证（历史）
 
+本页只保留历史实验记录。测试与探针源文件已按项目要求删除，以下场景不能从当前仓库重放。
+
 ## 2026-09-17：Codex 增量读取补充
 
 - 新增 `connector/tests/test_codex_incremental_reads.py`，使用真实临时 SQLite 索引、JSON 检查点和分页 RPC 模拟。240 轮首次读取 12 页；刷盘重建后历史读取为 0；新增一轮读取 1 页、上传 1 项。未提交检查点时重试同样的增量。
 - 覆盖旧轮次文字/工具结果修改、轮次删除、消息删除、重排、未完成轮次、损坏检查点、未知索引 schema、投影落后、继承历史、源文件缺失及读取期间变化。变化后的检查点与独立完整投影逐项比较，包含排序。
 - 使用隔离目录中的原生历史及数据库副本，分别启动 `0.147.0` 和 `0.154.0-alpha.6.2` 的真实 Codex app-server。两者均验证首次读取 7 项、检查点重建后 0 次历史 RPC；向隔离投影追加确定性测试轮次后，读取 1 页、上传 1 项。没有向模型发送消息，也没有改写用户的原生数据库。这验证协议组合，不代替真实模型流式生成测试。
 - 单会话恢复失败不再反复强制读取其他已恢复会话。实际桌面进程持有写锁时仍需原客户端释放；本改动只改善冲突报告，不绕过 Codex 的写入互斥。
-
-复现专项测试：在 `connector/` 执行 `uv run pytest tests/test_codex_incremental_reads.py tests/test_codex_sdk_client.py tests/test_connector_runtime.py -q`。
 
 下文是 2026-09-16 的增量上传验证记录；新的读取优化仅用于能通过原生索引校验的 Codex 会话，其余场景保留完整读取。
 
@@ -31,18 +31,6 @@
 - 定向 pytest（Codex 故障模拟、存储迁移）通过；Codex 实际后端四场景通过；修改测试文件 Ruff 和 `git diff --check` 通过。
 
 ## 复现
-
-在 `connector/` 执行：
-
-```sh
-uv run pytest tests/test_codex_recovery_simulation.py tests/test_runtime_storage.py -q
-```
-
-在 `server/` 执行：
-
-```sh
-uv run --with-editable ../connector --with pytest python ../connector/tests/codex_recovery_probe.py
-```
 
 ## 边界
 

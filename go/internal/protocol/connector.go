@@ -123,6 +123,7 @@ type RuntimeInfo struct {
 type TurnBegin struct {
 	SessionID string `json:"sessionId"`
 	TurnID    string `json:"turnId"`
+	RequestID string `json:"requestId,omitempty"`
 	QueuedAt  int64  `json:"queuedAt,omitempty"`
 }
 
@@ -142,9 +143,9 @@ type TurnDelta struct {
 type TurnEnd struct {
 	SessionID string         `json:"sessionId"`
 	TurnID    string         `json:"turnId"`
+	RequestID string         `json:"requestId,omitempty"`
 	Status    string         `json:"status"` // "done" | "aborted" | "error"
 	Text      string         `json:"text"`
-	Chunks    int            `json:"chunks,omitempty"`
 	Error     string         `json:"error,omitempty"`
 	State     map[string]any `json:"state,omitempty"`
 }
@@ -293,6 +294,7 @@ type InventorySession struct {
 	Title      string `json:"title,omitempty"`
 	Model      string `json:"model,omitempty"`
 	UpdatedAt  int64  `json:"updatedAt"`
+	Version    string `json:"version,omitempty"`
 }
 
 // TypeHistoryRequest asks the connector for a session's transcript.
@@ -300,6 +302,9 @@ const TypeHistoryRequest = "history.request"
 
 // TypeHistory carries the transcript back.
 const TypeHistory = "session.history"
+
+// TypeHistoryAck confirms that the server committed a transcript version.
+const TypeHistoryAck = "session.history.ack"
 
 // HistoryRequest names the session whose conversation to read.
 type HistoryRequest struct {
@@ -311,15 +316,16 @@ type HistoryRequest struct {
 }
 
 // History is one session's transcript, oldest first.
-//
-// UpdatedAt is the transcript's modification time in epoch milliseconds. A
-// periodic refresh uses it to stay out of a conversation that is still being
-// written: importing a half-streamed answer would duplicate what the live turn
-// already shows. Zero means the connector did not report it.
 type History struct {
 	SessionID string        `json:"sessionId"`
+	Version   string        `json:"version,omitempty"`
 	Items     []HistoryItem `json:"items"`
-	UpdatedAt int64         `json:"updatedAt,omitempty"`
+}
+
+// HistoryAck confirms a transcript snapshot after its database transaction.
+type HistoryAck struct {
+	SessionID string `json:"sessionId"`
+	Version   string `json:"version"`
 }
 
 // HistoryItem is one message or tool call read from a transcript.

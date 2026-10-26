@@ -27,21 +27,15 @@ const historyCooldown = 20 * time.Second
 // mtime have not changed, so a quiet session costs one stat.
 const historyRefreshInterval = 15 * time.Second
 
-// historyQuietWindow is how long a transcript must have been untouched before
-// a periodic refresh imports it.
-const historyQuietWindow = 10 * time.Second
-
 // historyRefreshLimit bounds one periodic import.
 const historyRefreshLimit = 80
 
 // historyItemPublishLimit is the number of imported rows above which a full
 // timeline reset is published instead of one event per item.
 //
-// It is as large as one periodic import can be, so a refresh never resets the
-// client's list — a reset discards the reader's loaded window and reorders the
-// conversation under them. Only the first import of a conversation, which
-// fetches a whole page, still resets.
-const historyItemPublishLimit = historyRefreshLimit
+// Large imports use one reset to avoid sending hundreds of individual events.
+// Smaller incremental updates keep the reader's loaded window in place.
+const historyItemPublishLimit = 80
 
 // refreshLiveHistories keeps the server's timeline in step with every live
 // conversation's transcript.
@@ -93,6 +87,20 @@ func (a *App) requestHistory(ctx context.Context, session store.Session, limit i
 	if !a.history.allow(session.ID, historyCooldown) {
 		return
 	}
+	a.sendHistoryRequest(session, limit)
+}
+
+// requestChangedHistory bypasses the periodic request limiter because a new
+// transcript version is a one-shot signal for a session that may stop being
+// live before the next poll.
+func (a *App) requestChangedHistory(session store.Session, limit int) {
+	if session.ExternalID == "" || !a.connectors.Online(session.ConnectorID) {
+		return
+	}
+	a.sendHistoryRequest(session, limit)
+}
+
+func (a *App) sendHistoryRequest(session store.Session, limit int) {
 	a.connectors.Send(session.ConnectorID, protocol.TypeHistoryRequest, protocol.HistoryRequest{
 		SessionID:  session.ID,
 		ExternalID: session.ExternalID,
@@ -135,10 +143,11 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 //
 // The whole import shares one revision: it is a single state change, and one
 // snapshot event tells every open client to replace its timeline in one go.
-// knownMessages collects the role and normalised text of every message the
-// session already shows from a source other than a transcript import.
-func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]bool {
-	known := map[string]bool{}
+// knownMessages counts messages already stored outside transcript imports.
+// Counts preserve repeated identical prompts while still matching the copy
+// Claude writes for messages sent through this server.
+func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]int {
+	known := map[string]int{}
 	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, 300)
 	if err != nil {
 		return known
@@ -148,7 +157,7 @@ func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]bo
 			continue
 		}
 		if role, text, ok := messageIdentity(item.Role, item.Payload); ok {
-			known[role+"|"+text] = true
+			known[role+"|"+text]++
 		}
 	}
 	return known
@@ -173,22 +182,15 @@ func messageIdentity(role string, payload json.RawMessage) (string, string, bool
 	return role, text, true
 }
 
-func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protocol.History) {
+func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protocol.History) bool {
 	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
 	if err != nil {
 		a.log.Warn("history for an unknown session", "session", msg.SessionID)
-		return
+		return false
 	}
 	if len(msg.Items) == 0 {
-		return
+		return true
 	}
-	// A transcript that is still being written belongs to a turn in progress.
-	// Importing it now would add a half-streamed answer beside the one the live
-	// turn is already showing, so the refresh waits for the file to settle.
-	if msg.UpdatedAt > 0 && time.Since(time.UnixMilli(msg.UpdatedAt)) < historyQuietWindow {
-		return
-	}
-
 	// Messages the server already recorded from the phone (or from a turn it
 	// followed) must not be imported again: the transcript copy has a different
 	// id, so only the role and the text identify it.
@@ -202,8 +204,12 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 			rows := make([]store.TimelineItem, 0, len(msg.Items))
 			for _, item := range msg.Items {
 				row := historyItemRow(session.ID, item, 0)
-				if role, text, ok := messageIdentity(item.Role, row.Payload); ok && known[role+"|"+text] {
-					continue
+				if role, text, ok := messageIdentity(item.Role, row.Payload); ok {
+					key := role + "|" + text
+					if known[key] > 0 {
+						known[key]--
+						continue
+					}
 				}
 				existing, err := a.db.TimelineItemByID(ctx, tx, session.ID, item.ID)
 				if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -248,11 +254,11 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	})
 	if err != nil {
 		a.log.Warn("could not store history", "error", err)
-		return
+		return false
 	}
 	if changed == 0 {
 		a.log.Debug("history already in sync", "session", session.ID, "items", len(msg.Items))
-		return
+		return true
 	}
 
 	// A periodic refresh usually brings one or two messages. Publishing those
@@ -265,12 +271,12 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 			a.publishItem(ctx, session.ID, row.ID, row.UpdatedSeq, created[i])
 		}
 		a.log.Info("imported transcript", "session", session.ID, "items", changed, "mode", "items")
-		return
+		return true
 	}
 
 	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 500)
 	if err != nil {
-		return
+		return false
 	}
 	views := make([]ItemView, 0, len(items))
 	for _, item := range items {
@@ -280,7 +286,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		"items": views,
 	})
 	if err != nil {
-		return
+		return false
 	}
 	a.broker.Publish(session.ID, frame)
 	// The import allocated a revision, and AllocateSeq also moves the session's
@@ -290,6 +296,7 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	// change even though its payload is a timeline reset.
 	a.notifySessionDashboard(ctx, session.ID)
 	a.log.Info("imported transcript", "session", session.ID, "items", len(views))
+	return true
 }
 
 // historyItemUnchanged reports whether the stored row already carries the

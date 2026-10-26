@@ -23,8 +23,7 @@ stable while moving dependencies toward the domain.
 | `agent_server/app.py` | Process composition and lifecycle | all layers |
 
 `core` must not import an outer layer. Services must not import FastAPI, API
-modules, or the concrete `Store` facade. These rules are enforced by
-`tests/test_architecture_boundaries.py`.
+modules, or the concrete `Store` facade.
 
 ## State Ownership
 

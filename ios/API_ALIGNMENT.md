@@ -121,34 +121,14 @@ observable objects. Dashboard reads also reject late results from an old scope.
   Ambiguous transport/RPC failures retain the draft and an uncertain outcome;
   an echo wins even if HTTP subsequently fails. A repeated tap cannot resubmit
   that unresolved draft. Concurrent edits to the next draft are preserved.
+  Accepted timeline messages use `pending` while waiting in the connector queue,
+  `running` after the matching `turn.begin`, then `done`, `failed` or `cancelled`
+  at `turn.end`; the composer remains available during a running turn.
   The ID correlates echoes and is not assumed to provide backend idempotency.
 
-## Validation approach
+## Validation
 
-Add headless Swift tests that compile the production client core, intercept real
-URLSession requests, and decode fixtures produced by the current Python backend
-models. Verify request methods, namespaced paths, query/body shapes, runtime
-identity, nullable selections, error responses, and WebSocket frames without
-starting a server or simulator. Record the final results and handoff here.
-
-From the repository root:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path ios
-cd server
-uv run python ../ios/scripts/export_contract_fixtures.py --check
-```
-
-The fixture exporter imports the current backend models and reads real FastAPI
-route decorators without constructing the application or contacting storage.
-On backend contract changes, regenerate the fixture and review the resulting
-diff before adjusting the client tests.
-
-Current validation: 170 headless tests across 22 suites pass against the production
-client core. Added coverage includes project request/query contracts, paginated
-snapshot races, project reuse, stale device inventory, post-pairing queue ownership,
-cold offline cache restoration, account/credential separation, corrupt archives,
-removed-cache write suppression, local-to-server creation handoff and optimistic
-message visibility before upload. The complete unsigned iOS Debug target and
-backend fixture check pass without starting a server or simulator. Manual device
-checks remain in [NATIVE_CHAT.md](NATIVE_CHAT.md).
+The historical headless client and fixture checks have been removed. The iOS
+target is built by `.github/workflows/ios-unsigned-ipa.yml`; real device behavior
+still requires manual validation on iPhone or iPad. Keep API changes aligned with
+`contracts/` and the current Go Server protocol.

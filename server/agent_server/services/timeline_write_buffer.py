@@ -91,68 +91,6 @@ class _CrossLoopLock:
             return self._locked
 
 
-class _HotpathProbe:
-    """Opt-in per-delta timing probe for the streaming hot path.
-
-    Every ``mark`` is a single boolean check when profiling is off, so the
-    production path keeps its allocation profile.  Turn it on with
-    ``AGENT_SERVER_TIMELINE_PROFILE=1`` and use
-    ``AGENT_SERVER_TIMELINE_PROFILE_MIN_MS`` to log only the slow deltas.
-    """
-
-    __slots__ = (
-        "_last",
-        "_started",
-        "enabled",
-        "item_id",
-        "min_ms",
-        "payload_bytes",
-        "phases",
-        "session_id",
-    )
-
-    def __init__(
-        self,
-        *,
-        enabled: bool,
-        min_ms: float,
-        session_id: str,
-        item_id: str,
-    ) -> None:
-        self.enabled = enabled
-        self.min_ms = min_ms
-        self.session_id = session_id
-        self.item_id = item_id
-        self.payload_bytes = 0
-        now = time.monotonic()
-        self._started = now
-        self._last = now
-        self.phases: list[tuple[str, float]] = []
-
-    def mark(self, phase: str) -> None:
-        if not self.enabled:
-            return
-        now = time.monotonic()
-        self.phases.append((phase, (now - self._last) * 1000.0))
-        self._last = now
-
-    def finish(self) -> None:
-        if not self.enabled:
-            return
-        total_ms = (time.monotonic() - self._started) * 1000.0
-        if total_ms < self.min_ms:
-            return
-        logger.info(
-            "timeline hotpath session_id={} item_id={} payload_bytes={} "
-            "total_ms={:.1f} phases={}",
-            self.session_id,
-            self.item_id,
-            self.payload_bytes,
-            total_ms,
-            " ".join(f"{name}={value:.1f}" for name, value in self.phases),
-        )
-
-
 class TimelineWriteBuffer:
     """Coalesce high-frequency timeline projections while preserving live order.
 
@@ -174,8 +112,6 @@ class TimelineWriteBuffer:
         presence: ConnectorPresencePort | None = None,
         flush_interval_seconds: float = DEFAULT_FLUSH_INTERVAL_SECONDS,
         revision_lease_size: int = DEFAULT_REVISION_LEASE_SIZE,
-        profile_hotpath: bool = False,
-        profile_min_ms: float = 0.0,
         single_instance: bool = False,
         lane_idle_seconds: float = DEFAULT_LANE_IDLE_SECONDS,
         max_lanes: int = DEFAULT_MAX_LANES,
@@ -187,8 +123,6 @@ class TimelineWriteBuffer:
         self._coordinator = coordinator
         self._presence = presence
         self._flush_interval_seconds = flush_interval_seconds
-        self._profile_hotpath = profile_hotpath
-        self._profile_min_ms = profile_min_ms
         self._single_instance = single_instance
         self._lane_idle_seconds = lane_idle_seconds
         self._max_lanes = max(1, max_lanes)
@@ -251,50 +185,20 @@ class TimelineWriteBuffer:
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
     ) -> TimelineItemWriteResult:
-        probe = _HotpathProbe(
-            enabled=self._profile_hotpath,
-            min_ms=self._profile_min_ms,
-            session_id=session_id,
-            item_id=item.id,
-        )
-        try:
-            return await self._accept_profiled(
-                session_id=session_id,
-                item=item,
-                source_observed_at=source_observed_at,
-                mark_read_on_change=mark_read_on_change,
-                probe=probe,
-            )
-        finally:
-            probe.finish()
-
-    async def _accept_profiled(
-        self,
-        *,
-        session_id: str,
-        item: TimelineItemIn,
-        source_observed_at: str | None,
-        mark_read_on_change: bool,
-        probe: _HotpathProbe,
-    ) -> TimelineItemWriteResult:
         if self._closing or self._closed:
             raise RuntimeError("timeline write buffer is closing")
         lane = await self._lane(session_id)
         async with lane.lock, self._sequences.session_fence(session_id):
-            probe.mark("lock")
             server_epoch, epoch_changed = await self._sequences.observe_server_epoch(
                 session_id
             )
-            probe.mark("epoch")
             if epoch_changed:
                 lane.latest.clear()
                 lane.max_order_seq = None
                 lane.seeded = False
             await self._repair_unpublished_locked(session_id)
-            probe.mark("repair")
             lane_was_seeded = lane.seeded
             await self._seed_lane(session_id, lane)
-            probe.mark("seed")
             existing = lane.latest.get(item.id)
             durable_item_checked = False
             if self._coordinator.distributed and not self._single_instance:
@@ -353,7 +257,6 @@ class TimelineWriteBuffer:
             unchanged = existing is not None and timeline_item_state_is_unchanged(
                 existing, item
             )
-            probe.mark("existing")
             if unchanged:
                 if source_observed_at is not None:
                     await self._store_pending(
@@ -372,7 +275,6 @@ class TimelineWriteBuffer:
                     break
                 except SessionRevisionRepairNeeded:
                     await self._repair_unpublished_locked(session_id)
-            probe.mark("reserve")
             if (
                 self._coordinator.distributed
                 and await self._coordinator.server_epoch() != server_epoch
@@ -380,7 +282,6 @@ class TimelineWriteBuffer:
                 raise RuntimeError(
                     "Redis server epoch changed during session revision allocation"
                 )
-            probe.mark("epoch_recheck")
             max_order_seq = lane.max_order_seq or 0
             if existing is not None:
                 order_seq = existing.orderSeq
@@ -396,15 +297,12 @@ class TimelineWriteBuffer:
                 order_seq=order_seq,
                 revision=next_timeline_item_revision(item, existing),
             )
-            probe.mark("normalize")
             raw_item = await self._store_pending(
                 session_id,
                 item=normalized,
                 source_observed_at=source_observed_at,
                 mark_read_on_change=mark_read_on_change,
-                probe=probe,
             )
-            probe.mark("stage")
             self._remember(lane, normalized)
             lane.max_order_seq = max(max_order_seq, normalized.orderSeq)
             await self._broker.publish_message(
@@ -415,9 +313,7 @@ class TimelineWriteBuffer:
                     raw_items=[raw_item] if raw_item is not None else [],
                 ),
             )
-            probe.mark("publish")
             await self._sequences.mark_published(session_id, normalized.updatedSeq)
-            probe.mark("mark")
             return TimelineItemWriteResult(item=normalized, changed=True)
 
     async def flush_through(self, session_id: str) -> None:
@@ -734,7 +630,6 @@ class TimelineWriteBuffer:
         item: TimelineItem | None = None,
         source_observed_at: str | None = None,
         mark_read_on_change: bool = False,
-        probe: _HotpathProbe | None = None,
     ) -> str | None:
         """Stage one pending projection and return its encoded item.
 
@@ -752,8 +647,6 @@ class TimelineWriteBuffer:
             if item is not None
             else None
         )
-        if probe is not None and raw_item is not None:
-            probe.payload_bytes = len(raw_item)
         if self._coordinator.distributed:
             await self._coordinator.store_pending_while_lock_owned(
                 f"session-revision:{session_id}",

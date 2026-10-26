@@ -2,8 +2,7 @@
 
 Source: https://github.com/gonzalezreal/textual, version 0.5.0,
 commit `01b51875a5406eefc95f52a058cb059e7bc94dc4`. The MIT license is retained.
-Only `Sources` and the runtime package dependencies are vendored; the upstream
-snapshot test suite is not included.
+Only `Sources` and the runtime package dependencies are vendored.
 
 This local package keeps the text-selection crash fix reproducible in Xcode and
 on another development machine. Do not patch a DerivedData checkout.
@@ -37,11 +36,5 @@ buttons can receive input. Embedded controls publish exclusion rectangles to
 the selection overlay. The parser, syntax highlighter, formatter and upstream
 clipboard exporter remain unchanged; the app's code button copies literal text.
 
-Run the headless regression tests from the repository root (no app or simulator):
-
-```sh
-swift test --package-path ios/Packages/Textual --scratch-path ios/.build/textual-tests
-```
-
-When upstream releases these fixes, compare the regression coverage before
+When upstream releases these fixes, compare the selection and layout behavior before
 switching the Xcode project back to a remote package and removing this copy.

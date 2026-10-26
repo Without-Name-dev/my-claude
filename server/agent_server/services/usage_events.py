@@ -193,7 +193,7 @@ class UsageRecorder:
 
 
 class NullUsageRecorder:
-    """Recorder used when statistics are not wired (benchmarks, unit tests)."""
+    """No-op recorder for workflows that do not emit usage statistics."""
 
     buffered = False
 

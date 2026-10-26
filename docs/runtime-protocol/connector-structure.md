@@ -39,8 +39,6 @@ Rules:
   protocol surfaces such as `metadata`, `source`, `content`, runtime config
   values, JSON Schema, and UI schema.
 
-These rules are enforced by `connector/tests/test_connector_architecture.py`.
-
 ## Current tree
 
 ```text

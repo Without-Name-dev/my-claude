@@ -88,15 +88,6 @@ class SetupToken:
             self._value = None
             self._expires_at = None
 
-    def peek(self) -> str | None:
-        """Return the current token value without triggering (re)generation.
-
-        Used by tests that want to capture the token after the server has
-        already generated it (via lifespan or a /auth/config call).
-        """
-        with self._lock:
-            return self._value
-
     def peek_state(self) -> tuple[str | None, dt.datetime | None]:
         """Return (value, expires_at) without side effects. For introspection."""
         with self._lock:

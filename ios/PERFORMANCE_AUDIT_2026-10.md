@@ -53,8 +53,9 @@
 
 即每个事件的主线程成本从约 2.3 ms 降到约 0.55 ms（解码已移出主线程）。这是单线程微基准，不含 SwiftUI 布局与绘制。
 
-验证：SwiftPM `ClientCore` 247 个测试通过（需 Xcode 工具链：`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`），
-`xcodebuild` iPhone 18 Pro 模拟器 Debug 构建成功。没有在真机上用 Instruments 量化，也没有做 OAuth / 真实 Runtime 会话的联调。
+历史验证：删除测试目标前，SwiftPM `ClientCore` 的 247 个测试通过，
+`xcodebuild` iPhone 18 Pro 模拟器 Debug 构建成功。没有在真机上用
+Instruments 量化，也没有做 OAuth / 真实 Runtime 会话的联调。
 
 ## 1. 总体判断
 
@@ -243,6 +244,6 @@ NATIVE_CHAT.md 里描述的视图层优化（5 Hz 批次、glyph ledger、digest
 
 ## 5. 未做的验证与建议的测量方法
 
-- 全部为静态阅读，没有在真机跑 Instruments（Time Profiler / SwiftUI / Hangs），没有跑 iOS 测试 target。各项"代价"基于代码路径与数据规模（≤1000 条 item、流式 20 到 50 事件 / 秒）推断。
+- 全部为静态阅读，没有在真机跑 Instruments（Time Profiler / SwiftUI / Hangs）。各项"代价"基于代码路径与数据规模（≤1000 条 item、流式 20 到 50 事件 / 秒）推断。
 - 建议的复现场景：一个 ≥ 500 条 item、含长回复和多个代码块的 Claude 会话，账号下 ≥ 100 个会话。分别记录：流式输出时的主线程占用（看 `V2SessionProjection.merge`、`V2SessionModel.update`、`JSONDecoder` 的自上而下占比）；侧栏拖动前后一次 `ChatShellView.body` 的耗时（看 `SecItemCopyMatching` 和 `ISO8601FormatStyle.parse`）；工具调用停顿后恢复输出时的掉帧（M1）。
-- 仓库已有 `Tests/ComposerDraftAudit` 和 `scripts/probe-drawer-updates.py` 这类回归探针，修完 H3/H4 后可以照同样方式加一个"1000 条 item 下单个 `item_updated` 的 emit 耗时"断言。
+- 该审计中记录的测试与探针已按项目要求删除；复现性能回归需使用 Instruments 或外部设备基准工具。

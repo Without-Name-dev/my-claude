@@ -504,7 +504,12 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
 			return
 		}
-		a.applyHistory(ctx, conn, msg)
+		if a.applyHistory(ctx, conn, msg) && msg.Version != "" {
+			a.connectors.Send(conn.id, protocol.TypeHistoryAck, protocol.HistoryAck{
+				SessionID: msg.SessionID,
+				Version:   msg.Version,
+			})
+		}
 	case protocol.TypeBeat:
 		// Both facts are optional on the wire. An older connector's ping reply
 		// is {"pong":true}: it carries no bridge flag and no presence list, and

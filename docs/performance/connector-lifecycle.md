@@ -1,5 +1,7 @@
 # 连接端生命周期修复与会话性能验证报告
 
+本报告中的回归与基准结果是历史记录。测试、压测和回放脚本已按项目要求删除，当前仓库不能重放这些实验。
+
 本轮修复位于 `codex/session-pipeline-performance` 分支，生命周期问题的对照基线为 `06f1f241`，修复代码和验证材料截至 `20d2c808`。代码已提交并推送，尚未部署线上。前一阶段的连接端、服务端、进程池和网页优化见[会话处理全链路性能报告](session-pipeline.md)。
 
 本轮已修复删除、撤销凭证、运行配置清理和断线恢复中的旧任务问题，并减少未变化会话的重复处理。**这些结果不能证明线上 CPU 问题已经全部解决：空标题会话的逐条补查、工作台全量快照和逐会话能力发布仍有成本。**
@@ -109,15 +111,6 @@ HTTP 批次在临时网络故障、408、429、5xx 或发送任务取消时保�
 
 原始删除回放会让积压的 500 条旧消息产生 500 个异常堆栈。修复后，这 500 条旧消息执行 0 条 SQL、输出 0 个异常堆栈，待处理计数回到零，会话没有被重新创建。实际删除和取消操作用了 8 条 SQL、27.979 毫秒，其中包含删除 200 个合成会话。
 
-从仓库根目录、安装开发依赖后，可以在测试库上快速重放：
-
-```sh
-AGENT_SERVER_TEST_DB_URL=postgresql+asyncpg://agents_anywhere:agents_anywhere_dev_password@127.0.0.1:55432/agents_anywhere_test \
-  uv run --project server python server/scripts/benchmark_connector_lifecycle.py --output /tmp/connector-lifecycle.json
-```
-
-默认模式清除其他 `AGENT_SERVER_*` 环境变量，使用 `AGENT_SERVER_TEST_DB_URL` 指向的一次性测试库，和测试套件一样先清空所有表、使用 NullPool；带执行计划和正常连接池的完整复现见下文“并发回归与复现”。
-
 ### 执行计划
 
 在 10,000 条合成会话记录上执行 `EXPLAIN (ANALYZE, BUFFERS)`：
@@ -128,33 +121,13 @@ AGENT_SERVER_TEST_DB_URL=postgresql+asyncpg://agents_anywhere:agents_anywhere_de
 
 这些计划针对来源更新和清单标记，**没有覆盖空标题首条用户消息查询，也没有覆盖生产大规模消息表**。
 
-### 并发回归与复现
+### 历史并发验证
 
 PostgreSQL 专项 21 个用例通过，覆盖凭证撤销、清理失败重试、后台继续删除、过期运行实例通知，以及两个真实行锁并发场景。
 
 行锁用例通过 `pg_stat_activity` 确认快速 UPDATE 正在等待锁，再由另一个事务分别提交状态变化或删除。等待结束后，快速路径返回未匹配，不覆盖新状态，也不重建已删除的行。
 
-复现使用两个可丢弃数据库：回归用例由测试套件在用例间清空测试表；性能脚本要求 `--replay-db-url` 指向的应用表为空，且只接受回环地址和 `aa_session_*` 库名。
-
-```sh
-docker run -d --rm --name aa-session-check-pg -p 127.0.0.1:55439:5432 \
-  --tmpfs /var/lib/postgresql/data:rw \
-  -e POSTGRES_USER=aa_test -e POSTGRES_PASSWORD=aa_disposable_test \
-  -e POSTGRES_DB=aa_session_perf postgres:17-alpine
-docker exec aa-session-check-pg pg_isready -U aa_test -d aa_session_perf
-docker exec aa-session-check-pg createdb -U aa_test aa_lifecycle_test
-AGENT_SERVER_TEST_DB_URL=postgresql+asyncpg://aa_test:aa_disposable_test@127.0.0.1:55439/aa_lifecycle_test \
-  uv run --project server python server/scripts/benchmark_connector_lifecycle.py \
-  --replay-db-url postgresql+asyncpg://aa_test:aa_disposable_test@127.0.0.1:55439/aa_session_perf \
-  --output /tmp/connector-lifecycle-replay.json
-AGENT_SERVER_TEST_DB_URL=postgresql+asyncpg://aa_test:aa_disposable_test@127.0.0.1:55439/aa_lifecycle_test \
-  uv run --project server pytest server/tests/test_connector_lifecycle.py server/tests/test_announcements.py \
-  server/tests/test_shared_setup_tokens.py server/tests/test_connector_deletion.py \
-  server/tests/test_session_inventory.py server/tests/test_session_source_row_locks.py
-docker stop aa-session-check-pg
-```
-
-等待 `pg_isready` 报告可接收连接后再创建第二个数据库。测试套件使用 `NullPool` 适配同步测试工具的多个事件循环；`--replay-db-url` 回放使用正常连接池。本轮临时容器已回收，结果保留在仓库。
+上述测试库与脚本均已回收或删除；结果仅供历史参考。
 
 ## 五、已完成的验证范围
 

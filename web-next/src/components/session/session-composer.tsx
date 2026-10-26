@@ -129,6 +129,7 @@ export function SessionComposer({
     sessionVisitRef.current = { id: session.id, sequence: sessionVisitRef.current.sequence + 1 }
   }
   const requestSequenceRef = React.useRef(0)
+  const messageSubmissionSequenceRef = React.useRef(0)
   const activeCommandRequestRef = React.useRef<number | null>(null)
   const [commandPending, setCommandPending] = React.useState(false)
   const [commandFeedback, setCommandFeedback] = React.useState<CommandOutcome | null>(null)
@@ -168,8 +169,6 @@ export function SessionComposer({
     connectorOnline &&
     !sourceUnavailable &&
     !isDisconnected &&
-    !isWaiting &&
-    !isRunning &&
     !isStopping &&
     !isWaitingApproval &&
     !isBlocked
@@ -205,7 +204,6 @@ export function SessionComposer({
   const canSend =
     canUseSendMessage &&
     !creatingSession &&
-    !sending &&
     !commandPending &&
     !interrupting &&
     acceptsUserInput
@@ -401,7 +399,7 @@ export function SessionComposer({
       ? tSession(`commandReason_${command.disabledReason}`)
       : command.disabledReason || tSession("commandUnavailable")
   }
-  const canSubmitCommand = mode.kind === "command" && !commandPending && connectorOnline
+  const canSubmitCommand = mode.kind === "command" && !sending && !interrupting && !commandPending && connectorOnline
   const canSubmitMessage =
     canSend &&
     session.takeover &&
@@ -500,24 +498,19 @@ export function SessionComposer({
     if (!canSubmitMessage) return
     const text = value
     const files = attachments
+    const submissionId = ++messageSubmissionSequenceRef.current
     updateValue("")
     clear({ revokePreviews: false })
     const sent = await onSend(text, files, {
       ...(selectedModelSelection ? { model: selectedModelSelection } : {}),
       ...(selectedPermissionSelection ? { permission: selectedPermissionSelection } : {}),
     })
-    if (!sent && valueRef.current === "") {
+    if (!sent && messageSubmissionSequenceRef.current === submissionId && valueRef.current === "") {
       updateValue(text)
     }
   }
 
-  const primaryAction = () => {
-    if (showInterruptAction) {
-      onInterrupt()
-      return
-    }
-    void submit()
-  }
+  const primaryAction = () => { void submit() }
 
   return (
     <div
@@ -650,7 +643,7 @@ export function SessionComposer({
                 }
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault()
-                  if (!showInterruptAction) void submit()
+                  void submit()
                 }
               }}
               placeholder={placeholder}
@@ -860,18 +853,29 @@ export function SessionComposer({
               {tSession("takeover")}
             </div>
             <span className="mx-1 h-5 w-px shrink-0 bg-border" />
+            {showInterruptAction ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="destructive"
+                aria-label={tSession("interrupt")}
+                className="size-8 rounded-full"
+                disabled={interrupting}
+                onClick={onInterrupt}
+              >
+                {interrupting ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="icon"
-              aria-label={showInterruptAction ? tSession("interrupt") : tSession("send")}
-              className={cn("size-8 rounded-full", showInterruptAction && "bg-destructive text-destructive-foreground hover:bg-destructive/90")}
-              disabled={showInterruptAction ? interrupting : !(canSubmitCommand || canSubmitMessage)}
+              aria-label={tSession("send")}
+              className="size-8 rounded-full"
+              disabled={!(canSubmitCommand || canSubmitMessage)}
               onClick={primaryAction}
             >
-              {sending || interrupting || commandPending ? (
+              {sending || commandPending ? (
                 <Loader2 className="size-4 animate-spin" />
-              ) : showInterruptAction ? (
-                <Square className="size-4" />
               ) : (
                 <ArrowUp className="size-4" />
               )}

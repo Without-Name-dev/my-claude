@@ -28,27 +28,4 @@ The shared UI contract is documented in
 [connector-to-runtime](../../docs/runtime-protocol/connector-to-runtime.md#commands)
 and [Web behavior](../../docs/runtime-protocol/web-behavior.md#commands).
 
-## Headless verification
-
-From `connector/`:
-
-```bash
-uv run pytest -q tests/test_runtime_rpc_params.py
-```
-
-From `server/`:
-
-```bash
-uv run pytest -q tests/test_session_commands_contract.py
-```
-
-From `web-next/`:
-
-```bash
-corepack yarn test
-corepack yarn typecheck
-```
-
-These checks do not start an interactive development server or prove an installed
-desktop client's behavior. Manual smoke testing requires a connected session and
-the matching connector build.
+Manual validation requires a connected session and the matching Connector build.

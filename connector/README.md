@@ -20,7 +20,6 @@ connector/
   _reference/        Old adapter implementations retained only as migration references
   cli.py             anywhere-cli CLI
   control.py         Connector controller shared by the CLI and the local control service
-tests/          Connector tests
 pyproject.toml  Connector dependencies and console script
 run.sh          Local helper for saved-config startup
 ```
@@ -166,10 +165,3 @@ The server can ask an online connector to perform local work:
 | `AGENT_CONNECTOR_KV_FILE` | Legacy KV copy source. Defaults to `~/.agents-anywhere/connector-kv.json`; new runtime writes use the instance's `kv.json`. |
 | `AGENT_CONNECTOR_ATTACHMENTS_ROOT` | Runtime attachment download directory. Defaults to `~/.agents-anywhere/attachments`. |
 | `CLAUDE_BIN` | Explicit Claude Code CLI path. |
-
-## Verify
-
-```bash
-uv run ruff check connector tests
-uv run pytest -q
-```

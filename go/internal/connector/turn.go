@@ -137,18 +137,20 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.sink.TurnEnd(protocol.TurnEnd{
 				SessionID: w.sessionID,
 				TurnID:    w.currentTurnID(),
+				RequestID: w.messageID,
 				Status:    "aborted",
 				Error:     "the terminal was closed from the phone",
 			})
 			return w.currentText()
 		}
 
-		box, err := w.bridge.ReadOutbox()
+		box, err := w.bridge.ReadOutbox(w.externalSessionID)
 		if err != nil || box == nil {
 			if stalled(nil) {
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
 					TurnID:    w.turnID,
+					RequestID: w.messageID,
 					Status:    "error",
 					Error:     "the desktop stopped responding while the turn was running",
 				})
@@ -159,6 +161,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
 					TurnID:    w.messageID,
+					RequestID: w.messageID,
 					Status:    "error",
 					Error:     "the desktop did not pick up the message",
 				})
@@ -192,6 +195,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
 					TurnID:    w.messageID,
+					RequestID: w.messageID,
 					Status:    "error",
 					Error:     "the session did not start a turn",
 				})
@@ -210,6 +214,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.sink.TurnBegin(protocol.TurnBegin{
 				SessionID: w.sessionID,
 				TurnID:    box.TurnID,
+				RequestID: w.messageID,
 				QueuedAt:  w.queuedAt,
 			})
 		}
@@ -240,9 +245,9 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.sink.TurnEnd(protocol.TurnEnd{
 				SessionID: w.sessionID,
 				TurnID:    box.TurnID,
+				RequestID: w.messageID,
 				Status:    "done",
 				Text:      w.full,
-				Chunks:    box.Chunks,
 				State:     box.State,
 			})
 			return w.full
@@ -252,6 +257,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.sink.TurnEnd(protocol.TurnEnd{
 				SessionID: w.sessionID,
 				TurnID:    w.turnID,
+				RequestID: w.messageID,
 				Status:    "error",
 				Error:     "the desktop stopped responding while the turn was running",
 			})
@@ -277,7 +283,7 @@ func (w *TurnWatcher) currentTurnID() string {
 	if w.turnID != "" {
 		return w.turnID
 	}
-	if box, err := w.bridge.ReadOutbox(); err == nil && box != nil &&
+	if box, err := w.bridge.ReadOutbox(w.externalSessionID); err == nil && box != nil &&
 		box.BelongsTo(w.sessionID, w.externalSessionID) && box.TurnID != w.previousID {
 		return box.TurnID
 	}
@@ -291,7 +297,7 @@ func (w *TurnWatcher) currentText() string {
 	if w.full != "" {
 		return w.full
 	}
-	box, err := w.bridge.ReadOutbox()
+	box, err := w.bridge.ReadOutbox(w.externalSessionID)
 	if err != nil || box == nil || !box.BelongsTo(w.sessionID, w.externalSessionID) {
 		return w.sent
 	}

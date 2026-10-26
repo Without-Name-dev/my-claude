@@ -167,7 +167,9 @@ function MessageCard({
   const hasAttachments = attachments.length > 0
   const message = stripInjectedAttachmentMentions(messageText(item))
   const text = hasAttachments && message.trim() === tNew("attachmentOnlyPrompt") ? "" : message
-  const showUserStatus = isUser && item.status === "failed"
+  const userStatus = isUser && ["pending", "running", "failed", "cancelled"].includes(item.status)
+    ? item.status
+    : null
   if (!text && !hasAttachments) {
     if (item.role === "assistant") return null
     return (
@@ -218,7 +220,13 @@ function MessageCard({
           </div>
         ) : null}
         {!isUser ? attachmentList : null}
-        {showUserStatus ? <TimelineStatusBadge status={item.status} /> : null}
+        {userStatus ? (
+          <span className={cn("text-[11px] text-muted-foreground", userStatus === "failed" && "text-destructive")}>
+            {userStatus === "pending" ? tSession("messageQueued")
+              : userStatus === "running" ? tSession("messageProcessing")
+                : userStatus === "failed" ? tSession("messageFailed") : tSession("messageCancelled")}
+          </span>
+        ) : null}
       </div>
     </div>
   )

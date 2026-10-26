@@ -12,7 +12,7 @@ from typing import Any
 
 from loguru import logger
 from redis.asyncio import Redis
-from redis.exceptions import RedisError, ResponseError, WatchError
+from redis.exceptions import RedisError, WatchError
 
 _MAX_LOCAL_LOCKS = 4096
 _LOCAL_LOCK_IDLE_SECONDS = 900.0
@@ -161,12 +161,7 @@ class RedisCoordinator:
 
         if self._client is None:
             return "local"
-        try:
-            info = await self._client.info(section="server")
-        except ResponseError:
-            if type(self._client).__module__.startswith("fakeredis"):
-                return f"fakeredis:{id(self._client)}"
-            raise
+        info = await self._client.info(section="server")
         run_id = info.get("run_id") if isinstance(info, dict) else None
         if not isinstance(run_id, str) or not run_id:
             raise RuntimeError("Redis server INFO did not include run_id")

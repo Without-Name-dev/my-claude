@@ -349,9 +349,9 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request, user store.
 		views = append(views, toView(it, session.Runtime))
 	}
 
-	if len(items) == 0 {
-		a.maybeRequestHistory(r.Context(), session)
-	}
+	// Refresh populated sessions too: Claude Code may have added transcript
+	// messages since this client last opened the conversation.
+	a.maybeRequestHistory(r.Context(), session)
 
 	httpx.OK(w, map[string]any{
 		"session":               a.sessionView(r.Context(), session),
@@ -548,7 +548,7 @@ func (a *App) deliverMessage(
 			SessionID:  session.ID,
 			ID:         userItemID,
 			Type:       "message",
-			Status:     "done",
+			Status:     "pending",
 			Role:       "user",
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,

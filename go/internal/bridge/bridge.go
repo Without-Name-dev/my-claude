@@ -84,15 +84,38 @@ func DefaultDir() string {
 }
 
 // Path helpers. Each file the plugin touches has exactly one here.
-func (b *Bridge) QueueDir() string      { return filepath.Join(b.Dir, "queue") }
-func (b *Bridge) OutboxPath() string    { return filepath.Join(b.Dir, "outbox.json") }
+func (b *Bridge) QueueDir() string { return filepath.Join(b.Dir, "queue") }
+func sessionFileID(sessionIDs []string) string {
+	for i := len(sessionIDs) - 1; i >= 0; i-- {
+		if sessionIDs[i] != "" {
+			return sanitizeCursorID(sessionIDs[i])
+		}
+	}
+	return ""
+}
+func (b *Bridge) OutboxPath(sessionIDs ...string) string {
+	if id := sessionFileID(sessionIDs); id != "" {
+		return filepath.Join(b.Dir, "outbox."+id+".json")
+	}
+	return filepath.Join(b.Dir, "outbox.json")
+}
 func (b *Bridge) HeartbeatPath() string { return filepath.Join(b.Dir, "heartbeat.txt") }
 func (b *Bridge) AbortPath() string     { return filepath.Join(b.Dir, "abort.txt") }
-func (b *Bridge) ToolsPath() string     { return filepath.Join(b.Dir, "tools.json") }
-func (b *Bridge) AgentsPath() string    { return filepath.Join(b.Dir, "agents.json") }
-func (b *Bridge) TokenPath() string     { return filepath.Join(b.Dir, "auth.json") }
-func (b *Bridge) ApprovalPath() string  { return filepath.Join(b.Dir, "approval.json") }
-func (b *Bridge) LiveDir() string       { return filepath.Join(b.Dir, "live") }
+func (b *Bridge) ToolsPath(sessionIDs ...string) string {
+	if id := sessionFileID(sessionIDs); id != "" {
+		return filepath.Join(b.Dir, "tools."+id+".json")
+	}
+	return filepath.Join(b.Dir, "tools.json")
+}
+func (b *Bridge) AgentsPath(sessionIDs ...string) string {
+	if id := sessionFileID(sessionIDs); id != "" {
+		return filepath.Join(b.Dir, "agents."+id+".json")
+	}
+	return filepath.Join(b.Dir, "agents.json")
+}
+func (b *Bridge) TokenPath() string    { return filepath.Join(b.Dir, "auth.json") }
+func (b *Bridge) ApprovalPath() string { return filepath.Join(b.Dir, "approval.json") }
+func (b *Bridge) LiveDir() string      { return filepath.Join(b.Dir, "live") }
 
 // RemoveLiveStamp withdraws one conversation's presence.
 //
@@ -259,7 +282,7 @@ func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action st
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("empty message")
 	}
-	previous, err := b.previousTurnID()
+	previous, err := b.previousTurnID(externalSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -284,10 +307,10 @@ func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action st
 // queued. The plugin rewrites the file while text streams in, so a read can
 // catch it half-written; retrying beats treating a torn file as "no previous
 // turn", which would let the watcher adopt a stale turn as the answer.
-func (b *Bridge) previousTurnID() (string, error) {
+func (b *Bridge) previousTurnID(sessionID string) (string, error) {
 	var last error
 	for attempt := 0; attempt < 10; attempt++ {
-		box, err := b.ReadOutbox()
+		box, err := b.ReadOutbox(sessionID)
 		if err == nil {
 			if box == nil {
 				return "", nil
@@ -359,7 +382,7 @@ func (b *Bridge) writeQueue(msg QueueMessage) error {
 // there invisible forever.
 func (b *Bridge) nextSeq(dir string) int {
 	best := highestSeq(dir)
-	if cursor := readCursor(b.Dir); cursor > best {
+	if cursor := highestCursor(b.Dir); cursor > best {
 		best = cursor
 	}
 	return best
@@ -396,6 +419,28 @@ func readCursor(dir string) int {
 		return 0
 	}
 	return n
+}
+
+func highestCursor(dir string) int {
+	best := readCursor(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return best
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "cursor.") || !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && n > best {
+			best = n
+		}
+	}
+	return best
 }
 
 // SeedSessionCursor primes a session's reader with the current queue head.
@@ -464,7 +509,6 @@ type Outbox struct {
 	SessionID string
 	TurnID    string
 	Status    string
-	Chunks    int
 	Text      string
 	TS        int64
 	State     map[string]any
@@ -507,8 +551,14 @@ func (o *Outbox) Aborted() bool { return o.Status == "aborted" }
 // ReadOutbox returns the current snapshot, or nil when the plugin has not
 // written one yet. A read that catches the file mid-rewrite returns an error;
 // the caller polls again.
-func (b *Bridge) ReadOutbox() (*Outbox, error) {
-	raw, err := os.ReadFile(b.OutboxPath())
+func (b *Bridge) ReadOutbox(sessionIDs ...string) (*Outbox, error) {
+	path := b.OutboxPath(sessionIDs...)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) && len(sessionIDs) > 0 && sessionIDs[0] != "" {
+		// Older installed plugins still write the shared outbox. Accept it only
+		// when its session id matches the requester's session.
+		raw, err = os.ReadFile(b.OutboxPath())
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -529,9 +579,6 @@ func (b *Bridge) ReadOutbox() (*Outbox, error) {
 	if v, ok := data["status"].(string); ok {
 		out.Status = v
 	}
-	if v, ok := data["chunks"].(float64); ok {
-		out.Chunks = int(v)
-	}
 	if v, ok := data["text"].(string); ok {
 		out.Text = v
 	}
@@ -542,6 +589,9 @@ func (b *Bridge) ReadOutbox() (*Outbox, error) {
 		if v, ok := data[key]; ok && v != nil {
 			out.State[key] = v
 		}
+	}
+	if len(sessionIDs) > 0 && !out.BelongsTo(sessionIDs...) {
+		return nil, nil
 	}
 	return out, nil
 }
@@ -560,7 +610,10 @@ type ToolEntry struct {
 // Tools returns the tool calls recorded for the running turn, oldest first.
 // A snapshot stamped with a different runtime session is skipped.
 func (b *Bridge) Tools(sessionIDs ...string) []ToolEntry {
-	raw, err := os.ReadFile(b.ToolsPath())
+	raw, err := os.ReadFile(b.ToolsPath(sessionIDs...))
+	if errors.Is(err, os.ErrNotExist) && len(sessionIDs) > 0 && sessionIDs[0] != "" {
+		raw, err = os.ReadFile(b.ToolsPath())
+	}
 	if err != nil {
 		return nil
 	}
@@ -678,7 +731,7 @@ func (b *Bridge) SubmitCommand(sessionID, externalSessionID, messageID, command,
 		body["args"] = args
 	}
 	previous := ""
-	if box, err := b.ReadOutbox(); err == nil && box != nil {
+	if box, err := b.ReadOutbox(externalSessionID); err == nil && box != nil {
 		previous = box.TurnID
 	}
 	if err := b.writeQueueRaw(body); err != nil {
@@ -738,7 +791,10 @@ type AgentEntry struct {
 // Agents returns the subagents the plugin currently knows about. A snapshot
 // stamped with a different runtime session is skipped.
 func (b *Bridge) Agents(sessionIDs ...string) []AgentEntry {
-	raw, err := os.ReadFile(b.AgentsPath())
+	raw, err := os.ReadFile(b.AgentsPath(sessionIDs...))
+	if errors.Is(err, os.ErrNotExist) && len(sessionIDs) > 0 && sessionIDs[0] != "" {
+		raw, err = os.ReadFile(b.AgentsPath())
+	}
 	if err != nil {
 		return nil
 	}

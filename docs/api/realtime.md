@@ -125,6 +125,15 @@ value changed. A connector going offline clears its whole set.
 - Web should not derive action availability from `runtime.state.updated` when a
   matching effective capability exists.
 
+### Message dispatch status
+
+An accepted user timeline item starts as `pending` while it waits in the
+Connector's FIFO queue. The Connector carries the submit `requestId` on
+`turn.begin` and `turn.end`, allowing the Server to update that exact user item
+to `running` when processing starts and to `done`, `failed` or `cancelled` when
+the request finishes. Clients can keep accepting messages while a turn runs and
+show these states on each submitted bubble independently.
+
 ## Dashboard realtime
 
 Primary realtime channel:

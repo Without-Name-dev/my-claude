@@ -53,26 +53,19 @@ new prompt requests an explicit completion marker so its answer can also be
 hidden. An unmarked assistant reply from older transcripts is kept because it
 could instead be a real scheduled reply with no intervening user message.
 
-## Validation
+## Historical validation
 
-Automated coverage includes ordinary chat, separate scheduled turns, cancellation,
+Before test sources were removed, automated coverage included ordinary chat, separate scheduled turns, cancellation,
 runtime restoration, same-project session isolation, selection changes, approval
 ownership, simultaneous user submission, interruption, transport failure and
-connection-registry write failure. Run from `connector/`:
-
-```sh
-uv run pytest tests/test_runtime_protocol.py tests/test_runtime_protocol_supervisor.py \
-  tests/test_connector_runtime_host.py tests/test_connector_architecture.py \
-  tests/test_claude_runtime.py tests/test_claude_sdk_client.py \
-  tests/test_claude_provider.py -q
-```
+connection-registry write failure.
 
 Local integration experiments used Claude Agent SDK 0.2.152 with bundled Claude
 2.1.259 and an isolated mock model endpoint. They verified future session-only
 reminders, cancellation, permission-change resume, a busy conversation crossing a
 deadline, runtime-object restart, and simultaneous scheduled/user replies.
-Long-running expiration, multi-process durable
-task ownership and mobile notification delivery are not established by these tests.
+Long-running expiration, multi-process durable task ownership and mobile
+notification delivery were not established by that coverage.
 
 ## Lifecycle status (2026-09-23)
 

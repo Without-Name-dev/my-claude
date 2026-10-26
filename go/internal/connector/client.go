@@ -28,6 +28,15 @@ const heartbeatInterval = 20 * time.Second
 // stays just under that.
 const approvalWait = 25 * time.Second
 
+// historyStableWindow keeps an in-progress transcript out of the timeline.
+// This check runs on the connector because file modification times belong to
+// the connector host's clock, which may differ from the server's clock.
+const historyStableWindow = 10 * time.Second
+
+const historyWorkerCount = 2
+
+const historyQueueSize = 128
+
 // Client is the connector's link to the server.
 type Client struct {
 	URL   string
@@ -43,7 +52,7 @@ type Client struct {
 	Discovery *Discovery
 
 	invMu             sync.Mutex
-	seenSessions      map[string]int64
+	seenSessions      map[string]string
 	lastFullInventory time.Time
 
 	connMu sync.Mutex
@@ -81,10 +90,13 @@ type Client struct {
 	spawnMu       sync.Mutex
 	spawnRequests map[string]time.Time
 
-	// historyMu guards historyStamps: the transcript size and mtime last sent
-	// for a session, so a periodic refresh costs one stat when nothing changed.
-	historyMu     sync.Mutex
-	historyStamps map[string]historyStamp
+	// historyMu guards historyStamps: versions the server confirmed committing.
+	historyMu          sync.Mutex
+	historyStamps      map[string]string
+	historyRetryTimers map[string]*time.Timer
+	historyRetryReqs   map[string]protocol.HistoryRequest
+	historyQueue       chan string
+	historyJobs        map[string]*historyJob
 
 	// closedMu guards closed: server sessions whose terminal the person closed
 	// from the phone. A turn watcher stops on its next poll instead of waiting
@@ -93,10 +105,11 @@ type Client struct {
 	closed   map[string]time.Time
 }
 
-// historyStamp identifies a transcript version by its size and write time.
-type historyStamp struct {
-	size     int64
-	modified int64
+type historyJob struct {
+	req     protocol.HistoryRequest
+	queued  bool
+	running bool
+	rerun   bool
 }
 
 // pendingAsk is one question awaiting an answer from the phone.
@@ -110,25 +123,32 @@ type pendingAsk struct {
 // NewClient prepares a client. Run opens the connection.
 func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Client {
 	return &Client{
-		URL:           url,
-		Token:         token,
-		Name:          name,
-		Bridge:        b,
-		Log:           log,
-		pending:       map[string]*pendingAsk{},
-		turnSessions:  map[string]string{},
-		queued:        map[string]int{},
-		cancelled:     map[string]int{},
-		turns:         make(chan protocol.Submit, 32),
-		spawnRequests: map[string]time.Time{},
-		closed:        map[string]time.Time{},
-		historyStamps: map[string]historyStamp{},
+		URL:                url,
+		Token:              token,
+		Name:               name,
+		Bridge:             b,
+		Log:                log,
+		pending:            map[string]*pendingAsk{},
+		turnSessions:       map[string]string{},
+		queued:             map[string]int{},
+		cancelled:          map[string]int{},
+		turns:              make(chan protocol.Submit, 32),
+		spawnRequests:      map[string]time.Time{},
+		closed:             map[string]time.Time{},
+		historyStamps:      map[string]string{},
+		historyRetryTimers: map[string]*time.Timer{},
+		historyRetryReqs:   map[string]protocol.HistoryRequest{},
+		historyQueue:       make(chan string, historyQueueSize),
+		historyJobs:        map[string]*historyJob{},
 	}
 }
 
 // Run connects and stays connected until ctx ends, backing off between tries.
 func (c *Client) Run(ctx context.Context) {
 	go c.runTurns(ctx)
+	for range historyWorkerCount {
+		go c.runHistory(ctx)
+	}
 
 	backoff := time.Second
 	for ctx.Err() == nil {
@@ -305,6 +325,7 @@ func (c *Client) dispatch(env protocol.Envelope) {
 			c.TurnEnd(protocol.TurnEnd{
 				SessionID: msg.SessionID,
 				TurnID:    msg.RequestID,
+				RequestID: msg.RequestID,
 				Status:    "error",
 				Error:     "the connector is still working through earlier messages; send this one again",
 			})
@@ -345,7 +366,15 @@ func (c *Client) dispatch(env protocol.Envelope) {
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
 			return
 		}
-		c.sendHistory(msg)
+		c.queueHistory(msg)
+	case protocol.TypeHistoryAck:
+		var msg protocol.HistoryAck
+		if err := json.Unmarshal(env.Data, &msg); err != nil || msg.SessionID == "" || msg.Version == "" {
+			return
+		}
+		c.historyMu.Lock()
+		c.historyStamps[msg.SessionID] = msg.Version
+		c.historyMu.Unlock()
 	case protocol.TypeTerminal:
 		c.handleTerminalFrame(env.Data)
 	case protocol.TypeSessionOpen:
@@ -354,6 +383,87 @@ func (c *Client) dispatch(env protocol.Envelope) {
 		_ = c.send(protocol.TypeBeat, c.beatFrame())
 	default:
 		c.Log.Debug("ignoring unknown frame", "type", env.Type)
+	}
+}
+
+// queueHistory keeps transcript scans off the websocket read loop while
+// limiting concurrent work and coalescing overlapping requests per session.
+func (c *Client) queueHistory(req protocol.HistoryRequest) {
+	if req.SessionID == "" {
+		return
+	}
+	if req.Limit <= 0 {
+		req.Limit = maxHistoryItems
+	}
+
+	c.historyMu.Lock()
+	if job := c.historyJobs[req.SessionID]; job != nil {
+		if req.Limit > job.req.Limit {
+			job.req.Limit = req.Limit
+		}
+		if job.running {
+			job.rerun = true
+		}
+		c.historyMu.Unlock()
+		return
+	}
+	job := &historyJob{req: req, queued: true}
+	c.historyJobs[req.SessionID] = job
+	select {
+	case c.historyQueue <- req.SessionID:
+		c.historyMu.Unlock()
+	default:
+		delete(c.historyJobs, req.SessionID)
+		c.historyMu.Unlock()
+		c.Log.Warn("history queue full; request deferred", "session", req.SessionID)
+		c.scheduleHistoryRetry(req, time.Second)
+	}
+}
+
+func (c *Client) runHistory(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case sessionID := <-c.historyQueue:
+			c.historyMu.Lock()
+			job := c.historyJobs[sessionID]
+			if job == nil || !job.queued {
+				c.historyMu.Unlock()
+				continue
+			}
+			job.queued = false
+			job.running = true
+			req := job.req
+			c.historyMu.Unlock()
+
+			c.sendHistory(req)
+
+			c.historyMu.Lock()
+			job = c.historyJobs[sessionID]
+			if job == nil {
+				c.historyMu.Unlock()
+				continue
+			}
+			job.running = false
+			if !job.rerun {
+				delete(c.historyJobs, sessionID)
+				c.historyMu.Unlock()
+				continue
+			}
+			job.rerun = false
+			job.queued = true
+			req = job.req
+			select {
+			case c.historyQueue <- sessionID:
+				c.historyMu.Unlock()
+			default:
+				delete(c.historyJobs, sessionID)
+				c.historyMu.Unlock()
+				c.Log.Warn("history queue full; follow-up deferred", "session", sessionID)
+				c.scheduleHistoryRetry(req, time.Second)
+			}
+		}
 	}
 }
 
@@ -377,6 +487,7 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
 			TurnID:    msg.RequestID,
+			RequestID: msg.RequestID,
 			Status:    "error",
 			Error:     "the connector has no plugin bridge configured, so the message cannot run on the desktop",
 		})
@@ -388,18 +499,18 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
 			TurnID:    msg.RequestID,
+			RequestID: msg.RequestID,
 			Status:    "aborted",
 		})
 		return
 	}
-	// The server asked us to open this conversation and the first message for
-	// it is being queued now. Pin the new plugin's cursor to the current queue
-	// head so a later global-cursor advance cannot make it skip this message.
-	if c.consumeSpawnRequest(msg.ExternalSessionID) {
-		if err := c.Bridge.SeedSessionCursor(msg.ExternalSessionID); err != nil {
-			c.Log.Warn("could not prime the spawned session's queue cursor",
-				"session", msg.SessionID, "external", msg.ExternalSessionID, "error", err)
-		}
+	// Prime a session's cursor once before its first message is queued. This
+	// also covers an already-running terminal whose plugin predates per-session
+	// cursors; later calls leave its cursor untouched.
+	c.consumeSpawnRequest(msg.ExternalSessionID)
+	if err := c.Bridge.SeedSessionCursor(msg.ExternalSessionID); err != nil {
+		c.Log.Warn("could not prime the session's queue cursor",
+			"session", msg.SessionID, "external", msg.ExternalSessionID, "error", err)
 	}
 	action := msg.Action
 	if action == "" {
@@ -430,6 +541,7 @@ func (c *Client) runTurn(ctx context.Context, msg protocol.Submit) {
 		c.TurnEnd(protocol.TurnEnd{
 			SessionID: msg.SessionID,
 			TurnID:    msg.RequestID,
+			RequestID: msg.RequestID,
 			Status:    "error",
 			Error:     "the desktop did not accept the message",
 		})
@@ -839,14 +951,18 @@ func (c *Client) sendInventory() {
 
 	c.invMu.Lock()
 	if c.seenSessions == nil {
-		c.seenSessions = map[string]int64{}
+		c.seenSessions = map[string]string{}
 	}
 	full := time.Since(c.lastFullInventory) >= fullInventoryEvery
 	changed := make([]protocol.InventorySession, 0, 16)
-	seen := make(map[string]int64, len(records))
+	seen := make(map[string]string, len(records))
 	for _, record := range records {
-		seen[record.ExternalID] = record.UpdatedAt
-		if previous, ok := c.seenSessions[record.ExternalID]; ok && previous == record.UpdatedAt && !full {
+		version := record.Version
+		if version == "" {
+			version = strconv.FormatInt(record.UpdatedAt, 10)
+		}
+		seen[record.ExternalID] = version
+		if previous, ok := c.seenSessions[record.ExternalID]; ok && previous == version && !full {
 			continue
 		}
 		changed = append(changed, protocol.InventorySession{
@@ -855,6 +971,7 @@ func (c *Client) sendInventory() {
 			Title:      record.Title,
 			Model:      record.Model,
 			UpdatedAt:  record.UpdatedAt,
+			Version:    version,
 		})
 	}
 	removed := make([]string, 0)
@@ -901,14 +1018,17 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 	// The server now asks live conversations for their transcript every few
 	// seconds. Reading a long transcript for an unchanged file would be pure
 	// cost, so the last sent size and mtime decide.
-	stamp, haveStamp := historyStamp{}, false
+	version := ""
 	if info, err := os.Stat(path); err == nil {
-		stamp = historyStamp{size: info.Size(), modified: info.ModTime().UnixMilli()}
-		haveStamp = true
+		version = strconv.FormatInt(info.Size(), 10) + ":" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
+		if delay := historyRetryDelay(info.ModTime(), time.Now()); delay > 0 {
+			c.scheduleHistoryRetry(req, delay)
+			return
+		}
 		c.historyMu.Lock()
 		previous, seen := c.historyStamps[req.SessionID]
 		c.historyMu.Unlock()
-		if seen && previous == stamp {
+		if seen && previous == version {
 			return
 		}
 	}
@@ -917,20 +1037,43 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 		c.Log.Warn("could not read transcript", "error", err)
 		return
 	}
-	frame := protocol.History{SessionID: req.SessionID, Items: items}
-	if haveStamp {
-		frame.UpdatedAt = stamp.modified
-	}
+	frame := protocol.History{SessionID: req.SessionID, Version: version, Items: items}
 	if err := c.send(protocol.TypeHistory, frame); err != nil {
 		c.Log.Debug("could not send history", "error", err)
 		return
 	}
-	if haveStamp {
-		c.historyMu.Lock()
-		c.historyStamps[req.SessionID] = stamp
-		c.historyMu.Unlock()
-	}
 	c.Log.Info("sent history", "session", req.SessionID, "items", len(items))
+}
+
+func historyRetryDelay(modifiedAt, now time.Time) time.Duration {
+	delay := modifiedAt.Add(historyStableWindow).Sub(now)
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func (c *Client) scheduleHistoryRetry(req protocol.HistoryRequest, delay time.Duration) {
+	c.historyMu.Lock()
+	if c.historyRetryTimers[req.SessionID] != nil {
+		pending := c.historyRetryReqs[req.SessionID]
+		if req.Limit > pending.Limit {
+			pending.Limit = req.Limit
+		}
+		c.historyRetryReqs[req.SessionID] = pending
+		c.historyMu.Unlock()
+		return
+	}
+	c.historyRetryReqs[req.SessionID] = req
+	c.historyRetryTimers[req.SessionID] = time.AfterFunc(delay, func() {
+		c.historyMu.Lock()
+		delete(c.historyRetryTimers, req.SessionID)
+		retry := c.historyRetryReqs[req.SessionID]
+		delete(c.historyRetryReqs, req.SessionID)
+		c.historyMu.Unlock()
+		c.queueHistory(retry)
+	})
+	c.historyMu.Unlock()
 }
 
 // splitCommand separates "/name rest of the line" into its two parts.

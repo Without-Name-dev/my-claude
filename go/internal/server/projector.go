@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -238,8 +239,9 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 	state.createdAt = orderSeq
 	state.mu.Unlock()
 
+	userItemID := ""
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
-		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
+		if err := store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
 			ID:         itemID,
 			Type:       "message",
@@ -248,14 +250,51 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
 			Payload:    messageContent(""),
-		}, store.NowMS())
+		}, store.NowMS()); err != nil {
+			return err
+		}
+		userItemID, err = a.updateSubmittedMessageStatus(ctx, tx, session.ID, msg.RequestID, "running", seq)
+		return err
 	})
 	if err != nil {
 		a.log.Warn("could not open the assistant message", "error", err)
 		return
 	}
 	a.publishItem(ctx, session.ID, itemID, seq, true)
+	if userItemID != "" {
+		a.publishItem(ctx, session.ID, userItemID, seq, false)
+	}
 	a.setSessionStatus(ctx, session.ID, "running")
+}
+
+// updateSubmittedMessageStatus records queue progress on the matching user
+// bubble. RequestID is the submit id, independent of the runtime's turn id.
+func (a *App) updateSubmittedMessageStatus(
+	ctx context.Context, tx *sql.Tx, sessionID, requestID, status string, seq int64,
+) (string, error) {
+	if requestID == "" {
+		return "", nil
+	}
+	itemID := "msg_" + requestID + "_user"
+	item, err := a.db.TimelineItemByID(ctx, tx, sessionID, itemID)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if item.Type != "message" || item.Role != "user" || item.Status == status {
+		return "", nil
+	}
+	if item.Status == "done" || item.Status == "failed" || item.Status == "cancelled" {
+		return "", nil
+	}
+	item.Status = status
+	item.UpdatedSeq = seq
+	if err := store.UpsertTimelineItem(ctx, tx, item, store.NowMS()); err != nil {
+		return "", err
+	}
+	return itemID, nil
 }
 
 // onTurnDelta appends streamed text to the assistant message.
@@ -407,6 +446,7 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			text = "已中断"
 		}
 	}
+	userItemID := ""
 	seq, err := a.writeTimeline(ctx, msg.SessionID, func(tx *sql.Tx, seq int64) error {
 		// The turn keeps the position it was given when it began. Restamping it
 		// here would move the answer below anything that arrived while it ran.
@@ -424,7 +464,7 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 		if msg.Error != "" {
 			payload = messageContentWithError(text, msg.Error)
 		}
-		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
+		if err := store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  msg.SessionID,
 			ID:         itemID,
 			Type:       "message",
@@ -433,13 +473,25 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
 			Payload:    payload,
-		}, store.NowMS())
+		}, store.NowMS()); err != nil {
+			return err
+		}
+		messageStatus := "done"
+		if status == "failed" || status == "cancelled" {
+			messageStatus = status
+		}
+		updatedUserItemID, updateErr := a.updateSubmittedMessageStatus(ctx, tx, msg.SessionID, msg.RequestID, messageStatus, seq)
+		userItemID = updatedUserItemID
+		return updateErr
 	})
 	if err != nil {
 		a.log.Warn("could not close the assistant message", "error", err)
 		return
 	}
 	a.publishItem(ctx, msg.SessionID, itemID, seq, false)
+	if userItemID != "" {
+		a.publishItem(ctx, msg.SessionID, userItemID, seq, false)
+	}
 	a.expireSessionApprovals(ctx, msg.SessionID, seq)
 
 	nextStatus := "idle"

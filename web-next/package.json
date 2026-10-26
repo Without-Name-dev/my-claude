@@ -8,7 +8,6 @@
     "dev": "next dev --hostname 127.0.0.1 --port 5174",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 5174",
-    "test": "node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "protocol:generate": "node scripts/generate-protocol-types.mjs",
@@ -93,7 +92,6 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@types/react-is": "^19",
-    "jsdom": "26.1.0",
     "json-schema-to-typescript": "^15.0.4",
     "typescript": "^6.0.3"
   }

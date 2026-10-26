@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type SessionRecord struct {
 	Title      string
 	Model      string
 	UpdatedAt  int64
+	Version    string
 	Path       string
 }
 
@@ -110,6 +112,7 @@ func (d *Discovery) Scan() ([]SessionRecord, error) {
 		}
 
 		record, ok := parseTranscript(path, info.ModTime())
+		record.Version = strconv.FormatInt(info.Size(), 10) + ":" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
 		d.cache[path] = cachedTranscript{
 			size: info.Size(), modTime: info.ModTime().UnixNano(), record: record, ok: ok,
 		}

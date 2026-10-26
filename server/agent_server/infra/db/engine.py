@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import NullPool
 
 DEFAULT_POSTGRES_POOL_SIZE = 10
 DEFAULT_POSTGRES_MAX_OVERFLOW = 20
@@ -29,40 +28,29 @@ def resolve_db_url(url: str | None = None) -> str:
 
 def build_engine(url: str | None = None) -> AsyncEngine:
     async_url = resolve_db_url(url)
-    engine_kwargs: dict[str, object] = {"future": True}
-    if _env_flag("AGENT_SERVER_DB_NULL_POOL"):
-        # Test suites drive one app from many short-lived event loops
-        # (asyncio.run per assertion, TestClient portals); pooled asyncpg
-        # connections would be reused across loops and fail. NullPool opens a
-        # connection per checkout, which is cheap against a local Postgres.
-        engine_kwargs["poolclass"] = NullPool
-    else:
-        engine_kwargs.update(
-            pool_size=_env_int(
-                "AGENT_SERVER_DB_POOL_SIZE", DEFAULT_POSTGRES_POOL_SIZE, minimum=1
-            ),
-            max_overflow=_env_int(
-                "AGENT_SERVER_DB_MAX_OVERFLOW",
-                DEFAULT_POSTGRES_MAX_OVERFLOW,
-                minimum=0,
-            ),
-            pool_timeout=_env_float(
-                "AGENT_SERVER_DB_POOL_TIMEOUT",
-                DEFAULT_POSTGRES_POOL_TIMEOUT_SECONDS,
-                minimum=0.1,
-            ),
-            pool_recycle=_env_int(
-                "AGENT_SERVER_DB_POOL_RECYCLE",
-                DEFAULT_POSTGRES_POOL_RECYCLE_SECONDS,
-                minimum=1,
-            ),
-            pool_pre_ping=True,
-        )
-    return create_async_engine(async_url, **engine_kwargs)
-
-
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return create_async_engine(
+        async_url,
+        future=True,
+        pool_size=_env_int(
+            "AGENT_SERVER_DB_POOL_SIZE", DEFAULT_POSTGRES_POOL_SIZE, minimum=1
+        ),
+        max_overflow=_env_int(
+            "AGENT_SERVER_DB_MAX_OVERFLOW",
+            DEFAULT_POSTGRES_MAX_OVERFLOW,
+            minimum=0,
+        ),
+        pool_timeout=_env_float(
+            "AGENT_SERVER_DB_POOL_TIMEOUT",
+            DEFAULT_POSTGRES_POOL_TIMEOUT_SECONDS,
+            minimum=0.1,
+        ),
+        pool_recycle=_env_int(
+            "AGENT_SERVER_DB_POOL_RECYCLE",
+            DEFAULT_POSTGRES_POOL_RECYCLE_SECONDS,
+            minimum=1,
+        ),
+        pool_pre_ping=True,
+    )
 
 
 def _env_int(name: str, default: int, *, minimum: int) -> int:

@@ -30,7 +30,6 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
     "ruff>=0.15.13",
 ]
 
@@ -46,9 +45,6 @@ explicit = true
 
 [tool.uv.sources]
 meshcall = { index = "pypi" }
-
-[tool.pytest.ini_options]
-pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["connector"]

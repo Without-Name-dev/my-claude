@@ -563,10 +563,6 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild \
   -destination 'generic/platform=iOS' -derivedDataPath ios/.build/release \
   -archivePath ios/.build/AgentsAnywhere.xcarchive \
   -onlyUsePackageVersionsFromResolvedFile -jobs 4 CODE_SIGNING_ALLOWED=NO archive
-uv run --no-project python ios/scripts/check-localization.py --derived-data ios/.build/release
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift \
-  ios/Tests/LocalizationProbe.swift \
-  'ios/.build/AgentsAnywhere.xcarchive/Products/Applications/Agents Anywhere.app'
 ```
 
 The beta compiler reports Swift isolation warnings during the successful build.
@@ -575,6 +571,9 @@ checks below remain to be performed. Cloud sign-in awaits the v2 backend
 deployment; this preparation does not change its endpoint or login flow.
 
 ## Verified checks
+
+The counts and measurements below are historical results from before the project
+removed its test and probe sources. They are not current validation results.
 
 Verified on 2026-09-06, without starting a server or simulator:
 
@@ -618,71 +617,9 @@ Verified on 2026-09-06, without starting a server or simulator:
   probe reads compiled `.lproj` files and checks translations, plural counts
   0/1/2, reordered arguments and both permission descriptions.
 - The Python backend contract fixture exporter reports that fixtures are current.
-- `Tests/DrawerLayoutProbe.swift` uses the real SwiftUI `ImageRenderer` on macOS,
-  without a window or simulator. Across 44 renders at 2x/3x with fractional pan
-  positions, the old geometry-group/offset control changes its reported origin;
-  the new transform retains origin zero and size 402x200 while rendered images
-  move. It also checks the actual SwiftUI Path used by the close layer's
-  `contentShape`: sidebar points are excluded and visible-card points included
-  at fractional reveal widths. These are layout and hit-region checks, not an
-  end-to-end touch dispatch test; on-device interaction still needs the manual
-  drawer checks below.
-- `Tests/ViewModelLifetimeProbe.swift` uses an offscreen SwiftUI host to compare
-  eager State initialization with the lazy model holder. Across 120 parent
-  updates the control creates 121 models, the holder creates one, and its page
-  task does not restart. Observable updates still reach the page and a changed
-  page identity creates a fresh model. The 600-record cache test confirms that
-  history projection waits for preparation and does not request history again.
-- `scripts/probe-drawer-updates.py` compiles the actual drawer with only its
-  progress driver replaced in a temporary copy. Across 240 synthetic pan samples
-  the header/sidebar/detail factories do no additional work; a destination
-  change still rebuilds the page. This validates the update boundary, not device
-  frame rate or real gesture dispatch.
 - The complete unsigned iOS Debug target builds for `generic/platform=iOS`, using
   the checked-in package resolutions and the Xcode beta toolchain. The app's
   existing iOS 26.5 deployment target remains unchanged.
-
-From the repository root:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test --package-path ios
-uv run --no-project python ios/scripts/check-localization.py
-uv run --no-project python -m unittest discover -s ios/Tests -p test_web_copy.py
-```
-
-After a successful unsigned build, verify compiler-extracted coverage and the
-actual compiled resources without starting an app:
-
-```sh
-uv run --no-project python ios/scripts/check-localization.py --derived-data ios/.build/xcode
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift \
-  ios/Tests/LocalizationProbe.swift \
-  'ios/.build/xcode/Build/Products/Debug-iphoneos/Agents Anywhere.app'
-```
-
-Native transform regression on macOS, without launching the app:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcrun swiftc -parse-as-library \
-  'ios/Agents Anywhere/Agents Anywhere/Views/Components/SidebarDrawerTranslation.swift' \
-  'ios/Agents Anywhere/Agents Anywhere/Views/Components/SidebarDrawerCloseRegion.swift' \
-  ios/Tests/DrawerLayoutProbe.swift -o /tmp/aa-drawer-layout-probe
-/tmp/aa-drawer-layout-probe
-
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcrun swiftc -parse-as-library \
-  'ios/Agents Anywhere/Agents Anywhere/Views/Components/StableViewModel.swift' \
-  ios/Tests/ViewModelLifetimeProbe.swift -o /tmp/aa-view-model-lifetime-probe
-/tmp/aa-view-model-lifetime-probe
-
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer uv run --no-project python \
-  ios/scripts/probe-drawer-updates.py
-```
-
-From `server/`:
-
-```sh
-uv run python ../ios/scripts/export_contract_fixtures.py --check
-```
 
 Unsigned app build, when needed after source changes:
 
@@ -752,18 +689,6 @@ keyboard layout and real mobile-network behavior still need manual validation:
     At the bottom of a long session, slowly open/close the iPhone drawer and leave
     it open; check stable footer spacing and no repeated vertical corrections.
     Check the two gesture directions separately, especially revealing the session
-    from an already open drawer. Set the `AA_CHAT_LAYOUT_TRACE=1` launch environment
-    variable to enable debug geometry diagnostics; normal debug runs do not
-    install per-row/per-block observers. Enabled builds log vertical changes during
-    drawer navigation under OSLog category `drawer-layout`: content/viewport height
-    and offset distinguish reflow or scrolling from a drawing-only flash. These
-    logs contain no message text and do not require a diagnostics overlay.
-    `Drawer component` lines narrow a content-size change to a group, row,
-    Copy/Share footer, or Markdown block's final `layout` size. Header, composer,
-    interaction dock and constant tail-spacer sizes are traced as well. Intrinsic
-    text widths no longer write to View state or generate reserved/natural trace
-    pairs. Membership/status changes are reported separately from size changes
-    so a 48-point footer and a paragraph reflow cannot be mistaken for each other.
     Repeat while reading in the middle and while streaming. Expand/collapse the
     composer, show/dismiss the keyboard and respond to approval cards; check the
     bottom margin is applied once and that a manual upward scroll is respected.

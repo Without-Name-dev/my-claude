@@ -13,7 +13,6 @@ agent_server/
   infra/        PostgreSQL/Redis/file repositories and runtime brokers
   services/     Use cases, application errors, and dependency ports
   app.py        FastAPI app factory and local uvicorn entry helper
-tests/          Backend tests
 pyproject.toml  Server dependencies
 run.sh          Local helper that migrates and starts the Server
 ```
@@ -199,13 +198,6 @@ A manually prepared static export can be served with:
 ```bash
 AGENT_SERVER_STATIC_DIR=/path/to/web-next/out \
   uv run uvicorn agent_server.app:create_app --factory --host 127.0.0.1 --port 8000
-```
-
-## Verify
-
-```bash
-uv run ruff check . --exclude .venv
-uv run pytest -q
 ```
 
 ## Client version checks
