@@ -909,6 +909,11 @@
           "title": "Latestturnendseq",
           "type": "integer"
         },
+        "live": {
+          "description": "Whether the session can currently accept a prompt through its phone-pane plugin.",
+          "title": "Live",
+          "type": "boolean"
+        },
         "pinned": {
           "default": false,
           "title": "Pinned",
@@ -948,6 +953,47 @@
           ],
           "title": "Runtime",
           "type": "string"
+        },
+        "runtimeId": {
+          "description": "Configured runtime instance identifier. Older servers may omit this field.",
+          "title": "Runtimeid",
+          "type": "string"
+        },
+        "runtimeName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Configured runtime instance name, when available.",
+          "title": "Runtimename"
+        },
+        "runtimeType": {
+          "description": "Runtime provider type. Current Go responses set this to runtime.",
+          "enum": [
+            "codex",
+            "claude",
+            "opencode",
+            "acp",
+            "dsh"
+          ],
+          "title": "Runtimetype",
+          "type": "string"
+        },
+        "runtimeTypeDisplayName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Display label for the runtime provider, when available.",
+          "title": "Runtimetypedisplayname"
         },
         "sortAt": {
           "anyOf": [

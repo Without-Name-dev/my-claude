@@ -39,8 +39,11 @@ type App struct {
 	// openMu guards lastAutoOpen: when the send path last asked each session's
 	// connector to open a terminal, so a retried message does not ask again
 	// while the first one is still starting.
-	openMu       sync.Mutex
-	lastAutoOpen map[string]time.Time
+	openMu         sync.Mutex
+	lastAutoOpen   map[string]time.Time
+	submitReplayMu sync.Mutex
+	commandAckMu   sync.Mutex
+	commandAcks    map[string]pendingCommandAck
 }
 
 // New wires the application.
@@ -60,6 +63,7 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		activity:   newActivityRegistry(),
 
 		lastAutoOpen: map[string]time.Time{},
+		commandAcks:  map[string]pendingCommandAck{},
 	}
 }
 

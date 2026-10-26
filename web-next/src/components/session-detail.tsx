@@ -69,7 +69,6 @@ import {
   isOptimisticTimelineItem,
   markOptimisticItemFailed,
   mergeTimelineItems,
-  mergeTimelineSnapshot,
   preserveOptimisticItems,
   timelineClientMessageId,
 } from "@/components/session/optimistic-timeline"
@@ -169,7 +168,6 @@ type SessionSendBatch = {
   pending: number
   accepted: number
   previousRuntimeState: SessionRuntimeState | null
-  tail: Promise<void>
 }
 type SessionSourceErrorCode =
   | "session_archived"
@@ -258,21 +256,29 @@ function mergeSessionSnapshot(
   current: SessionRemoteState,
   incoming: SessionRemoteState,
 ): SessionRemoteState {
-  const timeline = mergeTimelineSnapshot(
-    current.items,
-    current.nextSeq,
-    incoming.items,
-    incoming.nextSeq,
-  )
+  const items = mergeTimelineItems(current.items, incoming.items)
+  const currentCapabilities = current.effectiveCapabilities
+  const incomingCapabilities = incoming.effectiveCapabilities
+  const effectiveCapabilities = currentCapabilities && incomingCapabilities
+    && currentCapabilities.revision > incomingCapabilities.revision
+    ? currentCapabilities
+    : incomingCapabilities ?? currentCapabilities
+  const catalogs = mergeVersionedCatalogs(current.catalogs, incoming.catalogs)
   return {
     ...incoming,
-    items: timeline.items,
+    session: current.session.updatedSeq > incoming.session.updatedSeq ? current.session : incoming.session,
+    state: mergeRuntimeState(current.state, incoming.state, current.session.id),
+    items,
+    hasMore: current.hasMore || incoming.hasMore,
+    notices: mergeSnapshotNotices(current.notices, incoming.notices, incoming.nextSeq),
     // A refetch whose activity read failed leaves `agents` empty without
     // meaning "none"; keep the live set in that case.
     agents: incoming.agentsLoaded ? incoming.agents : current.agents,
     agentsLoaded: incoming.agentsLoaded || current.agentsLoaded,
-    nextSeq: timeline.nextSeq,
-    timelineResetVersion: nextTimelineResetVersion(current.timelineResetVersion, true),
+    effectiveCapabilities,
+    catalogs,
+    nextSeq: Math.max(current.nextSeq, incoming.nextSeq),
+    timelineResetVersion: current.timelineResetVersion,
     eventCursor: incoming.nextSeq >= current.nextSeq
       ? incoming.eventCursor
       : current.eventCursor,
@@ -996,17 +1002,19 @@ function SessionDetailView({
           snapshotHydrated = true
           setError(null)
           const merged = applyOptimisticItemsRef.current(next)
-          renderBuffer.clear()
+          // Events already received have advanced the cursor, even if their
+          // 30 fps render batch has not committed yet. Commit them before the
+          // snapshot so neither the buffer nor a newer live projection is lost.
+          renderBuffer.flush()
           clearResolvedOptimisticMessagesRef.current(sessionId, merged.items)
-          eventSequenceCursor.replaceFromSnapshot(
+          eventSequenceCursor.advance(
             sessionId,
             cursorSequence(next.eventCursor) || next.nextSeq,
           )
           processedEventIds = new Set()
-          setState((current) => ({
-            ...merged,
-            timelineResetVersion: nextTimelineResetVersion(current?.timelineResetVersion ?? 0, true),
-          }))
+          setState((current) => current?.session.id === sessionId
+            ? mergeSessionSnapshot(current, merged)
+            : merged)
           onSessionUpdatedRef.current?.(next.session)
         })
         .catch((error) => {
@@ -1087,13 +1095,22 @@ function SessionDetailView({
         ? afterSeq
         : Math.max(afterSeq, eventSequenceCursor.current(sessionId))
       try {
-        const recoveryRequest = dashboardApi.getSessionEvents(token, sessionId, `seq:${recoveryAfterSeq}`)
-          .then(async (recovery) => {
-            if (cancelled) return
-            if (recovery.snapshotRequired) {
-              return refetch(`${reason}:snapshot-required`)
+        const recoveryRequest = (async () => {
+            let recoveryCursor = recoveryAfterSeq
+            let recoveryEvents: ProtocolEventEnvelope[] = []
+            while (true) {
+              const page = await dashboardApi.getSessionEvents(token, sessionId, `seq:${recoveryCursor}`)
+              const nextCursor = cursorSequence(page.nextCursor)
+              if (page.snapshotRequired && nextCursor <= recoveryCursor) {
+                await refetch(`${reason}:snapshot-required`)
+                return
+              }
+              recoveryEvents = recoveryEvents.concat(page.events)
+              recoveryCursor = nextCursor
+              if (!page.snapshotRequired) break
             }
-            const recoveredSession = recovery.events.reduce<SessionView | null>(
+            if (cancelled) return
+            const recoveredSession = recoveryEvents.reduce<SessionView | null>(
               (latest, event) => {
                 if (event.type !== "session.meta.updated") return latest
                 return readPayloadValue<SessionView>(event.payload.session) ?? latest
@@ -1110,16 +1127,13 @@ function SessionDetailView({
             // events are buffered while recovery runs, so nothing else
             // advances the cursor in this window.
             eventSequenceCursor.replaceFromSnapshot(sessionId, recoveryAfterSeq)
-            for (const event of recovery.events) {
+            for (const event of recoveryEvents) {
               if (event.type === "runtime.capability.updated" && shouldReadLiveCapabilities) {
                 continue
               }
               applyEvent(event, { detectGap: false, recovered: true })
             }
-            eventSequenceCursor.advance(
-              sessionId,
-              cursorSequence(recovery.nextCursor),
-            )
+            eventSequenceCursor.advance(sessionId, recoveryCursor)
             // Runtime state and pending notices are not recovered by /events.
             // Read them even when offline so the Server can return its last
             // cached/persisted fact. Keep events received during these reads
@@ -1210,7 +1224,7 @@ function SessionDetailView({
                       ?? current.serverTime,
                   }
             })
-          })
+          })()
           .catch(async (error) => {
             if (isAuthFailure(error)) {
               signOutRef.current?.()
@@ -1475,15 +1489,10 @@ function SessionDetailView({
         pending: 0,
         accepted: 0,
         previousRuntimeState: state?.state ?? null,
-        tail: Promise.resolve(),
       }
       sendBatchesRef.current.set(sendSessionId, batch)
     }
-    const previousRequest = batch.tail
-    let releaseRequest!: () => void
-    const currentRequest = new Promise<void>((resolve) => { releaseRequest = resolve })
     batch.pending += 1
-    batch.tail = previousRequest.catch(() => undefined).then(() => currentRequest)
     if (activeSessionIdRef.current === sendSessionId) setSending(true)
     timelineFollowRef.current?.resume()
     const optimisticMessage = buildOptimisticUserMessage({
@@ -1503,12 +1512,15 @@ function SessionDetailView({
       if (!current || current.session.id !== sendSessionId) return current
       return {
         ...current,
-        state: nextOptimisticRuntimeState(current.state, current.session, "waiting"),
+        state: nextOptimisticRuntimeState(
+          current.state,
+          current.session,
+          effectiveRuntimeStatus(current.state, current.session) === "running" ? "running" : "waiting",
+        ),
         items: mergeTimelineItems(current.items, [optimisticMessage]),
       }
     })
     try {
-      await previousRequest.catch(() => undefined)
       const selectionPatch = selectionPatchFromComposerSelections(runtimeState?.selections ?? {}, selections)
       if (Object.keys(selectionPatch).length > 0) {
         const selectionResult = await dashboardApi.updateSessionSelections(token, sendSessionId, selectionPatch)
@@ -1582,7 +1594,6 @@ function SessionDetailView({
       }
       return false
     } finally {
-      releaseRequest()
       batch.pending -= 1
       if (batch.pending === 0) {
         if (batch.accepted === 0) {
@@ -2880,17 +2891,12 @@ function mergeSessionEvent(
       ? mergeNotices(current.notices, [notice])
       : current.notices
   const nextItems = timelineSnapshot
-    ? mergeTimelineSnapshot(
-        current.items,
-        current.nextSeq,
-        timelineSnapshot,
-        event.sequence,
-      ).items
+    ? mergeTimelineItems(current.items, timelineSnapshot)
     : item
       ? mergeTimelineItems(current.items, [item])
       : current.items
   const nextHasMore = timelineSnapshot !== null && typeof event.payload.hasMore === "boolean"
-    ? event.payload.hasMore
+    ? current.hasMore || event.payload.hasMore
     : current.hasMore
   const timelineResetVersion = nextTimelineResetVersion(
     current.timelineResetVersion,
@@ -3093,6 +3099,43 @@ function mergeNotices(current: Notice[], incoming: Notice[]): Notice[] {
     if (!existing || existing.updatedSeq <= notice.updatedSeq) byId.set(notice.noticeId, notice)
   }
   return Array.from(byId.values()).sort((a, b) => a.updatedSeq - b.updatedSeq || a.noticeId.localeCompare(b.noticeId))
+}
+
+function mergeSnapshotNotices(
+  current: Notice[],
+  incoming: Notice[],
+  snapshotSequence: number,
+): Notice[] {
+  return mergeNotices(
+    incoming,
+    current.filter((notice) => notice.updatedSeq > snapshotSequence),
+  )
+}
+
+function mergeVersionedCatalogs(
+  current: SessionRemoteState["catalogs"],
+  incoming: SessionRemoteState["catalogs"],
+): SessionRemoteState["catalogs"] {
+  const merged = { ...incoming }
+  for (const [key, value] of Object.entries(current)) {
+    const next = merged[key]
+    if (
+      isRevisionedValue(value) &&
+      (!isRevisionedValue(next) || value.revision > next.revision)
+    ) {
+      merged[key] = value
+    }
+  }
+  return merged
+}
+
+function isRevisionedValue(value: unknown): value is { revision: number } {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "revision" in value &&
+    typeof value.revision === "number",
+  )
 }
 
 function cursorSequence(cursor: string | null | undefined): number {

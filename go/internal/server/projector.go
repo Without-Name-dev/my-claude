@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -125,6 +126,38 @@ func (r *approveRegistry) takeFor(
 	delete(r.byID, noticeID)
 	delete(r.connOf, noticeID)
 	return req, connectorID, true
+}
+
+func (r *approveRegistry) getFor(
+	noticeID, sessionID, connectorID string,
+) (protocol.ApprovalRequest, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	req, ok := r.byID[noticeID]
+	if !ok || req.SessionID != sessionID || r.connOf[noticeID] != connectorID {
+		return protocol.ApprovalRequest{}, "", false
+	}
+	return req, connectorID, true
+}
+
+func (r *approveRegistry) statusForSession(sessionID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	questionPending := false
+	for _, request := range r.byID {
+		if request.SessionID != sessionID {
+			continue
+		}
+		if approvalKind(request) == "question" {
+			questionPending = true
+			continue
+		}
+		return "waiting_approval"
+	}
+	if questionPending {
+		return "waiting"
+	}
+	return ""
 }
 
 // take removes one notice and returns it, so the caller can publish the
@@ -260,6 +293,9 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 		a.log.Warn("could not open the assistant message", "error", err)
 		return
 	}
+	state.mu.Lock()
+	state.lastSeq = seq
+	state.mu.Unlock()
 	a.publishItem(ctx, session.ID, itemID, seq, true)
 	if userItemID != "" {
 		a.publishItem(ctx, session.ID, userItemID, seq, false)
@@ -402,27 +438,27 @@ func (a *App) publishStreamingView(
 }
 
 // onTurnEnd closes the assistant message and returns the session to idle.
-func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.TurnEnd) {
+func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.TurnEnd) bool {
+	if msg.SessionID == "" || msg.TurnID == "" {
+		return false
+	}
 	// Check ownership before touching the registry: otherwise a connector could
 	// end another connector's running turn by guessing its turn id.
 	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
 	if err != nil {
 		a.log.Warn("turn.end for an unknown session", "session", msg.SessionID)
-		return
+		return false
 	}
-	if state := a.turns.get(msg.TurnID); state != nil {
+	state := a.turns.get(msg.TurnID)
+	if state != nil {
 		state.mu.Lock()
 		owned := state.connID == conn.id && state.session == msg.SessionID
 		state.mu.Unlock()
 		if !owned {
-			return
+			return false
 		}
 	}
-	state := a.turns.end(msg.TurnID)
 	itemID := assistantItemID(msg.TurnID)
-	if state != nil {
-		itemID = state.itemID
-	}
 	text := msg.Text
 	if text == "" && state != nil {
 		state.mu.Lock()
@@ -447,6 +483,34 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			text = "已中断"
 		}
 	}
+	finalPayload := messageContent(text)
+	if msg.Error != "" {
+		finalPayload = messageContentWithError(text, msg.Error)
+	}
+	existingItem, lookupErr := a.db.TimelineItemByID(ctx, a.db.Read(), msg.SessionID, itemID)
+	if lookupErr != nil && !errors.Is(lookupErr, store.ErrNotFound) {
+		a.log.Warn("could not check the final assistant message", "session", msg.SessionID, "turn", msg.TurnID, "error", lookupErr)
+		return false
+	}
+	if lookupErr == nil {
+		switch existingItem.Status {
+		case "done", "failed", "cancelled":
+			// A connector may resend after the database commit if its ack was lost.
+			// The item id is the durable turn key, so preserve the first final result.
+			a.turns.end(msg.TurnID)
+			seq := a.currentSeq(ctx, msg.SessionID)
+			userItemID := ""
+			if msg.RequestID != "" {
+				userItemID = "msg_" + msg.RequestID + "_user"
+			}
+			a.finishTurnEnd(ctx, session, itemID, userItemID, existingItem.Status, seq)
+			return true
+		}
+	}
+	state = a.turns.end(msg.TurnID)
+	if state != nil {
+		itemID = state.itemID
+	}
 	userItemID := ""
 	seq, err := a.writeTimeline(ctx, msg.SessionID, func(tx *sql.Tx, seq int64) error {
 		// The turn keeps the position it was given when it began. Restamping it
@@ -461,10 +525,6 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			// wrote still remembers where the message belongs.
 			orderSeq = existing.OrderSeq
 		}
-		payload := messageContent(text)
-		if msg.Error != "" {
-			payload = messageContentWithError(text, msg.Error)
-		}
 		if err := store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  msg.SessionID,
 			ID:         itemID,
@@ -473,7 +533,7 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 			Role:       "assistant",
 			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
-			Payload:    payload,
+			Payload:    finalPayload,
 		}, store.NowMS()); err != nil {
 			return err
 		}
@@ -487,24 +547,33 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 	})
 	if err != nil {
 		a.log.Warn("could not close the assistant message", "error", err)
-		return
+		return false
 	}
-	a.publishItem(ctx, msg.SessionID, itemID, seq, false)
+	a.finishTurnEnd(ctx, session, itemID, userItemID, status, seq)
+	return true
+}
+
+func (a *App) finishTurnEnd(
+	ctx context.Context,
+	session store.Session,
+	itemID, userItemID, status string,
+	seq int64,
+) {
+	a.publishItem(ctx, session.ID, itemID, seq, false)
 	if userItemID != "" {
-		a.publishItem(ctx, msg.SessionID, userItemID, seq, false)
+		a.publishItem(ctx, session.ID, userItemID, seq, false)
 	}
-	a.expireSessionApprovals(ctx, msg.SessionID, seq)
+	a.expireSessionApprovals(ctx, session.ID, seq)
 
 	nextStatus := "idle"
-	if a.hasPendingUserMessages(ctx, msg.SessionID) {
+	if a.hasPendingUserMessages(ctx, session.ID) {
 		nextStatus = "waiting"
 	} else if status == "failed" {
 		nextStatus = "error"
 	}
-	a.setSessionStatus(ctx, msg.SessionID, nextStatus)
+	a.setSessionStatus(ctx, session.ID, nextStatus)
 	// A desktop prompt does not pass through the server's turn watcher. Once a
-	// watched turn closes, ask the connector to reconcile the now-settled
-	// transcript so those terminal-origin messages reach every client promptly.
+	// watched turn closes, reconcile the now-settled transcript for every client.
 	a.requestChangedHistory(ctx, session, maxHistoryRequest, false)
 }
 
@@ -592,7 +661,10 @@ func (a *App) onApprovalRequest(ctx context.Context, conn *connectorConn, msg pr
 	}
 	noticeID := noticeIDFor(msg.ToolUseID)
 	a.approvals.add(noticeID, conn.id, msg)
-	a.setSessionStatus(ctx, msg.SessionID, "waiting_approval")
+	status := a.approvals.statusForSession(msg.SessionID)
+	if status != "" {
+		a.setSessionStatus(ctx, msg.SessionID, status)
+	}
 
 	frame, err := newEnvelope(msg.SessionID, a.currentSeq(ctx, msg.SessionID), EventNoticeUpdated, map[string]any{
 		"notice": a.approvalNotice(noticeID, msg),
@@ -614,6 +686,11 @@ func (a *App) onApprovalCancel(ctx context.Context, conn *connectorConn, msg pro
 		return
 	}
 	a.publishNoticeUpdate(ctx, msg.SessionID, noticeID, request, "cancelled", 0)
+	status := a.approvals.statusForSession(msg.SessionID)
+	if status == "" {
+		status = "running"
+	}
+	a.setSessionStatus(ctx, msg.SessionID, status)
 }
 
 // ownedSessionForConnector loads a session and proves the connector owns it.
@@ -768,37 +845,153 @@ func mergeToolOutput(payload, output json.RawMessage, errText string) json.RawMe
 	return body
 }
 
-// approvalNotice renders a pending approval the way the phone draws it.
+// approvalNotice renders Claude permissions, questions and plan reviews using
+// the shared notice contract consumed by Web and iOS.
 func (a *App) approvalNotice(noticeID string, msg protocol.ApprovalRequest) map[string]any {
 	var input any
 	if len(msg.Input) > 0 {
 		_ = json.Unmarshal(msg.Input, &input)
 	}
+	kind := approvalKind(msg)
+	title := approvalTitle(msg.Tool)
+	interactionType := "approval"
+	message := any(nil)
+	component := "claude.permission"
+	actions := []map[string]any{
+		{"actionId": "allow", "label": "Allow", "style": "primary",
+			"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+		{"actionId": "deny", "label": "Reject", "style": "danger",
+			"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+	}
+	if kind == "question" {
+		title = "Claude needs your input"
+		interactionType = "input_request"
+		component = "claude.ask_user_question"
+		if questions, ok := claudeInputRequestQuestions(msg.Input); ok {
+			actions = []map[string]any{
+				{"actionId": "submit", "label": "Submit", "style": "primary", "input": map[string]any{
+					"required": true, "schema": nil,
+					"uiSchema": map[string]any{"component": "inputRequest", "version": 1, "questions": questions},
+				}},
+				{"actionId": "cancel", "label": "Cancel", "style": "secondary",
+					"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+			}
+		} else {
+			message = "This input request could not be displayed as a form."
+			actions = []map[string]any{
+				{"actionId": "deny", "label": "Reject", "style": "danger",
+					"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+			}
+		}
+	} else if kind == "plan" {
+		title = "Review Claude's plan"
+		interactionType = "confirmation"
+		component = "claude.exit_plan_mode"
+		actions = []map[string]any{
+			{"actionId": "approve", "label": "Approve", "style": "primary",
+				"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+			{"actionId": "reject", "label": "Reject", "style": "danger",
+				"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
+		}
+		if plan := claudePlanText(msg.Input); plan != "" {
+			message = plan
+		}
+	}
 	return map[string]any{
 		"noticeId":         noticeID,
 		"type":             "interaction",
 		"sessionId":        msg.SessionID,
-		"source":           map[string]any{"runtime": "claude"},
-		"title":            approvalTitle(msg.Tool),
-		"message":          nil,
+		"source":           map[string]any{"runtime": "claude", "component": component},
+		"title":            title,
+		"message":          message,
 		"severity":         "info",
 		"status":           "open",
-		"interactionType":  "approval",
+		"interactionType":  interactionType,
 		"blocking":         map[string]any{"scope": "session", "targetId": msg.SessionID},
 		"responseRequired": true,
-		"actions": []map[string]any{
-			{"actionId": "allow", "label": "Allow", "style": "primary",
-				"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
-			{"actionId": "deny", "label": "Reject", "style": "danger",
-				"input": map[string]any{"required": false, "schema": nil, "uiSchema": nil}},
-		},
-		"context":    map[string]any{"tool": msg.Tool, "input": input, "kind": msg.Kind},
-		"metadata":   map[string]any{},
-		"expiresAt":  nil,
-		"revision":   1,
-		"createdAt":  timestampNow(),
-		"resolvedAt": nil,
+		"actions":          actions,
+		"context":          map[string]any{"tool": msg.Tool, "input": input, "kind": kind},
+		"metadata":         map[string]any{},
+		"expiresAt":        nil,
+		"revision":         1,
+		"createdAt":        timestampNow(),
+		"resolvedAt":       nil,
 	}
+}
+
+func approvalKind(msg protocol.ApprovalRequest) string {
+	kind := strings.ToLower(strings.TrimSpace(msg.Kind))
+	if kind != "" {
+		return kind
+	}
+	switch strings.ToLower(strings.TrimSpace(msg.Tool)) {
+	case "askuserquestion":
+		return "question"
+	case "exitplanmode":
+		return "plan"
+	default:
+		return "permission"
+	}
+}
+
+type claudeInputQuestion struct {
+	Question    string `json:"question"`
+	Header      string `json:"header"`
+	MultiSelect bool   `json:"multiSelect"`
+	Options     []struct {
+		Label       string `json:"label"`
+		Description string `json:"description"`
+	} `json:"options"`
+}
+
+func claudeInputRequestQuestions(raw json.RawMessage) ([]map[string]any, bool) {
+	var request struct {
+		Questions []claudeInputQuestion `json:"questions"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &request) != nil || len(request.Questions) == 0 {
+		return nil, false
+	}
+	questions := make([]map[string]any, 0, len(request.Questions))
+	seen := map[string]bool{}
+	for questionIndex, question := range request.Questions {
+		prompt := strings.TrimSpace(question.Question)
+		if prompt == "" || seen[prompt] || len(question.Options) == 0 {
+			return nil, false
+		}
+		seen[prompt] = true
+		options := make([]map[string]any, 0, len(question.Options))
+		for optionIndex, option := range question.Options {
+			label := strings.TrimSpace(option.Label)
+			if label == "" {
+				return nil, false
+			}
+			options = append(options, map[string]any{
+				"id":          "o_" + strconv.Itoa(optionIndex),
+				"label":       label,
+				"description": strings.TrimSpace(option.Description),
+			})
+		}
+		questions = append(questions, map[string]any{
+			"id":          "q_" + strconv.Itoa(questionIndex),
+			"prompt":      prompt,
+			"header":      strings.TrimSpace(question.Header),
+			"multiple":    question.MultiSelect,
+			"allowCustom": true,
+			"options":     options,
+		})
+	}
+	return questions, true
+}
+
+func claudePlanText(raw json.RawMessage) string {
+	var input struct {
+		Plan         string `json:"plan"`
+		PlanFilePath string `json:"planFilePath"`
+	}
+	if json.Unmarshal(raw, &input) != nil {
+		return ""
+	}
+	return firstNonEmptyText(input.Plan, input.PlanFilePath)
 }
 
 func approvalTitle(tool string) string {

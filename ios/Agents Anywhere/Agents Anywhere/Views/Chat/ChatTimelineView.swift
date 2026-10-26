@@ -6,6 +6,7 @@ struct ChatTimelineView: View {
     let onAttachment: (V2AttachmentContent) -> Void
     let onFile: (String) -> Void
     @State private var historyLayout = ChatHistoryLayoutSample()
+    @State private var visibleHistoryRows = ChatVisibleHistoryRows()
     @State private var historyPosition: TimelineHistoryPosition?
     @State private var hasRequestedOlder = false
     @State private var position = ScrollPosition()
@@ -13,7 +14,6 @@ struct ChatTimelineView: View {
     @State private var viewportSample = ChatViewportSample()
     @State private var viewportUpdates = ChatLayoutUpdate<TimelineViewport>()
     @State private var historyUpdates = ChatLayoutUpdate<TimelineHistoryLayout>()
-    @State private var historyHeights = ChatLayoutUpdate<CGFloat>()
     @State private var latestPull = TimelineHistoryPull()
     @State private var olderPull = TimelineHistoryPull(edge: .older)
     @State private var olderPromptVisible = false
@@ -54,7 +54,15 @@ struct ChatTimelineView: View {
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
                     subagentActivity: model.timeline.subagentActivity,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
-                    onHistoryLayout: historyDidLayOut,
+                    onHistoryRowLayout: { rowID, layout, frame in
+                        visibleHistoryRows.update(rowID: rowID, layout: layout, frame: frame)
+                        if historyPosition?.origin?.anchorRowID == layout.anchorRowID {
+                            historyDidLayOut(layout)
+                        }
+                    },
+                    onHistoryRowVisibility: { rowID, visible in
+                        visibleHistoryRows.setVisible(visible, rowID: rowID)
+                    },
                     onPromptVisibility: { latestPromptVisible = $0 },
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
                     onTailVisibility: { region, visible in scrolling.tailVisibilityChanged(region, visible: visible) })
@@ -99,6 +107,7 @@ struct ChatTimelineView: View {
                 @unknown default: mapped = .idle
                 }
                 let current = TimelineViewport(geometry: context.geometry)
+                let wasUserScrolling = scrolling.userIsScrolling
                 let wasInteracting = scrolling.phase == .interacting
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
@@ -124,10 +133,18 @@ struct ChatTimelineView: View {
                         else if shouldLoadLatest { loadLatest() }
                     }
                 } else if mapped == .animating { latestPull.cancel(); olderPull.cancel() }
+                if mapped == .idle && wasUserScrolling {
+                    // A history page can finish laying out while native
+                    // deceleration still owns the offset. Its measurements
+                    // are intentionally ignored then; replay the cached row
+                    // anchor after the gesture settles so the prepend cannot
+                    // leave the reader at a shifted point.
+                    if let layout = historyLayout.value { applyHistoryLayout(layout) }
+                }
             }
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
-            } action: { previous, value in
+            } action: { _, value in
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
                     // the rendered page. Publish only dimensions used by following.
@@ -148,15 +165,6 @@ struct ChatTimelineView: View {
                         if older != olderPull { olderPull = older }
                     }
                 }
-                // A lazy prepend may leave the measured anchor outside the
-                // viewport. The content-height delta is the exact distance the
-                // old content moved down, so it can complete the same point
-                // correction without measuring every inserted row.
-                if abs(value.contentHeight - previous.contentHeight) > 0.5 {
-                    historyHeights.submit(value.contentHeight) { height in
-                        applyHistoryHeight(height)
-                    }
-                }
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 viewportUpdates.cancel()
@@ -167,7 +175,6 @@ struct ChatTimelineView: View {
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
                     if let layout = historyLayout.value { historyDidLayOut(layout) }
-                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
@@ -217,35 +224,46 @@ struct ChatTimelineView: View {
             .task(id: olderLoadRequest) {
                 guard let request = olderLoadRequest else { return }
                 await model.session.loadOlder()
-                guard !Task.isCancelled, historyPosition?.id == request else { return }
+                guard !Task.isCancelled, historyPosition?.id == request,
+                      scrolling.navigationGeneration == request else { return }
                 if !model.session.isValid { historyPosition = nil; olderLoadRequest = nil; return }
                 // Read the repository projection, not the presentation buffer:
                 // the 4 Hz flush can lag the HTTP response, and using the old
                 // first row would finish restoration before the page appears.
                 let firstRowID = model.repository.cached(sessionId: model.session.id)
                     .flatMap { data in data.items.first { $0.isVisibleInChat }?.id }
-                historyPosition?.receivedPage(firstRowID: firstRowID
-                    ?? model.session.timeline.first { $0.value.isVisibleInChat }?.id)
-                // If presentation already published the page while the request
-                // was completing, no further geometry callback is guaranteed.
-                // One main-queue turn lets the coalesced geometry sample land.
+                let expectedFirstRowID = firstRowID
+                    ?? model.session.timeline.first { $0.value.isVisibleInChat }?.id
+                guard !Task.isCancelled, historyPosition?.id == request,
+                      scrolling.navigationGeneration == request else { return }
+                historyPosition?.receivedPage(firstRowID: expectedFirstRowID)
+                // Restore from the visible anchor's new content-space frame
+                // when SwiftUI has laid that row out again.
                 do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
-                guard !Task.isCancelled else { return }
-                applyHistoryHeight(viewport.contentHeight)
+                guard !Task.isCancelled, historyPosition?.id == request,
+                      scrolling.navigationGeneration == request else { return }
+                if let origin = historyPosition?.origin,
+                   expectedFirstRowID != origin.firstRowID {
+                    if let layout = historyLayout.value,
+                       layout.anchorRowID == origin.anchorRowID,
+                       layout.firstRowID == expectedFirstRowID {
+                        applyHistoryLayout(layout)
+                    }
+                }
             }
-            .task(id: HistorySettlement(id: historyPosition?.id, ready: historyPosition?.isReadyToFinish == true,
+            .task(id: HistorySettlement(id: historyPosition?.id,
+                ready: historyPosition?.isReadyToFinish() == true,
                 offset: historyPosition?.restoredOffset, generation: scrolling.navigationGeneration)) {
                 guard let request = historyPosition?.id else { return }
                 // A gesture or an explicit return to bottom supersedes the
                 // restoration. The page may still arrive through the
-                // repository, but it must not hold the older prompt busy
-                // (especially when the lazy anchor never lays out again).
+                // repository, but it must not hold the older prompt busy.
                 if scrolling.navigationGeneration != request {
                     historyPosition = nil
                     olderLoadRequest = nil
                     return
                 }
-                guard historyPosition?.isReadyToFinish == true else { return }
+                guard historyPosition?.isReadyToFinish() == true else { return }
                 // Let the point correction reach native layout before releasing
                 // its target or ending the spinner. A new measurement restarts this.
                 do { try await Task.sleep(for: .milliseconds(64)) } catch { return }
@@ -283,7 +301,7 @@ struct ChatTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
+        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
             // The keyboard covers the newest rows. A reader who was following
@@ -303,12 +321,13 @@ struct ChatTimelineView: View {
         olderPull.cancel(); latestPull.cancel()
         scrolling.browseHistory()
         position.isPositionedByUser = true
-        let layout = historyLayout.value.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
+        let visibleRowIDs = Set(model.timeline.rows.map(\.id))
+        let layout = visibleHistoryRows.anchor(firstRowID: model.timeline.rows.first?.id, rowIDs: visibleRowIDs,
+            visibleTop: viewport.isMeasured ? viewport.visibleBottom - viewport.visibleHeight : nil,
+            visibleBottom: viewport.isMeasured ? viewport.visibleBottom : nil)
+        historyLayout.value = layout
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
-            // A zero baseline would turn the first measured height into a
-            // scroll to the far end of the page; disable the fallback instead.
-            contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
             originFirstRowID: model.timeline.rows.first?.id)
         hasRequestedOlder = true
         olderLoadRequest = scrolling.navigationGeneration
@@ -347,31 +366,24 @@ struct ChatTimelineView: View {
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in
-            historyLayout.value = layout
-            // Point restoration is a forced scroll too: a live gesture always
-            // wins, even if a coalesced measurement arrives after it began.
-            guard !navigationIsSuspended, !scrolling.userIsScrolling,
-                  var restoration = historyPosition else { return }
-            let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
-            if historyPosition != restoration { historyPosition = restoration }
-            guard let offset else { return }
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { position.scrollTo(y: offset) }
+            applyHistoryLayout(layout)
         }
     }
 
-    private func applyHistoryHeight(_ height: CGFloat) {
+    private func applyHistoryLayout(_ layout: TimelineHistoryLayout) {
+        historyLayout.value = layout
+        // Point restoration is a forced scroll too: a live gesture always
+        // wins, even if a coalesced measurement arrives after it began.
         guard !navigationIsSuspended, !scrolling.userIsScrolling,
               var restoration = historyPosition else { return }
-        let offset = restoration.laidOutContentHeight(height, firstRowID: model.timeline.rows.first?.id,
-            generation: scrolling.navigationGeneration)
+        let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(y: offset) }
     }
+
     private struct HistorySettlement: Equatable {
         let id: Int?
         let ready: Bool
@@ -426,7 +438,8 @@ private struct ChatTimelineContent: View, Equatable {
     let subagentActivity: SubagentActivityPresentation?
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
-    let onHistoryLayout: (TimelineHistoryLayout) -> Void
+    let onHistoryRowLayout: (String, TimelineHistoryLayout, TimelineHistoryRowFrame) -> Void
+    let onHistoryRowVisibility: (String, Bool) -> Void
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
@@ -446,15 +459,9 @@ private struct ChatTimelineContent: View, Equatable {
         let noticesByTarget = Dictionary(grouping: visibleNotices.filter { $0.timelineTargetID != nil }) { $0.timelineTargetID! }
         let actions = TimelineTurnActions.build(groups: groups, suppressLatest: model.isRunning || model.session.hasNewerItems,
             hasPendingUserMessage: !model.session.hasNewerItems && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
-        // Measure one row, never every group. During a history load the origin
-        // group is pinned so its coordinate stays comparable; at any other time
-        // the newest group is enough, and it costs nothing to find. Tracking
-        // which groups are on screen meant a state write for every row on every
-        // scroll frame, which re-evaluated this whole body — the main source of
-        // jank while scrolling.
+        // Cache content-space frames without publishing SwiftUI state. Visibility
+        // callbacks select the actual row under the reader when history loads.
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
-            ?? groups.last
-        let anchorEdge = historyAnchorEdge(for: anchorGroup)
         // A lazy column builds and lays out only the rows around the viewport.
         // The spacing and row styling stay identical to the old eager stack.
         LazyVStack(alignment: .leading, spacing: 20) {
@@ -487,17 +494,23 @@ private struct ChatTimelineContent: View, Equatable {
                     .equatable()
                     .id(group.id)
                     .background {
-                        // One measurement for the anchor, not one per group. A
-                        // lazy row only runs this when it is actually realized.
-                        if group.id == anchorGroup?.id, let firstRowID = model.timeline.rows.first?.id {
-                            Color.clear.onGeometryChange(for: TimelineHistoryLayout.self) { geometry in
+                        if let firstRowID = model.timeline.rows.first?.id {
+                            Color.clear.onGeometryChange(for: TimelineHistoryRowFrame.self) { geometry in
                                 let frame = geometry.frame(in: .named("chat.timeline.content"))
-                                return TimelineHistoryLayout(firstRowID: firstRowID,
-                                    anchorRowID: historyAnchor?.anchorRowID ?? group.id, edge: anchorEdge,
-                                    y: anchorEdge == .top ? frame.minY : frame.maxY)
-                            } action: { onHistoryLayout($0) }
+                                return TimelineHistoryRowFrame(minY: frame.minY, maxY: frame.maxY)
+                            } action: { frame in
+                                let isRestorationAnchor = historyAnchor != nil && group.id == anchorGroup?.id
+                                let edge: TimelineHistoryLayout.Edge
+                                if isRestorationAnchor, let historyAnchor { edge = historyAnchor.edge }
+                                else { edge = historyAnchorEdge(for: group, preserving: false) }
+                                let layout = TimelineHistoryLayout(firstRowID: firstRowID,
+                                    anchorRowID: isRestorationAnchor ? historyAnchor?.anchorRowID ?? group.id : group.id,
+                                    edge: edge, y: edge == .top ? frame.minY : frame.maxY)
+                                onHistoryRowLayout(group.id, layout, frame)
+                            }
                         }
                     }
+                    .onScrollVisibilityChange(threshold: 0.01) { onHistoryRowVisibility(group.id, $0) }
             }
             if let activity = subagentActivity {
                 // One extra lazy row in the normal transcript flow. The active
@@ -566,8 +579,8 @@ private struct ChatTimelineContent: View, Equatable {
     /// so its first row and top edge stay put while the rows below move down.
     /// Its trailing edge is the one that follows the inserted page, exactly
     /// like the pre-lazy grouping logic.
-    private func historyAnchorEdge(for anchorGroup: ChatTimelineGroup?) -> TimelineHistoryLayout.Edge {
-        if let historyAnchor { return historyAnchor.edge }
+    private func historyAnchorEdge(for anchorGroup: ChatTimelineGroup?, preserving: Bool = true) -> TimelineHistoryLayout.Edge {
+        if preserving, let historyAnchor { return historyAnchor.edge }
         guard let anchorGroup,
               anchorGroup.id == model.timeline.rows.first?.id,
               let firstRow = anchorGroup.rows.first,
@@ -593,4 +606,43 @@ private extension TimelineViewport {
 /// Neither sample should invalidate the chat view tree on every scroll frame.
 @MainActor private final class ChatHistoryLayoutSample {
     var value: TimelineHistoryLayout?
+}
+
+private struct TimelineHistoryRowFrame: Equatable {
+    let minY: CGFloat
+    let maxY: CGFloat
+}
+
+@MainActor private final class ChatVisibleHistoryRows {
+    private struct Entry {
+        var layout: TimelineHistoryLayout
+        var frame: TimelineHistoryRowFrame
+    }
+
+    private var entries: [String: Entry] = [:]
+    private var visibleIDs: Set<String> = []
+
+    func update(rowID: String, layout: TimelineHistoryLayout, frame: TimelineHistoryRowFrame) {
+        entries[rowID] = Entry(layout: layout, frame: frame)
+    }
+
+    func setVisible(_ visible: Bool, rowID: String) {
+        if visible { visibleIDs.insert(rowID) }
+        else {
+            visibleIDs.remove(rowID)
+            entries.removeValue(forKey: rowID)
+        }
+    }
+
+    func anchor(firstRowID: String?, rowIDs: Set<String>, visibleTop: CGFloat?, visibleBottom: CGFloat?) -> TimelineHistoryLayout? {
+        guard let firstRowID else { return nil }
+        return visibleIDs.compactMap { entries[$0] }
+            .filter { entry in
+                entry.layout.firstRowID == firstRowID && rowIDs.contains(entry.layout.anchorRowID)
+                    && (visibleTop.map { entry.frame.maxY > $0 } ?? true)
+                    && (visibleBottom.map { entry.frame.minY < $0 } ?? true)
+            }
+            .min { $0.frame.minY < $1.frame.minY }?.layout
+    }
+
 }

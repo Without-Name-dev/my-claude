@@ -34,6 +34,10 @@ const (
 	TypeTurnDelta = "turn.delta"
 	// TypeTurnEnd closes a turn with its final text and the facts worth keeping.
 	TypeTurnEnd = "turn.end"
+	// TypeSubmitAck confirms a submit was durably queued or permanently rejected.
+	TypeSubmitAck = "submit.ack"
+	// TypeCommandAck confirms that a slash command was durably queued or rejected.
+	TypeCommandAck = "command.ack"
 	// TypeToolBegin and TypeToolEnd bracket one tool call.
 	TypeToolBegin = "tool.begin"
 	TypeToolEnd   = "tool.end"
@@ -60,6 +64,8 @@ const (
 	TypeSessionClose = "session.close"
 	// TypePing is a liveness probe; the connector answers with TypeBeat.
 	TypePing = "ping"
+	// TypeTurnEndAck confirms the server committed a turn.end frame.
+	TypeTurnEndAck = "turn.end.ack"
 )
 
 // Capability names a connector may advertise in Hello.Capabilities.
@@ -76,6 +82,10 @@ const (
 	// running Claude Code. An older connector omits it and must not be sent a
 	// session.open frame it would silently ignore.
 	CapabilitySessionOpen = "sessionOpen"
+	// CapabilitySubmitAck reports that submits are durably acknowledged and deduplicated.
+	CapabilitySubmitAck = "submitAck"
+	// CapabilityTurnEndAck reports that the connector retains turn.end until server commit.
+	CapabilityTurnEndAck = "turnEndAck"
 )
 
 // Hello is the connector's introduction.
@@ -148,6 +158,31 @@ type TurnEnd struct {
 	Text      string         `json:"text"`
 	Error     string         `json:"error,omitempty"`
 	State     map[string]any `json:"state,omitempty"`
+}
+
+// SubmitAck confirms that a submit reached the connector's durable plugin queue.
+type SubmitAck struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	RequestID         string `json:"requestId"`
+	Accepted          bool   `json:"accepted"`
+	Error             string `json:"error,omitempty"`
+}
+
+// CommandAck confirms that a slash command reached the plugin's durable queue.
+type CommandAck struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	RequestID         string `json:"requestId"`
+	Accepted          bool   `json:"accepted"`
+	Error             string `json:"error,omitempty"`
+}
+
+// TurnEndAck confirms that the server committed the final turn state.
+type TurnEndAck struct {
+	SessionID string `json:"sessionId"`
+	RequestID string `json:"requestId"`
+	TurnID    string `json:"turnId"`
 }
 
 // ToolBegin announces a tool call.
@@ -266,9 +301,9 @@ type ApprovalAnswer struct {
 	ToolUseID string `json:"toolUseId"`
 	Decision  string `json:"decision"` // "allow" | "deny"
 	// UpdatedInput replaces the tool input entirely when the person edited it.
-	UpdatedInput json.RawMessage   `json:"updatedInput,omitempty"`
-	Answers      map[string]string `json:"answers,omitempty"`
-	Message      string            `json:"message,omitempty"`
+	UpdatedInput json.RawMessage `json:"updatedInput,omitempty"`
+	Answers      map[string]any  `json:"answers,omitempty"`
+	Message      string          `json:"message,omitempty"`
 }
 
 // TypeInventory reports the sessions the connector can see on its machine.

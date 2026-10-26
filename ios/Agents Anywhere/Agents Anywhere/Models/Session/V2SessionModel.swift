@@ -106,7 +106,7 @@ final class V2SessionModel: Identifiable {
     var draftAttachmentIDs: [V2AttachmentID] = []
     @ObservationIgnored private weak var repository: V2SessionRepository?
     @ObservationIgnored private var rowsByID: [V2TimelineItemID: V2TimelineItemModel] = [:]
-    @ObservationIgnored private var sendTail: Task<Void, Never>?
+    @ObservationIgnored private var sendTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var sendGeneration = 0
 
     init(id: V2SessionID, scope: V2ClientScope, repository: V2SessionRepository) {
@@ -189,13 +189,13 @@ final class V2SessionModel: Identifiable {
         repository.localWorkDidChange(sessionID: id)
         sendGeneration &+= 1
         let generation = sendGeneration
-        let previousSend = sendTail
         let currentSend = Task { @MainActor in
-            await previousSend?.value
+            guard !Task.isCancelled, self.isValid else { return }
             await deliver(pending, content: content, repository: repository, upload: upload, generation: generation)
         }
-        sendTail = currentSend
+        sendTasks[pending.id] = currentSend
         await currentSend.value
+        sendTasks[pending.id] = nil
         return pending
     }
 
@@ -343,6 +343,9 @@ final class V2SessionModel: Identifiable {
     }
 
     func invalidate() {
+        sendGeneration &+= 1
+        for task in sendTasks.values { task.cancel() }
+        sendTasks.removeAll()
         runtime.update(nil, connected: false)
         metadata = nil; timeline = []; rowsByID = [:]; pendingMessages = []; awaitingReplyID = nil; draft = ""; draftAttachmentIDs = []
         composer.invalidate()

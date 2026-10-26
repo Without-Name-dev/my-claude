@@ -632,17 +632,30 @@ final class V2SessionRepository {
         let task = Task { [self] in
             defer { if entry.connectionID == version { entry.recoveryTask = nil } }
             if entry.projection == nil { _ = try await hydrate(entry) }
-            let cursor = entry.projection!.data.cursor
-            let recovery = try await detail.recover(sessionId: entry.id, after: cursor)
-            try requireCurrent(entry)
-            guard entry.connectionID == version else { throw CacheError.invalidated }
-            if recovery.snapshotRequired {
+            var recoveryCursor = entry.projection!.data.cursor
+            var recoveryEvents: [V2SessionEvent] = []
+            var needsSnapshot = false
+            while true {
+                let recovery = try await detail.recover(sessionId: entry.id, after: recoveryCursor)
+                try requireCurrent(entry)
+                guard entry.connectionID == version else { throw CacheError.invalidated }
+                let nextSequence = V2SessionProjection.sequence(recovery.nextCursor)
+                let currentSequence = V2SessionProjection.sequence(recoveryCursor)
+                if recovery.snapshotRequired && nextSequence <= currentSequence {
+                    needsSnapshot = true
+                    break
+                }
+                recoveryEvents.append(contentsOf: recovery.events)
+                recoveryCursor = recovery.nextCursor
+                if !recovery.snapshotRequired { break }
+            }
+            if needsSnapshot {
                 _ = try await hydrate(entry)
             } else {
-                for event in recovery.events.sorted(by: { $0.sequence < $1.sequence }) {
+                for event in recoveryEvents {
                     try entry.projection?.apply(event)
                 }
-                entry.projection?.advanceCursor(recovery.nextCursor)
+                entry.projection?.advanceCursor(recoveryCursor)
             }
             entry.projection?.markStale()
             invalidateCatalogs(entry)

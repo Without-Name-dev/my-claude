@@ -83,7 +83,7 @@ struct V2SessionProjection {
         case "timeline.item_created", "timeline.item_updated":
             merge([try item("item", in: event)], history: false)
         case "timeline.snapshot":
-            replaceTimeline(try items("items", in: event), hasMore: event.payload["hasMore"]?.boolValue ?? false)
+            mergeSnapshot(try items("items", in: event), hasMore: event.payload["hasMore"]?.boolValue ?? false)
         case "runtime.notice.snapshot":
             data.notices = try payload("notices", in: event)
         case "runtime.notice.updated":
@@ -147,7 +147,12 @@ struct V2SessionProjection {
         merge(items, history: false)
     }
 
-    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool) {
+    private mutating func mergeSnapshot(_ items: [V2TimelineItem], hasMore: Bool) {
+        merge(items, history: false, preservingCurrentWindow: true)
+        data.hasOlderItems = data.hasOlderItems || hasMore
+    }
+
+    private mutating func merge(_ incoming: [V2TimelineItem], history: Bool, preservingCurrentWindow: Bool = false) {
         if !history, incoming.count == 1 { mergeOne(incoming[0]); return }
         var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
@@ -163,7 +168,9 @@ struct V2SessionProjection {
             byID[item.id] = item
         }
         let sorted = byID.values.sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
-        if history {
+        if preservingCurrentWindow {
+            data.items = sorted
+        } else if history {
             data.items = Array(sorted.prefix(maximumItems))
             data.hasNewerItems = data.hasNewerItems || sorted.count > maximumItems
         } else {

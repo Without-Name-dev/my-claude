@@ -77,7 +77,11 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 // The connector skips a version it has already sent and the server committed.
 func (a *App) maybeRequestHistory(ctx context.Context, session store.Session) {
 	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 1)
-	force := err != nil || len(items) == 0
+	_, dirty, dirtyErr := a.db.HistoryImportState(ctx, a.db.Read(), session.ID)
+	if dirtyErr != nil {
+		a.log.Warn("could not read transcript reconciliation state", "session", session.ID, "error", dirtyErr)
+	}
+	force := err != nil || dirtyErr != nil || dirty || len(items) == 0
 	a.requestHistory(ctx, session, maxHistoryRequest, true, force)
 }
 
@@ -152,21 +156,18 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 // knownMessages counts messages already stored outside transcript imports.
 // Counts preserve repeated identical prompts while still matching the copy
 // Claude writes for messages sent through this server.
-func (a *App) knownMessages(ctx context.Context, sessionID string) map[string]int {
+func (a *App) knownMessages(ctx context.Context, sessionID string) (map[string]int, error) {
 	known := map[string]int{}
-	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), sessionID, maxHistoryRequest)
+	items, err := a.db.TimelineNonHistoryMessages(ctx, a.db.Read(), sessionID)
 	if err != nil {
-		return known
+		return nil, err
 	}
 	for _, item := range items {
-		if strings.HasPrefix(item.ID, "hist_") {
-			continue
-		}
 		if role, text, ok := messageIdentity(item.Role, item.Payload); ok {
 			known[role+"|"+text]++
 		}
 	}
-	return known
+	return known, nil
 }
 
 // messageIdentity renders a message row as the key the importer compares.
@@ -194,18 +195,26 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		a.log.Warn("history for an unknown session", "session", msg.SessionID)
 		return false
 	}
-	if len(msg.Items) == 0 {
+	fullImport := msg.Full && msg.Complete != nil
+	if len(msg.Items) == 0 && !fullImport {
 		return true
 	}
 	// Messages the server already recorded from the phone (or from a turn it
 	// followed) must not be imported again: the transcript copy has a different
 	// id, so only the role and the text identify it.
-	known := a.knownMessages(ctx, session.ID)
+	known := map[string]int{}
 	var seq int64
 	changed := 0
 	written := make([]store.TimelineItem, 0, len(msg.Items))
 	created := make([]bool, 0, len(msg.Items))
 	err = a.db.WithSession(session.ID, func() error {
+		if len(msg.Items) > 0 {
+			var err error
+			known, err = a.knownMessages(ctx, session.ID)
+			if err != nil {
+				return err
+			}
+		}
 		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			rows := make([]store.TimelineItem, 0, len(msg.Items))
 			for _, item := range msg.Items {
@@ -255,6 +264,11 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 				written = append(written, row)
 			}
 			changed = len(rows)
+			if fullImport && changed > 0 {
+				if err := store.MarkHistoryImportDirty(ctx, tx, session.ID, store.NowMS()); err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 	})
@@ -262,14 +276,30 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 		a.log.Warn("could not store history", "error", err)
 		return false
 	}
-	if msg.Full && msg.Complete != nil {
+	if fullImport {
 		if !*msg.Complete {
 			return true
 		}
-		if seq == 0 {
-			seq = session.Seq
+		generation, publishReset, err := a.db.HistoryImportState(ctx, a.db.Read(), session.ID)
+		if err != nil {
+			a.log.Warn("could not read transcript reconciliation state", "session", session.ID, "error", err)
+			return false
 		}
-		return a.publishHistoryReset(ctx, session, seq)
+		if !publishReset {
+			a.log.Debug("full transcript already in sync", "session", session.ID, "items", len(msg.Items))
+			return true
+		}
+		if seq == 0 {
+			seq = a.currentSeq(ctx, session.ID)
+		}
+		if !a.publishHistoryReset(ctx, session, seq) {
+			return false
+		}
+		if err := a.db.ClearHistoryImportDirty(ctx, session.ID, generation); err != nil {
+			a.log.Warn("could not clear transcript reconciliation state", "session", session.ID, "error", err)
+			return false
+		}
+		return true
 	}
 	if changed == 0 {
 		a.log.Debug("history already in sync", "session", session.ID, "items", len(msg.Items))

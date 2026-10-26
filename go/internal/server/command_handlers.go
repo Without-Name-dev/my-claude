@@ -3,11 +3,54 @@ package server
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
+
+const commandQueueAckTimeout = 10 * time.Second
+
+type pendingCommandAck struct {
+	connectorID       string
+	sessionID         string
+	externalSessionID string
+	response          chan protocol.CommandAck
+}
+
+func (a *App) registerCommandAck(connectorID, sessionID, externalSessionID, requestID string) chan protocol.CommandAck {
+	response := make(chan protocol.CommandAck, 1)
+	a.commandAckMu.Lock()
+	a.commandAcks[requestID] = pendingCommandAck{
+		connectorID: connectorID, sessionID: sessionID,
+		externalSessionID: externalSessionID, response: response,
+	}
+	a.commandAckMu.Unlock()
+	return response
+}
+
+func (a *App) removeCommandAck(requestID string) {
+	a.commandAckMu.Lock()
+	delete(a.commandAcks, requestID)
+	a.commandAckMu.Unlock()
+}
+
+func (a *App) applyCommandAck(conn *connectorConn, ack protocol.CommandAck) {
+	if ack.RequestID == "" || ack.SessionID == "" {
+		return
+	}
+	a.commandAckMu.Lock()
+	pending, ok := a.commandAcks[ack.RequestID]
+	if ok && pending.connectorID == conn.id && pending.sessionID == ack.SessionID &&
+		(pending.externalSessionID == "" || pending.externalSessionID == ack.ExternalSessionID) {
+		select {
+		case pending.response <- ack:
+		default:
+		}
+	}
+	a.commandAckMu.Unlock()
+}
 
 // RuntimeCommandView is one entry in the slash-command menu.
 type RuntimeCommandView struct {
@@ -142,8 +185,11 @@ func (a *App) handleRunCommand(w http.ResponseWriter, r *http.Request, user stor
 		httpx.Fail(w, httpx.Conflict("the conversation is not live on the desktop; open it there to run commands"))
 		return
 	}
+	requestID := store.NewID("cmd")
+	ack := a.registerCommandAck(session.ConnectorID, session.ID, session.ExternalID, requestID)
+	defer a.removeCommandAck(requestID)
 	sent := a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
-		RequestID:         store.NewID("cmd"),
+		RequestID:         requestID,
 		SessionID:         session.ID,
 		ExternalSessionID: session.ExternalID,
 		Text:              line,
@@ -151,6 +197,30 @@ func (a *App) handleRunCommand(w http.ResponseWriter, r *http.Request, user stor
 	})
 	if !sent {
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
+		return
+	}
+	select {
+	case result := <-ack:
+		if !result.Accepted {
+			message := strings.TrimSpace(result.Error)
+			if message == "" {
+				message = "the desktop rejected the command"
+			}
+			httpx.Fail(w, httpx.Conflict(message))
+			return
+		}
+	case <-time.After(commandQueueAckTimeout):
+		httpx.OK(w, map[string]any{
+			"command":    name,
+			"ok":         false,
+			"code":       "command_outcome_unknown",
+			"message":    "the desktop may have accepted the command, but did not confirm it in time; check the terminal before retrying",
+			"result":     map[string]any{"executionState": "unknown", "retryable": false},
+			"session":    nil,
+			"serverTime": timestampNow(),
+		})
+		return
+	case <-r.Context().Done():
 		return
 	}
 	httpx.OK(w, map[string]any{

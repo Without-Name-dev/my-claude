@@ -2,12 +2,16 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,10 +48,11 @@ type Client struct {
 	// ServerURL is the HTTP origin this connector was paired with. It is the
 	// base for the attachment downloads a message can ask for; when empty it
 	// is derived from URL.
-	ServerURL string
-	Name      string
-	Bridge    *bridge.Bridge
-	Log       *slog.Logger
+	ServerURL  string
+	Name       string
+	Bridge     *bridge.Bridge
+	Log        *slog.Logger
+	DurableDir string
 	// Discovery, when set, tells the server which sessions exist on this machine.
 	Discovery *Discovery
 
@@ -66,10 +71,10 @@ type Client struct {
 	turnMu       sync.RWMutex
 	turnSessions map[string]string
 
-	// pendingEnds keeps the turn.end frames that could not be sent, in order,
-	// so every final text is replayed after the next hello.
-	endMu       sync.Mutex
-	pendingEnds []protocol.TurnEnd
+	endMu sync.Mutex
+
+	watchMu  sync.Mutex
+	watching map[string]struct{}
 
 	// activeMu guards accepted session work and cancels that arrive before a
 	// message reaches the plugin queue.
@@ -132,12 +137,17 @@ type pendingAsk struct {
 
 // NewClient prepares a client. Run opens the connection.
 func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Client {
+	durableDir := ""
+	if b != nil {
+		durableDir = b.Dir
+	}
 	return &Client{
 		URL:                url,
 		Token:              token,
 		Name:               name,
 		Bridge:             b,
 		Log:                log,
+		DurableDir:         durableDir,
 		pending:            map[string]*pendingAsk{},
 		turnSessions:       map[string]string{},
 		active:             map[string]string{},
@@ -153,8 +163,12 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		historyRetryReqs:   map[string]protocol.HistoryRequest{},
 		historyQueue:       make(chan string, historyQueueSize),
 		historyJobs:        map[string]*historyJob{},
+		watching:           map[string]struct{}{},
 	}
 }
+
+// SetDurableDir configures connector-owned state when plugin delivery is off.
+func (c *Client) SetDurableDir(dir string) { c.DurableDir = dir }
 
 // Run connects and stays connected until ctx ends, backing off between tries.
 func (c *Client) Run(ctx context.Context) {
@@ -163,6 +177,7 @@ func (c *Client) Run(ctx context.Context) {
 	for range historyWorkerCount {
 		go c.runHistory(ctx)
 	}
+	c.recoverPendingWatches(ctx)
 
 	backoff := time.Second
 	for ctx.Err() == nil {
@@ -183,6 +198,42 @@ func (c *Client) Run(ctx context.Context) {
 		}
 		if backoff < 30*time.Second {
 			backoff *= 2
+		}
+	}
+}
+
+func (c *Client) recoverPendingWatches(ctx context.Context) {
+	if c.Bridge == nil {
+		return
+	}
+	records, err := c.Bridge.PendingAcceptedRequests()
+	if err != nil {
+		c.Log.Warn("could not read accepted requests for recovery", "error", err)
+		return
+	}
+	for _, record := range records {
+		if c.hasTurnEndSpool(record.SessionID, record.RequestID) {
+			continue
+		}
+		msg := protocol.Submit{
+			SessionID: record.SessionID, ExternalSessionID: record.ExternalSessionID,
+			RequestID: record.RequestID, Action: record.Action,
+		}
+		if !c.markWatching(msg.SessionID, msg.RequestID) {
+			continue
+		}
+		if record.Action == "command" {
+			go c.watchCommand(ctx, msg)
+			continue
+		}
+		job := turnWatchJob{msg: msg, sub: &bridge.Submission{
+			QueuedAt: record.QueuedAt, PreviousTurnID: record.PreviousTurnID, Duplicate: true,
+		}}
+		select {
+		case c.turnWatches <- job:
+		case <-ctx.Done():
+			c.unmarkWatching(msg.SessionID, msg.RequestID)
+			return
 		}
 	}
 }
@@ -315,6 +366,8 @@ func (c *Client) capabilitySet(bridgeReady bool) map[string]bool {
 		protocol.CapabilityBridge:           bridgeReady,
 		protocol.CapabilityBridgeConfigured: c.Bridge != nil,
 		protocol.CapabilitySessionOpen:      spawnAllowed() && sessionOpenSupported(),
+		protocol.CapabilitySubmitAck:        c.Bridge != nil,
+		protocol.CapabilityTurnEndAck:       c.DurableDir != "",
 	}
 }
 
@@ -336,14 +389,19 @@ func (c *Client) dispatch(env protocol.Envelope) {
 			// as failed instead of dropping an acknowledged submit silently.
 			c.finishQueued(msg.SessionID)
 			c.Log.Warn("turn queue full; failing submit", "session", msg.SessionID, "request", msg.RequestID)
-			c.TurnEnd(protocol.TurnEnd{
-				SessionID: msg.SessionID,
-				TurnID:    msg.RequestID,
-				RequestID: msg.RequestID,
-				Status:    "error",
-				Error:     "the connector is still working through earlier messages; send this one again",
-			})
+			message := "the connector is still working through earlier messages; send this one again"
+			if msg.Action == "command" {
+				c.rejectCommand(msg, message)
+			} else {
+				c.rejectSubmit(msg, message)
+			}
 		}
+	case protocol.TypeTurnEndAck:
+		var ack protocol.TurnEndAck
+		if err := json.Unmarshal(env.Data, &ack); err != nil {
+			return
+		}
+		c.acknowledgeTurnEnd(ack)
 	case protocol.TypeSessionClose:
 		c.handleSessionClose(env.Data)
 	case protocol.TypeAbort:
@@ -514,23 +572,23 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 			c.finishQueued(msg.SessionID)
 		}
 	}()
+	requestHash := submitRequestHash(msg)
 	if c.Bridge == nil {
-		c.TurnEnd(protocol.TurnEnd{
-			SessionID: msg.SessionID,
-			TurnID:    msg.RequestID,
-			RequestID: msg.RequestID,
-			Status:    "error",
-			Error:     "the connector has no plugin bridge configured, so the message cannot run on the desktop",
-		})
+		message := "the connector has no plugin bridge configured, so the message cannot run on the desktop"
+		if msg.Action == "command" {
+			c.rejectCommand(msg, message)
+		} else {
+			c.rejectSubmit(msg, message)
+		}
 		return
 	}
 	if c.consumeAbort(msg.SessionID) {
-		c.TurnEnd(protocol.TurnEnd{
-			SessionID: msg.SessionID,
-			TurnID:    msg.RequestID,
-			RequestID: msg.RequestID,
-			Status:    "aborted",
-		})
+		message := "the message was cancelled before it reached the desktop queue"
+		if msg.Action == "command" {
+			c.rejectCommand(msg, message)
+		} else {
+			c.rejectSubmit(msg, message)
+		}
 		return
 	}
 	c.consumeSpawnRequest(msg.ExternalSessionID)
@@ -544,9 +602,17 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 	}
 	if action == "command" {
 		name, args := splitCommand(msg.Text)
-		if _, err := c.Bridge.SubmitCommand(msg.SessionID, msg.ExternalSessionID, msg.RequestID, name, args); err != nil {
+		sub, err := c.Bridge.SubmitCommandWithRequestHash(msg.SessionID, msg.ExternalSessionID, msg.RequestID, name, args, requestHash)
+		if err != nil {
 			c.Log.Warn("could not queue the command", "error", err)
+			c.rejectCommand(msg, err.Error())
+			return
 		}
+		c.ackCommand(msg, true, "")
+		if sub.TerminalAcked || !c.markWatching(msg.SessionID, msg.RequestID) {
+			return
+		}
+		go c.watchCommand(ctx, msg)
 		return
 	}
 	text := msg.Text
@@ -554,18 +620,15 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 		files, failures := c.materializeAttachments(ctx, msg)
 		text = promptWithAttachments(text, files, failures)
 	}
-	sub, err := c.Bridge.Submit(msg.SessionID, msg.ExternalSessionID, msg.RequestID, text, action)
+	sub, err := c.Bridge.SubmitWithRequestHash(msg.SessionID, msg.ExternalSessionID, msg.RequestID, text, action, requestHash)
 	if err != nil {
 		c.Log.Warn("could not queue the message", "error", err)
-		c.TurnEnd(protocol.TurnEnd{
-			SessionID: msg.SessionID,
-			TurnID:    msg.RequestID,
-			RequestID: msg.RequestID,
-			Status:    "error",
-			Error:     "the desktop did not accept the message",
-		})
+		if isPermanentSubmitError(err) {
+			c.rejectSubmit(msg, err.Error())
+		}
 		return
 	}
+	c.ackSubmit(msg, true, "")
 	c.setActive(msg.SessionID, msg.ExternalSessionID)
 	c.clearSessionClosed(msg.SessionID)
 	if c.consumeAbort(msg.SessionID) {
@@ -573,18 +636,119 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 			c.Log.Warn("could not write the abort request", "error", err)
 		}
 	}
+	if sub.TerminalAcked || c.hasTurnEndSpool(msg.SessionID, msg.RequestID) {
+		return
+	}
+	if !c.markWatching(msg.SessionID, msg.RequestID) {
+		return
+	}
 	select {
 	case c.turnWatches <- turnWatchJob{msg: msg, sub: sub}:
 		handedOff = true
 	case <-ctx.Done():
-		c.TurnEnd(protocol.TurnEnd{
-			SessionID: msg.SessionID,
-			TurnID:    msg.RequestID,
-			RequestID: msg.RequestID,
-			Status:    "error",
-			Error:     "the connector stopped before it could track the desktop reply",
-		})
+		c.unmarkWatching(msg.SessionID, msg.RequestID)
 	}
+}
+
+func submitRequestHash(msg protocol.Submit) string {
+	body, err := json.Marshal(struct {
+		SessionID         string                      `json:"sessionId"`
+		ExternalSessionID string                      `json:"externalSessionId,omitempty"`
+		RequestID         string                      `json:"requestId"`
+		Text              string                      `json:"text"`
+		Action            string                      `json:"action,omitempty"`
+		Attachments       []protocol.SubmitAttachment `json:"attachments,omitempty"`
+	}{msg.SessionID, msg.ExternalSessionID, msg.RequestID, msg.Text, msg.Action, msg.Attachments})
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(body)
+	return hex.EncodeToString(hash[:])
+}
+
+func isPermanentSubmitError(err error) bool {
+	return errors.Is(err, bridge.ErrRequestConflict) || err.Error() == "empty message" || err.Error() == "empty command"
+}
+
+func (c *Client) ackSubmit(msg protocol.Submit, accepted bool, message string) {
+	if msg.RequestID == "" {
+		return
+	}
+	if err := c.send(protocol.TypeSubmitAck, protocol.SubmitAck{
+		SessionID: msg.SessionID, ExternalSessionID: msg.ExternalSessionID,
+		RequestID: msg.RequestID, Accepted: accepted, Error: message,
+	}); err != nil {
+		c.Log.Debug("could not forward submit acknowledgement", "request", msg.RequestID, "error", err)
+	}
+}
+
+func (c *Client) ackCommand(msg protocol.Submit, accepted bool, message string) {
+	if msg.RequestID == "" {
+		return
+	}
+	if err := c.send(protocol.TypeCommandAck, protocol.CommandAck{
+		SessionID: msg.SessionID, ExternalSessionID: msg.ExternalSessionID,
+		RequestID: msg.RequestID, Accepted: accepted, Error: message,
+	}); err != nil {
+		c.Log.Debug("could not forward command acknowledgement", "request", msg.RequestID, "error", err)
+	}
+}
+
+func (c *Client) rejectCommand(msg protocol.Submit, message string) {
+	c.ackCommand(msg, false, message)
+}
+
+func (c *Client) watchCommand(ctx context.Context, msg protocol.Submit) {
+	defer c.unmarkWatching(msg.SessionID, msg.RequestID)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		receipt, err := c.Bridge.ReadRequestReceipt(msg.ExternalSessionID, msg.RequestID)
+		if err == nil && receipt != nil && (receipt.Status == "done" || receipt.Status == "failed") {
+			if markErr := c.Bridge.MarkTurnEndAcked(msg.SessionID, msg.RequestID); markErr != nil {
+				c.Log.Warn("could not record completed command", "request", msg.RequestID, "error", markErr)
+			} else {
+				if err := c.Bridge.RemoveRequestArtifacts(msg.ExternalSessionID, msg.RequestID); err != nil {
+					c.Log.Warn("could not remove completed command artifacts", "request", msg.RequestID, "error", err)
+				}
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Client) rejectSubmit(msg protocol.Submit, message string) {
+	c.ackSubmit(msg, false, message)
+	c.sendTurnEnd(protocol.TurnEnd{
+		SessionID: msg.SessionID, TurnID: msg.RequestID, RequestID: msg.RequestID,
+		Status: "error", Error: message,
+	}, msg.ExternalSessionID)
+}
+
+func watchKey(sessionID, requestID string) string {
+	return sessionID + "\x00" + requestID
+}
+
+func (c *Client) markWatching(sessionID, requestID string) bool {
+	key := watchKey(sessionID, requestID)
+	c.watchMu.Lock()
+	defer c.watchMu.Unlock()
+	if _, exists := c.watching[key]; exists {
+		return false
+	}
+	c.watching[key] = struct{}{}
+	return true
+}
+
+func (c *Client) unmarkWatching(sessionID, requestID string) {
+	c.watchMu.Lock()
+	delete(c.watching, watchKey(sessionID, requestID))
+	c.watchMu.Unlock()
 }
 
 // runTurnWatchers keeps reply tracking independent across sessions. Each
@@ -624,11 +788,12 @@ func (c *Client) runSessionTurnWatchers(ctx context.Context, sessionID string, j
 			watcher.Closed = func() bool { return c.sessionWasClosed(job.msg.SessionID) }
 			if requestScoped {
 				watcher.requestScoped = true
-				go func() {
+				go func(watcher *TurnWatcher, serverSessionID, externalSessionID, requestID string) {
 					watcher.Run(ctx)
+					c.unmarkWatching(serverSessionID, requestID)
 					c.clearActive(sessionID)
 					c.finishQueued(sessionID)
-				}()
+				}(watcher, job.msg.SessionID, job.msg.ExternalSessionID, job.msg.RequestID)
 				continue
 			}
 			if previous := lastTurnIDs[job.msg.SessionID]; previous != "" {
@@ -638,6 +803,7 @@ func (c *Client) runSessionTurnWatchers(ctx context.Context, sessionID string, j
 			if !requestScoped && watcher.turnID != "" {
 				lastTurnIDs[job.msg.SessionID] = watcher.turnID
 			}
+			c.unmarkWatching(job.msg.SessionID, job.msg.RequestID)
 			c.clearActive(sessionID)
 			c.finishQueued(sessionID)
 		}
@@ -682,25 +848,166 @@ func (c *Client) TurnBegin(msg protocol.TurnBegin) {
 // TurnDelta implements TurnSink.
 func (c *Client) TurnDelta(msg protocol.TurnDelta) { c.emit(protocol.TypeTurnDelta, msg) }
 
-// maxPendingEnds bounds what a long outage can hold. Several turns can finish
-// while the link is down, so one slot would lose all but the last answer.
-const maxPendingEnds = 64
+type pendingTurnEnd struct {
+	Message           protocol.TurnEnd `json:"message"`
+	ExternalSessionID string           `json:"externalSessionId,omitempty"`
+	CreatedAt         int64            `json:"createdAt"`
+}
+
+func (c *Client) turnEndDir() string {
+	if c.DurableDir == "" {
+		return ""
+	}
+	return filepath.Join(c.DurableDir, "turn-ends")
+}
+
+func turnEndKey(sessionID, requestID, turnID string) string {
+	key := sessionID + "\x00" + requestID
+	if requestID == "" {
+		key += "\x00" + turnID
+	}
+	hash := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(hash[:]) + ".json"
+}
+
+func (c *Client) turnEndPath(sessionID, requestID, turnID string) string {
+	dir := c.turnEndDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, turnEndKey(sessionID, requestID, turnID))
+}
+
+func (c *Client) hasTurnEndSpool(sessionID, requestID string) bool {
+	if requestID == "" {
+		return false
+	}
+	path := c.turnEndPath(sessionID, requestID, "")
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func (c *Client) persistTurnEnd(msg protocol.TurnEnd, externalSessionID string) error {
+	path := c.turnEndPath(msg.SessionID, msg.RequestID, msg.TurnID)
+	if path == "" {
+		return nil
+	}
+	c.endMu.Lock()
+	defer c.endMu.Unlock()
+	if raw, err := os.ReadFile(path); err == nil {
+		var existing pendingTurnEnd
+		if err := json.Unmarshal(raw, &existing); err != nil {
+			return fmt.Errorf("decode queued turn.end: %w", err)
+		}
+		if existing.Message.SessionID != msg.SessionID || existing.Message.RequestID != msg.RequestID || existing.Message.TurnID != msg.TurnID {
+			return errors.New("queued turn.end identity conflict")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	entry := pendingTurnEnd{
+		Message: msg, ExternalSessionID: externalSessionID,
+		CreatedAt: time.Now().UnixMilli(),
+	}
+	body, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	return writeDurableAtomic(path, body)
+}
+
+func writeDurableAtomic(path string, body []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if _, err := temp.Write(body); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempName, path)
+}
 
 // TurnEnd implements TurnSink.
 //
-// The final text lives only in this frame, so a send failure is not just
-// logged: the frame is kept and replayed after the next hello.
+// The spool remains until the server confirms its database commit.
 func (c *Client) TurnEnd(msg protocol.TurnEnd) {
-	if err := c.send(protocol.TypeTurnEnd, msg); err != nil {
-		c.endMu.Lock()
-		c.pendingEnds = append(c.pendingEnds, msg)
-		if len(c.pendingEnds) > maxPendingEnds {
-			c.pendingEnds = c.pendingEnds[len(c.pendingEnds)-maxPendingEnds:]
+	externalSessionID := ""
+	if c.Bridge != nil && msg.RequestID != "" {
+		if accepted, err := c.Bridge.AcceptedRequest(msg.SessionID, msg.RequestID); err == nil && accepted != nil {
+			externalSessionID = accepted.ExternalSessionID
 		}
-		c.endMu.Unlock()
+	}
+	c.sendTurnEnd(msg, externalSessionID)
+	c.forgetTurn(msg.TurnID)
+}
+
+func (c *Client) sendTurnEnd(msg protocol.TurnEnd, externalSessionID string) {
+	if err := c.persistTurnEnd(msg, externalSessionID); err != nil {
+		c.Log.Warn("could not persist turn.end before forwarding", "request", msg.RequestID, "error", err)
+	}
+	if err := c.send(protocol.TypeTurnEnd, msg); err != nil {
 		c.Log.Debug("could not forward frame", "type", protocol.TypeTurnEnd, "error", err)
 	}
-	c.forgetTurn(msg.TurnID)
+}
+
+func (c *Client) acknowledgeTurnEnd(ack protocol.TurnEndAck) {
+	if ack.SessionID == "" || ack.RequestID == "" || ack.TurnID == "" {
+		return
+	}
+	path := c.turnEndPath(ack.SessionID, ack.RequestID, ack.TurnID)
+	if path == "" {
+		return
+	}
+	c.endMu.Lock()
+	defer c.endMu.Unlock()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			c.Log.Debug("could not read acknowledged turn.end", "request", ack.RequestID, "error", err)
+		}
+		return
+	}
+	var entry pendingTurnEnd
+	if err := json.Unmarshal(raw, &entry); err != nil || entry.Message.SessionID != ack.SessionID || entry.Message.RequestID != ack.RequestID || entry.Message.TurnID != ack.TurnID {
+		c.Log.Warn("ignoring mismatched turn.end acknowledgement", "request", ack.RequestID)
+		return
+	}
+	externalSessionID := entry.ExternalSessionID
+	if externalSessionID == "" && c.Bridge != nil {
+		if accepted, err := c.Bridge.AcceptedRequest(ack.SessionID, ack.RequestID); err == nil && accepted != nil {
+			externalSessionID = accepted.ExternalSessionID
+		}
+	}
+	if c.Bridge != nil {
+		if err := c.Bridge.MarkTurnEndAcked(ack.SessionID, ack.RequestID); err != nil {
+			c.Log.Warn("could not record committed turn.end acknowledgement", "request", ack.RequestID, "error", err)
+			return
+		}
+		if err := c.Bridge.RemoveRequestArtifacts(externalSessionID, ack.RequestID); err != nil {
+			c.Log.Warn("could not remove committed request artifacts", "request", ack.RequestID, "error", err)
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		c.Log.Warn("could not remove committed turn.end spool", "request", ack.RequestID, "error", err)
+	}
 }
 
 // ToolBegin implements TurnSink.
@@ -720,28 +1027,38 @@ func (c *Client) emit(frameType string, value any) {
 	}
 }
 
-// replayTurnEnds re-sends the turn.end frames that a disconnect swallowed,
-// oldest first, and stops at the first one that fails again.
+// replayTurnEnds re-sends unacknowledged durable turn.end frames oldest first.
 func (c *Client) replayTurnEnds() {
-	for {
-		c.endMu.Lock()
-		if len(c.pendingEnds) == 0 {
-			c.endMu.Unlock()
+	dir := c.turnEndDir()
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			c.Log.Warn("could not read turn.end spool", "error", err)
+		}
+		return
+	}
+	queued := make([]pendingTurnEnd, 0, len(entries))
+	for _, file := range entries {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		var entry pendingTurnEnd
+		raw, readErr := os.ReadFile(filepath.Join(dir, file.Name()))
+		if readErr != nil || json.Unmarshal(raw, &entry) != nil {
+			c.Log.Warn("ignoring malformed turn.end spool entry", "file", file.Name())
+			continue
+		}
+		queued = append(queued, entry)
+	}
+	sort.Slice(queued, func(i, j int) bool { return queued[i].CreatedAt < queued[j].CreatedAt })
+	for _, entry := range queued {
+		if err := c.send(protocol.TypeTurnEnd, entry.Message); err != nil {
+			c.Log.Debug("could not replay turn.end", "request", entry.Message.RequestID, "error", err)
 			return
 		}
-		msg := c.pendingEnds[0]
-		c.endMu.Unlock()
-
-		if err := c.send(protocol.TypeTurnEnd, msg); err != nil {
-			c.Log.Debug("could not replay turn.end", "error", err)
-			return
-		}
-
-		c.endMu.Lock()
-		if len(c.pendingEnds) > 0 {
-			c.pendingEnds = c.pendingEnds[1:]
-		}
-		c.endMu.Unlock()
 	}
 }
 
@@ -970,14 +1287,20 @@ func (c *Client) deliverApproval(msg protocol.ApprovalAnswer) {
 
 func answerPayload(answer protocol.ApprovalAnswer) map[string]any {
 	out := map[string]any{"decision": answer.Decision}
+	var updated map[string]any
 	if len(answer.UpdatedInput) > 0 {
-		var updated map[string]any
-		if err := json.Unmarshal(answer.UpdatedInput, &updated); err == nil {
+		if err := json.Unmarshal(answer.UpdatedInput, &updated); err == nil && updated != nil {
 			out["updatedInput"] = updated
 		}
 	}
 	if len(answer.Answers) > 0 {
-		out["answers"] = answer.Answers
+		if updated == nil {
+			updated = map[string]any{}
+		}
+		if _, exists := updated["answers"]; !exists {
+			updated["answers"] = answer.Answers
+		}
+		out["updatedInput"] = updated
 	}
 	if answer.Message != "" {
 		out["message"] = answer.Message

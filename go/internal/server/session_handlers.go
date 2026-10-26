@@ -393,12 +393,15 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, user store.Us
 		return
 	}
 
-	items, err := a.db.TimelineItemsAfter(r.Context(), a.db.Read(), session.ID, after, 500)
+	// A cursor names a sequence, and one write can emit several events under
+	// that sequence. Replay the boundary sequence so reconnect can recover
+	// sibling events that were not received before the disconnect.
+	items, hasMore, err := a.timelineChangesPage(r.Context(), session.ID, after-1, 500)
 	if err != nil {
 		httpx.Fail(w, err)
 		return
 	}
-	events := make([]json.RawMessage, 0, len(items)*2)
+	events := make([]json.RawMessage, 0, len(items)+1)
 	for _, it := range items {
 		eventType := EventItemUpdated
 		if it.UpdatedSeq <= 1 {
@@ -413,10 +416,26 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request, user store.Us
 		var decoded json.RawMessage = frame
 		events = append(events, decoded)
 	}
+	// Session metadata is a live projection, not a durable timeline item. Send
+	// it with the final recovery page only; a high-water metadata frame on an
+	// earlier page would make clients reject the remaining older timeline rows.
+	if !hasMore {
+		if frame, err := newEnvelope(session.ID, current, EventSessionMeta, map[string]any{
+			"session": a.sessionView(r.Context(), session),
+		}); err == nil {
+			events = append(events, json.RawMessage(frame))
+		}
+	}
+	nextCursor := current
+	if hasMore && len(items) > 0 {
+		// Keep the last complete sequence as the next cursor. The next page
+		// replays that boundary and clients discard its deterministic event IDs.
+		nextCursor = items[len(items)-1].UpdatedSeq
+	}
 	httpx.OK(w, map[string]any{
 		"events":           events,
-		"nextCursor":       Cursor(current),
-		"snapshotRequired": len(items) >= 500,
+		"nextCursor":       Cursor(nextCursor),
+		"snapshotRequired": hasMore,
 		"serverTime":       timestampNow(),
 	})
 }
@@ -441,11 +460,6 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		httpx.Fail(w, apiErr)
 		return
 	}
-	if !a.connectors.Online(session.ConnectorID) {
-		httpx.Fail(w, httpx.Conflict("connector is offline"))
-		return
-	}
-
 	messageID := ""
 	if body.ClientMessageID != nil {
 		messageID = *body.ClientMessageID
@@ -488,14 +502,6 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 	}
 	if strings.TrimSpace(body.Content) == "" {
 		httpx.Fail(w, httpx.BadRequest("content is required"))
-		return
-	}
-	if !a.connectors.Online(session.ConnectorID) {
-		httpx.Fail(w, httpx.Conflict("connector is offline"))
-		return
-	}
-	if !a.connectors.Live(session.ConnectorID, session.ExternalID) {
-		httpx.Fail(w, httpx.Conflict("no live Claude session on the connector"))
 		return
 	}
 	requestID := ""
@@ -541,6 +547,87 @@ func (a *App) deliverMessage(
 	userItemID := "msg_" + messageID + "_user"
 	orderSeq := store.NowMS()
 	payload := messageContentWithAttachments(content, timelineAttachments(files))
+	wireAttachments := submitAttachments(session.ID, files)
+	submit := protocol.Submit{
+		RequestID:         messageID,
+		SessionID:         session.ID,
+		ExternalSessionID: session.ExternalID,
+		Text:              content,
+		Action:            action,
+		Attachments:       wireAttachments,
+	}
+	payloadHash, err := fingerprintSubmit(submit)
+	if err != nil {
+		return session, err
+	}
+	if found, existing, err := a.existingSubmit(ctx, session.ID, messageID, payloadHash); found {
+		if err != nil {
+			return session, err
+		}
+		if existing.State == "pending" {
+			a.replayPendingSubmits(ctx, session.ConnectorID, false)
+		}
+		return session, nil
+	} else if err != nil {
+		return session, err
+	}
+	if a.connectors.SupportsSubmitAck(session.ConnectorID) {
+		if !a.connectors.Online(session.ConnectorID) {
+			return session, httpx.Conflict("connector is offline")
+		}
+		if action == "steer" && !a.connectors.Live(session.ConnectorID, session.ExternalID) {
+			return session, httpx.Conflict("no live Claude session on the connector")
+		}
+		session, opened, err := a.sessionOpenForDelivery(ctx, session)
+		if err != nil {
+			return session, err
+		}
+		if !opened {
+			return session, errSessionNotLive
+		}
+		submit.ExternalSessionID = session.ExternalID
+		frame, err := encodeSubmitFrame(submit)
+		if err != nil {
+			return session, err
+		}
+		seq, inserted, existing, err := a.persistSubmit(ctx, session, submit, frame, payloadHash,
+			store.TimelineItem{
+				SessionID: session.ID,
+				ID:        userItemID,
+				Type:      "message",
+				Status:    "pending",
+				Role:      "user",
+				OrderSeq:  orderSeq,
+				Payload:   payload,
+			}, previousStatus)
+		if errors.Is(err, store.ErrSubmitRequestConflict) {
+			return session, httpx.Conflict("clientMessageId was already used for different message content")
+		}
+		if err != nil {
+			return session, err
+		}
+		if !inserted {
+			if existing.PayloadHash != payloadHash {
+				return session, httpx.Conflict("clientMessageId was already used for different message content")
+			}
+			if existing.State == "failed" {
+				return session, httpx.Conflict("the connector permanently rejected this message")
+			}
+		} else {
+			a.publishItem(ctx, session.ID, userItemID, seq, true)
+			if previousStatus != "running" {
+				a.setSessionStatus(ctx, session.ID, "waiting")
+			}
+		}
+		a.replayPendingSubmits(ctx, session.ConnectorID, true)
+		return session, nil
+	}
+	if !a.connectors.Online(session.ConnectorID) {
+		return session, httpx.Conflict("connector is offline")
+	}
+	if action == "steer" && !a.connectors.Live(session.ConnectorID, session.ExternalID) {
+		return session, httpx.Conflict("no live Claude session on the connector")
+	}
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
 		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
@@ -571,14 +658,8 @@ func (a *App) deliverMessage(
 		return session, errSessionNotLive
 	}
 
-	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
-		RequestID:         messageID,
-		SessionID:         session.ID,
-		ExternalSessionID: session.ExternalID,
-		Text:              content,
-		Action:            action,
-		Attachments:       submitAttachments(session.ID, files),
-	}) {
+	submit.ExternalSessionID = session.ExternalID
+	if !a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, submit) {
 		a.failMessageDelivery(ctx, session, userItemID, payload, orderSeq, previousStatus)
 		return session, httpx.Conflict("connector is offline")
 	}
@@ -666,7 +747,7 @@ func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user s
 		httpx.Fail(w, err)
 		return
 	}
-	request, connectorID, found := a.approvals.takeFor(noticeID, session.ID, session.ConnectorID)
+	request, connectorID, found := a.approvals.getFor(noticeID, session.ID, session.ConnectorID)
 	if !found {
 		httpx.OK(w, map[string]any{
 			"ok":     false,
@@ -675,36 +756,201 @@ func (a *App) handleNoticeRespond(w http.ResponseWriter, r *http.Request, user s
 		})
 		return
 	}
-	decision := "deny"
-	if strings.EqualFold(body.ActionID, "allow") || strings.EqualFold(body.ActionID, "approve") {
-		decision = "allow"
+	answer, err := approvalAnswer(request, body.ActionID, body.Input)
+	if err != nil {
+		httpx.Fail(w, httpx.BadRequest(err.Error()))
+		return
 	}
-	var answers map[string]string
-	if raw, ok := body.Input["answers"].(map[string]any); ok {
-		answers = map[string]string{}
-		for k, v := range raw {
-			if text, ok := v.(string); ok {
-				answers[k] = text
-			}
-		}
+	request, connectorID, found = a.approvals.takeFor(noticeID, session.ID, session.ConnectorID)
+	if !found {
+		httpx.Fail(w, httpx.Conflict("the approval is no longer pending"))
+		return
 	}
-	if !a.connectors.Send(connectorID, protocol.TypeApprovalAnswer, protocol.ApprovalAnswer{
-		RequestID: store.NewID("ans"),
-		ToolUseID: request.ToolUseID,
-		Decision:  decision,
-		Answers:   answers,
-	}) {
+	answer.RequestID = store.NewID("ans")
+	answer.ToolUseID = request.ToolUseID
+	if !a.connectors.Send(connectorID, protocol.TypeApprovalAnswer, answer) {
 		// The decision never reached the connector; keep the notice pending so
 		// the person can try again once the connector is back.
 		a.approvals.add(noticeID, connectorID, request)
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	a.setSessionStatus(r.Context(), session.ID, "running")
+	status := a.approvals.statusForSession(session.ID)
+	if status == "" {
+		status = "running"
+	}
+	a.setSessionStatus(r.Context(), session.ID, status)
 	// The decision is resolved for everyone, not only for the tab that sent
 	// it; the other open sessions keep the card open until this event.
 	a.publishNoticeUpdate(r.Context(), session.ID, noticeID, request, "resolved", 0)
 	httpx.OK(w, map[string]any{"ok": true, "result": nil, "error": nil})
+}
+
+func approvalAnswer(request protocol.ApprovalRequest, actionID string, input map[string]any) (protocol.ApprovalAnswer, error) {
+	actionID = strings.ToLower(strings.TrimSpace(actionID))
+	kind := approvalKind(request)
+	answer := protocol.ApprovalAnswer{}
+	if kind == "question" {
+		if actionID == "submit" {
+			updated, err := claudeQuestionUpdatedInput(request.Input, input)
+			if err != nil {
+				return protocol.ApprovalAnswer{}, err
+			}
+			answer.UpdatedInput = updated
+			answer.Decision = "allow"
+			return answer, nil
+		}
+		if actionID != "cancel" && actionID != "deny" && actionID != "reject" {
+			return protocol.ApprovalAnswer{}, errors.New("unsupported input request action")
+		}
+		answer.Decision = "deny"
+		return answer, nil
+	}
+
+	if kind == "plan" {
+		switch actionID {
+		case "approve":
+			answer.Decision = "allow"
+		case "reject", "cancel":
+			answer.Decision = "deny"
+		default:
+			return protocol.ApprovalAnswer{}, errors.New("unsupported plan review action")
+		}
+	} else {
+		switch actionID {
+		case "allow", "approve":
+			answer.Decision = "allow"
+		case "deny", "reject":
+			answer.Decision = "deny"
+		default:
+			return protocol.ApprovalAnswer{}, errors.New("unsupported approval action")
+		}
+	}
+
+	if kind == "plan" && answer.Decision == "allow" && len(request.Input) > 0 {
+		updated, err := claudePlanUpdatedInput(request.Input, input)
+		if err != nil {
+			return protocol.ApprovalAnswer{}, err
+		}
+		answer.UpdatedInput = updated
+	}
+	if override, ok := input["updatedInput"]; ok && kind != "question" && kind != "plan" {
+		updated, err := json.Marshal(override)
+		if err != nil {
+			return protocol.ApprovalAnswer{}, errors.New("updatedInput must be valid JSON")
+		}
+		var object map[string]any
+		if err := json.Unmarshal(updated, &object); err != nil || object == nil {
+			return protocol.ApprovalAnswer{}, errors.New("updatedInput must be an object")
+		}
+		answer.UpdatedInput = updated
+	}
+	return answer, nil
+}
+
+func claudeQuestionUpdatedInput(raw json.RawMessage, submitted map[string]any) (json.RawMessage, error) {
+	var original map[string]any
+	var request struct {
+		Questions []claudeInputQuestion `json:"questions"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &original) != nil || original == nil ||
+		json.Unmarshal(raw, &request) != nil || len(request.Questions) == 0 {
+		return nil, errors.New("the input request is invalid")
+	}
+	answers, ok := submitted["answers"].(map[string]any)
+	if !ok || len(answers) != len(request.Questions) {
+		return nil, errors.New("answer every question before submitting")
+	}
+	updatedAnswers := make(map[string]any, len(request.Questions))
+	for questionIndex, question := range request.Questions {
+		prompt := strings.TrimSpace(question.Question)
+		if prompt == "" {
+			return nil, errors.New("the input request contains an invalid question")
+		}
+		questionID := "q_" + strconv.Itoa(questionIndex)
+		rawAnswer, ok := answers[questionID].(map[string]any)
+		if !ok {
+			return nil, errors.New("answer every question before submitting")
+		}
+		selectedRaw, ok := rawAnswer["optionIds"].([]any)
+		if !ok {
+			return nil, errors.New("question choices are invalid")
+		}
+		selected := make(map[string]bool, len(selectedRaw))
+		for _, value := range selectedRaw {
+			optionID, ok := value.(string)
+			if !ok || optionID == "" || selected[optionID] {
+				return nil, errors.New("question choices are invalid")
+			}
+			selected[optionID] = true
+		}
+		if !question.MultiSelect && len(selected) > 1 {
+			return nil, errors.New("select at most one choice for this question")
+		}
+		customText, hasCustomText := rawAnswer["customText"].(string)
+		if _, exists := rawAnswer["customText"]; exists && !hasCustomText {
+			return nil, errors.New("custom answer must be text")
+		}
+		customText = strings.TrimSpace(customText)
+		if len(selected) == 0 && customText == "" {
+			return nil, errors.New("answer every question before submitting")
+		}
+		if !question.MultiSelect && len(selected) > 0 && customText != "" {
+			return nil, errors.New("choose either an option or a custom answer")
+		}
+
+		values := make([]string, 0, len(selected)+1)
+		for optionIndex, option := range question.Options {
+			optionID := "o_" + strconv.Itoa(optionIndex)
+			if selected[optionID] {
+				values = append(values, strings.TrimSpace(option.Label))
+				delete(selected, optionID)
+			}
+		}
+		if len(selected) > 0 {
+			return nil, errors.New("a selected option is no longer available")
+		}
+		if customText != "" {
+			values = append(values, customText)
+		}
+		if len(values) == 0 {
+			return nil, errors.New("answer every question before submitting")
+		}
+		if question.MultiSelect {
+			updatedAnswers[prompt] = strings.Join(values, ", ")
+		} else {
+			updatedAnswers[prompt] = values[0]
+		}
+	}
+	original["answers"] = updatedAnswers
+	updated, err := json.Marshal(original)
+	if err != nil {
+		return nil, errors.New("could not encode the input request answer")
+	}
+	return updated, nil
+}
+
+func claudePlanUpdatedInput(raw json.RawMessage, submitted map[string]any) (json.RawMessage, error) {
+	var original map[string]any
+	if json.Unmarshal(raw, &original) != nil || original == nil {
+		return nil, errors.New("the plan request is invalid")
+	}
+	if value, ok := submitted["plan"].(string); ok && strings.TrimSpace(value) != "" {
+		original["plan"] = value
+	}
+	if value, ok := submitted["planFilePath"].(string); ok && strings.TrimSpace(value) != "" {
+		original["planFilePath"] = value
+	}
+	if override, ok := submitted["updatedInput"].(map[string]any); ok {
+		for key, value := range override {
+			original[key] = value
+		}
+	}
+	updated, err := json.Marshal(original)
+	if err != nil {
+		return nil, errors.New("could not encode the plan response")
+	}
+	return updated, nil
 }
 
 // ownedSession resolves the path session for the signed-in person.

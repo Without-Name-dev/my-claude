@@ -80,6 +80,9 @@ func main() {
 
 	client := connector.NewClient(wsURL(profile.ServerURL), profile.ConnectorToken,
 		profile.displayName(), b, log)
+	if b == nil {
+		client.SetDurableDir(filepath.Join(cfg.DataDir, "connector-state"))
+	}
 	// Attachment downloads go over HTTP to the same server that was paired.
 	client.ServerURL = profile.ServerURL
 

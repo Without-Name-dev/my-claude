@@ -47,6 +47,8 @@ type connectorConn struct {
 	bridgeOK         bool
 	bridgeConfigured bool
 	sessionOpenOK    bool
+	submitAckOK      bool
+	turnEndAckOK     bool
 }
 
 func (c *connectorConn) close() {
@@ -85,6 +87,8 @@ func (c *connectorConn) setCapabilities(capabilities map[string]bool) {
 	c.bridgeOK = capabilities[protocol.CapabilityBridge]
 	c.bridgeConfigured = capabilities[protocol.CapabilityBridgeConfigured]
 	c.sessionOpenOK = capabilities[protocol.CapabilitySessionOpen]
+	c.submitAckOK = capabilities[protocol.CapabilitySubmitAck]
+	c.turnEndAckOK = capabilities[protocol.CapabilityTurnEndAck]
 	c.bridgeMu.Unlock()
 }
 
@@ -229,6 +233,33 @@ func (h *ConnectorHub) SupportsSessionOpen(connectorID string) bool {
 	conn := h.byID[connectorID]
 	h.mu.RUnlock()
 	return conn != nil && conn.sessionOpenReady()
+}
+
+// SupportsSubmitAck reports whether the connector durably acknowledges submits.
+func (h *ConnectorHub) SupportsSubmitAck(connectorID string) bool {
+	h.mu.RLock()
+	conn := h.byID[connectorID]
+	h.mu.RUnlock()
+	if conn == nil {
+		return false
+	}
+	conn.bridgeMu.RLock()
+	defer conn.bridgeMu.RUnlock()
+	return conn.submitAckOK
+}
+
+// SupportsTurnEndAck reports whether this connector retains final turn frames
+// until the server confirms their timeline commit.
+func (h *ConnectorHub) SupportsTurnEndAck(connectorID string) bool {
+	h.mu.RLock()
+	conn := h.byID[connectorID]
+	h.mu.RUnlock()
+	if conn == nil {
+		return false
+	}
+	conn.bridgeMu.RLock()
+	defer conn.bridgeMu.RUnlock()
+	return conn.turnEndAckOK
 }
 
 // CanQueue reports whether the connector has a bridge directory a submit could
@@ -485,6 +516,7 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		a.applyLiveSessions(ctx, conn, hello.LiveSessions)
 		a.publishConnectorPresence(ctx, conn.userID, conn.id, true)
 		a.healStalledSessions(ctx, conn.id, conn.userID)
+		a.replayPendingSubmits(ctx, conn.id, true)
 	case protocol.TypeInventory:
 		var inv protocol.Inventory
 		if err := json.Unmarshal(env.Data, &inv); err != nil {
@@ -541,6 +573,19 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		if err := a.db.TouchConnector(ctx, conn.id); err != nil {
 			a.log.Debug("could not refresh connector presence", "error", err)
 		}
+		a.replayPendingSubmits(ctx, conn.id, false)
+	case protocol.TypeSubmitAck:
+		var msg protocol.SubmitAck
+		if err := json.Unmarshal(env.Data, &msg); err != nil {
+			return
+		}
+		a.applySubmitAck(ctx, conn, msg)
+	case protocol.TypeCommandAck:
+		var msg protocol.CommandAck
+		if err := json.Unmarshal(env.Data, &msg); err != nil {
+			return
+		}
+		a.applyCommandAck(conn, msg)
 	case protocol.TypeTurnBegin:
 		var msg protocol.TurnBegin
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
@@ -558,7 +603,13 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 		if err := json.Unmarshal(env.Data, &msg); err != nil {
 			return
 		}
-		a.onTurnEnd(ctx, conn, msg)
+		if a.onTurnEnd(ctx, conn, msg) && a.connectors.SupportsTurnEndAck(conn.id) {
+			a.connectors.Send(conn.id, protocol.TypeTurnEndAck, protocol.TurnEndAck{
+				SessionID: msg.SessionID,
+				RequestID: msg.RequestID,
+				TurnID:    msg.TurnID,
+			})
+		}
 	case protocol.TypeToolBegin:
 		var msg protocol.ToolBegin
 		if err := json.Unmarshal(env.Data, &msg); err != nil {

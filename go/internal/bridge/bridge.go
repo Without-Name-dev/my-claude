@@ -22,6 +22,7 @@ package bridge
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,13 @@ const DefaultLiveTTL = 12 * time.Second
 
 const requestOutboxCapabilityTTL = DefaultLiveTTL
 
+const (
+	acceptedRequestRetention = 90 * 24 * time.Hour
+	acceptedRequestCapacity  = 50000
+)
+
+var ErrRequestConflict = errors.New("request id was already used for different content")
+
 // outboxStateKeys are forwarded to the server as session state; "branch" is the
 // git branch, not a duplicate of the working directory.
 var outboxStateKeys = []string{"model", "effort", "cwd", "branch", "usage", "context", "costUsd"}
@@ -59,9 +67,11 @@ var outboxStateKeys = []string{"model", "effort", "cwd", "branch", "usage", "con
 type Bridge struct {
 	Dir string
 
-	mu      sync.Mutex
-	token   string
-	lastSeq int
+	mu             sync.Mutex
+	token          string
+	lastSeq        int
+	lastPruneSeq   int
+	acceptedPrunes int
 }
 
 // New returns a bridge rooted at dir.
@@ -112,6 +122,128 @@ func (b *Bridge) RequestAgentsPath(sessionID, requestID string) string {
 }
 func (b *Bridge) RequestReceiptPath(sessionID, requestID string) string {
 	return filepath.Join(b.Dir, "receipt."+sanitizeCursorID(sessionID)+"."+sanitizeCursorID(requestID)+".json")
+}
+
+func (b *Bridge) acceptedRequestPath(sessionID, requestID string) string {
+	key := sha256.Sum256([]byte(sessionID + "\x00" + requestID))
+	return filepath.Join(b.Dir, "accepted-requests", hex.EncodeToString(key[:])+".json")
+}
+
+// AcceptedRequest is the durable idempotency record for a server submit. It
+// outlives the plugin's request-scoped stream artifacts.
+type AcceptedRequest struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	RequestID         string `json:"requestId"`
+	PayloadHash       string `json:"payloadHash"`
+	Action            string `json:"action"`
+	QueuedAt          int64  `json:"queuedAt"`
+	QueueSeq          int    `json:"queueSeq,omitempty"`
+	PreviousTurnID    string `json:"previousTurnId,omitempty"`
+	AcceptedAt        int64  `json:"acceptedAt"`
+	TerminalAcked     bool   `json:"terminalAcked,omitempty"`
+}
+
+// AcceptedRequest returns a persisted request identity, if one exists.
+func (b *Bridge) AcceptedRequest(sessionID, requestID string) (*AcceptedRequest, error) {
+	if sessionID == "" || requestID == "" {
+		return nil, nil
+	}
+	record, err := readAcceptedRequest(b.acceptedRequestPath(sessionID, requestID))
+	if err != nil || record == nil {
+		return record, err
+	}
+	if record.SessionID != sessionID || record.RequestID != requestID {
+		return nil, errors.New("accepted request identity does not match its key")
+	}
+	return record, nil
+}
+
+// MarkTurnEndAcked records that the server committed the final result.
+func (b *Bridge) MarkTurnEndAcked(sessionID, requestID string) error {
+	if sessionID == "" || requestID == "" {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	path := b.acceptedRequestPath(sessionID, requestID)
+	record, err := readAcceptedRequest(path)
+	if err != nil || record == nil {
+		return err
+	}
+	if record.SessionID != sessionID || record.RequestID != requestID {
+		return errors.New("accepted request identity does not match its key")
+	}
+	if record.TerminalAcked {
+		return nil
+	}
+	record.TerminalAcked = true
+	return writeAtomic(path, mustJSON(record))
+}
+
+// PendingAcceptedRequests returns prompts not yet followed by a committed
+// final result so a restarted Connector can resume their watchers.
+func (b *Bridge) PendingAcceptedRequests() ([]AcceptedRequest, error) {
+	dir := filepath.Join(b.Dir, "accepted-requests")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []AcceptedRequest
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var record AcceptedRequest
+		if !readJSONFile(filepath.Join(dir, entry.Name()), &record) {
+			continue
+		}
+		if (record.Action == "prompt" || record.Action == "command") && !record.TerminalAcked && record.SessionID != "" && record.RequestID != "" {
+			out = append(out, record)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].AcceptedAt != out[j].AcceptedAt {
+			return out[i].AcceptedAt < out[j].AcceptedAt
+		}
+		return out[i].RequestID < out[j].RequestID
+	})
+	return out, nil
+}
+
+// RemoveRequestArtifacts releases the snapshots used to follow one submitted
+// prompt after its watcher has finished consuming them.
+func (b *Bridge) RemoveRequestArtifacts(sessionID, requestID string) error {
+	if sessionID == "" || requestID == "" {
+		return nil
+	}
+	paths := []string{
+		b.RequestOutboxPath(sessionID, requestID),
+		b.RequestToolsPath(sessionID, requestID),
+		b.RequestAgentsPath(sessionID, requestID),
+		b.RequestReceiptPath(sessionID, requestID),
+	}
+	var firstErr error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (b *Bridge) clearRequestReceipt(sessionID, requestID string) error {
+	if sessionID == "" || requestID == "" {
+		return nil
+	}
+	err := os.Remove(b.RequestReceiptPath(sessionID, requestID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 func (b *Bridge) RequestOutboxSupported(sessionID string) bool {
 	if sessionID == "" {
@@ -321,6 +453,8 @@ type QueueMessage struct {
 	// name). The plugin compares it with its own session so a message is only
 	// submitted into the conversation it was addressed to.
 	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	RequestHash       string `json:"requestHash,omitempty"`
+	PreviousTurnID    string `json:"previousTurnId,omitempty"`
 }
 
 // Submission describes what the caller needs to follow the turn it queued.
@@ -329,12 +463,23 @@ type Submission struct {
 	// PreviousTurnID is the turn the outbox already showed. The plugin rewrites
 	// the same file, so a snapshot carrying this id predates the new message.
 	PreviousTurnID string
+	Duplicate      bool
+	TerminalAcked  bool
 }
 
 // Submit queues a prompt and returns the handle used to follow it.
 func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action string) (*Submission, error) {
+	return b.SubmitWithRequestHash(sessionID, externalSessionID, messageID, text, action, "")
+}
+
+// SubmitWithRequestHash queues a prompt and persists its request identity so a
+// server retry cannot make the plugin execute the same prompt twice.
+func (b *Bridge) SubmitWithRequestHash(sessionID, externalSessionID, messageID, text, action, requestHash string) (*Submission, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("empty message")
+	}
+	if action == "" {
+		action = "prompt"
 	}
 	previous, err := b.previousTurnID(externalSessionID)
 	if err != nil {
@@ -347,14 +492,227 @@ func (b *Bridge) Submit(sessionID, externalSessionID, messageID, text, action st
 		QueuedAt:          time.Now().UnixMilli(),
 		SessionID:         sessionID,
 		ExternalSessionID: externalSessionID,
+		RequestHash:       requestHash,
+		PreviousTurnID:    previous,
 	}
 	if msg.ID == "" {
 		msg.ID = "bridge-" + strconv.FormatInt(msg.QueuedAt, 10)
 	}
-	if err := b.writeQueue(msg); err != nil {
+	if messageID == "" {
+		if err := b.clearRequestReceipt(externalSessionID, msg.ID); err != nil {
+			return nil, fmt.Errorf("clear previous request receipt: %w", err)
+		}
+		if err := b.writeQueue(msg); err != nil {
+			return nil, err
+		}
+		return &Submission{QueuedAt: msg.QueuedAt, PreviousTurnID: previous}, nil
+	}
+	return b.persistAcceptedRequest(msg, requestHash)
+}
+
+// SubmitCommandWithRequestHash queues a command with the same durable
+// idempotency guarantee as an ordinary prompt.
+func (b *Bridge) SubmitCommandWithRequestHash(sessionID, externalSessionID, messageID, command, args, requestHash string) (*Submission, error) {
+	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
+	if name == "" {
+		return nil, errors.New("empty command")
+	}
+	previous := ""
+	if box, err := b.ReadOutbox(externalSessionID); err == nil && box != nil {
+		previous = box.TurnID
+	}
+	msg := QueueMessage{
+		ID: messageID, Action: "command", Command: name, Args: args,
+		QueuedAt: time.Now().UnixMilli(), SessionID: sessionID,
+		ExternalSessionID: externalSessionID, RequestHash: requestHash,
+		PreviousTurnID: previous,
+	}
+	if msg.ID == "" {
+		if err := b.writeQueue(msg); err != nil {
+			return nil, err
+		}
+		return &Submission{QueuedAt: msg.QueuedAt, PreviousTurnID: previous}, nil
+	}
+	return b.persistAcceptedRequest(msg, requestHash)
+}
+
+func (b *Bridge) persistAcceptedRequest(msg QueueMessage, requestHash string) (*Submission, error) {
+	if requestHash == "" {
+		body, err := json.Marshal(struct {
+			SessionID         string `json:"sessionId"`
+			ExternalSessionID string `json:"externalSessionId"`
+			Action            string `json:"action"`
+			Text              string `json:"text"`
+			Command           string `json:"command"`
+			Args              string `json:"args"`
+		}{msg.SessionID, msg.ExternalSessionID, msg.Action, msg.Text, msg.Command, msg.Args})
+		if err != nil {
+			return nil, err
+		}
+		hash := sha256.Sum256(body)
+		requestHash = hex.EncodeToString(hash[:])
+		msg.RequestHash = requestHash
+	}
+	path := b.acceptedRequestPath(msg.SessionID, msg.ID)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	existing, err := readAcceptedRequest(path)
+	if err != nil {
 		return nil, err
 	}
-	return &Submission{QueuedAt: msg.QueuedAt, PreviousTurnID: previous}, nil
+	if existing != nil {
+		if existing.SessionID != msg.SessionID || existing.RequestID != msg.ID || existing.PayloadHash != requestHash {
+			return nil, ErrRequestConflict
+		}
+		if !existing.TerminalAcked {
+			queued, err := b.findQueuedRequestLocked(msg.ID)
+			if err != nil {
+				return nil, err
+			}
+			if queued == nil && existing.QueueSeq > 0 {
+				cursorID := sanitizeCursorID(msg.ExternalSessionID)
+				if cursorID == "" || readSessionCursor(b.Dir, cursorID) < existing.QueueSeq {
+					msg.QueuedAt = existing.QueuedAt
+					msg.PreviousTurnID = existing.PreviousTurnID
+					if err := b.writeQueueAtSeqLocked(msg, existing.QueueSeq); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		return &Submission{
+			QueuedAt: existing.QueuedAt, PreviousTurnID: existing.PreviousTurnID,
+			Duplicate: true, TerminalAcked: existing.TerminalAcked,
+		}, nil
+	}
+	queued, err := b.findQueuedRequestLocked(msg.ID)
+	if err != nil {
+		return nil, err
+	}
+	if queued != nil {
+		if queued.SessionID != msg.SessionID || queued.ExternalSessionID != msg.ExternalSessionID || queued.Action != msg.Action || queued.Text != msg.Text || queued.Command != msg.Command || queued.Args != msg.Args || (queued.RequestHash != "" && queued.RequestHash != requestHash) {
+			return nil, ErrRequestConflict
+		}
+		msg.QueuedAt = queued.QueuedAt
+		if queued.PreviousTurnID != "" {
+			msg.PreviousTurnID = queued.PreviousTurnID
+		}
+	}
+	queueSeq := 0
+	if queued == nil {
+		if err := b.clearRequestReceipt(msg.ExternalSessionID, msg.ID); err != nil {
+			return nil, fmt.Errorf("clear previous request receipt: %w", err)
+		}
+		queueSeq = b.nextQueueSequenceLocked(b.QueueDir())
+	}
+	record := AcceptedRequest{
+		SessionID: msg.SessionID, ExternalSessionID: msg.ExternalSessionID,
+		RequestID: msg.ID, PayloadHash: requestHash, Action: msg.Action,
+		QueuedAt: msg.QueuedAt, QueueSeq: queueSeq, PreviousTurnID: msg.PreviousTurnID,
+		AcceptedAt: time.Now().UnixMilli(),
+	}
+	if err := writeAtomic(path, mustJSON(record)); err != nil {
+		return nil, fmt.Errorf("persist accepted request: %w", err)
+	}
+	if queued == nil {
+		if err := b.writeQueueAtSeqLocked(msg, queueSeq); err != nil {
+			return nil, err
+		}
+	}
+	b.pruneAcceptedRequestsLocked()
+	return &Submission{QueuedAt: msg.QueuedAt, PreviousTurnID: msg.PreviousTurnID}, nil
+}
+
+func readAcceptedRequest(path string) (*AcceptedRequest, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record AcceptedRequest
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return nil, fmt.Errorf("parse accepted request: %w", err)
+	}
+	return &record, nil
+}
+
+func (b *Bridge) findQueuedRequestLocked(requestID string) (*QueueMessage, error) {
+	entries, err := os.ReadDir(b.QueueDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var queued QueueMessage
+		if !readJSONFile(filepath.Join(b.QueueDir(), entry.Name()), &queued) || queued.ID != requestID {
+			continue
+		}
+		return &queued, nil
+	}
+	return nil, nil
+}
+
+func (b *Bridge) pruneAcceptedRequestsLocked() {
+	b.acceptedPrunes++
+	if b.acceptedPrunes%64 != 1 {
+		return
+	}
+	dir := filepath.Join(b.Dir, "accepted-requests")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type acceptedFile struct {
+		path          string
+		at            int64
+		terminalAcked bool
+	}
+	files := make([]acceptedFile, 0, len(entries))
+	cutoff := time.Now().Add(-acceptedRequestRetention).UnixMilli()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var record AcceptedRequest
+		if !readJSONFile(path, &record) {
+			continue
+		}
+		if record.TerminalAcked && record.AcceptedAt > 0 && record.AcceptedAt < cutoff {
+			_ = os.Remove(path)
+			continue
+		}
+		files = append(files, acceptedFile{
+			path: path, at: record.AcceptedAt, terminalAcked: record.TerminalAcked,
+		})
+	}
+	if len(files) <= acceptedRequestCapacity {
+		return
+	}
+	// A request without a committed terminal ACK is the only recovery record
+	// for a prompt that may still be running. Never evict it to meet the size
+	// target; trim the oldest completed records instead.
+	completed := make([]acceptedFile, 0, len(files))
+	for _, file := range files {
+		if file.terminalAcked {
+			completed = append(completed, file)
+		}
+	}
+	sort.Slice(completed, func(i, j int) bool { return completed[i].at < completed[j].at })
+	removeCount := len(files) - acceptedRequestCapacity
+	if removeCount > len(completed) {
+		removeCount = len(completed)
+	}
+	for _, file := range completed[:removeCount] {
+		_ = os.Remove(file.path)
+	}
 }
 
 // previousTurnID reads the turn the outbox showed before this message was
@@ -382,7 +740,10 @@ func (b *Bridge) previousTurnID(sessionID string) (string, error) {
 func (b *Bridge) writeQueueRaw(payload map[string]any) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.writeQueueRawLocked(payload)
+}
 
+func (b *Bridge) writeQueueRawLocked(payload map[string]any) error {
 	dir := b.QueueDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -393,14 +754,65 @@ func (b *Bridge) writeQueueRaw(payload map[string]any) error {
 	}
 	payload["token"] = token
 
+	seq := b.nextQueueSequenceLocked(dir)
+	return b.writeQueuePayloadAtSeqLocked(payload, seq)
+}
+
+func (b *Bridge) nextQueueSequenceLocked(dir string) int {
 	seq := b.lastSeq
 	if next := b.nextSeq(dir); next > seq {
 		seq = next
 	}
 	seq++
+	if b.lastPruneSeq == 0 || seq-b.lastPruneSeq >= 64 {
+		b.pruneConsumedQueue(dir)
+		b.lastPruneSeq = seq
+		if next := b.nextSeq(dir); next >= seq {
+			seq = next + 1
+		}
+	}
 	b.lastSeq = seq
+	return seq
+}
 
+func (b *Bridge) writeQueueAtSeqLocked(msg QueueMessage, seq int) error {
+	dir := b.QueueDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	token, err := b.tokenLocked()
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"id": msg.ID, "action": msg.Action, "queuedAt": msg.QueuedAt,
+		"sessionId": msg.SessionID, "externalSessionId": msg.ExternalSessionID,
+		"requestHash": msg.RequestHash, "previousTurnId": msg.PreviousTurnID,
+		"token": token,
+	}
+	if msg.Text != "" {
+		payload["text"] = msg.Text
+	}
+	if msg.Command != "" {
+		payload["command"] = msg.Command
+	}
+	if msg.Args != "" {
+		payload["args"] = msg.Args
+	}
+	return b.writeQueuePayloadAtSeqLocked(payload, seq)
+}
+
+func (b *Bridge) writeQueuePayloadAtSeqLocked(payload map[string]any, seq int) error {
+	dir := b.QueueDir()
 	final := filepath.Join(dir, strconv.Itoa(seq)+".json")
+	if _, err := os.Stat(final); err == nil {
+		return fmt.Errorf("queue sequence %d is already occupied", seq)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if seq > b.lastSeq {
+		b.lastSeq = seq
+	}
 	return writeAtomic(final, mustJSON(payload))
 }
 
@@ -425,7 +837,31 @@ func (b *Bridge) writeQueue(msg QueueMessage) error {
 	if msg.ExternalSessionID != "" {
 		payload["externalSessionId"] = msg.ExternalSessionID
 	}
+	if msg.RequestHash != "" {
+		payload["requestHash"] = msg.RequestHash
+	}
+	if msg.PreviousTurnID != "" {
+		payload["previousTurnId"] = msg.PreviousTurnID
+	}
 	return b.writeQueueRaw(payload)
+}
+
+func (b *Bridge) writeQueueLocked(msg QueueMessage) error {
+	payload := map[string]any{
+		"id": msg.ID, "action": msg.Action, "queuedAt": msg.QueuedAt,
+		"sessionId": msg.SessionID, "externalSessionId": msg.ExternalSessionID,
+		"requestHash": msg.RequestHash, "previousTurnId": msg.PreviousTurnID,
+	}
+	if msg.Text != "" {
+		payload["text"] = msg.Text
+	}
+	if msg.Command != "" {
+		payload["command"] = msg.Command
+	}
+	if msg.Args != "" {
+		payload["args"] = msg.Args
+	}
+	return b.writeQueueRawLocked(payload)
 }
 
 // nextSeq is the highest sequence already used, counting both the files still
@@ -440,6 +876,42 @@ func (b *Bridge) nextSeq(dir string) int {
 		best = cursor
 	}
 	return best
+}
+
+// pruneConsumedQueue drops queue files after the addressed plugin session has
+// durably advanced its cursor past them. This bounds directory scans while
+// preserving messages that their target session has not picked up yet.
+func (b *Bridge) pruneConsumedQueue(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cursors := make(map[string]int)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		seq, err := strconv.Atoi(strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil || seq < 1 {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var msg struct {
+			ExternalSessionID string `json:"externalSessionId"`
+		}
+		if !readJSONFile(path, &msg) || msg.ExternalSessionID == "" {
+			continue
+		}
+		id := sanitizeCursorID(msg.ExternalSessionID)
+		cursor, ok := cursors[id]
+		if !ok {
+			cursor = readSessionCursor(b.Dir, id)
+			cursors[id] = cursor
+		}
+		if seq <= cursor {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // highestSeq scans the queue for the largest sequence already present.
@@ -464,15 +936,29 @@ func highestSeq(dir string) int {
 
 // readCursor reads the plugin's progress marker, which lives beside the queue.
 func readCursor(dir string) int {
-	raw, err := os.ReadFile(filepath.Join(dir, "cursor.txt"))
+	value, _ := readCursorFile(filepath.Join(dir, "cursor.txt"))
+	return value
+}
+
+func readCursorFile(path string) (int, bool) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return n
+	return n, true
+}
+
+func readSessionCursor(dir, sessionID string) int {
+	path := filepath.Join(dir, "cursor."+sessionID+".txt")
+	if value, ok := readCursorFile(path); ok {
+		return value
+	}
+	backup, _ := readCursorFile(path + ".bak")
+	return backup
 }
 
 func highestCursor(dir string) int {
@@ -790,6 +1276,10 @@ func writeAtomic(path string, body []byte) error {
 		temp.Close()
 		return err
 	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
 	if err := temp.Close(); err != nil {
 		return err
 	}
@@ -809,31 +1299,7 @@ func mustJSON(value any) []byte {
 // runtime session id is carried like a prompt's, so a plugin shared by several
 // sessions only runs the command in the conversation it was addressed to.
 func (b *Bridge) SubmitCommand(sessionID, externalSessionID, messageID, command, args string) (*Submission, error) {
-	name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
-	if name == "" {
-		return nil, errors.New("empty command")
-	}
-	body := map[string]any{
-		"id":        messageID,
-		"action":    "command",
-		"command":   name,
-		"queuedAt":  time.Now().UnixMilli(),
-		"sessionId": sessionID,
-	}
-	if externalSessionID != "" {
-		body["externalSessionId"] = externalSessionID
-	}
-	if args != "" {
-		body["args"] = args
-	}
-	previous := ""
-	if box, err := b.ReadOutbox(externalSessionID); err == nil && box != nil {
-		previous = box.TurnID
-	}
-	if err := b.writeQueueRaw(body); err != nil {
-		return nil, err
-	}
-	return &Submission{QueuedAt: time.Now().UnixMilli(), PreviousTurnID: previous}, nil
+	return b.SubmitCommandWithRequestHash(sessionID, externalSessionID, messageID, command, args, "")
 }
 
 // CancelQueued removes a message the plugin has not picked up yet.

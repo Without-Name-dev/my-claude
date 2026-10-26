@@ -28,6 +28,8 @@ type User struct {
 const userColumns = `id, coalesce(email, ''), display_name, coalesce(avatar, ''),
 	role, password_hash, disabled, email_verified_at, created_at, updated_at`
 
+var ErrInitialAdminExists = errors.New("initial administrator already exists")
+
 func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var u User
 	var disabled int
@@ -89,6 +91,48 @@ func (s *Store) CreateUser(ctx context.Context, u User) (User, error) {
 			                   display_name, avatar, created_at, updated_at)
 			VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
 			u.ID, u.PasswordHash, u.Role, email, u.EmailVerifiedAt, u.DisplayName, avatar,
+			u.CreatedAt, u.UpdatedAt)
+		return err
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+// CreateInitialAdmin atomically creates the first account as administrator.
+// The registration handler cannot safely decide this from a count performed
+// before the write: concurrent first registrations could both become admins.
+func (s *Store) CreateInitialAdmin(ctx context.Context, u User) (User, error) {
+	now := time.Now().UnixMilli()
+	if u.ID == "" {
+		u.ID = NewID("usr")
+	}
+	u.Email = NormaliseEmail(u.Email)
+	u.Role = "admin"
+	u.CreatedAt, u.UpdatedAt = now, now
+
+	var email any
+	if u.Email != "" {
+		email = u.Email
+	}
+	var avatar any
+	if u.Avatar != "" {
+		avatar = u.Avatar
+	}
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users)`).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 0 {
+			return ErrInitialAdminExists
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO users (id, password_hash, role, disabled, email, email_verified_at,
+			                   display_name, avatar, created_at, updated_at)
+			VALUES (?, ?, 'admin', 0, ?, ?, ?, ?, ?, ?)`,
+			u.ID, u.PasswordHash, email, u.EmailVerifiedAt, u.DisplayName, avatar,
 			u.CreatedAt, u.UpdatedAt)
 		return err
 	})

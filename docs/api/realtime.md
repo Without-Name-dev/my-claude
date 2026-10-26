@@ -92,6 +92,13 @@ the conversation can actually accept a prompt right now. It is false for a
 session whose plugin stopped stamping, whose connector is offline, or whose
 connector predates presence reporting.
 
+`SessionView` also carries the runtime identity fields `runtimeId`,
+`runtimeType`, `runtimeName`, and `runtimeTypeDisplayName`. These additive fields
+are optional for compatibility with older servers. The current Go Server always
+returns `runtimeId` and `runtimeType`; `runtimeName` and
+`runtimeTypeDisplayName` are nullable and currently `null`. `live` is also
+optional for older servers, but is always a boolean in current Go responses.
+
 The Server republishes `session.meta.updated` for the sessions whose `live`
 value changed. A connector going offline clears its whole set.
 
@@ -99,29 +106,39 @@ value changed. A connector going offline clears its whole set.
 
 - Event cursor format is `seq:{number}`.
 - Timeline items are upsert-only.
+- `timeline.snapshot` carries a bounded latest window. Clients merge its rows
+  with already loaded timeline rows; rows outside that window are not deleted.
 - A sequence gap does not automatically require snapshot.
-- Server returns `snapshotRequired=true` only when durable meta/timeline
-  recovery is explicitly impossible.
-- Client pulls snapshot only for initial load or `snapshotRequired=true`.
-- Runtime state and catalogs are not recovered from Server DB. After the
-  initial session subscription and reconnect, Web and Desktop read
-  `GET /sessions/{sessionId}/runtime/state` after successful event recovery.
-  This read also runs when the connector is offline, using the endpoint's
-  cached/persisted fallback. Older runtime-state revisions are ignored; events
-  received before the live read participate in its version check, while events
-  received during the read are applied afterwards. Failed live reads retain
-  the existing state and buffered events. Catalogs use their runtime live
-  endpoints when needed.
-- Runtime notices are recovered when Server has a sequence-backed projection.
-  Session meta and the latest persisted effective capability projection are
-  also returned when recovery starts at the current cursor, because presence
-  and capabilities can change without advancing the durable session sequence.
-  When the connector is online, Web reads the live session capability endpoint
-  after recovery and keeps that Runtime result authoritative.
+- `/events` replays the requested sequence boundary because one write may emit
+  several durable events with the same `seq:N`. Event IDs are deterministic, so
+  clients apply each event once and ignore boundary duplicates.
+- When a replay page reaches its item limit, `snapshotRequired=true` and
+  `nextCursor` marks the last complete sequence in that page. Clients continue
+  from that cursor while it advances. If the requested cursor is ahead of the
+  session, or a page cannot advance the cursor, clients hydrate a snapshot.
+- The latest `session.meta.updated` projection is included on the final replay
+  page only; an earlier high-water metadata event could make clients reject
+  timeline items from later pages.
+- Client pulls a snapshot for initial load or when event recovery cannot advance.
+- Runtime state and catalogs are not recovered from Server DB. After event
+  recovery, Web reads `GET /sessions/{sessionId}/runtime/state`, including when
+  the connector is offline so the endpoint can return its cached fallback. iOS
+  reads runtime state, capabilities, and notices together only when its current
+  session projection says the connector is online. Older runtime-state
+  revisions are ignored; events received before the live read participate in
+  its version check, while events received during the read are applied
+  afterwards. Failed live reads retain the existing state and buffered events.
+  Catalogs use their runtime live endpoints when needed.
+- `/events` replays timeline item changes and includes the current session meta
+  on the final recovery page. Notices, runtime state, and capabilities are not
+  included; Web and iOS refresh those separately after recovery.
 - `runtime.capability.updated` carries effective capabilities. On a session
   WebSocket, it is session-scoped and controls current session actions. On a
   dashboard/runtime WebSocket, it is runtime-scoped and controls setup,
   create-session, catalog, and feature entry points.
+- The current Go Server does not publish `runtime.capability.updated`; clients
+  obtain session capabilities from `GET /sessions/{sessionId}/runtime/capabilities`
+  and connector runtime capabilities from the corresponding connector endpoint.
 - Web should not derive action availability from `runtime.state.updated` when a
   matching effective capability exists.
 

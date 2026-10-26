@@ -99,6 +99,33 @@ func (s *Store) TimelineItemsLatest(ctx context.Context, q Querier, sessionID st
 	return s.timelineWindow(ctx, q, sessionID, limit, 0, false)
 }
 
+// TimelineNonHistoryMessages returns every message not imported from a
+// transcript. History reconciliation uses these rows to avoid re-importing
+// prompts already recorded by the Server, even when they are older than the
+// current display window.
+func (s *Store) TimelineNonHistoryMessages(ctx context.Context, q Querier, sessionID string) ([]TimelineItem, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+timelineColumns+` FROM timeline_items
+		WHERE session_id = ? AND type = 'message' AND substr(id, 1, 5) != 'hist_'
+		ORDER BY order_seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TimelineItem
+	for rows.Next() {
+		item, err := scanTimelineItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TimelineItemsBefore returns the newest limit items older than beforeOrderSeq,
 // in display order. It backs mode=history pagination.
 func (s *Store) TimelineItemsBefore(ctx context.Context, q Querier, sessionID string, beforeOrderSeq int64, limit int) ([]TimelineItem, error) {

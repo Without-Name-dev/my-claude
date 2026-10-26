@@ -1,8 +1,13 @@
 # Protocol 1.0 Contract
 
-The Server Pydantic wire models are the source of truth for these artifacts.
-Files under `schemas/` and `manifest.json` are generated and must not be edited
-by hand.
+The Server Pydantic wire models are the exporter source for these artifacts,
+but the Python Server is a reference implementation. The production Go Server
+is authoritative for `/api/v2` responses. In particular, the Go `SessionView`
+includes the additive `runtimeId`, `runtimeType`, `runtimeName`,
+`runtimeTypeDisplayName`, and `live` fields in the session snapshot schema;
+these fields are not yet represented by the Python reference model. Preserve
+this Go API projection when exporting the snapshot schema, then update its
+manifest digest and regenerate the Web types from the checked-in schema.
 
 Regenerate the contract from the repository root:
 

@@ -81,10 +81,30 @@ export type Lastitemorderseq = number | null
 export type Lastreadseq = number
 export type Lastsyncedat = string | null
 export type Latestturnendseq = number
+/**
+ * Whether the session can currently accept a prompt through its phone-pane plugin.
+ */
+export type Live = boolean
 export type Pinned = boolean
 export type Pinnedat = string | null
 export type Projectid = string | null
 export type Runtime3 = "codex" | "claude" | "opencode" | "acp" | "dsh"
+/**
+ * Configured runtime instance identifier. Older servers may omit this field.
+ */
+export type Runtimeid = string
+/**
+ * Configured runtime instance name, when available.
+ */
+export type Runtimename = string | null
+/**
+ * Runtime provider type. Current Go responses set this to runtime.
+ */
+export type Runtimetype = "codex" | "claude" | "opencode" | "acp" | "dsh"
+/**
+ * Display label for the runtime provider, when available.
+ */
+export type Runtimetypedisplayname = string | null
 export type Sortat = string | null
 export type Sourceavailability = "available" | "archived" | "unavailable" | "deleted" | "missing" | "unknown"
 export type Sourceavailabilityreason = string | null
@@ -263,10 +283,15 @@ export interface SessionView {
   lastReadSeq?: Lastreadseq
   lastSyncedAt?: Lastsyncedat
   latestTurnEndSeq?: Latestturnendseq
+  live?: Live
   pinned?: Pinned
   pinnedAt?: Pinnedat
   projectId?: Projectid
   runtime: Runtime3
+  runtimeId?: Runtimeid
+  runtimeName?: Runtimename
+  runtimeType?: Runtimetype
+  runtimeTypeDisplayName?: Runtimetypedisplayname
   sortAt?: Sortat
   sourceAvailability?: Sourceavailability
   sourceAvailabilityReason?: Sourceavailabilityreason

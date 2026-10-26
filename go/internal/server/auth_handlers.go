@@ -218,12 +218,13 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+	isBootstrap := count == 0
 	if count > 0 && !a.loadInstanceSettings(r.Context()).RegistrationOpen {
 		httpx.Fail(w, httpx.Forbidden("registration is closed"))
 		return
 	}
 	role := "member"
-	if count == 0 {
+	if isBootstrap {
 		role = "admin"
 		ok, err := a.checkSetupToken(r.Context(), body.SetupToken)
 		if err != nil {
@@ -251,13 +252,23 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		displayName = name
 	}
 
-	user, err := a.db.CreateUser(r.Context(), store.User{
+	newUser := store.User{
 		Email:        email,
 		DisplayName:  displayName,
 		Role:         role,
 		PasswordHash: hash,
-	})
+	}
+	var user store.User
+	if isBootstrap {
+		user, err = a.db.CreateInitialAdmin(r.Context(), newUser)
+	} else {
+		user, err = a.db.CreateUser(r.Context(), newUser)
+	}
 	if err != nil {
+		if err == store.ErrInitialAdminExists {
+			httpx.Fail(w, httpx.Conflict("registration could not be completed"))
+			return
+		}
 		if isUniqueViolation(err) {
 			// Same body as any other failure so the endpoint cannot be used to
 			// ask whether an address already has an account.
@@ -267,7 +278,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
-	if count == 0 {
+	if isBootstrap {
 		_ = a.clearSetting(r.Context(), "setup_token")
 		_ = a.clearSetting(r.Context(), "setup_token_expires_at")
 	}
