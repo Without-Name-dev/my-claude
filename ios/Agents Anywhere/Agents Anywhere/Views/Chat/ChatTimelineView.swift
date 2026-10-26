@@ -5,7 +5,7 @@ struct ChatTimelineView: View {
     let model: SessionChatModel
     let onAttachment: (V2AttachmentContent) -> Void
     let onFile: (String) -> Void
-    @State private var historyLayout: TimelineHistoryLayout?
+    @State private var historyLayout = ChatHistoryLayoutSample()
     @State private var historyPosition: TimelineHistoryPosition?
     @State private var hasRequestedOlder = false
     @State private var position = ScrollPosition()
@@ -37,6 +37,14 @@ struct ChatTimelineView: View {
     }
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
+    /// Keep the native target for explicit history restoration, but ignore
+    /// per-frame user-owned positions so a drag does not invalidate this view.
+    private var scrollPositionBinding: Binding<ScrollPosition> {
+        Binding(get: { self.position }, set: { next in
+            guard !self.scrolling.userIsScrolling, !next.isPositionedByUser else { return }
+            self.position = next
+        })
+    }
     var body: some View {
         ScrollViewReader { scrollProxy in
             timelineBody(using: scrollProxy)
@@ -68,7 +76,7 @@ struct ChatTimelineView: View {
             }
             // Keep the binding for exact history-prepend restoration. Tail
             // navigation uses one-shot ScrollViewReader commands below.
-            .scrollPosition($position)
+            .scrollPosition(scrollPositionBinding)
             .environment(\.streamingGlyphAnimationPaused, scrolling.userIsScrolling)
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
@@ -165,7 +173,7 @@ struct ChatTimelineView: View {
                     latestPull.cancel(); olderPull.cancel()
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
-                    if let historyLayout { historyDidLayOut(historyLayout) }
+                    if let layout = historyLayout.value { historyDidLayOut(layout) }
                     applyHistoryHeight(viewport.contentHeight)
                 }
             }
@@ -302,7 +310,7 @@ struct ChatTimelineView: View {
         olderPull.cancel(); latestPull.cancel()
         scrolling.browseHistory()
         position.isPositionedByUser = true
-        let layout = historyLayout.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
+        let layout = historyLayout.value.flatMap { $0.firstRowID == model.timeline.rows.first?.id ? $0 : nil }
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
             // A zero baseline would turn the first measured height into a
@@ -346,7 +354,7 @@ struct ChatTimelineView: View {
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in
-            if historyLayout != layout { historyLayout = layout }
+            historyLayout.value = layout
             // Point restoration is a forced scroll too: a live gesture always
             // wins, even if a coalesced measurement arrives after it began.
             guard !navigationIsSuspended, !scrolling.userIsScrolling,
@@ -586,4 +594,10 @@ private extension TimelineViewport {
 /// Native offset storage deliberately does not invalidate the SwiftUI view tree.
 @MainActor private final class ChatViewportSample {
     var value: TimelineViewport?
+}
+
+/// Scroll geometry and its restoration anchor change while UIKit scrolls.
+/// Neither sample should invalidate the chat view tree on every scroll frame.
+@MainActor private final class ChatHistoryLayoutSample {
+    var value: TimelineHistoryLayout?
 }
