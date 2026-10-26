@@ -19,7 +19,7 @@ type SubmitOutboxItem struct {
 	State             string
 	Error             string
 	PreviousStatus    string
-	// EnqueueSeq is the session revision assigned when the submit was persisted.
+	// EnqueueSeq stores the outbox row's rowid, preserving durable insert order.
 	EnqueueSeq    int64
 	Attempts      int
 	LastAttemptAt *int64
@@ -41,10 +41,10 @@ func InsertSubmitOutbox(ctx context.Context, tx *sql.Tx, item SubmitOutboxItem) 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO submit_outbox
 			(session_id, request_id, connector_id, external_session_id, payload_json,
-			 payload_hash, state, previous_status, enqueue_seq, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+			 payload_hash, state, previous_status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
 		item.SessionID, item.RequestID, item.ConnectorID, item.ExternalSessionID,
-		string(item.Payload), item.PayloadHash, item.PreviousStatus, item.EnqueueSeq, item.CreatedAt, item.UpdatedAt)
+		string(item.Payload), item.PayloadHash, item.PreviousStatus, item.CreatedAt, item.UpdatedAt)
 	return err
 }
 

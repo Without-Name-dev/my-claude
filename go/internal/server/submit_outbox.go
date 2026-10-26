@@ -17,6 +17,8 @@ import (
 
 const submitRetryInterval = 15 * time.Second
 
+const submitReplayWorkerTimeout = 5 * time.Second
+
 type submitFingerprint struct {
 	Text        string                      `json:"text"`
 	Action      string                      `json:"action"`
@@ -95,7 +97,6 @@ func (a *App) persistSubmit(
 				Payload:           frame,
 				PayloadHash:       payloadHash,
 				PreviousStatus:    previousStatus,
-				EnqueueSeq:        seq,
 				CreatedAt:         now,
 				UpdatedAt:         now,
 			}); err != nil {
@@ -147,6 +148,31 @@ func (a *App) replayPendingSubmits(ctx context.Context, connectorID string, forc
 	}
 }
 
+// scheduleSubmitReplay wakes one bounded worker so the connector can receive
+// the next queued message as soon as it acknowledges the current one. The
+// connector socket reader only performs a non-blocking channel send here.
+func (a *App) scheduleSubmitReplay(connectorID string) {
+	if connectorID == "" {
+		return
+	}
+	a.submitReplayOnce.Do(func() {
+		go a.runSubmitReplayWorker()
+	})
+	select {
+	case a.submitReplayQ <- connectorID:
+	default:
+		a.log.Debug("submit replay queue is full; connector heartbeat will retry", "connector", connectorID)
+	}
+}
+
+func (a *App) runSubmitReplayWorker() {
+	for connectorID := range a.submitReplayQ {
+		ctx, cancel := context.WithTimeout(context.Background(), submitReplayWorkerTimeout)
+		a.replayPendingSubmits(ctx, connectorID, false)
+		cancel()
+	}
+}
+
 func (a *App) applySubmitAck(ctx context.Context, conn *connectorConn, ack protocol.SubmitAck) {
 	if ack.SessionID == "" || ack.RequestID == "" {
 		return
@@ -159,7 +185,9 @@ func (a *App) applySubmitAck(ctx context.Context, conn *connectorConn, ack proto
 		})
 		if err != nil {
 			a.log.Warn("could not commit submit acknowledgement", "session", ack.SessionID, "request", ack.RequestID, "error", err)
+			return
 		}
+		a.scheduleSubmitReplay(conn.id)
 		return
 	}
 

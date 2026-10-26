@@ -39,16 +39,18 @@ type App struct {
 	// openMu guards lastAutoOpen: when the send path last asked each session's
 	// connector to open a terminal, so a retried message does not ask again
 	// while the first one is still starting.
-	openMu         sync.Mutex
-	lastAutoOpen   map[string]time.Time
-	submitReplayMu sync.Mutex
-	commandAckMu   sync.Mutex
-	commandAcks    map[string]pendingCommandAck
+	openMu           sync.Mutex
+	lastAutoOpen     map[string]time.Time
+	submitReplayMu   sync.Mutex
+	submitReplayQ    chan string
+	submitReplayOnce sync.Once
+	commandAckMu     sync.Mutex
+	commandAcks      map[string]pendingCommandAck
 }
 
 // New wires the application.
 func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
-	return &App{
+	app := &App{
 		cfg:        cfg,
 		db:         db,
 		log:        log,
@@ -62,9 +64,11 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		rpc:        newRPCClient(),
 		activity:   newActivityRegistry(),
 
-		lastAutoOpen: map[string]time.Time{},
-		commandAcks:  map[string]pendingCommandAck{},
+		lastAutoOpen:  map[string]time.Time{},
+		commandAcks:   map[string]pendingCommandAck{},
+		submitReplayQ: make(chan string, 128),
 	}
+	return app
 }
 
 // Handler returns the root router.
