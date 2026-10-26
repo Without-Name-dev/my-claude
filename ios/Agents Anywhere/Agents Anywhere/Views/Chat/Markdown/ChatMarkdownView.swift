@@ -22,6 +22,21 @@ struct ChatMarkdownView: View {
     /// Completed blocks parsed so far; each batch re-parses only the open tail.
     @State private var parseState = MarkdownParseState()
 
+    init(text: String, isStreaming: Bool = false, resolvesFileReferences: Bool = false, layoutGeneration: Int = 0) {
+        self.text = text
+        self.isStreaming = isStreaming
+        self.resolvesFileReferences = resolvesFileReferences
+        self.layoutGeneration = layoutGeneration
+        // A settled message that was parsed before — the row left the realized
+        // window and came back — is drawn at its full height on the first frame
+        // instead of inflating after an asynchronous parse.
+        if !isStreaming,
+           let cached = ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: resolvesFileReferences) {
+            _blocks = State(initialValue: cached.blocks)
+            _parseState = State(initialValue: cached.state)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
@@ -34,6 +49,12 @@ struct ChatMarkdownView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)) {
             let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)
+            if !isStreaming,
+               let cached = ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: resolvesFileReferences) {
+                if blocks != cached.blocks { blocks = cached.blocks }
+                parseState = cached.state
+                return
+            }
             // Parsing a long response must not block scroll and drawer gestures.
             // Cancelled requests cannot publish an older snapshot over a new reply.
             // Streaming replies reuse the blocks before the last safe boundary.
@@ -46,6 +67,9 @@ struct ChatMarkdownView: View {
             }
             guard !Task.isCancelled, case .success(let parsed) = result else { return }
             parseState = parsed.state
+            if !isStreaming {
+                ChatMarkdownCache.shared.store(parsed, for: text, resolvesFileReferences: resolvesFileReferences)
+            }
             let next = parsed.blocks
             guard blocks != next else { return }
             if isStreaming {

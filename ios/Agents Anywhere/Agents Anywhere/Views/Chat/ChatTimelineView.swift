@@ -344,11 +344,22 @@ struct ChatTimelineView: View {
             if scrolling.complete(command) { releaseScrollPosition() }
         }
     }
+    /// Clears the scroll target completely.
+    ///
+    /// `scrollTo(edge:)` leaves a persistent pin: SwiftUI re-applies it every
+    /// time the content grows, which is what kept dragging the page back to the
+    /// bottom while the reader was scrolling up. Marking the position as
+    /// user-positioned is supposed to release it, but the old guard returned
+    /// early whenever the target already looked empty, and a nil animation gave
+    /// no reliable completion to land on. Resetting the value cannot leave a
+    /// target behind.
     private func releaseScrollPosition() {
-        guard position.edge != nil || position.point != nil else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
-        withTransaction(transaction) { position.isPositionedByUser = true }
+        withTransaction(transaction) {
+            position.isPositionedByUser = true
+            position = ScrollPosition()
+        }
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
         historyUpdates.submit(layout) { layout in

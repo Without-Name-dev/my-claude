@@ -36,7 +36,12 @@ const historyRefreshLimit = 80
 
 // historyItemPublishLimit is the number of imported rows above which a full
 // timeline reset is published instead of one event per item.
-const historyItemPublishLimit = 12
+//
+// It is as large as one periodic import can be, so a refresh never resets the
+// client's list — a reset discards the reader's loaded window and reorders the
+// conversation under them. Only the first import of a conversation, which
+// fetches a whole page, still resets.
+const historyItemPublishLimit = historyRefreshLimit
 
 // refreshLiveHistories keeps the server's timeline in step with every live
 // conversation's transcript.

@@ -28,6 +28,9 @@ nonisolated struct TimelineScrollState: Equatable {
     private var lastRequest: BottomRequest?
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
+    /// Whether the reader was following the tail when an interaction card
+    /// appeared, so dismissing it restores that intent and nothing else.
+    private var followedBeforeInteraction = false
     /// The offset the page settled at while it owned the tail. Nil until the
     /// first return completes.
     private var bottomOffset: CGFloat?
@@ -113,8 +116,13 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func setInteractionPresented(_ presented: Bool) {
         guard interactionIsPresented != presented else { return }
         interactionIsPresented = presented
-        if presented { browseHistory() }
-        else {
+        if presented {
+            // Remember the reader's intent. Dismissing a card used to arm a
+            // return unconditionally, which yanked people who had deliberately
+            // scrolled up while an approval was open.
+            followedBeforeInteraction = mode == .following || mode == .returning || atContentBottom
+            browseHistory()
+        } else if followedBeforeInteraction {
             // The reply resumes as soon as the last card is dismissed. A
             // transient deceleration callback must not leave the timeline in
             // reading mode for the rest of the stream; arm the return directly
