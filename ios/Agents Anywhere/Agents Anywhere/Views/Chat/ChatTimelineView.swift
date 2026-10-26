@@ -96,6 +96,7 @@ struct ChatTimelineView: View {
                 @unknown default: mapped = .idle
                 }
                 let current = TimelineViewport(geometry: context.geometry)
+                ChatScrollLog.shared.record("ph=\(mapped) y=\(Int(current.offsetY)) ch=\(Int(current.contentHeight)) vh=\(Int(current.visibleHeight))")
                 let wasInteracting = scrolling.phase == .interacting
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
@@ -202,6 +203,9 @@ struct ChatTimelineView: View {
                 releaseScrollPosition()
             }
             .task(id: scrolling.pendingBottomRequest) {
+                if scrolling.pendingBottomRequest != nil {
+                    ChatScrollLog.shared.record("ask-bottom mode=\(scrolling.mode) atBottom=\(scrolling.atContentBottom) tail=\(scrolling.tail.isAtBottom)")
+                }
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
                 // Coalesce actual layout changes. Scrolling through the same
                 // layout cannot restart this animation on every offset callback.
@@ -286,6 +290,23 @@ struct ChatTimelineView: View {
                 .padding(.bottom, 2)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if ChatScrollLog.shared.isEnabled {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(ChatScrollLog.shared.visibleLines.enumerated()), id: \.offset) { _, line in
+                        Text(verbatim: line)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .padding(4)
+                .background(Color.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.leading, 6)
+                .padding(.top, 6)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .traceChatLayout("timeline-viewport")
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
@@ -353,6 +374,7 @@ struct ChatTimelineView: View {
     /// `.defaultScrollAnchor(.top)`, and the page snapped to the very top the
     /// moment a swipe began.
     private func releaseScrollPosition() {
+        ChatScrollLog.shared.record("release edge=\(position.edge != nil) point=\(position.point != nil)")
         guard position.edge != nil || position.point != nil else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -370,6 +392,7 @@ struct ChatTimelineView: View {
             guard let offset else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
+            ChatScrollLog.shared.record("restore-anchor y=\(Int(offset))")
             withTransaction(transaction) { position.scrollTo(y: offset) }
         }
     }
@@ -383,6 +406,7 @@ struct ChatTimelineView: View {
         guard let offset else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
+        ChatScrollLog.shared.record("restore-height y=\(Int(offset))")
         withTransaction(transaction) { position.scrollTo(y: offset) }
     }
     private struct HistorySettlement: Equatable {

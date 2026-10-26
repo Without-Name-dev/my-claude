@@ -135,6 +135,13 @@ struct SessionChatView: View, Equatable {
                         .disabled(!model.canCloseTerminal)
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
                     Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+                    Button(ChatScrollLog.shared.isEnabled
+                        ? String(localized: "关闭滚动诊断")
+                        : String(localized: "开启滚动诊断"),
+                        systemImage: "waveform.path.ecg") {
+                        ChatScrollLog.shared.isEnabled.toggle()
+                        ChatScrollLog.shared.clear()
+                    }
                 } label: { AppSymbol("ellipsis") }
                 .accessibilityLabel(String(localized: "会话菜单"))
             }
