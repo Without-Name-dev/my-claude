@@ -38,6 +38,12 @@ struct ChatTimelineView: View {
     private var viewport: TimelineViewport { viewportSample.value ?? scrolling.viewport }
     private var navigationIsSuspended: Bool { sidebarIsTransitioning || sidebarObscuresDetail }
     var body: some View {
+        ScrollViewReader { scrollProxy in
+            timelineBody(using: scrollProxy)
+        }
+    }
+
+    private func timelineBody(using scrollProxy: ScrollViewProxy) -> some View {
         // A sibling overlay receives taps independently of the scroll view's
         // deceleration recognizer. The explicit return intent survives its callbacks.
         ZStack(alignment: .bottom) {
@@ -60,7 +66,10 @@ struct ChatTimelineView: View {
                         ChatTranscriptTapDismiss(onTap: dismissKeyboard)
                     }
             }
+            // Keep the binding for exact history-prepend restoration. Tail
+            // navigation uses one-shot ScrollViewReader commands below.
             .scrollPosition($position)
+            .environment(\.streamingGlyphAnimationPaused, scrolling.userIsScrolling)
             .scrollDismissesKeyboard(.interactively)
             .scrollIndicators(.hidden)
             .scrollBounceBehavior(.always, axes: .vertical)
@@ -97,8 +106,8 @@ struct ChatTimelineView: View {
                 // interrupted scroll callbacks as a fresh vertical reading intent.
                 if navigationIsSuspended { return }
                 if scrolling.phaseChanged(mapped, viewport: current) {
-                    // Release ScrollPosition's persistent edge target as soon
-                    // as the user takes over, including interrupted animations.
+                    // Release a history point restoration as soon as the user
+                    // takes over, including interrupted animations.
                     releaseScrollPosition()
                     historyPosition?.cancelRestoration()
                     olderPull.begin(at: current, promptVisible: olderPromptVisible,
@@ -123,9 +132,13 @@ struct ChatTimelineView: View {
                     // the rendered page. Publish only dimensions used by following.
                     viewportSample.value = value
                     let previous = scrolling.viewport
-                    if previous.contentHeight != value.contentHeight || previous.visibleHeight != value.visibleHeight
+                    let contentHeightChanged = abs(previous.contentHeight - value.contentHeight) > 0.5
+                    if contentHeightChanged || previous.visibleHeight != value.visibleHeight
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
+                    }
+                    if contentHeightChanged && scrolling.mayFollowNewContent {
+                        scrolling.requestBottom()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -189,7 +202,7 @@ struct ChatTimelineView: View {
                 // layout cannot restart this animation on every offset callback.
                 do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
-                scrollToBottom(command)
+                scrollToBottom(command, using: scrollProxy)
             }
             .task(id: UserScrollSettlement(needed: scrolling.needsUserScrollSettlement,
                 tail: scrolling.tail, generation: scrolling.navigationGeneration)) {
@@ -310,31 +323,23 @@ struct ChatTimelineView: View {
         // taken over the offset in the meantime.
         latestLoadRequest = scrolling.navigationGeneration
     }
-    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand) {
+    private func scrollToBottom(_ command: TimelineScrollState.BottomCommand, using proxy: ScrollViewProxy) {
         // While a reply streams, the content grows several times a second. An
         // animation per growth never settles and reads as the page jittering,
         // so the correction is instant; an explicit return still animates.
         let streaming = model.isRunning
         withAnimation(reduceMotion || streaming ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
             completionCriteria: .removed) {
-            // Let the scroll view resolve its own safe-area/inset coordinate
-            // system. The edge target is released when this animation finishes
-            // or as soon as a gesture/drawer/approval cancels the command.
-            position.scrollTo(edge: .bottom)
+            // A proxy command targets the tail once. A persistent edge target
+            // can compete with the user's next drag or with history restoration.
+            proxy.scrollTo("tail", anchor: .bottom)
         } completion: {
             if scrolling.complete(command) { releaseScrollPosition() }
         }
     }
-    /// Releases the scroll target so it cannot keep pinning the page.
-    ///
-    /// Both the guard and the mechanism are back to what they were: the
-    /// position is only released when it actually holds a target, and only
-    /// `isPositionedByUser` is set. Writing a fresh, empty `ScrollPosition` — or
-    /// marking an already-empty one — reads as "no position" under this view's
-    /// `.defaultScrollAnchor(.bottom)`, and the page snapped to the very top the
-    /// moment a swipe began.
+    /// Stops a history point restoration from overriding a new scroll gesture.
     private func releaseScrollPosition() {
-        guard position.edge != nil || position.point != nil else { return }
+        guard position.point != nil else { return }
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.isPositionedByUser = true }

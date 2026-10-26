@@ -3,6 +3,7 @@ import Foundation
 
 extension EnvironmentValues {
     @Entry var streamingGlyphAnimation = false
+    @Entry var streamingGlyphAnimationPaused = false
     /// The clock stops here even while the reply streams. Streamed Markdown
     /// moves it forward whenever a block's text changes.
     @Entry var streamingRevealDeadline = Date.distantFuture
@@ -39,6 +40,7 @@ nonisolated struct StreamingTextPhrase: TextAttribute {
 /// animates a layout constraint. Each paragraph/code fragment owns its ledger.
 struct StreamingGlyphReveal: ViewModifier {
     @Environment(\.streamingGlyphAnimation) private var isStreaming
+    @Environment(\.streamingGlyphAnimationPaused) private var isPaused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.streamingRevealDeadline) private var deadline
     @AppStorage(ReplyPresentation.plainFadeKey) private var plainFade = false
@@ -55,7 +57,7 @@ struct StreamingGlyphReveal: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        let enabled = isStreaming && !reduceMotion
+        let enabled = isStreaming && !isPaused && !reduceMotion
         // Text arrives in batches, one after the previous reveal ends. Drawing
         // interpolates each batch without reparsing or appending text.
         if !enabled && !hasStreamed && revealedPhraseCount == nil {
