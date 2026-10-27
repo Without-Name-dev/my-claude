@@ -58,10 +58,9 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// How far above the remembered tail still counts as being at it.
     ///
-    /// A few points of rounding and one inset adjustment, no more: anything
-    /// larger would keep following alive after a deliberate small swipe, which
-    /// is the bug this remembers the offset to avoid.
-    static let bottomTolerance: CGFloat = 8
+    /// Need enough tolerance to handle streaming content layout changes
+    /// without accidentally leaving follow mode. Too strict causes drift.
+    static let bottomTolerance: CGFloat = 48
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.

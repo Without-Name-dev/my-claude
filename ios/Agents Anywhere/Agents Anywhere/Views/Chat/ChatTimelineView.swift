@@ -165,9 +165,14 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    // Only follow on keyboard show, not every content change during streaming
-                    if keyboardIsVisible && visibleHeightChanged && scrolling.mayFollowNewContent {
-                        scrolling.requestBottom()
+                    // Follow on keyboard show OR streaming content growth (when already following)
+                    if scrolling.mayFollowNewContent {
+                        if keyboardIsVisible && visibleHeightChanged {
+                            scrolling.requestBottom()
+                        } else if contentHeightChanged && model.isRunning {
+                            // During streaming, follow content growth to show new tokens
+                            scrolling.requestBottom()
+                        }
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -206,9 +211,8 @@ struct ChatTimelineView: View {
                 // the user's optimistic-send state. Follow that explicit event
                 // while parked at the live tail; geometry remains responsible
                 // for later height changes within the same streaming row.
-                // IMPORTANT: Only scroll on NEW rows, not streaming updates to existing rows
                 guard model.isOpeningReady, newID != nil, newID != oldID,
-                      scrolling.mayFollowNewContent, !model.isRunning else { return }
+                      scrolling.mayFollowNewContent else { return }
                 scrolling.requestBottom()
             }
             .onChange(of: model.responseRevision) { _, _ in
