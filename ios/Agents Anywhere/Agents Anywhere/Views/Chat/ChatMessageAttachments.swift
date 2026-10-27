@@ -53,21 +53,20 @@ private struct ChatMessageImage: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(.quaternary.opacity(0.6))
                 if let image {
-                    // A blurred fill of the same photo keeps the fixed
-                    // footprint without the empty bands a fitted portrait
-                    // leaves, and the photo stays uncropped on top.
+                    // Fill + clip: a portrait screenshot becomes a thumbnail
+                    // instead of a full-height page. The frame below is a hard
+                    // size, so no proposal from the row can stretch it.
                     Image(uiImage: image).resizable().scaledToFill()
-                        .blur(radius: 16).opacity(0.28)
-                    Image(uiImage: image).resizable().scaledToFit()
                 } else if failed {
                     Label(String(localized: "轻点重试预览"), appSymbol: "arrow.clockwise").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ProgressView().progressViewStyle(.circular)
                 }
             }
-            // Fixed preview footprint: decoding or switching from local bytes
-            // to a remote thumbnail cannot move the surrounding conversation.
-            .aspectRatio(4.0 / 3.0, contentMode: .fit).frame(maxWidth: 320)
+            // A fixed footprint: decoding or switching from local bytes to a
+            // remote thumbnail cannot move the surrounding conversation, and
+            // the attachment can never take over the screen.
+            .frame(width: 240, height: 180)
             .clipShape(.rect(cornerRadius: 16))
             .contentShape(.rect(cornerRadius: 16))
         }
