@@ -190,6 +190,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/steer", a.requireUser(a.handleSteer))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/state", a.requireUser(a.handleRuntimeState))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/activity", a.requireUser(a.handleSessionActivity))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/diagnostics", a.requireUser(a.handleUploadDiagnostics))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/capabilities", a.requireUser(a.handleSessionCapabilities))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/notices", a.requireUser(a.handleSessionNotices))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/sync", a.requireUser(a.handleSessionSync))

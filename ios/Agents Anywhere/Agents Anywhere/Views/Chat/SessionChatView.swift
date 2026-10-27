@@ -228,6 +228,19 @@ struct SessionChatView: View, Equatable {
         .onChange(of: model.openingError, initial: true) { _, message in
             toasts.update(source: "opening", failure: message.map { V2ClientFailure(kind: .unavailable, message: $0) })
         }
+        // A scroll trace goes to the server every 20 seconds, so a reported
+        // jump can be read back without asking the person to copy anything.
+        // Only new events are sent; failures are ignored.
+        .task(id: session.id) {
+            var cursor = 0
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                let report = TimelineTrace.shared.text(after: cursor)
+                guard !report.text.isEmpty else { continue }
+                cursor = report.last
+                await model.uploadDiagnostics(report.text)
+            }
+        }
     }
 
     private var openingMask: some View {

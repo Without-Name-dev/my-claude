@@ -774,17 +774,21 @@ final class TimelineTrace {
     static let shared = TimelineTrace()
 
     private struct Event {
+        let seq: Int
         let at: TimeInterval
         let kind: String
         let detail: String
     }
 
     private var events: [Event] = []
+    private var nextSeq = 0
+    private var lastSampleAt: TimeInterval = 0
     private let limit = 1200
 
     func record(_ kind: String, _ detail: @autoclosure () -> String = "") {
-        let at = Date.timeIntervalSinceReferenceDate
-        events.append(Event(at: at, kind: kind, detail: detail()))
+        let event = Event(seq: nextSeq, at: Date.timeIntervalSinceReferenceDate, kind: kind, detail: detail())
+        nextSeq += 1
+        events.append(event)
         if events.count > limit { events.removeFirst(events.count - limit) }
     }
 
@@ -798,12 +802,32 @@ final class TimelineTrace {
         if abs(dh) > 1 {
             record("HEIGHT", "dh=\(Int(dh)) offset=\(Int(value.offsetY)) phase=\(phase) rows=\(rows)")
         }
+        // A quiet heartbeat, so a trace without events still shows what the
+        // page was doing around the moment somebody noticed a jump.
+        let now = Date.timeIntervalSinceReferenceDate
+        if now - lastSampleAt > 3 {
+            lastSampleAt = now
+            record("SAMPLE", "offset=\(Int(value.offsetY)) h=\(Int(value.contentHeight)) vh=\(Int(value.visibleHeight)) phase=\(phase) mode=\(mode) rows=\(rows)")
+        }
     }
 
+    /// The whole buffer, for the on-demand copy.
     func text() -> String {
         guard let first = events.first?.at else { return "no events" }
         return events.map {
             String(format: "%7.1fms ", ($0.at - first) * 1000) + $0.kind + " " + $0.detail
         }.joined(separator: "\n")
+    }
+
+    /// Events newer than `after`, with the newest sequence for the next call.
+    /// Uploads use this so a periodic report never repeats what was already
+    /// sent.
+    func text(after after: Int) -> (text: String, last: Int) {
+        let fresh = events.filter { $0.seq > after }
+        guard let first = fresh.first, let last = fresh.last else { return ("", after) }
+        let text = fresh.map {
+            String(format: "%7.1fms ", ($0.at - first.at) * 1000) + $0.kind + " " + $0.detail
+        }.joined(separator: "\n")
+        return (text, last.seq)
     }
 }

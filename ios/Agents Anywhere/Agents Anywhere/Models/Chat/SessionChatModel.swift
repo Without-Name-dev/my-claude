@@ -302,6 +302,11 @@ final class SessionChatModel {
         if session.runtime.isFresh { takeoverUncertain = false; takeoverError = nil }
     }
 
+    /// Leaves a scroll trace on the server. Failures are silent by design.
+    func uploadDiagnostics(_ trace: String) async {
+        await repository.uploadDiagnostics(sessionId: session.id, trace: trace)
+    }
+
     func loadSettings() async {
         guard !isLoadingSettings, session.isValid else { return }
         guard session.runtime.isFresh else { settingsError = String(localized: "连接恢复后可更改对话选项。"); return }

@@ -17,11 +17,16 @@ protocol V2SessionAPIProtocol {
     func markRead(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func archive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
     func unarchive(sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse
+    func pinMessage(sessionId: V2SessionID, messageId: String) async throws -> V2SessionMetaResponse
+    func unpinMessage(sessionId: V2SessionID, messageId: String) async throws -> V2SessionMetaResponse
     func snapshot(sessionId: V2SessionID, limit: Int) async throws -> V2SessionSnapshot
     func activity(sessionId: V2SessionID) async throws -> V2AgentActivity
     func latestTimeline(sessionId: V2SessionID, limit: Int) async throws -> V2SessionTimelinePage
     func timelineChanges(sessionId: V2SessionID, afterSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
     func timelineHistory(sessionId: V2SessionID, beforeOrderSeq: Int, limit: Int) async throws -> V2SessionTimelinePage
+    /// Leaves a scroll trace on the server for later inspection.
+    func uploadDiagnostics(sessionId: V2SessionID, trace: String, capturedAt: Int64,
+                           appVersion: String, build: String, device: String) async throws
 }
 
 struct V2SessionAPI: V2SessionAPIProtocol {
@@ -151,6 +156,30 @@ struct V2SessionAPI: V2SessionAPIProtocol {
         ))
     }
 
+    func pinMessage(sessionId: V2SessionID, messageId: String) async throws -> V2SessionMetaResponse {
+        struct PinRequest: Encodable {
+            let messageId: String
+        }
+        let request = HTTPRequest<PinRequest, V2SessionMetaResponse>(
+            method: .post,
+            path: sessionPath(sessionId, suffix: "messages/pin"),
+            body: PinRequest(messageId: messageId)
+        )
+        return try await transport.send(request)
+    }
+
+    func unpinMessage(sessionId: V2SessionID, messageId: String) async throws -> V2SessionMetaResponse {
+        struct UnpinRequest: Encodable {
+            let messageId: String
+        }
+        let request = HTTPRequest<UnpinRequest, V2SessionMetaResponse>(
+            method: .post,
+            path: sessionPath(sessionId, suffix: "messages/unpin"),
+            body: UnpinRequest(messageId: messageId)
+        )
+        return try await transport.send(request)
+    }
+
     private func bulkAction(path: String, sessionIds: [V2SessionID]) async throws -> V2SessionBulkActionResponse {
         let request = HTTPRequest<[V2SessionID], V2SessionBulkActionResponse>(
             method: .post,
@@ -183,6 +212,28 @@ struct V2SessionAPI: V2SessionAPIProtocol {
             queryItems: queryItems
         )
         return try await transport.send(request)
+    }
+
+    func uploadDiagnostics(sessionId: V2SessionID, trace: String, capturedAt: Int64,
+                           appVersion: String, build: String, device: String) async throws {
+        struct Body: Encodable {
+            let trace: String
+            let capturedAt: Int64
+            let appVersion: String
+            let build: String
+            let device: String
+        }
+        struct Response: Decodable {
+            let stored: Bool
+            let serverTime: String
+        }
+        let body = Body(trace: trace, capturedAt: capturedAt, appVersion: appVersion, build: build, device: device)
+        let request = HTTPRequest<Body, Response>(
+            method: .post,
+            path: sessionPath(sessionId, suffix: "diagnostics"),
+            body: body
+        )
+        _ = try await transport.send(request)
     }
 
     private func sessionPath(_ sessionId: V2SessionID, suffix: String) -> String {

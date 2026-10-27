@@ -194,6 +194,16 @@ struct V2SessionDetailService {
         return try await V2SessionCatalogs(model: model, permission: permission)
     }
 
+    /// Leaves a client-side scroll trace on the server. Diagnostics must never
+    /// disturb the page, so the caller ignores failures.
+    func uploadDiagnostics(sessionId: V2SessionID, trace: String,
+                           appVersion: String, build: String, device: String) async throws {
+        try await sessionAPI.uploadDiagnostics(
+            sessionId: sessionId, trace: trace,
+            capturedAt: Int64(Date().timeIntervalSince1970 * 1000),
+            appVersion: appVersion, build: build, device: device)
+    }
+
     private func validatePageSize(_ limit: Int) throws {
         if !(1...500).contains(limit) {
             throw V2BusinessError.invalidPageSize

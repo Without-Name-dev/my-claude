@@ -66,6 +66,17 @@ final class V2SessionRepository {
         return entry.projection?.data
     }
 
+    /// Leaves a scroll trace on the server for later inspection. Never throws:
+    /// a failed upload must not disturb the conversation.
+    func uploadDiagnostics(sessionId: V2SessionID, trace: String) async {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let device = "\(ProcessInfo.processInfo.hostName) \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        try? await detail.uploadDiagnostics(sessionId: sessionId, trace: trace,
+            appVersion: version, build: build, device: device)
+    }
+
     /// Returns cached durable content immediately. Observe to keep live facts fresh.
     func load(sessionId: V2SessionID) async throws -> V2SessionData {
         let entry = entry(for: sessionId)
