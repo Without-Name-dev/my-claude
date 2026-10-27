@@ -165,8 +165,8 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    if (contentHeightChanged && scrolling.mayFollowNewContent)
-                        || (keyboardIsVisible && visibleHeightChanged && scrolling.mayFollowNewContent) {
+                    // Only follow on keyboard show, not every content change during streaming
+                    if keyboardIsVisible && visibleHeightChanged && scrolling.mayFollowNewContent {
                         scrolling.requestBottom()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
@@ -206,8 +206,9 @@ struct ChatTimelineView: View {
                 // the user's optimistic-send state. Follow that explicit event
                 // while parked at the live tail; geometry remains responsible
                 // for later height changes within the same streaming row.
+                // IMPORTANT: Only scroll on NEW rows, not streaming updates to existing rows
                 guard model.isOpeningReady, newID != nil, newID != oldID,
-                      scrolling.mayFollowNewContent else { return }
+                      scrolling.mayFollowNewContent, !model.isRunning else { return }
                 scrolling.requestBottom()
             }
             .onChange(of: model.responseRevision) { _, _ in
@@ -371,12 +372,13 @@ struct ChatTimelineView: View {
         latestLoadRequest = scrolling.navigationGeneration
     }
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand, using proxy: ScrollViewProxy) {
-        // While a reply streams, the content grows several times a second. An
-        // animation per growth never settles and reads as the page jittering,
-        // so the correction is instant; an explicit return still animates.
+        // Use smooth animation even during streaming to avoid jarring jumps
+        // Reduce animation duration during streaming for more responsive feel
         let streaming = model.isRunning
-        withAnimation(reduceMotion || streaming ? nil : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12),
-            completionCriteria: .removed) {
+        let animation: Animation? = reduceMotion ? nil :
+            (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12))
+
+        withAnimation(animation, completionCriteria: .removed) {
             // A proxy command targets the tail once. A persistent edge target
             // can compete with the user's next drag or with history restoration.
             proxy.scrollTo("tail", anchor: .bottom)
