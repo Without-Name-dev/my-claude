@@ -49,6 +49,14 @@ func (c *Client) closeSession(msg protocol.SessionClose) {
 			"session", msg.SessionID, "external", externalID, "error", err)
 		return
 	}
+	if killed == 0 {
+		// The search succeeded but matched nothing (the terminal may run under
+		// a different id). Reporting a close here still aborted the watcher
+		// while the process kept working.
+		c.Log.Warn("no terminal matched the runtime session id; leaving it open",
+			"session", msg.SessionID, "external", externalID)
+		return
+	}
 	// Only a confirmed close ends the watcher early. Left until after the kill,
 	// this is the difference between "the person stopped it" and "we hoped so".
 	c.markSessionClosed(msg.SessionID)

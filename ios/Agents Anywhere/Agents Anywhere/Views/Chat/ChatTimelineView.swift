@@ -260,8 +260,18 @@ struct ChatTimelineView: View {
             .task(id: olderLoadRequest) {
                 guard let request = olderLoadRequest else { return }
                 await model.session.loadOlder()
-                guard !Task.isCancelled, historyPosition?.id == request,
-                      scrolling.navigationGeneration == request else { return }
+                guard !Task.isCancelled else { return }
+                if historyPosition?.id != request || scrolling.navigationGeneration != request {
+                    // The person navigated while the page was in flight (an
+                    // interaction card appeared, or they tapped the bottom
+                    // pill). The repository still applied the page. Leaving
+                    // historyPosition and olderLoadRequest set wedged the
+                    // spinner and refused every later older-page load until
+                    // the whole session view was recreated.
+                    if olderLoadRequest == request { olderLoadRequest = nil }
+                    if historyPosition?.id == request { historyPosition = nil }
+                    return
+                }
                 if !model.session.isValid { historyPosition = nil; olderLoadRequest = nil; return }
                 // Read the repository projection, not the presentation buffer:
                 // the 4 Hz flush can lag the HTTP response, and using the old
@@ -437,6 +447,10 @@ struct ChatTimelineView: View {
                                          generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
+        // The correction moves the viewport but not the remembered tail. A
+        // stale absolute bottomOffset made the reader look parked at the bottom
+        // after a prepend, so the next streamed token pulled them off the page.
+        scrolling.shiftBottom(by: offset - viewport.offsetY)
         TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -703,11 +717,23 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
     }
 
     func setVisible(_ visible: Bool, rowID: String) {
-        if visible { visibleIDs.insert(rowID) }
-        else {
+        if visible {
+            visibleIDs.insert(rowID)
+        } else {
+            // Keep the measurement: a content-space frame does not change while
+            // the reader scrolls, so a row that comes back into the viewport
+            // does not re-emit geometry. Dropping the entry here left the
+            // anchor nil after one round trip, and the older page then jumped
+            // into view by its full height with no correction at all.
             visibleIDs.remove(rowID)
-            entries.removeValue(forKey: rowID)
         }
+    }
+
+    /// Forgets rows that no longer exist in the timeline. Called with the live
+    /// row ids so the retained measurements stay bounded to the loaded window.
+    func prune(rowIDs: Set<String>) {
+        guard !entries.isEmpty else { return }
+        entries = entries.filter { rowIDs.contains($0.key) }
     }
 
     /// The row id of the visible group nearest the top of the content, which
@@ -719,6 +745,7 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
     }
 
     func anchor(firstRowID: String?, rowIDs: Set<String>, visibleTop: CGFloat?, visibleBottom: CGFloat?) -> TimelineHistoryLayout? {
+        prune(rowIDs: rowIDs)
         guard let firstRowID else { return nil }
         return visibleIDs.compactMap { entries[$0] }
             .filter { entry in

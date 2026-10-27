@@ -24,6 +24,13 @@ const (
 
 	pairingStartWindow = 10 * time.Minute
 	pairingStartLimit  = 30
+
+	// A six-digit code is guessable, so claiming needs its own budget. Keyed
+	// by account and caller together: either one alone could be used to reset
+	// the other, and a sweep of the code space would bind someone else's
+	// connector to the guesser's account.
+	pairingClaimWindow = 10 * time.Minute
+	pairingClaimLimit  = 10
 	// How long an expired code keeps answering "expired" before its row is
 	// removed and the code becomes allocatable again.
 	pairingExpiredGrace = time.Hour
@@ -128,6 +135,12 @@ func (a *App) handlePairingClaim(w http.ResponseWriter, r *http.Request, user st
 		httpx.Fail(w, httpx.BadRequest("code is required"))
 		return
 	}
+	claimKey := "pairing:claim:" + user.ID + ":" + clientIP(r)
+	if retry := loginAttempts.blocked(claimKey, pairingClaimLimit); retry > 0 {
+		respondTooManyAttempts(w, retry)
+		return
+	}
+	loginAttempts.record(claimKey, pairingClaimWindow)
 	name := strings.TrimSpace(body.Name)
 	if name == "" {
 		name = "Agents Anywhere Connector"
@@ -233,6 +246,7 @@ func (a *App) handlePairingClaim(w http.ResponseWriter, r *http.Request, user st
 		return
 	}
 
+	loginAttempts.reset(claimKey)
 	httpx.OK(w, map[string]any{
 		"status":     "claimed",
 		"connector":  a.connectorView(connector),

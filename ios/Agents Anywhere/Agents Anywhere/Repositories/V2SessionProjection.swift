@@ -162,7 +162,13 @@ struct V2SessionProjection {
         // A GET can finish after newer socket frames. Its high watermark bounds
         // the window it may replace, but never acknowledges the event cursor.
         let newer = data.items.filter { $0.updatedSeq > page.nextSeq }
-        replaceTimeline(page.items, hasMore: page.hasMore)
+        // A refresh must not discard the pages the person already scrolled
+        // into. Replacing the whole window with the newest 100 collapsed the
+        // transcript by thousands of points mid-read — the visible jump — and
+        // forced a reload of history that was already on screen.
+        let boundary = page.items.first?.orderSeq
+        let older = boundary.map { first in data.items.filter { $0.orderSeq < first } } ?? []
+        replaceTimeline(older + page.items, hasMore: page.hasMore || !older.isEmpty)
         merge(newer, history: false)
     }
 

@@ -39,5 +39,10 @@ struct ChatToast: Identifiable, Equatable {
             offersOpenOnComputer: notLive
         ))
     }
-    func dismiss(_ id: String) { items.removeAll { $0.id == id } }
+    func dismiss(_ id: String) {
+        items.removeAll { $0.id == id }
+        // Forget what was last shown, or repeating the same failed action
+        // produced no feedback at all after the first dismissal.
+        latest[id] = nil
+    }
 }

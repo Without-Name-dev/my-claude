@@ -99,7 +99,15 @@ struct NoticeActionForm {
         case ("string", let .string(text)):
             if let min = number(schema["minLength"]), Double(text.unicodeScalars.count) < min { return false }
             if let max = number(schema["maxLength"]), Double(text.unicodeScalars.count) > max { return false }
-            if let pattern = schema["pattern"]?.stringValue, text.range(of: pattern, options: .regularExpression) == nil { return false }
+            // A pattern the server sends is data, not a promise that it is a
+            // valid regex. String.range(of:options:.regularExpression) raises
+            // on a malformed pattern, which crashed the app; an invalid
+            // constraint is ignored instead.
+            if let pattern = schema["pattern"]?.stringValue,
+               let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                if regex.firstMatch(in: text, range: range) == nil { return false }
+            }
             return true
         case ("number", let .number(value)), ("integer", let .number(value)):
             if schema["type"] == .string("integer"), value.rounded() != value { return false }

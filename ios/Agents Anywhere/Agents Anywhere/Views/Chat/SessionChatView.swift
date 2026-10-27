@@ -217,6 +217,12 @@ struct SessionChatView: View, Equatable {
         .onChange(of: session.failure, initial: true) { _, failure in
             toasts.update(source: "session", failure: failure, canRetry: failure?.kind != .authentication)
         }
+        // Send failures are held separately: the repository emit that follows
+        // a send publishes no error, which erased the session failure before
+        // the toast rendered. A failed send must not look like nothing happened.
+        .onChange(of: session.actionFailure) { _, failure in
+            toasts.update(source: "send", failure: failure, canRetry: true)
+        }
         .onChange(of: model.error, initial: true) { _, message in
             toasts.update(source: "operation", failure: message.map { V2ClientFailure(kind: .rejected, message: $0) })
         }

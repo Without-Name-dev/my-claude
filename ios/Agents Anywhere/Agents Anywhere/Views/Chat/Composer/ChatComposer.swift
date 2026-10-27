@@ -57,6 +57,25 @@ struct ChatComposer: View {
                         NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
                     }
 
+                    // A draft used to hide the only stop control: typing
+                    // anything while the agent was working removed the one way
+                    // to cancel it. Keep stop beside send whenever the turn is
+                    // still running and the primary button has become send.
+                    if isStreaming && hasSendableContent {
+                        Button(action: onStop) {
+                            AppSymbol("stop.fill", size: 13)
+                                .foregroundStyle(Color.red)
+                                .frame(width: controls.sendDiameter, height: controls.sendDiameter)
+                                .background(Color.red.opacity(canStop && !isBusy ? 0.12 : 0.06), in: Circle())
+                                .frame(width: controls.touchTarget, height: controls.touchTarget)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canStop || isBusy)
+                        .accessibilityLabel(String(localized: "停止生成"))
+                        .accessibilityIdentifier("chat.composer.stop.secondary")
+                    }
+
                     Button {
                         if hasSendableContent { onSend() }
                         else if showsStopAction { onStop() }

@@ -99,7 +99,10 @@ final class V2SessionRepository {
         entry.historyTask = nil
         // Trim before a possible latest-page request so an offline fallback
         // also stays bounded and cannot remount the entire cached history.
-        if entry.projection?.limitToLatest(100) == true { emit(entry) }
+        if entry.projection?.limitToLatest(100) == true {
+            TimelineTrace.shared.record("WINDOW.trim", "kept=100 rows=\(entry.projection?.data.items.count ?? 0)")
+            emit(entry)
+        }
         if entry.projection?.data.hasNewerItems == true {
             return try await loadLatest(sessionId: sessionId, limit: 100)
         }
@@ -265,6 +268,7 @@ final class V2SessionRepository {
             let page = try await detail.loadOlderItems(sessionId: sessionId, beforeOrderSeq: before, limit: limit)
             try requireCurrent(entry, version: version)
             entry.projection?.applyHistory(page)
+            TimelineTrace.shared.record("WINDOW.older", "page=\(page.items.count) rows=\(entry.projection?.data.items.count ?? 0)")
             emit(entry)
             return entry.projection!.data
         }
@@ -282,7 +286,9 @@ final class V2SessionRepository {
         let version = entry.readVersion
         let page = try await detail.latestItems(sessionId: sessionId, limit: limit)
         try requireCurrent(entry, version: version)
+        let before = entry.projection?.data.items.count ?? 0
         entry.projection?.applyLatest(page)
+        TimelineTrace.shared.record("WINDOW.latest", "page=\(page.items.count) before=\(before) after=\(entry.projection?.data.items.count ?? 0)")
         emit(entry)
         return entry.projection!.data
     }
@@ -584,7 +590,19 @@ final class V2SessionRepository {
                             attempt = 0
                             self.emit(entry, persist: false)
                         } else {
-                            try await self.receive(event, entry: entry)
+                            do {
+                                try await self.receive(event, entry: entry)
+                            } catch is DecodingError {
+                                // One frame this build cannot decode must not
+                                // end the live connection: that set the entry
+                                // to .failed for good, which disabled the
+                                // composer, and a refresh repeated the same
+                                // decode. Drop it, ask for a snapshot on the
+                                // next chance, and keep listening.
+                                entry.needsSnapshot = true
+                                entry.projection?.markStale()
+                                TimelineTrace.shared.record("EVENT.decode", "type=\(event.type)")
+                            }
                         }
                     }
                     throw CacheError.connectionClosed

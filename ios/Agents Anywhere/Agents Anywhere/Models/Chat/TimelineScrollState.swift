@@ -56,6 +56,15 @@ nonisolated struct TimelineScrollState: Equatable {
         guard let bottomOffset, viewport.isMeasured else { return tail.isAtBottom }
         return viewport.offsetY >= bottomOffset - Self.bottomTolerance
     }
+    /// Moves the remembered tail with the viewport when content is inserted or
+    /// removed above the reader. Without this, a history correction left
+    /// bottomOffset pointing at the old layout: the reader was then judged to
+    /// be at the bottom and the next streamed token scrolled them away from
+    /// the page they had just loaded.
+    mutating func shiftBottom(by delta: CGFloat) {
+        guard delta != 0, let bottomOffset else { return }
+        self.bottomOffset = bottomOffset + delta
+    }
     /// How far above the remembered tail still counts as being at it.
     ///
     /// A real upward swipe must leave follow mode. Anything larger turns every

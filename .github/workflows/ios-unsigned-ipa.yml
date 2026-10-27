@@ -29,6 +29,12 @@ permissions:
   # without signing in, unlike an Actions artifact.
   contents: write
 
+# Builds race on the same release tag: when two finished out of order the older
+# commit's IPA became "latest" and the server synced it. Serialize them.
+concurrency:
+  group: ios-unsigned-ipa
+  cancel-in-progress: false
+
 jobs:
   build:
     # macos-26 ships Xcode 26; pass "macos-latest" if that label is unavailable.
@@ -96,6 +102,34 @@ jobs:
           cp -R "$APP" out/Payload/
           (cd out && zip -qry AgentsAnywhere-unsigned.ipa Payload)
           ls -lh out/AgentsAnywhere-unsigned.ipa
+
+      - name: Patch bundle identifier
+        # The phone installs this build under a fixed id. The server's sync
+        # timer also patches, but the direct upload below publishes the
+        # archive immediately — without this step the download URL served an
+        # unpatched IPA until the next sync replaced it.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import plistlib, zipfile
+          src = dst = "out/AgentsAnywhere-unsigned.ipa"
+          info = "Payload/Agents Anywhere.app/Info.plist"
+          zin = zipfile.ZipFile(src)
+          if info not in zin.namelist():
+              raise SystemExit("unexpected ipa layout")
+          data = plistlib.loads(zin.read(info))
+          data["CFBundleIdentifier"] = "app.jade5197.gypsum9420"
+          blob = plistlib.dumps(data, fmt=plistlib.FMT_BINARY)
+          tmp = "out/patched.ipa"
+          with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+              for item in zin.infolist():
+                  out.writestr(item, blob if item.filename == info else zin.read(item.filename))
+          zin.close()
+          import os
+          os.replace(tmp, dst)
+          PY
+          unzip -p out/AgentsAnywhere-unsigned.ipa "Payload/Agents Anywhere.app/Info.plist" > /tmp/info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" /tmp/info.plist
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4

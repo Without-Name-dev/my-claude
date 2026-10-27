@@ -778,13 +778,31 @@ func (l *attemptLimiter) sweepLocked(now time.Time) {
 	}
 }
 
-// clientIP is the peer address without the port. It deliberately ignores
-// X-Forwarded-For: the header is client-controlled unless a trusted proxy is
-// configured, and a spoofable key would let a guesser reset its own budget.
+// clientIP is the peer address without the port.
+//
+// A forwarded header is trusted only when the request came from a loopback
+// proxy: behind the local nginx every request had the same peer (127.0.0.1),
+// which put the whole instance in one rate-limit bucket — a single anonymous
+// caller could exhaust the login and pairing budget for everyone. From any
+// other peer the header stays client-controlled and is ignored, so a guesser
+// cannot reset its own budget.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
+			if parsed := net.ParseIP(value); parsed != nil {
+				return parsed.String()
+			}
+		}
+		if value := r.Header.Get("X-Forwarded-For"); value != "" {
+			first, _, _ := strings.Cut(value, ",")
+			if parsed := net.ParseIP(strings.TrimSpace(first)); parsed != nil {
+				return parsed.String()
+			}
+		}
 	}
 	return host
 }

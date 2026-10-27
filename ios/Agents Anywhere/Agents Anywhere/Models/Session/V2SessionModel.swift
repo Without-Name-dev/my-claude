@@ -83,6 +83,12 @@ final class V2SessionModel: Identifiable {
     private(set) var connection = V2SessionConnectionState.inactive
     private(set) var network = V2NetworkStatus()
     private(set) var failure: V2ClientFailure?
+    /// The last failure of an action the person started (send, command).
+    ///
+    /// Kept apart from `failure`: the repository emits right after an action,
+    /// and that emit publishes `observation.error == nil`, which used to erase
+    /// the message before the toast could show it — a send failed silently.
+    private(set) var actionFailure: V2ClientFailure?
     private(set) var hasOlderItems = false
     private(set) var hasNewerItems = false
     private(set) var isLoading = false
@@ -207,6 +213,7 @@ final class V2SessionModel: Identifiable {
         generation: Int
     ) async {
         var didSubmit = false
+        actionFailure = nil
         do {
             try await upload?(pending)
             guard isValid, !Task.isCancelled else { throw CancellationError() }
@@ -224,6 +231,7 @@ final class V2SessionModel: Identifiable {
             guard isValid else { return }
             if awaitingReplyID == pending.id { awaitingReplyID = nil }
             let failure = V2ClientFailure(error)
+            actionFailure = failure
             pending.update(!didSubmit || V2ClientFailure.isDefiniteWriteRejection(error) ? .rejected(failure) : .uncertain(failure))
             if pending.delivery == .confirmed { clearDraft(ifMatching: pending) }
             else {

@@ -177,7 +177,16 @@ func (a *App) handleRunCommand(w http.ResponseWriter, r *http.Request, user stor
 
 	line := "/" + name
 	if body.Raw != nil && *body.Raw != "" {
-		line += " " + *body.Raw
+		raw := strings.TrimSpace(*body.Raw)
+		// Clients that send the raw line include the command itself. Prefixing
+		// it again produced "/compact /compact …", which the plugin then ran as
+		// a different command line.
+		first, _, _ := strings.Cut(raw, " ")
+		if strings.TrimPrefix(first, "/") == name {
+			line = raw
+		} else {
+			line += " " + *body.Raw
+		}
 	} else if len(body.Args) > 0 {
 		line += " " + strings.Join(body.Args, " ")
 	}

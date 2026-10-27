@@ -711,6 +711,10 @@ func (a *App) handleInterrupt(w http.ResponseWriter, r *http.Request, user store
 	sent := a.connectors.Send(session.ConnectorID, protocol.TypeAbort, protocol.Abort{
 		RequestID: store.NewID("abort"),
 		SessionID: session.ID,
+		// The connector routes by the runtime's own session id. Without it a
+		// stop only reached turns the connector itself had queued, so the
+		// button did nothing for work started in the terminal.
+		ExternalSessionID: session.ExternalID,
 	})
 	if !sent {
 		httpx.Fail(w, httpx.Conflict("connector is offline"))

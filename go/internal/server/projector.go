@@ -110,10 +110,31 @@ type approveRegistry struct {
 	mu     sync.Mutex
 	byID   map[string]protocol.ApprovalRequest
 	connOf map[string]string
+	// Last revision published per notice. Re-opening an answered question must
+	// publish a newer revision: a fresh "revision 1" was ignored by every
+	// client that keeps the highest revision it has seen, so the card never
+	// came back while the desktop was still blocked on it.
+	revision map[string]int
 }
 
 func newApproveRegistry() *approveRegistry {
-	return &approveRegistry{byID: map[string]protocol.ApprovalRequest{}, connOf: map[string]string{}}
+	return &approveRegistry{
+		byID:     map[string]protocol.ApprovalRequest{},
+		connOf:   map[string]string{},
+		revision: map[string]int{},
+	}
+}
+
+// nextRevision returns a revision strictly newer than what this notice has
+// already published.
+func (r *approveRegistry) nextRevision(noticeID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.revision) > 4096 {
+		r.revision = map[string]int{}
+	}
+	r.revision[noticeID]++
+	return r.revision[noticeID]
 }
 
 func (r *approveRegistry) add(noticeID, connectorID string, req protocol.ApprovalRequest) {
@@ -258,7 +279,7 @@ func (a *App) publishNoticeUpdate(
 	notice := a.approvalNotice(noticeID, request)
 	notice["status"] = status
 	notice["responseRequired"] = false
-	notice["revision"] = 2
+	notice["revision"] = a.approvals.nextRevision(noticeID)
 	notice["updatedSeq"] = seq
 	notice["updatedAt"] = timestampNow()
 	notice["resolvedAt"] = timestampNow()
@@ -735,8 +756,14 @@ func (a *App) onApprovalRequest(ctx context.Context, conn *connectorConn, msg pr
 		a.setSessionStatus(ctx, msg.SessionID, status)
 	}
 
-	frame, err := newEnvelope(msg.SessionID, a.currentSeq(ctx, msg.SessionID), EventNoticeUpdated, map[string]any{
-		"notice": a.approvalNotice(noticeID, msg),
+	// Every publication of the same question is a new revision carrying the
+	// sequence it was published at.
+	seq := a.currentSeq(ctx, msg.SessionID)
+	notice := a.approvalNotice(noticeID, msg)
+	notice["revision"] = a.approvals.nextRevision(noticeID)
+	notice["updatedSeq"] = seq
+	frame, err := newEnvelope(msg.SessionID, seq, EventNoticeUpdated, map[string]any{
+		"notice": notice,
 	})
 	if err != nil {
 		return

@@ -130,7 +130,10 @@ func (a *App) handleEditTimelineItem(w http.ResponseWriter, r *http.Request, use
 	// Trigger regeneration by sending the edited message
 	if messageID != "" && a.connectors.Online(session.ConnectorID) {
 		files := []messageAttachment{} // No attachments on retry
-		if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID+"_retry", "prompt", files); err != nil {
+		// A unique id per attempt: the deterministic "_retry" suffix made a
+		// second edit collide with the first one's request (silent no-op or
+		// 409) while the reply it was meant to regenerate stayed deleted.
+		if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID+"_"+store.NewID("retry"), "prompt", files); err != nil {
 			a.log.Warn("failed to regenerate after edit", "session", session.ID, "error", err)
 		}
 	}
@@ -186,7 +189,9 @@ func (a *App) handleRetryMessage(w http.ResponseWriter, r *http.Request, user st
 	if messageID == "" {
 		messageID = store.NewID("msg")
 	} else {
-		messageID = messageID + "_retry"
+		// Unique per attempt, so retrying the same failed message twice does
+		// not reuse the first retry's request id.
+		messageID = messageID + "_" + store.NewID("retry")
 	}
 
 	files := []messageAttachment{} // TODO: Extract attachments from content if needed
