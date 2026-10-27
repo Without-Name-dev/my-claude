@@ -40,6 +40,10 @@ func (a *App) handleCloseRuntime(w http.ResponseWriter, r *http.Request, user st
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
+	// Closing ends the automatic-open window with the process. Keeping the
+	// reservation meant a message sent within the next minute was accepted but
+	// never reached a terminal, then timed out two minutes later.
+	a.releaseAutoOpen(session.ID)
 	// The person ended this run deliberately; the phone must stop showing the
 	// conversation as working while the desktop tears the process down.
 	a.setSessionStatus(r.Context(), session.ID, "idle")

@@ -31,12 +31,15 @@ struct CommandSuggestionPanel: View {
                     Text(String(localized: "指令")).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                     Spacer()
                     Button { if forced { forced = false } else { dismissedFor = draft.text } } label: {
-                        AppSymbol("xmark", size: 11).frame(width: 36, height: 36)
+                        AppSymbol("xmark", size: 13)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .frame(width: 44, height: 44)
                     .accessibilityLabel(String(localized: "关闭"))
                 }
-                .padding(.leading, 16).padding(.trailing, 4)
+                .padding(.leading, 16).padding(.trailing, 0)
                 content
             }
             .padding(.bottom, 8)
@@ -58,8 +61,19 @@ struct CommandSuggestionPanel: View {
         } else if chat.commands.isEmpty, chat.commandsError != nil {
             VStack(alignment: .leading, spacing: 4) {
                 message(String(localized: "无法读取指令。"), symbol: "exclamationmark.circle")
+                if let detail = chat.commandsError, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 16)
+                }
                 Button(String(localized: "重试")) { Task { await chat.loadCommands(force: true) } }
-                    .font(.footnote.weight(.medium)).padding(.horizontal, 16).frame(minHeight: 36)
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
         } else if suggestions.isEmpty {
             message(String(localized: "没有匹配的指令"), symbol: "magnifyingglass")

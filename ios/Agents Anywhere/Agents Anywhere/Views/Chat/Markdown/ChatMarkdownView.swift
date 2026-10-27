@@ -46,8 +46,12 @@ struct ChatMarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)) {
-            let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences)
+        // `streaming` is part of the identity on purpose. A reply that finished
+        // while this row was visible parses once more when it settles, and that
+        // is the parse that fills the cache; without it the row was never
+        // cached, and every rebuild drew at zero height before inflating.
+        .task(id: ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, streaming: isStreaming)) {
+            let request = ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, streaming: isStreaming)
             if !isStreaming,
                let cached = ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: resolvesFileReferences) {
                 if blocks != cached.blocks { blocks = cached.blocks }
@@ -89,6 +93,16 @@ struct ChatMarkdownView: View {
     nonisolated private struct ParseRequest: Equatable, Sendable {
         let text: String
         let resolvesFileReferences: Bool
+        /// Whether the reply is still growing. The final parse is the one whose
+        /// result is cached, so settling must restart the task even when the
+        /// text stopped changing.
+        let streaming: Bool
+
+        init(text: String, resolvesFileReferences: Bool, streaming: Bool = false) {
+            self.text = text
+            self.resolvesFileReferences = resolvesFileReferences
+            self.streaming = streaming
+        }
     }
 
     /// Completed text is parsed once per safe boundary; the open tail is parsed

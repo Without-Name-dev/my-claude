@@ -249,6 +249,15 @@ final class V2StreamCoordinator {
         connectionTask?.cancel()
         connectionTask = nil
         if state != .fallback { state = .idle }
+        // Buffered frames belong to the connection that produced them. Replaying
+        // them after a reconnect re-applied a state the server had already
+        // superseded: status frames carry the session's current seq, so an old
+        // "stopping" copy still passed the sequence check and overwrote a fresh
+        // "idle". A stale dashboard snapshot did the same to the session list.
+        sessionBuffers.removeAll()
+        sessionBufferBytes.removeAll()
+        bufferOrder.removeAll()
+        lastDashboardSnapshot = nil
     }
 
     /// Reconnects only for a live consumer. Without one the next subscribe

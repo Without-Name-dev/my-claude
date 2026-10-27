@@ -159,6 +159,13 @@ nonisolated struct TimelineScrollState: Equatable {
         let beganGesture = next == .tracking && phase != .tracking
             || next == .interacting && phase != .tracking && phase != .interacting
         if beganGesture {
+            // The true tail moves down while content arrives, and the offset
+            // remembered when the last return completed is already stale. The
+            // moment a gesture starts is the one moment it is known to be the
+            // tail (the page was following until now), so refresh it here.
+            // Without this, a light upward swipe stayed above the stale value,
+            // read as "at the bottom", and the next token pulled the page back.
+            if mode != .reading { bottomOffset = viewport.offsetY }
             browseHistory()
             awaitsUserScrollSettlement = true
         }

@@ -68,8 +68,23 @@ nonisolated struct V2SessionArchive: Codable {
             case .uncertain(let failure): error = failure.message; rejected = false
             default: error = nil; rejected = false
             }
+            // Pending uploads used to bypass the draft's byte budget. Two
+            // failed 25 MB uploads were enough to push the archive past the
+            // 64 MiB ceiling, at which point saveSession silently refused and
+            // the draft, pending sends and timeline all stopped persisting.
+            let attachments: [ChatAttachment] = value.attachments.map { attachment in
+                let archived = attachment.archived()
+                guard archived.uploaded == nil, !archived.data.isEmpty else { return archived }
+                guard archived.data.count <= budget else {
+                    dropped.append(archived.name)
+                    return ChatAttachment(id: archived.id, name: archived.name, data: Data(),
+                        mediaType: archived.mediaType, previewData: archived.previewData)
+                }
+                budget -= archived.data.count
+                return archived
+            }
             return Pending(id: value.id, content: value.content, attachmentIDs: value.attachmentIDs,
-                attachments: value.attachments.map { $0.archived() }, error: error, rejected: rejected)
+                attachments: attachments, error: error, rejected: rejected)
         }
     }
 

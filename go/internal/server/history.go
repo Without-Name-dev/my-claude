@@ -170,6 +170,38 @@ func (a *App) knownMessages(ctx context.Context, sessionID string) (map[string]i
 	return known, nil
 }
 
+// The connector prepends this block to the text it actually runs, so the
+// transcript copy of a message with attachments differs from the plain text the
+// server stored for the phone. Comparing them verbatim imported every such
+// message a second time, permanently.
+const (
+	attachedFilesHeader   = "[attached files from the My Claude app"
+	attachmentFailureHead = "[attachments that could not be delivered"
+	// attachmentOnlyIdentity stands in for a message that was nothing but
+	// attachments, so its stored row and its transcript copy still match.
+	attachmentOnlyIdentity = "\x00attachments"
+)
+
+// stripAttachmentPrompt removes the connector's attachment preamble and returns
+// only the words the person typed.
+func stripAttachmentPrompt(text string) string {
+	trimmed := strings.TrimLeft(text, " \t\r\n")
+	isHeader := strings.HasPrefix(trimmed, attachedFilesHeader) ||
+		strings.HasPrefix(trimmed, attachmentFailureHead)
+	if !isHeader {
+		return text
+	}
+	// The connector separates its blocks from the person's text with a blank
+	// line; everything before that belongs to the attachment list.
+	if index := strings.Index(trimmed, "\n\n"); index >= 0 {
+		rest := strings.TrimSpace(trimmed[index+2:])
+		if rest != "" {
+			return rest
+		}
+	}
+	return attachmentOnlyIdentity
+}
+
 // messageIdentity renders a message row as the key the importer compares.
 // Whitespace is normalised so a re-wrapped transcript still matches.
 func messageIdentity(role string, payload json.RawMessage) (string, string, bool) {
@@ -177,12 +209,20 @@ func messageIdentity(role string, payload json.RawMessage) (string, string, bool
 		return "", "", false
 	}
 	var decoded struct {
-		Text string `json:"text"`
+		Text        string            `json:"text"`
+		Attachments []json.RawMessage `json:"attachments"`
 	}
 	if json.Unmarshal(payload, &decoded) != nil {
 		return "", "", false
 	}
-	text := strings.Join(strings.Fields(decoded.Text), " ")
+	text := decoded.Text
+	if role == "user" {
+		text = stripAttachmentPrompt(text)
+	}
+	if strings.TrimSpace(text) == "" && len(decoded.Attachments) > 0 {
+		text = attachmentOnlyIdentity
+	}
+	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
 		return "", "", false
 	}

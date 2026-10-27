@@ -80,6 +80,18 @@ func (r *turnRegistry) end(turnID string) *turnState {
 	return state
 }
 
+// activeForSession reports whether any turn of this session is still running.
+func (r *turnRegistry) activeForSession(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, state := range r.turns {
+		if state.session == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
 // hasItem reports whether a running turn owns a timeline item. A history
 // import consults it so a call that is still streaming keeps the live row.
 func (r *turnRegistry) hasItem(itemID string) bool {
@@ -275,6 +287,17 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 
 	userItemID := ""
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
+		// Allocate against the session's existing items, not the wall clock. An
+		// imported transcript row can carry a timestamp ahead of the server, and
+		// then the answer sorted below the question it answered.
+		allocated, allocErr := store.NextTimelineOrderSeq(ctx, tx, session.ID, store.NowMS())
+		if allocErr != nil {
+			return allocErr
+		}
+		orderSeq = allocated
+		state.mu.Lock()
+		state.orderSeq = orderSeq
+		state.mu.Unlock()
 		if err := store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
 			ID:         itemID,
@@ -532,7 +555,13 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 					userItemID = ""
 				}
 			}
-			a.finishTurnEnd(ctx, session, itemID, userItemID, existingItem.Status, seq)
+			// A replay is not the end of a live turn. Calling finishTurnEnd
+			// here expired the approvals of whatever round was running now and
+			// rewrote its status to idle while its answer was still streaming.
+			a.publishItem(ctx, session.ID, itemID, seq, false)
+			if userItemID != "" {
+				a.publishItem(ctx, session.ID, userItemID, seq, false)
+			}
 			return true
 		}
 	}
@@ -627,13 +656,17 @@ func (a *App) onToolBegin(ctx context.Context, conn *connectorConn, msg protocol
 	itemID := toolItemID(msg.ToolUseID)
 	payload := toolContent(msg.Tool, msg.Input, nil, "")
 	seq, err := a.writeTimeline(ctx, msg.SessionID, func(tx *sql.Tx, seq int64) error {
+		orderSeq, orderErr := store.NextTimelineOrderSeq(ctx, tx, msg.SessionID, store.NowMS())
+		if orderErr != nil {
+			return orderErr
+		}
 		return store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  msg.SessionID,
 			ID:         itemID,
 			Type:       "tool",
 			Status:     "running",
 			Role:       "tool",
-			OrderSeq:   store.NowMS(),
+			OrderSeq:   orderSeq,
 			UpdatedSeq: seq,
 			Payload:    payload,
 		}, store.NowMS())
@@ -685,8 +718,20 @@ func (a *App) onToolEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 
 // onApprovalRequest turns a permission question into a blocking notice.
 func (a *App) onApprovalRequest(ctx context.Context, conn *connectorConn, msg protocol.ApprovalRequest) {
-	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
-		return
+	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
+	if err != nil {
+		// A permission raised by a turn the person started in the terminal has
+		// no server session id in the plugin; the runtime id is what it can
+		// supply. Without this fallback the card was dropped and the terminal
+		// sat waiting on a question the phone never showed.
+		if msg.ExternalSessionID == "" {
+			return
+		}
+		session, err = a.db.SessionByExternalID(ctx, conn.id, msg.ExternalSessionID)
+		if err != nil {
+			return
+		}
+		msg.SessionID = session.ID
 	}
 	noticeID := noticeIDFor(msg.ToolUseID)
 	a.approvals.add(noticeID, conn.id, msg)

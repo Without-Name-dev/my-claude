@@ -1,8 +1,10 @@
 import Foundation
 import Observation
+import OSLog
 
 @MainActor @Observable
 final class SessionChatModel {
+    private let commandLogger = Logger(subsystem: "com.agentsanywhere.ios", category: "RuntimeCommands")
     let session: V2SessionModel
     let timeline = SessionTimelinePresentation()
     let settings = ConversationSettings()
@@ -135,7 +137,10 @@ final class SessionChatModel {
             guard session.isValid else { return }
             commands = loaded
         } catch {
-            if session.isValid, !Task.isCancelled { commandsError = error.localizedDescription }
+            if session.isValid, !Task.isCancelled {
+                commandsError = error.localizedDescription
+                commandLogger.error("Command catalog read failed: \(String(reflecting: type(of: error)), privacy: .public)")
+            }
         }
     }
 

@@ -195,15 +195,13 @@ func (a *App) applySubmitAck(ctx context.Context, conn *connectorConn, ack proto
 
 	var seq int64
 	var itemID string
-	var previousStatus string
 	err := a.db.WithSession(ack.SessionID, func() error {
 		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			item, applied, err := store.ResolveSubmitAck(ctx, tx, conn.id, ack.SessionID,
+			_, applied, err := store.ResolveSubmitAck(ctx, tx, conn.id, ack.SessionID,
 				ack.ExternalSessionID, ack.RequestID, false, ack.Error, store.NowMS())
 			if err != nil || !applied {
 				return err
 			}
-			previousStatus = item.PreviousStatus
 			seq, err = store.AllocateSeq(ctx, tx, ack.SessionID, store.NowMS())
 			if err != nil {
 				return err
@@ -219,12 +217,16 @@ func (a *App) applySubmitAck(ctx context.Context, conn *connectorConn, ack proto
 	if itemID != "" {
 		a.publishItem(ctx, ack.SessionID, itemID, seq, false)
 	}
-	if previousStatus != "" {
-		if a.hasPendingUserMessages(ctx, ack.SessionID) {
-			previousStatus = "waiting"
-		}
-		a.setSessionStatus(ctx, ack.SessionID, previousStatus)
+	// Derive the status from what is true now. The status captured when the
+	// message was queued can be stale: a different turn may have ended since,
+	// and restoring "running" then left the composer unable to send forever.
+	nextStatus := "idle"
+	if a.hasPendingUserMessages(ctx, ack.SessionID) {
+		nextStatus = "waiting"
+	} else if a.turns.activeForSession(ack.SessionID) {
+		nextStatus = "running"
 	}
+	a.setSessionStatus(ctx, ack.SessionID, nextStatus)
 	if ack.Error != "" {
 		a.log.Info("connector rejected submit", "connector", conn.id, "session", ack.SessionID, "request", ack.RequestID, "error", ack.Error)
 	}

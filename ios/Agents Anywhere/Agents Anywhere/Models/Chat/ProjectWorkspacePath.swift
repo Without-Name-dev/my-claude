@@ -57,8 +57,13 @@ nonisolated enum ProjectWorkspacePath {
     /// absolute Windows path under a `~` root would become `~/D:\...`. Anchor it
     /// to its own drive instead; relative paths keep the requested root.
     static func requestRoot(_ root: String, path: String) -> String {
-        guard windowsAnchor(root) == nil, let anchor = windowsAnchor(path) else { return root }
-        return anchor
+        if windowsAnchor(root) == nil, let anchor = windowsAnchor(path) { return anchor }
+        // A POSIX connector reports absolute paths. Under the "~" browse root
+        // the server's containment check rejected every one of them, so Home
+        // could be listed but nothing below it opened. Anchor those requests to
+        // the filesystem root; the connector still applies its own bounds check.
+        if root.hasPrefix("~"), path.hasPrefix("/") { return "/" }
+        return root
     }
 
     static func key(_ value: String, deviceOS: String?) -> String? {

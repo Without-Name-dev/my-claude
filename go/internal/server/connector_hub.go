@@ -49,6 +49,11 @@ type connectorConn struct {
 	sessionOpenOK    bool
 	submitAckOK      bool
 	turnEndAckOK     bool
+
+	// bootID is the connector process that reported last. A reconnect from the
+	// same process still owns its running turns; only a new process means the
+	// old turn state is dead.
+	bootID string
 }
 
 func (c *connectorConn) close() {
@@ -515,7 +520,14 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 			"liveSessions", len(hello.LiveSessions))
 		a.applyLiveSessions(ctx, conn, hello.LiveSessions)
 		a.publishConnectorPresence(ctx, conn.userID, conn.id, true)
-		a.healStalledSessions(ctx, conn.id, conn.userID)
+		// A reconnect from the same process keeps its turn watchers running, so
+		// resetting them here marked long turns idle while they were still
+		// streaming. Only a new process (or an old connector that cannot say)
+		// justifies clearing the old state.
+		if hello.BootID == "" || hello.BootID != conn.bootID {
+			conn.bootID = hello.BootID
+			a.healStalledSessions(ctx, conn.id, conn.userID)
+		}
 		a.replayPendingSubmits(ctx, conn.id, true)
 	case protocol.TypeInventory:
 		var inv protocol.Inventory

@@ -45,6 +45,9 @@ const historyQueueSize = 128
 type Client struct {
 	URL   string
 	Token string
+	// BootID stays the same for the life of this process, so a reconnect does
+	// not look like a restart to the server.
+	BootID string
 	// ServerURL is the HTTP origin this connector was paired with. It is the
 	// base for the attachment downloads a message can ask for; when empty it
 	// is derived from URL.
@@ -144,6 +147,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 	return &Client{
 		URL:                url,
 		Token:              token,
+		BootID:             strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36),
 		Name:               name,
 		Bridge:             b,
 		Log:                log,
@@ -265,6 +269,7 @@ func (c *Client) session(ctx context.Context) (reachedHello bool, err error) {
 	bridgeReady, liveSessions := c.bridgeStatus()
 	if err := c.send(protocol.TypeHello, protocol.Hello{
 		Version:      protocol.ConnectorProtocolVersion,
+		BootID:       c.BootID,
 		Name:         c.Name,
 		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
 		Capabilities: c.capabilitySet(bridgeReady),
@@ -384,17 +389,14 @@ func (c *Client) dispatch(env protocol.Envelope) {
 		select {
 		case c.turns <- msg:
 		default:
-			// The queue is drained one turn at a time, so a full one means
-			// this message would sit behind tens of minutes of work. Report it
-			// as failed instead of dropping an acknowledged submit silently.
+			// The worker is busy. Leave the submit unacknowledged: the server
+			// replays pending submits, and it lands once the queue drains.
+			// Failing it here made a transient overload permanent — the same
+			// clientMessageId could not be retried, and the phone showed a
+			// failure for work that would have run seconds later.
 			c.finishQueued(msg.SessionID)
-			c.Log.Warn("turn queue full; failing submit", "session", msg.SessionID, "request", msg.RequestID)
-			message := "the connector is still working through earlier messages; send this one again"
-			if msg.Action == "command" {
-				c.rejectCommand(msg, message)
-			} else {
-				c.rejectSubmit(msg, message)
-			}
+			c.Log.Warn("turn queue full; leaving the submit pending for replay",
+				"session", msg.SessionID, "request", msg.RequestID)
 		}
 	case protocol.TypeTurnEndAck:
 		var ack protocol.TurnEndAck
@@ -704,9 +706,18 @@ func (c *Client) watchCommand(ctx context.Context, msg protocol.Submit) {
 	defer c.unmarkWatching(msg.SessionID, msg.RequestID)
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	// Without a deadline this loop outlived the plugin: a missing receipt (the
+	// process was killed, /clear changed the id, the write failed) leaked one
+	// goroutine and one watching entry per failed command, forever, and the
+	// same request could never be watched again.
+	deadline := time.Now().Add(pickupTimeout)
 	for {
 		receipt, err := c.Bridge.ReadRequestReceipt(msg.ExternalSessionID, msg.RequestID)
 		if err == nil && receipt != nil && (receipt.Status == "done" || receipt.Status == "failed") {
+			if receipt.Status == "failed" {
+				c.Log.Warn("the desktop rejected the command",
+					"request", msg.RequestID, "error", receipt.Error)
+			}
 			if markErr := c.Bridge.MarkTurnEndAcked(msg.SessionID, msg.RequestID); markErr != nil {
 				c.Log.Warn("could not record completed command", "request", msg.RequestID, "error", markErr)
 			} else {
@@ -715,6 +726,11 @@ func (c *Client) watchCommand(ctx context.Context, msg protocol.Submit) {
 				}
 				return
 			}
+		}
+		if time.Now().After(deadline) {
+			c.Log.Warn("command receipt never arrived",
+				"session", msg.SessionID, "request", msg.RequestID)
+			return
 		}
 		select {
 		case <-ctx.Done():

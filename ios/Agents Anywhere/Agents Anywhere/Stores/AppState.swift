@@ -697,7 +697,12 @@ final class AppState {
     func signOutAndDeleteCredentials(showSignedOutRoute: Bool = true) throws {
         dashboardUpdatesTask?.cancel()
         dashboardUpdatesTask = nil
-        try keychain.delete(account: tokenAccount)
+        // A Keychain that refuses deletion must not keep the session alive in
+        // memory. Throwing here used to skip the whole teardown, leaving a
+        // signed-in UI whose every request failed with 401 and no way out.
+        var deletionError: Error?
+        do { try keychain.delete(account: tokenAccount) }
+        catch { deletionError = error }
         cachedToken = nil
         authenticationEpoch = UUID(); accountSyncID = UUID()
         accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
@@ -727,6 +732,7 @@ final class AppState {
         if showSignedOutRoute {
             route = .signedOut
         }
+        if let deletionError { throw deletionError }
     }
 
     func showSignedOutRoute() {
@@ -768,7 +774,16 @@ final class AppState {
                 let failure = V2ClientFailure(error)
                 guard cachedServices === services else { return }
                 dashboardError = failure.message
-                if !failure.permitsAutomaticReconnect { return }
+                if isAuthenticationFailure(error) {
+                    // The bearer expired or was revoked elsewhere. The socket
+                    // used to just stop, leaving a UI that still looked
+                    // connected but could not send anything.
+                    signOut()
+                    authError = error.localizedDescription
+                    return
+                }
+                // Any other failure is retried with backoff. Returning here
+                // froze the session/device lists until the app was relaunched.
             }
 
             do {

@@ -146,6 +146,19 @@ func (s *Store) SessionByIDAny(ctx context.Context, q Querier, id string) (Sessi
 	return scanSession(row)
 }
 
+// SessionByExternalID finds the session a connector runs under one runtime id.
+// It is the fallback for events that carry only the transcript name, such as a
+// permission request raised by a turn the phone did not start.
+func (s *Store) SessionByExternalID(ctx context.Context, connectorID, externalID string) (Session, error) {
+	if connectorID == "" || externalID == "" {
+		return Session{}, ErrNotFound
+	}
+	row := s.Read().QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions
+		WHERE connector_id = ? AND external_session_id = ?
+		ORDER BY created_at DESC LIMIT 1`, connectorID, externalID)
+	return scanSession(row)
+}
+
 // SessionCursor is the position of the last row of a session page. Its fields
 // mirror the values documented for GET /sessions?cursor=.
 type SessionCursor struct {

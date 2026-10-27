@@ -319,6 +319,28 @@ func (b *Bridge) RemoveLiveStamp(sessionID string) error {
 	return err
 }
 
+// Live reports whether this one conversation's plugin refreshed its presence
+// stamp inside ttl.
+//
+// Available() reads the shared heartbeat, which every Claude process on the
+// machine rewrites. Using it to decide whether one session's plugin is still
+// alive means a dead conversation stays "alive" as long as any other plugin
+// runs, and its turn watcher never gives up.
+func (b *Bridge) Live(sessionID string, ttl time.Duration) bool {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(b.LiveDir(), sessionID+".txt"))
+	if err != nil {
+		return false
+	}
+	ms, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil {
+		return false
+	}
+	return ms >= time.Now().Add(-ttl).UnixMilli()
+}
+
 // maxLiveStamps bounds one presence scan. Stamps that stopped moving are
 // deleted as they are found (see expireLiveStamp), so a normal directory holds
 // one file per conversation that can accept a prompt; the cap only matters in a
@@ -1068,7 +1090,10 @@ func (o *Outbox) BelongsTo(sessionIDs ...string) bool {
 // accepted rather than risking a session's own turn being ignored.
 func matchesSession(declared string, sessionIDs []string) bool {
 	if declared == "" {
-		return true
+		// An unowned snapshot cannot be attributed to anyone. Treating it as
+		// "belongs to whoever asked" let one conversation adopt another's
+		// shared outbox/tools/agents when an older plugin wrote them.
+		return len(sessionIDs) == 0
 	}
 	for _, id := range sessionIDs {
 		if id == "" || id == declared {

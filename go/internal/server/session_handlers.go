@@ -460,6 +460,12 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request, user sto
 		httpx.Fail(w, apiErr)
 		return
 	}
+	if strings.TrimSpace(body.Content) == "" && len(body.Attachments) == 0 {
+		// The connector rejects an empty prompt anyway, but as a failed message
+		// that shows up in the timeline. An empty request is a caller error.
+		httpx.Fail(w, httpx.BadRequest("a message needs text or an attachment"))
+		return
+	}
 	messageID := ""
 	if body.ClientMessageID != nil {
 		messageID = *body.ClientMessageID

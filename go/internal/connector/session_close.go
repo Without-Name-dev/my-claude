@@ -40,16 +40,18 @@ func (c *Client) closeSession(msg protocol.SessionClose) {
 			"reason", "no usable runtime session id", "session", msg.SessionID)
 		return
 	}
-	// Recorded before the kill so the turn watcher stops on its next poll
-	// instead of waiting for the heartbeat to expire.
-	c.markSessionClosed(msg.SessionID)
-
 	killed, err := closeSessionProcessFunc(externalID)
 	if err != nil {
+		// Nothing was stopped. Marking it closed here told the watcher the
+		// turn was aborted while the process kept working, and the phone
+		// showed a stopped conversation that was still running.
 		c.Log.Warn("could not close the terminal",
 			"session", msg.SessionID, "external", externalID, "error", err)
 		return
 	}
+	// Only a confirmed close ends the watcher early. Left until after the kill,
+	// this is the difference between "the person stopped it" and "we hoped so".
+	c.markSessionClosed(msg.SessionID)
 	// Presence is evidence of a process that can take a message. It is gone
 	// now, so the stamp must not keep the conversation looking live.
 	if c.Bridge != nil {

@@ -106,11 +106,20 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 	// every later submit behind this watcher.
 	var unavailableSince time.Time
 	var stalledTS int64
+	// Liveness belongs to this conversation, not to the machine. The shared
+	// heartbeat is rewritten by every Claude process, so it kept a dead
+	// session's watcher polling forever while another plugin was still alive.
+	alive := func() bool {
+		if w.externalSessionID != "" {
+			return w.bridge.Live(w.externalSessionID, bridge.DefaultLiveTTL)
+		}
+		return w.bridge.Available()
+	}
 	stalled := func(box *bridge.Outbox) bool {
 		if w.turnID == "" {
 			return false
 		}
-		if w.bridge.Available() {
+		if alive() {
 			unavailableSince = time.Time{}
 			return false
 		}
@@ -162,12 +171,23 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 
 		box, err := w.readOutbox()
 		if w.requestScoped && box == nil && err == nil {
-			// A prompt may wait behind a long-running terminal turn. Keep its
-			// pickup window open while the live plugin is still processing it.
+			// The per-request file is the preferred channel, not the only one.
+			// A reloaded plugin, a lost correlation or an older build still
+			// writes the answer to the per-session outbox; a turn that began
+			// after this message was queued is this message's answer, and
+			// adopting it beats reporting a two-minute timeout for work the
+			// desktop already finished.
 			current, currentErr := w.bridge.ReadOutbox(w.externalSessionID)
-			if currentErr == nil && current != nil && current.Running() && w.bridge.Available() {
-				lastActivity = time.Now()
-				deadline = lastActivity.Add(pickupTimeout)
+			if currentErr == nil && current != nil && alive() {
+				if current.TurnID != "" && current.TurnID != w.previousID &&
+					(current.TS == 0 || current.TS >= w.queuedAt) {
+					w.requestScoped = false
+					box, err = current, nil
+				} else if current.Running() {
+					// A prompt may wait behind a long-running terminal turn.
+					lastActivity = time.Now()
+					deadline = lastActivity.Add(pickupTimeout)
+				}
 			}
 		}
 		if err != nil || box == nil {
@@ -208,7 +228,7 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		// answering keeps the old deadline, so a dead desktop is still
 		// reported instead of holding the message forever.
 		if box.Running() && box.TurnID != w.turnID {
-			if w.bridge.Available() {
+			if alive() {
 				lastActivity = time.Now()
 				deadline = lastActivity.Add(pickupTimeout)
 			}
@@ -219,6 +239,10 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 		// message itself; none of those is this message's answer.
 		stale := box.TurnID == "" || (!w.requestScoped && box.TurnID == w.previousID) ||
 			(w.requestScoped && box.RequestID != w.messageID) ||
+			// A fallback/shared snapshot still names its message. Accepting one
+			// tagged with a different message is how the next queued answer was
+			// reported against this one.
+			(!w.requestScoped && box.RequestID != "" && box.RequestID != w.messageID) ||
 			!box.BelongsTo(w.sessionID, w.externalSessionID) ||
 			(w.turnID == "" && box.TS > 0 && box.TS < w.queuedAt)
 		if stale {

@@ -90,9 +90,13 @@ const (
 
 // Hello is the connector's introduction.
 type Hello struct {
-	Version      int             `json:"version"`
-	ConnectorID  string          `json:"connectorId"`
-	Name         string          `json:"name"`
+	Version     int    `json:"version"`
+	ConnectorID string `json:"connectorId"`
+	// BootID identifies this connector process. A reconnect after a network
+	// blip keeps it, so the server can tell that still-running turns survived;
+	// a restart gets a new one and the old turn state is genuinely dead.
+	BootID  string          `json:"bootId,omitempty"`
+	Name    string          `json:"name"`
 	Platform     string          `json:"platform"`
 	Runtimes     []RuntimeInfo   `json:"runtimes"`
 	Capabilities map[string]bool `json:"capabilities"`

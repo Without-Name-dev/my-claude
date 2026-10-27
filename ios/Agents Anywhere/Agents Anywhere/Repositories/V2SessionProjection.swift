@@ -71,8 +71,32 @@ struct V2SessionProjection {
 
     mutating func apply(_ event: V2SessionEvent) throws {
         guard event.sessionId == data.session.id else { return }
-        guard event.sequence >= sequence else { return }
+        // Deduplicate first. The cursor comparison is not a safe gate on its
+        // own: the server publishes after releasing the session lock, so N+1
+        // can arrive before N. Dropping N because the cursor already passed it
+        // lost the row for good — the recovery query starts at the cursor — and
+        // left an echoed message stuck on "accepted".
         if !event.isLiveProjection, eventIDs.contains(event.eventId) { return }
+        if event.sequence < sequence {
+            switch event.type {
+            case "timeline.item_created", "timeline.item_updated":
+                // merge keeps the newest revision, so an older frame can only
+                // fill a gap. The cursor is deliberately not advanced.
+                merge([try item("item", in: event)], history: false)
+            case "runtime.notice.updated":
+                let notice: V2RuntimeNotice = try payload("notice", in: event)
+                guard notice.sessionId == data.session.id else { return }
+                if let index = data.notices.firstIndex(where: { $0.id == notice.id }),
+                   notice.revision >= data.notices[index].revision {
+                    data.notices[index] = notice
+                }
+            default:
+                // State and snapshots have no revision guard of their own; an
+                // older copy would roll a newer one back.
+                break
+            }
+            return
+        }
         switch event.type {
         case "session.meta.updated":
             applyMeta(try payload("session", in: event))

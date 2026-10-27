@@ -7,9 +7,12 @@ struct NoticeActionPresentation {
     let more: [V2RuntimeNoticeAction]
 
     init(_ actions: [V2RuntimeNoticeAction]) {
-        let primary = actions.first { $0.style == "primary" }
-            ?? actions.first { !["reject", "cancel", "dismiss"].contains($0.id) }
-        let negative = actions.first { $0.id == "reject" }
+        // Claude permission notices use allow/deny, not approve/reject. Only the
+        // latter were recognised, so Reject was pushed into the "more" menu and
+        // drawn with a checkmark.
+        let primary = actions.first { $0.style == "primary" && !["reject", "deny"].contains($0.id) }
+            ?? actions.first { !["reject", "deny", "cancel", "dismiss"].contains($0.id) }
+        let negative = actions.first { $0.id == "reject" || $0.id == "deny" }
             ?? actions.first { ["cancel", "dismiss"].contains($0.id) }
         var selected = [primary, negative].compactMap { $0 }
         if selected.isEmpty, let first = actions.first { selected = [first] }
@@ -19,9 +22,9 @@ struct NoticeActionPresentation {
     }
     static func title(_ action: V2RuntimeNoticeAction, notice: V2RuntimeNotice) -> String {
         switch action.id {
-        case "approve": return String(localized: "批准")
+        case "approve", "allow": return String(localized: "批准")
         case "approve_for_session": return String(localized: "本会话批准")
-        case "reject": return String(localized: "拒绝")
+        case "reject", "deny": return String(localized: "拒绝")
         case "cancel": return notice.interactionType == "approval" ? String(localized: "取消本轮") : String(localized: "取消")
         case "dismiss": return String(localized: "取消")
         case "submit": return String(localized: "提交")
@@ -30,7 +33,7 @@ struct NoticeActionPresentation {
     }
     static func symbol(_ action: V2RuntimeNoticeAction) -> String {
         switch action.id {
-        case "reject", "cancel", "dismiss": "xmark"
+        case "reject", "deny", "cancel", "dismiss": "xmark"
         case "approve_for_session": "checkmark.shield"
         default: "checkmark"
         }
