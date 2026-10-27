@@ -68,6 +68,7 @@ type SessionView struct {
 	Takeover                    bool    `json:"takeover"`
 	Pinned                      bool    `json:"pinned"`
 	PinnedAt                    *string `json:"pinnedAt"`
+	PinnedMessageIds            []string `json:"pinnedMessageIds"`
 	Archived                    bool    `json:"archived"`
 	ArchivedAt                  *string `json:"archivedAt"`
 	UserArchived                bool    `json:"userArchived"`
@@ -108,6 +109,7 @@ func (a *App) sessionView(ctx context.Context, s store.Session) SessionView {
 		Takeover:           s.Takeover,
 		Live:               a.connectors.Live(s.ConnectorID, s.ExternalID),
 		Pinned:             s.Pinned,
+		PinnedMessageIds:   s.PinnedMessageIds,
 		Archived:           s.Archived,
 		UserArchived:       s.Archived,
 		SourceAvailability: availabilityOf(s.SourceState),

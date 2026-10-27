@@ -32,6 +32,13 @@ const heartbeatInterval = 20 * time.Second
 // stays just under that.
 const approvalWait = 25 * time.Second
 
+// approvalRateLimit is the maximum number of approval requests per session
+// within the rate window to prevent abuse.
+const approvalRateLimit = 100
+
+// approvalRateWindow is the time window for rate limiting approval requests.
+const approvalRateWindow = time.Minute
+
 // historyStableWindow keeps an in-progress transcript out of the timeline.
 // This check runs on the connector because file modification times belong to
 // the connector host's clock, which may differ from the server's clock.
@@ -68,6 +75,11 @@ type Client struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingAsk
+	// pendingTools tracks which toolUseIds were created by this connector's Ask
+	// calls, preventing external processes from injecting arbitrary decisions.
+	pendingTools map[string]struct{}
+	// approvalRateLimiter tracks approval request times per session for rate limiting.
+	approvalRateLimiter map[string][]time.Time
 
 	// turnSessions maps a runtime turn id to the server session it belongs to,
 	// so an approval request that carries only the turn id can be addressed.
@@ -145,29 +157,31 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		durableDir = b.Dir
 	}
 	return &Client{
-		URL:                url,
-		Token:              token,
-		BootID:             strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-		Name:               name,
-		Bridge:             b,
-		Log:                log,
-		DurableDir:         durableDir,
-		pending:            map[string]*pendingAsk{},
-		turnSessions:       map[string]string{},
-		active:             map[string]string{},
-		queued:             map[string]int{},
-		cancelled:          map[string]int{},
-		turns:              make(chan protocol.Submit, 32),
-		turnWatches:        make(chan turnWatchJob, turnWatchQueueSize),
-		spawnRequests:      map[string]time.Time{},
-		closed:             map[string]time.Time{},
-		historyStamps:      map[string]string{},
-		historyFullStamps:  map[string]string{},
-		historyRetryTimers: map[string]*time.Timer{},
-		historyRetryReqs:   map[string]protocol.HistoryRequest{},
-		historyQueue:       make(chan string, historyQueueSize),
-		historyJobs:        map[string]*historyJob{},
-		watching:           map[string]struct{}{},
+		URL:                 url,
+		Token:               token,
+		BootID:              strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Name:                name,
+		Bridge:              b,
+		Log:                 log,
+		DurableDir:          durableDir,
+		pending:             map[string]*pendingAsk{},
+		pendingTools:        map[string]struct{}{},
+		approvalRateLimiter: map[string][]time.Time{},
+		turnSessions:        map[string]string{},
+		active:              map[string]string{},
+		queued:              map[string]int{},
+		cancelled:           map[string]int{},
+		turns:               make(chan protocol.Submit, 32),
+		turnWatches:         make(chan turnWatchJob, turnWatchQueueSize),
+		spawnRequests:       map[string]time.Time{},
+		closed:              map[string]time.Time{},
+		historyStamps:       map[string]string{},
+		historyFullStamps:   map[string]string{},
+		historyRetryTimers:  map[string]*time.Timer{},
+		historyRetryReqs:    map[string]protocol.HistoryRequest{},
+		historyQueue:        make(chan string, historyQueueSize),
+		historyJobs:         map[string]*historyJob{},
+		watching:            map[string]struct{}{},
 	}
 }
 
@@ -1185,6 +1199,47 @@ func (c *Client) sessionForTurn(turnID string) string {
 	return c.turnSessions[turnID]
 }
 
+// checkApprovalRateLimit enforces a per-session rate limit on approval requests
+// to prevent abuse. Returns true if the request is allowed, false if rate limited.
+func (c *Client) checkApprovalRateLimit(sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-approvalRateWindow)
+
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+
+	// Clean up old entries
+	timestamps := c.approvalRateLimiter[sessionID]
+	validTimestamps := make([]time.Time, 0, len(timestamps))
+	for _, ts := range timestamps {
+		if ts.After(cutoff) {
+			validTimestamps = append(validTimestamps, ts)
+		}
+	}
+
+	// Check if rate limit exceeded
+	if len(validTimestamps) >= approvalRateLimit {
+		return false
+	}
+
+	// Add current request
+	validTimestamps = append(validTimestamps, now)
+	c.approvalRateLimiter[sessionID] = validTimestamps
+	return true
+}
+
+// cleanupApproval removes tracking data for a settled approval to prevent memory leaks.
+func (c *Client) cleanupApproval(toolUseID string) {
+	c.pendingMu.Lock()
+	delete(c.pending, toolUseID)
+	delete(c.pendingTools, toolUseID)
+	c.pendingMu.Unlock()
+}
+
 // forgetTurn drops a finished turn's session mapping.
 func (c *Client) forgetTurn(turnID string) {
 	if turnID == "" {
@@ -1210,6 +1265,14 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	// the hook that is waiting on this tool instead of treating the decision
 	// as another question.
 	if decision := stringField(request, "decision"); decision == "allow" || decision == "deny" {
+		// SECURITY: Only allow settling decisions for toolUseIds created by this connector.
+		c.pendingMu.Lock()
+		_, isOurs := c.pendingTools[toolUseID]
+		c.pendingMu.Unlock()
+		if !isOurs {
+			c.Log.Warn("rejecting settlement attempt for unknown toolUseId", "toolUseId", toolUseID)
+			return nil, errors.New("toolUseId not recognized")
+		}
 		return c.settle(toolUseID, protocol.ApprovalAnswer{ToolUseID: toolUseID, Decision: decision}), nil
 	}
 
@@ -1229,6 +1292,12 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 		sessionID = stringField(request, "sessionId")
 	}
 
+	// SECURITY: Rate limit approval requests per session to prevent abuse.
+	if sessionID != "" && !c.checkApprovalRateLimit(sessionID) {
+		c.Log.Warn("approval request rate limit exceeded", "session", sessionID, "toolUseId", toolUseID)
+		return nil, errors.New("rate limit exceeded")
+	}
+
 	c.pendingMu.Lock()
 	ask, exists := c.pending[toolUseID]
 	if exists && ask.settled != nil {
@@ -1239,6 +1308,8 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	if !exists {
 		ask = &pendingAsk{answers: make(chan protocol.ApprovalAnswer, 1)}
 		c.pending[toolUseID] = ask
+		// SECURITY: Track this toolUseId as owned by this connector.
+		c.pendingTools[toolUseID] = struct{}{}
 	}
 	c.pendingMu.Unlock()
 
@@ -1291,14 +1362,20 @@ func (c *Client) settle(toolUseID string, answer protocol.ApprovalAnswer) map[st
 
 // deliverApproval hands a decision to the waiting Ask, if any.
 func (c *Client) deliverApproval(msg protocol.ApprovalAnswer) {
+	// SECURITY: Verify this toolUseId belongs to this connector before delivering.
 	c.pendingMu.Lock()
 	ask, ok := c.pending[msg.ToolUseID]
+	_, isOurs := c.pendingTools[msg.ToolUseID]
 	var settled *protocol.ApprovalAnswer
 	if ok && ask.settled != nil {
 		settled = ask.settled
 	}
 	c.pendingMu.Unlock()
 
+	if !isOurs {
+		c.Log.Warn("ignoring approval for unknown toolUseId", "toolUseId", msg.ToolUseID)
+		return
+	}
 	if settled != nil {
 		return // already answered; a duplicate is harmless to ignore
 	}

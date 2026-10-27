@@ -2,6 +2,7 @@ package connector
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
@@ -25,26 +27,46 @@ func (c *Client) handleRPC(raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &req); err != nil || req.ID == "" {
 		return
 	}
+
+	// Run RPC with timeout to prevent blocking the read loop indefinitely.
+	// Large file operations have their own chunking limits; this timeout is a
+	// backstop against stuck filesystem calls or runaway processing.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
 	var (
 		result json.RawMessage
 		rpcErr *protocol.RPCError
 	)
-	switch req.Method {
-	case "fs.list":
-		result, rpcErr = c.fsList(req.Params)
-	case "fs.read":
-		result, rpcErr = c.fsRead(req.Params)
-	case "fs.readText":
-		result, rpcErr = c.fsReadText(req.Params)
-	case "fs.write":
-		result, rpcErr = c.fsWrite(req.Params)
-	case "fs.size":
-		result, rpcErr = c.fsSize(req.Params)
-	case "ping":
-		result, _ = json.Marshal(map[string]any{"ok": true})
-	default:
-		rpcErr = &protocol.RPCError{Code: "unknown_method", Message: "unknown method: " + req.Method}
+
+	go func() {
+		defer close(done)
+		switch req.Method {
+		case "fs.list":
+			result, rpcErr = c.fsList(req.Params)
+		case "fs.read":
+			result, rpcErr = c.fsRead(req.Params)
+		case "fs.readText":
+			result, rpcErr = c.fsReadText(req.Params)
+		case "fs.write":
+			result, rpcErr = c.fsWrite(req.Params)
+		case "fs.size":
+			result, rpcErr = c.fsSize(req.Params)
+		case "ping":
+			result, _ = json.Marshal(map[string]any{"ok": true})
+		default:
+			rpcErr = &protocol.RPCError{Code: "unknown_method", Message: "unknown method: " + req.Method}
+		}
+	}()
+
+	select {
+	case <-done:
+		// RPC completed normally
+	case <-ctx.Done():
+		rpcErr = &protocol.RPCError{Code: "timeout", Message: "RPC call exceeded timeout"}
 	}
+
 	_ = c.send(protocol.TypeRPCResponse, protocol.RPCResponse{
 		ID: req.ID, Result: result, Error: rpcErr,
 	})

@@ -279,24 +279,19 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 	}
 	itemID := assistantItemID(msg.TurnID)
 	state := a.turns.begin(msg.TurnID, msg.SessionID, conn.id, itemID)
-	orderSeq := store.NowMS()
-	state.mu.Lock()
-	state.orderSeq = orderSeq
-	state.createdAt = orderSeq
-	state.mu.Unlock()
 
 	userItemID := ""
 	seq, err := a.writeTimeline(ctx, session.ID, func(tx *sql.Tx, seq int64) error {
 		// Allocate against the session's existing items, not the wall clock. An
 		// imported transcript row can carry a timestamp ahead of the server, and
 		// then the answer sorted below the question it answered.
-		allocated, allocErr := store.NextTimelineOrderSeq(ctx, tx, session.ID, store.NowMS())
+		orderSeq, allocErr := store.NextTimelineOrderSeq(ctx, tx, session.ID, store.NowMS())
 		if allocErr != nil {
 			return allocErr
 		}
-		orderSeq = allocated
 		state.mu.Lock()
 		state.orderSeq = orderSeq
+		state.createdAt = orderSeq
 		state.mu.Unlock()
 		if err := store.UpsertTimelineItem(ctx, tx, store.TimelineItem{
 			SessionID:  session.ID,
@@ -1084,3 +1079,5 @@ func firstNonEmptyText(values ...string) string {
 	}
 	return ""
 }
+
+// PublishTimelineReset sends a timeline snapshot event to refresh the entire timeline.

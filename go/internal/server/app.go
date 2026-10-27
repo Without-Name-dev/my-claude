@@ -35,6 +35,7 @@ type App struct {
 	history    *historyLimiter
 	rpc        *rpcClient
 	activity   *activityRegistry
+	redisQueue *RedisQueue
 
 	// openMu guards lastAutoOpen: when the send path last asked each session's
 	// connector to open a terminal, so a retried message does not ask again
@@ -50,6 +51,9 @@ type App struct {
 
 // New wires the application.
 func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
+	// Initialize Redis queue if configured
+	redisQueue := NewRedisQueue(cfg.RedisURL, log)
+
 	app := &App{
 		cfg:        cfg,
 		db:         db,
@@ -63,6 +67,7 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		history:    newHistoryLimiter(),
 		rpc:        newRPCClient(),
 		activity:   newActivityRegistry(),
+		redisQueue: redisQueue,
 
 		lastAutoOpen:  map[string]time.Time{},
 		commandAcks:   map[string]pendingCommandAck{},
@@ -158,6 +163,17 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/snapshot", a.requireUser(a.handleSnapshot))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/events", a.requireUser(a.handleEvents))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/timeline", a.requireUser(a.handleTimeline))
+
+	// Search.
+	mux.HandleFunc("GET /api/v2/search", a.requireUser(a.handleSearch))
+	mux.HandleFunc("GET /api/v2/search/suggestions", a.requireUser(a.handleSearchSuggestions))
+	mux.HandleFunc("PATCH /api/v2/sessions/{session_id}/timeline/{item_id}", a.requireUser(a.handleEditTimelineItem))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/branches", a.requireUser(a.handleCreateBranch))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/branches", a.requireUser(a.handleListBranches))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/branches/{branch_id}/switch", a.requireUser(a.handleSwitchBranch))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/branches/{branch_id}/timeline", a.requireUser(a.handleGetBranchTimeline))
+	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/branches/{branch_id}", a.requireUser(a.handleDeleteBranch))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/timeline/{item_id}/retry", a.requireUser(a.handleRetryMessage))
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/meta", a.requireUser(a.handleSessionMeta))
 	mux.HandleFunc("PATCH /api/v2/sessions/{session_id}/meta", a.requireUser(a.handlePatchSession))
 	mux.HandleFunc("POST /api/v2/sessions/archive", a.requireUser(a.handleBulkArchive))
@@ -165,6 +181,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v2/sessions/read", a.requireUser(a.handleBulkRead))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleTakeover))
 	mux.HandleFunc("DELETE /api/v2/sessions/{session_id}/takeover", a.requireUser(a.handleReleaseTakeover))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/messages/pin", a.requireUser(a.handlePinMessage))
+	mux.HandleFunc("POST /api/v2/sessions/{session_id}/messages/unpin", a.requireUser(a.handleUnpinMessage))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/messages", a.requireUser(a.handleSendMessage))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/open", a.requireUser(a.handleOpenRuntime))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/close", a.requireUser(a.handleCloseRuntime))
@@ -181,6 +199,21 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleListCommands))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/commands", a.requireUser(a.handleRunCommand))
 	mux.HandleFunc("POST /api/v2/sessions/{session_id}/runtime/notices/{notice_id}/respond", a.requireUser(a.handleNoticeRespond))
+
+	// Message Queue.
+	mux.HandleFunc("POST /api/v2/sessions/{id}/queue", a.requireUser(a.handleEnqueueMessage))
+	mux.HandleFunc("GET /api/v2/sessions/{id}/queue", a.requireUser(a.handleGetQueue))
+	mux.HandleFunc("DELETE /api/v2/sessions/{id}/queue/{msgId}", a.requireUser(a.handleCancelQueuedMessage))
+	mux.HandleFunc("PATCH /api/v2/sessions/{id}/queue/{msgId}", a.requireUser(a.handleUpdateQueueMessage))
+
+	// Commands and Configuration.
+	mux.HandleFunc("POST /api/v2/sessions/{id}/commands/execute", a.requireUser(a.handleExecuteCommand))
+	mux.HandleFunc("GET /api/v2/sessions/{id}/config", a.requireUser(a.handleGetSessionConfig))
+	mux.HandleFunc("PATCH /api/v2/sessions/{id}/config", a.requireUser(a.handleUpdateSessionConfig))
+
+	// Agent and Workflow visualization.
+	mux.HandleFunc("GET /api/v2/sessions/{id}/agents", a.requireUser(a.handleGetAgents))
+	mux.HandleFunc("GET /api/v2/sessions/{id}/workflows", a.requireUser(a.handleGetWorkflows))
 
 	// Attachments and file downloads.
 	a.registerAttachmentRoutes(mux)

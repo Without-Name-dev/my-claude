@@ -22,6 +22,11 @@ type pendingCommandAck struct {
 func (a *App) registerCommandAck(connectorID, sessionID, externalSessionID, requestID string) chan protocol.CommandAck {
 	response := make(chan protocol.CommandAck, 1)
 	a.commandAckMu.Lock()
+	// Limit pending commands to prevent unbounded growth
+	if len(a.commandAcks) >= 1000 {
+		a.commandAckMu.Unlock()
+		return nil
+	}
 	a.commandAcks[requestID] = pendingCommandAck{
 		connectorID: connectorID, sessionID: sessionID,
 		externalSessionID: externalSessionID, response: response,
@@ -187,6 +192,10 @@ func (a *App) handleRunCommand(w http.ResponseWriter, r *http.Request, user stor
 	}
 	requestID := store.NewID("cmd")
 	ack := a.registerCommandAck(session.ConnectorID, session.ID, session.ExternalID, requestID)
+	if ack == nil {
+		httpx.Fail(w, httpx.TooManyRequests("too many pending commands"))
+		return
+	}
 	defer a.removeCommandAck(requestID)
 	sent := a.connectors.Send(session.ConnectorID, protocol.TypeSubmit, protocol.Submit{
 		RequestID:         requestID,

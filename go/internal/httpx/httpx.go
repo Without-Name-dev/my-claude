@@ -27,11 +27,12 @@ func NewError(status int, detail string) *Error {
 }
 
 // BadRequest, Unauthorized and friends keep handler code short.
-func BadRequest(detail string) *Error   { return NewError(http.StatusBadRequest, detail) }
-func Unauthorized(detail string) *Error { return NewError(http.StatusUnauthorized, detail) }
-func Forbidden(detail string) *Error    { return NewError(http.StatusForbidden, detail) }
-func NotFound(detail string) *Error     { return NewError(http.StatusNotFound, detail) }
-func Conflict(detail string) *Error     { return NewError(http.StatusConflict, detail) }
+func BadRequest(detail string) *Error      { return NewError(http.StatusBadRequest, detail) }
+func Unauthorized(detail string) *Error    { return NewError(http.StatusUnauthorized, detail) }
+func Forbidden(detail string) *Error       { return NewError(http.StatusForbidden, detail) }
+func NotFound(detail string) *Error        { return NewError(http.StatusNotFound, detail) }
+func Conflict(detail string) *Error        { return NewError(http.StatusConflict, detail) }
+func TooManyRequests(detail string) *Error { return NewError(http.StatusTooManyRequests, detail) }
 
 // JSON writes a value with the given status.
 func JSON(w http.ResponseWriter, status int, value any) {
@@ -102,6 +103,11 @@ func DecodeOptional(r *http.Request, dst any) error {
 		return BadRequest("invalid JSON body: " + err.Error())
 	}
 	return nil
+}
+
+// ReadJSON is an alias for Decode for compatibility.
+func ReadJSON(r *http.Request, dst any) error {
+	return Decode(r, dst)
 }
 
 // isTooLarge recognises the error http.MaxBytesReader raises, whose text is

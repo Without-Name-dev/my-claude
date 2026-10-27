@@ -1379,3 +1379,66 @@ func (a *App) handleSessionSync(w http.ResponseWriter, r *http.Request, user sto
 	a.maybeRequestHistory(r.Context(), session)
 	httpx.OK(w, map[string]any{"ok": true, "result": map[string]any{"queued": true}, "error": nil})
 }
+
+// handlePinMessage pins a message to the session.
+func (a *App) handlePinMessage(w http.ResponseWriter, r *http.Request, user store.User) {
+	sessionID := r.PathValue("session_id")
+	var req struct {
+		MessageID string `json:"messageId"`
+	}
+	if err := httpx.ReadJSON(r, &req); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	if req.MessageID == "" {
+		httpx.Fail(w, httpx.BadRequest("messageId is required"))
+		return
+	}
+
+	session, err := a.db.PinMessage(r.Context(), sessionID, req.MessageID, user.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.Fail(w, httpx.NotFound("session not found"))
+			return
+		}
+		httpx.Fail(w, err)
+		return
+	}
+
+	httpx.OK(w, map[string]any{
+		"session":    a.sessionView(r.Context(), session),
+		"serverTime": timestampNow(),
+	})
+}
+
+// handleUnpinMessage unpins a message from the session.
+func (a *App) handleUnpinMessage(w http.ResponseWriter, r *http.Request, user store.User) {
+	sessionID := r.PathValue("session_id")
+	var req struct {
+		MessageID string `json:"messageId"`
+	}
+	if err := httpx.ReadJSON(r, &req); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	if req.MessageID == "" {
+		httpx.Fail(w, httpx.BadRequest("messageId is required"))
+		return
+	}
+
+	session, err := a.db.UnpinMessage(r.Context(), sessionID, req.MessageID, user.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.Fail(w, httpx.NotFound("session not found"))
+			return
+		}
+		httpx.Fail(w, err)
+		return
+	}
+
+	httpx.OK(w, map[string]any{
+		"session":    a.sessionView(r.Context(), session),
+		"serverTime": timestampNow(),
+	})
+}
+

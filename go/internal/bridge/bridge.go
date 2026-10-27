@@ -683,7 +683,7 @@ func (b *Bridge) findQueuedRequestLocked(requestID string) (*QueueMessage, error
 
 func (b *Bridge) pruneAcceptedRequestsLocked() {
 	b.acceptedPrunes++
-	if b.acceptedPrunes%64 != 1 {
+	if b.acceptedPrunes%16 != 1 {
 		return
 	}
 	dir := filepath.Join(b.Dir, "accepted-requests")
@@ -903,12 +903,20 @@ func (b *Bridge) nextSeq(dir string) int {
 // pruneConsumedQueue drops queue files after the addressed plugin session has
 // durably advanced its cursor past them. This bounds directory scans while
 // preserving messages that their target session has not picked up yet.
+//
+// To prevent a fast session from deleting messages a slow session has not yet
+// consumed, only prune up to the minimum cursor across all active sessions that
+// have ever polled. The watermark file persists this safe bound.
 func (b *Bridge) pruneConsumedQueue(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	cursors := make(map[string]int)
+
+	// Load all session cursors and compute the global minimum safe watermark.
+	cursors := b.loadAllSessionCursors()
+	minCursor := b.computeSafeWatermark(cursors)
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -917,23 +925,88 @@ func (b *Bridge) pruneConsumedQueue(dir string) {
 		if err != nil || seq < 1 {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		var msg struct {
-			ExternalSessionID string `json:"externalSessionId"`
-		}
-		if !readJSONFile(path, &msg) || msg.ExternalSessionID == "" {
-			continue
-		}
-		id := sanitizeCursorID(msg.ExternalSessionID)
-		cursor, ok := cursors[id]
-		if !ok {
-			cursor = readSessionCursor(b.Dir, id)
-			cursors[id] = cursor
-		}
-		if seq <= cursor {
+
+		// Only prune messages below the global safe watermark.
+		if seq <= minCursor {
+			path := filepath.Join(dir, entry.Name())
 			_ = os.Remove(path)
 		}
 	}
+
+	// Persist the new watermark after successful cleanup.
+	b.persistWatermark(minCursor)
+}
+
+// loadAllSessionCursors scans for all session cursor files and returns a map.
+func (b *Bridge) loadAllSessionCursors() map[string]int {
+	cursors := make(map[string]int)
+	entries, err := os.ReadDir(b.Dir)
+	if err != nil {
+		return cursors
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "cursor.") || !strings.HasSuffix(name, ".txt") {
+			continue
+		}
+		// Skip backup files.
+		if strings.HasSuffix(name, ".txt.bak") {
+			continue
+		}
+		sessionID := strings.TrimSuffix(strings.TrimPrefix(name, "cursor."), ".txt")
+		if sessionID == "" {
+			continue
+		}
+		cursor := readSessionCursor(b.Dir, sessionID)
+		if cursor > 0 {
+			cursors[sessionID] = cursor
+		}
+	}
+	return cursors
+}
+
+// computeSafeWatermark returns the minimum cursor value, ensuring no active
+// session's unread messages are deleted. Returns the persisted watermark if
+// no sessions have cursors yet.
+func (b *Bridge) computeSafeWatermark(cursors map[string]int) int {
+	if len(cursors) == 0 {
+		// No active sessions: use last persisted watermark to avoid replaying.
+		return b.readWatermark()
+	}
+	minCursor := -1
+	for _, cursor := range cursors {
+		if minCursor == -1 || cursor < minCursor {
+			minCursor = cursor
+		}
+	}
+	// Never regress below the last persisted watermark.
+	lastWatermark := b.readWatermark()
+	if minCursor < lastWatermark {
+		minCursor = lastWatermark
+	}
+	return minCursor
+}
+
+// readWatermark loads the last safe prune boundary from disk.
+func (b *Bridge) readWatermark() int {
+	raw, err := os.ReadFile(filepath.Join(b.Dir, "prune-watermark.txt"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// persistWatermark writes the new safe prune boundary to disk.
+func (b *Bridge) persistWatermark(seq int) {
+	if seq <= 0 {
+		return
+	}
+	path := filepath.Join(b.Dir, "prune-watermark.txt")
+	_ = writeAtomic(path, []byte(strconv.Itoa(seq)))
 }
 
 // highestSeq scans the queue for the largest sequence already present.

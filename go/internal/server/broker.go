@@ -98,15 +98,22 @@ func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 // durable event log from its own cursor. Reconnects are more disruptive than a
 // refetch, so the socket is left open.
 func (b *Broker) Publish(sessionID string, frame []byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// Take snapshot of subscribers while holding lock, then release before draining
+	b.mu.RLock()
 	set := b.subs[sessionID]
 	if len(set) == 0 {
+		b.mu.RUnlock()
 		return
 	}
-	var refetch []byte
+	// Copy subscriber set to avoid holding lock during slow operations
+	subscribers := make([]*Subscriber, 0, len(set))
 	for sub := range set {
+		subscribers = append(subscribers, sub)
+	}
+	b.mu.RUnlock()
+
+	var refetch []byte
+	for _, sub := range subscribers {
 		if sub.closed() {
 			continue
 		}

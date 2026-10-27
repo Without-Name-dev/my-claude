@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -24,15 +25,17 @@ type Session struct {
 	Pinned       bool
 	Archived     bool
 	SourceState  string
+	ActiveBranchID string
 	Seq          int64
 	UpdatedSeq   int64
 	LastReadSeq  int64
 	ResetSeq     int64
 	LastTurnEnd  int64
 	SortAt       int64
-	CreatedAt    int64
-	UpdatedAt    int64
-	LastActivity *int64
+	CreatedAt         int64
+	UpdatedAt         int64
+	LastActivity      *int64
+	PinnedMessageIds  []string
 
 	// LatestItemOrderSeq is the sort key of the newest timeline item. It is
 	// filled by the paginated list queries and is part of the list cursor;
@@ -42,9 +45,9 @@ type Session struct {
 
 const sessionColumns = `id, connector_id, coalesce(project_id, ''), runtime, runtime_id,
 	origin, coalesce(external_session_id, ''), coalesce(title, ''), coalesce(cwd, ''),
-	status, takeover, pinned, archived, source_state,
+	status, takeover, pinned, archived, source_state, coalesce(active_branch_id, ''),
 	seq, updated_seq, last_read_seq, timeline_reset_seq, latest_turn_end_seq,
-	coalesce(sort_at, created_at), created_at, updated_at, last_activity_at`
+	coalesce(sort_at, created_at), created_at, updated_at, last_activity_at, coalesce(pinned_message_ids, '[]')`
 
 // sessionIdentityColumns is the unique identity of a runtime session; keep the
 // text in sync with uq_sessions_connector_runtime_external.
@@ -53,11 +56,12 @@ const sessionIdentityColumns = "sessions.connector_id, sessions.runtime, session
 func scanSession(row interface{ Scan(...any) error }, extra ...any) (Session, error) {
 	var s Session
 	var takeover, pinned, archived int
+	var pinnedJSON string
 	dest := []any{&s.ID, &s.ConnectorID, &s.ProjectID, &s.Runtime, &s.RuntimeID,
 		&s.Origin, &s.ExternalID, &s.Title, &s.CWD, &s.Status,
-		&takeover, &pinned, &archived, &s.SourceState,
+		&takeover, &pinned, &archived, &s.SourceState, &s.ActiveBranchID,
 		&s.Seq, &s.UpdatedSeq, &s.LastReadSeq, &s.ResetSeq, &s.LastTurnEnd,
-		&s.SortAt, &s.CreatedAt, &s.UpdatedAt, &s.LastActivity}
+		&s.SortAt, &s.CreatedAt, &s.UpdatedAt, &s.LastActivity, &pinnedJSON}
 	dest = append(dest, extra...)
 	err := row.Scan(dest...)
 	if err != nil {
@@ -67,6 +71,15 @@ func scanSession(row interface{ Scan(...any) error }, extra ...any) (Session, er
 		return Session{}, err
 	}
 	s.Takeover, s.Pinned, s.Archived = takeover != 0, pinned != 0, archived != 0
+
+	// Parse pinned message IDs from JSON
+	if pinnedJSON != "" && pinnedJSON != "[]" {
+		if err := json.Unmarshal([]byte(pinnedJSON), &s.PinnedMessageIds); err != nil {
+			s.PinnedMessageIds = []string{}
+		}
+	} else {
+		s.PinnedMessageIds = []string{}
+	}
 	return s, nil
 }
 
@@ -372,7 +385,7 @@ func archivedAt(archived bool, now int64) any {
 
 // sessionColumnsFor is sessionColumns with a table alias.
 //
-// The expressions have to wrap the qualified name ("coalesce(s.title, ”)"),
+// The expressions have to wrap the qualified name ("coalesce(s.title, ")"),
 // not be prefixed wholesale, or the SQL is invalid.
 func sessionColumnsFor(alias string) string {
 	a := alias + "."
@@ -391,6 +404,7 @@ func sessionColumnsFor(alias string) string {
 		a + "pinned",
 		a + "archived",
 		a + "source_state",
+		"coalesce(" + a + "active_branch_id, '')",
 		a + "seq",
 		a + "updated_seq",
 		a + "last_read_seq",
@@ -400,9 +414,9 @@ func sessionColumnsFor(alias string) string {
 		a + "created_at",
 		a + "updated_at",
 		a + "last_activity_at",
+		"coalesce(" + a + "pinned_message_ids, '[]')",
 	}, ", ")
 }
-
 // SessionsForConnector returns every session on one connector, for presence
 // fan-out.
 func (s *Store) SessionsForConnector(ctx context.Context, connectorID string) ([]Session, error) {
@@ -634,3 +648,126 @@ func (s *Store) ResetStalledSessions(ctx context.Context, connectorID string) ([
 	}
 	return ids, nil
 }
+
+// PinMessage adds a message ID to the session's pinned messages list (max 5).
+func (s *Store) PinMessage(ctx context.Context, sessionID, messageID, userID string) (Session, error) {
+	now := time.Now().UnixMilli()
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		// Verify ownership
+		var connectorID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT s.connector_id FROM sessions s
+			JOIN connectors c ON c.id = s.connector_id
+			WHERE s.id = ? AND c.user_id = ?`, sessionID, userID).Scan(&connectorID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// Get current pinned messages
+		var pinnedJSON string
+		err = tx.QueryRowContext(ctx, `
+			SELECT coalesce(pinned_message_ids, '[]') FROM sessions WHERE id = ?`,
+			sessionID).Scan(&pinnedJSON)
+		if err != nil {
+			return err
+		}
+
+		var pinned []string
+		if pinnedJSON != "" && pinnedJSON != "[]" {
+			if err := json.Unmarshal([]byte(pinnedJSON), &pinned); err != nil {
+				pinned = []string{}
+			}
+		}
+
+		// Check if already pinned
+		for _, id := range pinned {
+			if id == messageID {
+				return nil // Already pinned
+			}
+		}
+
+		// Enforce max 5 pinned messages
+		if len(pinned) >= 5 {
+			return errors.New("maximum 5 pinned messages allowed")
+		}
+
+		// Add to pinned list
+		pinned = append(pinned, messageID)
+		pinnedBytes, err := json.Marshal(pinned)
+		if err != nil {
+			return err
+		}
+
+		// Update session
+		_, err = tx.ExecContext(ctx, `
+			UPDATE sessions SET pinned_message_ids = ?, updated_at = ?
+			WHERE id = ?`, string(pinnedBytes), now, sessionID)
+		return err
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return s.SessionByID(ctx, s.Read(), sessionID, userID)
+}
+
+// UnpinMessage removes a message ID from the session's pinned messages list.
+func (s *Store) UnpinMessage(ctx context.Context, sessionID, messageID, userID string) (Session, error) {
+	now := time.Now().UnixMilli()
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		// Verify ownership
+		var connectorID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT s.connector_id FROM sessions s
+			JOIN connectors c ON c.id = s.connector_id
+			WHERE s.id = ? AND c.user_id = ?`, sessionID, userID).Scan(&connectorID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		// Get current pinned messages
+		var pinnedJSON string
+		err = tx.QueryRowContext(ctx, `
+			SELECT coalesce(pinned_message_ids, '[]') FROM sessions WHERE id = ?`,
+			sessionID).Scan(&pinnedJSON)
+		if err != nil {
+			return err
+		}
+
+		var pinned []string
+		if pinnedJSON != "" && pinnedJSON != "[]" {
+			if err := json.Unmarshal([]byte(pinnedJSON), &pinned); err != nil {
+				pinned = []string{}
+			}
+		}
+
+		// Remove from pinned list
+		newPinned := make([]string, 0, len(pinned))
+		for _, id := range pinned {
+			if id != messageID {
+				newPinned = append(newPinned, id)
+			}
+		}
+
+		pinnedBytes, err := json.Marshal(newPinned)
+		if err != nil {
+			return err
+		}
+
+		// Update session
+		_, err = tx.ExecContext(ctx, `
+			UPDATE sessions SET pinned_message_ids = ?, updated_at = ?
+			WHERE id = ?`, string(pinnedBytes), now, sessionID)
+		return err
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	return s.SessionByID(ctx, s.Read(), sessionID, userID)
+}
+
