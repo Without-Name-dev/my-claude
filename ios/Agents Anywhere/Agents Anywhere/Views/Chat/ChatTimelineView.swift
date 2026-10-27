@@ -54,6 +54,12 @@ struct ChatTimelineView: View {
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
                     timelineRevision: model.timeline.presentationRevision,
+                    notices: model.session.notices.notices,
+                    isRunning: model.isRunning,
+                    hasOlderItems: model.session.hasOlderItems,
+                    hasNewerItems: model.session.hasNewerItems,
+                    hasPendingUserMessage: !model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty,
+                    sendingPlaceholder: model.sendingPlaceholder,
                     subagentActivity: model.timeline.subagentActivity,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryRowLayout: { rowID, layout, frame in
@@ -193,7 +199,7 @@ struct ChatTimelineView: View {
                 // requesting it on `session.pendingMessages` (or at send start)
                 // could scroll to the previous bottom and leave the bubble one
                 // row below the viewport.
-                if model.isOpeningReady, id != nil && !hasInteractions { scrolling.requestBottom() }
+                if model.isOpeningReady, id != nil { scrolling.requestBottom() }
             }
             .onChange(of: model.timeline.rows.last?.id) { oldID, newID in
                 // Incoming terminal messages can append a row without changing
@@ -201,7 +207,7 @@ struct ChatTimelineView: View {
                 // while parked at the live tail; geometry remains responsible
                 // for later height changes within the same streaming row.
                 guard model.isOpeningReady, newID != nil, newID != oldID,
-                      !hasInteractions, scrolling.mayFollowNewContent else { return }
+                      scrolling.mayFollowNewContent else { return }
                 scrolling.requestBottom()
             }
             .onChange(of: model.responseRevision) { _, _ in
@@ -226,7 +232,7 @@ struct ChatTimelineView: View {
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
                 // Coalesce actual layout changes. Scrolling through the same
                 // layout cannot restart this animation on every offset callback.
-                do { try await Task.sleep(for: .milliseconds(24)) } catch { return }
+                do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command, using: scrollProxy)
             }
@@ -470,6 +476,12 @@ private struct ChatTimelineContent: View, Equatable {
     let keepsOlderPrompt: Bool
     let historyAnchor: TimelineHistoryLayout?
     let timelineRevision: Int
+    let notices: [V2RuntimeNotice]
+    let isRunning: Bool
+    let hasOlderItems: Bool
+    let hasNewerItems: Bool
+    let hasPendingUserMessage: Bool
+    let sendingPlaceholder: String?
     let subagentActivity: SubagentActivityPresentation?
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
@@ -484,31 +496,35 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
             && lhs.timelineRevision == rhs.timelineRevision
+            && lhs.notices == rhs.notices && lhs.isRunning == rhs.isRunning
+            && lhs.hasOlderItems == rhs.hasOlderItems && lhs.hasNewerItems == rhs.hasNewerItems
+            && lhs.hasPendingUserMessage == rhs.hasPendingUserMessage
+            && lhs.sendingPlaceholder == rhs.sendingPlaceholder
             && lhs.subagentActivity == rhs.subagentActivity
     }
     var body: some View {
-        let visibleNotices = model.session.notices.notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
-        let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(model.session.notices.notices
+        let visibleNotices = notices.filter { $0.isVisible && !$0.blocks(model.session.id) }
+        let groups = TimelineGrouping.groups(model.timeline.rows, interactionTargets: Set(notices
             .filter(\.isVisible).compactMap(\.timelineTargetID)))
         // Resolve notice targets once per body instead of once per row.
         let rowIDs = Set(model.timeline.rows.map(\.id))
         let noticesByTarget = Dictionary(grouping: visibleNotices.filter { $0.timelineTargetID != nil }) { $0.timelineTargetID! }
-        let actions = TimelineTurnActions.build(groups: groups, suppressLatest: model.isRunning || model.session.hasNewerItems,
-            hasPendingUserMessage: !model.session.hasNewerItems && (!model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty))
+        let actions = TimelineTurnActions.build(groups: groups, suppressLatest: isRunning || hasNewerItems,
+            hasPendingUserMessage: !hasNewerItems && hasPendingUserMessage)
         // Cache content-space frames without publishing SwiftUI state. Visibility
         // callbacks select the actual row under the reader when history loads.
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
         // A lazy column builds and lays out only the rows around the viewport.
         // The spacing and row styling stay identical to the old eager stack.
         LazyVStack(alignment: .leading, spacing: 20) {
-            if model.session.hasOlderItems || keepsOlderPrompt {
+            if hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {
                         HStack(spacing: 8) {
                             ProgressView().progressViewStyle(.circular).controlSize(.small)
                             Text(String(localized: "正在加载较早的消息…"))
                         }.accessibilityElement(children: .combine)
-                    } else if model.session.hasOlderItems {
+                    } else if hasOlderItems {
                         Button(action: onLoadOlder) {
                             Text(olderPullReady ? String(localized: "松开加载较早的消息") : String(localized: "加载较早的消息"))
                                 .frame(maxWidth: .infinity, minHeight: 44)
@@ -563,7 +579,7 @@ private struct ChatTimelineContent: View, Equatable {
                     onDismiss: { model.session.dismissPendingMessage(id: pending.id) })
                     .id(pending.id)
             }
-            if model.session.hasNewerItems {
+            if hasNewerItems {
                 Button(action: onLoadLatest) {
                     Group {
                         if isLoadingLatest { ProgressView(String(localized: "正在加载更新的记录…")) }
@@ -576,7 +592,7 @@ private struct ChatTimelineContent: View, Equatable {
             // Constant breathing room: status text and card counts cannot
             // change this spacer or create a spurious follow request.
             Group {
-                if let text = model.sendingPlaceholder {
+                if let text = sendingPlaceholder {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
