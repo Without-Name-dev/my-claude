@@ -10,27 +10,29 @@ nonisolated struct TimelineHistoryLayout: Equatable {
     let y: CGFloat
 }
 
-/// A history request stays busy until its page has passed through the 5 Hz
-/// presentation buffer and layout. Restoring a point retains the reader's
-/// offset inside a long message, unlike aligning a group ID to the viewport top.
+/// Where the reader was when an older page was requested, and how far that page
+/// has moved the content under them since.
+///
+/// The correction is expressed as an incremental delta against the *current*
+/// offset, not as a target computed when the request started: the page can
+/// arrive while the person is still dragging, and a point measured then would
+/// drag them back. Each time the anchor's content-space position changes by Δ
+/// (a page was prepended, or a long message above it finished parsing), the
+/// live offset is shifted by the same Δ, which keeps the row they are reading
+/// exactly where it is on screen.
+///
+/// The position stays alive after the page has arrived so those late height
+/// changes keep being corrected; a new request or leaving the session replaces
+/// it.
 nonisolated struct TimelineHistoryPosition: Equatable {
     let id: Int
     let origin: TimelineHistoryLayout?
-    private let originOffset: CGFloat
-    private let originContentHeight: CGFloat?
-    private let originFirstRowID: String?
-    /// The newest row when the page was requested. Any row appended after that
-    /// grew the tail, and the height difference between two samples then mixes
-    /// "a page was prepended" with "the reply grew" — the height fallback is
-    /// only trustworthy while this still matches.
-    private let originLastRowID: String?
-    private var prePublicationContentHeight: CGFloat?
     private var hasReceivedPage = false
     private var expectedFirstRowID: String?
-    private var restorationCancelled = false
     private(set) var restoredOffset: CGFloat?
-    private var restoredByAnchor = false
-    private var restoredByHeight = false
+    /// The anchor position the last correction was derived from.
+    private var measuredAnchorY: CGFloat
+    private var corrected = false
 
     init(id: Int, layout: TimelineHistoryLayout?, offsetY: CGFloat, topInset: CGFloat,
          contentHeight: CGFloat? = nil,
@@ -38,63 +40,32 @@ nonisolated struct TimelineHistoryPosition: Equatable {
          originLastRowID: String? = nil) {
         self.id = id
         origin = layout
-        originContentHeight = contentHeight
-        self.originFirstRowID = originFirstRowID ?? layout?.firstRowID
-        self.originLastRowID = originLastRowID
-        // An outward pull can still be bouncing when the request starts.
-        originOffset = max(-topInset, offsetY)
+        measuredAnchorY = layout?.y ?? 0
     }
 
-    func isReadyToFinish() -> Bool {
-        guard hasReceivedPage else { return false }
-        guard let expectedFirstRowID else { return true }
-        return restoredByHeight || restoredByAnchor || expectedFirstRowID == originFirstRowID
-    }
+    /// Whether the page itself has arrived. The loading indicator ends here;
+    /// the correction may still be waiting for layout or for the reader to stop
+    /// dragging.
+    var pageArrived: Bool { hasReceivedPage }
 
     mutating func receivedPage(firstRowID: String?) {
         hasReceivedPage = true
         expectedFirstRowID = firstRowID
     }
 
-    mutating func cancelRestoration() { restorationCancelled = true }
-
-    mutating func laidOut(_ layout: TimelineHistoryLayout, generation: Int) -> CGFloat? {
-        // The anchor is the trustworthy channel, so it may correct an earlier
-        // height-based guess (that one can be polluted). The reverse is not
-        // allowed: see laidOutContentHeight.
-        guard !restorationCancelled, generation == id, let origin,
+    /// Returns the offset the page should be shifted to, or nil when nothing
+    /// moved since the last call.
+    mutating func laidOut(_ layout: TimelineHistoryLayout, currentOffset: CGFloat, generation: Int) -> CGFloat? {
+        guard generation == id, let origin,
               layout.anchorRowID == origin.anchorRowID, layout.edge == origin.edge,
               layout.firstRowID != origin.firstRowID else { return nil }
-        guard expectedFirstRowID == nil || layout.firstRowID == expectedFirstRowID else { return nil }
-        restoredByAnchor = true
-        let offset = originOffset + layout.y - origin.y
-        guard abs(offset - (restoredOffset ?? originOffset)) > 0.5 else { return nil }
+        if let expectedFirstRowID, layout.firstRowID != expectedFirstRowID { return nil }
+        let delta = layout.y - measuredAnchorY
+        guard abs(delta) > 0.5 else { return nil }
+        measuredAnchorY = layout.y
+        let offset = currentOffset + delta
         restoredOffset = offset
-        return offset
-    }
-
-    mutating func laidOutContentHeight(_ height: CGFloat, firstRowID: String?, lastRowID: String?, generation: Int) -> CGFloat? {
-        guard !restorationCancelled, !restoredByHeight, generation == id,
-              let originContentHeight, originContentHeight > 0 else { return nil }
-        // Something was appended at the tail since the page was requested; the
-        // height delta now includes that growth, so the fallback would restore
-        // by the wrong amount.
-        if let originLastRowID, lastRowID != originLastRowID { return nil }
-        guard hasReceivedPage, let expectedFirstRowID else {
-            if firstRowID == originFirstRowID { prePublicationContentHeight = height }
-            return nil
-        }
-        guard expectedFirstRowID != originFirstRowID else { return nil }
-        guard firstRowID == expectedFirstRowID else {
-            prePublicationContentHeight = height
-            return nil
-        }
-        guard !restoredByAnchor else { return nil }
-        let baseline = prePublicationContentHeight ?? originContentHeight
-        let offset = originOffset + height - baseline
-        guard abs(offset - (restoredOffset ?? originOffset)) > 0.5 else { return nil }
-        restoredOffset = offset
-        restoredByHeight = true
+        corrected = true
         return offset
     }
 }

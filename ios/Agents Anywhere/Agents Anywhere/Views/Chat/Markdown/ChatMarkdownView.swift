@@ -29,7 +29,7 @@ struct ChatMarkdownView: View {
     /// viewport — the jump seen when swiping up through history. Parsing a
     /// normal message costs a few milliseconds and happens only when the row is
     /// realized, so the first layout is already its final height.
-    private static let synchronousParseLimit = 4_000
+    private static let synchronousParseLimit = 12_000
 
     init(text: String, isStreaming: Bool = false, resolvesFileReferences: Bool = false, layoutGeneration: Int = 0) {
         self.text = text

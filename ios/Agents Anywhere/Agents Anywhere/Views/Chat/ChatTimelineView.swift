@@ -17,7 +17,6 @@ struct ChatTimelineView: View {
     @State private var viewportSample = ChatViewportSample()
     @State private var viewportUpdates = ChatLayoutUpdate<TimelineViewport>()
     @State private var historyUpdates = ChatLayoutUpdate<TimelineHistoryLayout>()
-    @State private var historyHeights = ChatLayoutUpdate<CGFloat>()
     @State private var latestPull = TimelineHistoryPull()
     @State private var olderPull = TimelineHistoryPull(edge: .older)
     @State private var olderPromptVisible = false
@@ -132,8 +131,11 @@ struct ChatTimelineView: View {
                     // queued by that restoration would otherwise be applied on
                     // the next main-queue turn, after the gesture had begun.
                     releaseScrollPosition()
-                    historyUpdates.cancel(); historyHeights.cancel()
-                    historyPosition?.cancelRestoration()
+                    historyUpdates.cancel()
+                    // The correction itself is not cancelled: a page that
+                    // lands mid-gesture still moved the content under the
+                    // reader, and the anchor has to shift it back once the
+                    // finger is gone.
                     olderPull.begin(at: current, promptVisible: olderPromptVisible,
                         canLoad: model.session.hasOlderItems && !model.session.isLoadingHistory && olderLoadRequest == nil && latestLoadRequest == nil)
                     latestPull.begin(at: current, promptVisible: latestPromptVisible,
@@ -154,7 +156,6 @@ struct ChatTimelineView: View {
                     // anchor after the gesture settles so the prepend cannot
                     // leave the reader at a shifted point.
                     if let layout = historyLayout.value { applyHistoryLayout(layout) }
-                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
@@ -191,9 +192,6 @@ struct ChatTimelineView: View {
                         if older != olderPull { olderPull = older }
                     }
                 }
-                if abs(value.contentHeight - previous.contentHeight) > 0.5 {
-                    historyHeights.submit(value.contentHeight) { applyHistoryHeight($0) }
-                }
             }
             .onChange(of: navigationIsSuspended, initial: true) { _, suspended in
                 viewportUpdates.cancel()
@@ -204,7 +202,6 @@ struct ChatTimelineView: View {
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
                     if let layout = historyLayout.value { historyDidLayOut(layout) }
-                    applyHistoryHeight(viewport.contentHeight)
                 }
             }
             .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
@@ -289,29 +286,22 @@ struct ChatTimelineView: View {
                         applyHistoryLayout(layout)
                     }
                 }
-                applyHistoryHeight(viewport.contentHeight)
             }
             .task(id: HistorySettlement(id: historyPosition?.id,
-                ready: historyPosition?.isReadyToFinish() == true,
+                ready: historyPosition?.pageArrived == true,
                 offset: historyPosition?.restoredOffset, generation: scrolling.navigationGeneration)) {
                 guard let request = historyPosition?.id else { return }
-                // A gesture or an explicit return to bottom supersedes the
-                // restoration. The page may still arrive through the
-                // repository, but it must not hold the older prompt busy.
-                if scrolling.navigationGeneration != request {
-                    historyPosition = nil
-                    olderLoadRequest = nil
-                    return
-                }
-                guard historyPosition?.isReadyToFinish() == true else { return }
-                // Let the point correction reach native layout before releasing
-                // its target or ending the spinner. A new measurement restarts this.
+                guard historyPosition?.pageArrived == true else { return }
+                // Let the point correction reach native layout before ending
+                // the spinner. The position itself stays alive: a long message
+                // above the anchor can finish parsing later, and that height
+                // still has to be taken out of the reader's position.
                 do { try await Task.sleep(for: .milliseconds(64)) } catch { return }
                 guard !Task.isCancelled, historyPosition?.id == request else { return }
                 if historyPosition?.restoredOffset != nil {
                     position.isPositionedByUser = true
                 }
-                historyPosition = nil; olderLoadRequest = nil
+                olderLoadRequest = nil
             }
             .task(id: latestLoadRequest) {
                 guard let generation = latestLoadRequest else { return }
@@ -328,7 +318,6 @@ struct ChatTimelineView: View {
             if !keyboardIsVisible, scrolling.showsBottomButton() {
                 Button {
                     latestPull.cancel(); olderPull.cancel()
-                    historyPosition?.cancelRestoration()
                     scrolling.requestBottom()
                 } label: {
                     Label(String(localized: "到底部"), appSymbol: "arrow.down").font(.caption.weight(.medium)).foregroundStyle(.primary)
@@ -341,7 +330,7 @@ struct ChatTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
+        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
             // Typing is a reason to bring the tail back only for a reader who
@@ -401,7 +390,6 @@ struct ChatTimelineView: View {
         guard model.session.isValid, model.session.hasNewerItems,
               !model.session.isLoadingHistory, latestLoadRequest == nil, olderLoadRequest == nil else { return }
         olderPull.cancel(); latestPull.cancel()
-        historyPosition?.cancelRestoration()
         // This is reached from the pull gesture while the offset is still
         // decelerating. Do not request the tail here: the page lands first,
         // and the fetch completion below returns only if the reader has not
@@ -445,29 +433,11 @@ struct ChatTimelineView: View {
         // wins, even if a coalesced measurement arrives after it began.
         guard !navigationIsSuspended, !scrolling.userIsScrolling,
               var restoration = historyPosition else { return }
-        let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
+        let offset = restoration.laidOut(layout, currentOffset: viewport.offsetY,
+                                         generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
         TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset))")
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { position.scrollTo(y: offset) }
-    }
-
-    private func applyHistoryHeight(_ height: CGFloat) {
-        // The height difference between two samples cannot tell "a page was
-        // prepended" apart from "the reply at the tail grew". While a reply
-        // streams, that fallback would restore by the wrong amount and jump the
-        // page; the anchor measurement is the only trustworthy channel then.
-        guard !navigationIsSuspended, !scrolling.userIsScrolling, !model.isRunning,
-              var restoration = historyPosition else { return }
-        let offset = restoration.laidOutContentHeight(height,
-            firstRowID: model.timeline.rows.first?.id,
-            lastRowID: model.timeline.rows.last?.id,
-            generation: scrolling.navigationGeneration)
-        if historyPosition != restoration { historyPosition = restoration }
-        guard let offset else { return }
-        TimelineTrace.shared.record("RESTORE.height", "y=\(Int(offset))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(y: offset) }
