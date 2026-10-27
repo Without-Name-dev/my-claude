@@ -236,7 +236,7 @@ struct WorkflowCard: View {
 
                 Spacer()
 
-                StatusBadge(status: workflow.status)
+                WorkflowStatusBadge(status: workflow.status)
             }
 
             // Progress

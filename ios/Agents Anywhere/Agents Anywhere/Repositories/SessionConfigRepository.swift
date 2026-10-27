@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Repository for session configuration management
 @MainActor
@@ -20,7 +21,11 @@ public final class SessionConfigRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let fetchedConfig: SessionConfig = try await get(path: "/api/v2/sessions/\(sessionID)/config")
+        let request = HTTPRequest<EmptyRequestBody, SessionConfig>(
+            method: .get,
+            path: "/api/v2/sessions/\(sessionID)/config"
+        )
+        let fetchedConfig = try await transport.send(request)
         config = fetchedConfig
     }
 
@@ -34,14 +39,18 @@ public final class SessionConfigRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let request = UpdateConfigRequest(
+        let requestBody = UpdateConfigRequest(
             effortLevel: effortLevel,
             modelName: modelName,
             fastMode: fastMode,
             autoMode: autoMode
         )
-
-        let updatedConfig: SessionConfig = try await patch(path: "/api/v2/sessions/\(sessionID)/config", body: request)
+        let request = HTTPRequest(
+            method: .patch,
+            path: "/api/v2/sessions/\(sessionID)/config",
+            body: requestBody
+        )
+        let updatedConfig: SessionConfig = try await transport.send(request)
         config = updatedConfig
     }
 
@@ -50,8 +59,13 @@ public final class SessionConfigRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let request = ExecuteCommandRequest(command: command)
-        return try await post(path: "/api/v2/sessions/\(sessionID)/commands/execute", body: request)
+        let requestBody = ExecuteCommandRequest(command: command)
+        let request = HTTPRequest(
+            method: .post,
+            path: "/api/v2/sessions/\(sessionID)/commands/execute",
+            body: requestBody
+        )
+        return try await transport.send(request)
     }
 
     /// Fetch agent executions
@@ -59,7 +73,11 @@ public final class SessionConfigRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let response: AgentsResponse = try await get(path: "/api/v2/sessions/\(sessionID)/agents")
+        let request = HTTPRequest<EmptyRequestBody, AgentsResponse>(
+            method: .get,
+            path: "/api/v2/sessions/\(sessionID)/agents"
+        )
+        let response = try await transport.send(request)
         return response.agents
     }
 
@@ -68,22 +86,12 @@ public final class SessionConfigRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let response: WorkflowsResponse = try await get(path: "/api/v2/sessions/\(sessionID)/workflows")
+        let request = HTTPRequest<EmptyRequestBody, WorkflowsResponse>(
+            method: .get,
+            path: "/api/v2/sessions/\(sessionID)/workflows"
+        )
+        let response = try await transport.send(request)
         return response.workflows
-    }
-
-    // MARK: - HTTP Helpers
-
-    private func get<Response: Decodable>(path: String) async throws -> Response {
-        try await transport.request(method: .get, path: path, body: EmptyBody?.none)
-    }
-
-    private func post<Body: Encodable, Response: Decodable>(path: String, body: Body) async throws -> Response {
-        try await transport.request(method: .post, path: path, body: body)
-    }
-
-    private func patch<Body: Encodable, Response: Decodable>(path: String, body: Body) async throws -> Response {
-        try await transport.request(method: .patch, path: path, body: body)
     }
 }
 
@@ -112,5 +120,3 @@ private struct AgentsResponse: Decodable {
 private struct WorkflowsResponse: Decodable {
     let workflows: [WorkflowRun]
 }
-
-private struct EmptyBody: Encodable {}

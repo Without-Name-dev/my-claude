@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Repository for message queue operations
 @MainActor
@@ -22,8 +23,13 @@ public final class MessageQueueRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        let request = EnqueueRequest(content: content, attachments: attachments, source: source)
-        let message: QueuedMessage = try await post(path: "/api/v2/sessions/\(sessionID)/queue", body: request)
+        let requestBody = EnqueueRequest(content: content, attachments: attachments, source: source)
+        let request = HTTPRequest(
+            method: .post,
+            path: "/api/v2/sessions/\(sessionID)/queue",
+            body: requestBody
+        )
+        let message: QueuedMessage = try await transport.send(request)
 
         messages.append(message)
         lastSeq = max(lastSeq, message.seq)
@@ -37,7 +43,12 @@ public final class MessageQueueRepository: ObservableObject {
         defer { isLoading = false }
 
         let sinceParam = since ?? lastSeq
-        let response: QueueResponse = try await get(path: "/api/v2/sessions/\(sessionID)/queue?since=\(sinceParam)")
+        let request = HTTPRequest<EmptyRequestBody, QueueResponse>(
+            method: .get,
+            path: "/api/v2/sessions/\(sessionID)/queue",
+            queryItems: [URLQueryItem(name: "since", value: String(sinceParam))]
+        )
+        let response = try await transport.send(request)
 
         // Merge with existing messages
         for newMsg in response.messages {
@@ -57,38 +68,29 @@ public final class MessageQueueRepository: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        try await delete(path: "/api/v2/sessions/\(sessionID)/queue/\(messageID)")
+        let request = HTTPRequest<EmptyRequestBody, EmptyResponse>(
+            method: .delete,
+            path: "/api/v2/sessions/\(sessionID)/queue/\(messageID)"
+        )
+        let _: EmptyResponse = try await transport.send(request)
 
         messages.removeAll { $0.id == messageID }
     }
 
     /// Update message status (typically called by system)
     public func updateStatus(messageID: String, status: QueueStatus, errorMessage: String? = nil) async throws {
-        let request = UpdateStatusRequest(status: status.rawValue, errorMessage: errorMessage)
-        try await patch(path: "/api/v2/sessions/\(sessionID)/queue/\(messageID)", body: request)
+        let requestBody = UpdateStatusRequest(status: status.rawValue, errorMessage: errorMessage)
+        let request = HTTPRequest(
+            method: .patch,
+            path: "/api/v2/sessions/\(sessionID)/queue/\(messageID)",
+            body: requestBody
+        )
+        let _: EmptyResponse = try await transport.send(request)
 
         if let index = messages.firstIndex(where: { $0.id == messageID }) {
             messages[index].status = status
             messages[index].errorMessage = errorMessage
         }
-    }
-
-    // MARK: - HTTP Helpers
-
-    private func get<Response: Decodable>(path: String) async throws -> Response {
-        try await transport.request(method: .get, path: path, body: EmptyBody?.none)
-    }
-
-    private func post<Body: Encodable, Response: Decodable>(path: String, body: Body) async throws -> Response {
-        try await transport.request(method: .post, path: path, body: body)
-    }
-
-    private func patch<Body: Encodable>(path: String, body: Body) async throws {
-        let _: EmptyResponse = try await transport.request(method: .patch, path: path, body: body)
-    }
-
-    private func delete(path: String) async throws {
-        let _: EmptyResponse = try await transport.request(method: .delete, path: path, body: EmptyBody?.none)
     }
 }
 
@@ -108,6 +110,3 @@ private struct UpdateStatusRequest: Encodable {
     let status: String
     let errorMessage: String?
 }
-
-private struct EmptyResponse: Decodable {}
-private struct EmptyBody: Encodable {}
