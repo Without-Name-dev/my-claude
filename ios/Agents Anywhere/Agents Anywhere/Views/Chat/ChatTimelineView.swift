@@ -561,9 +561,16 @@ private struct ChatTimelineContent: View, Equatable {
         // Cache content-space frames without publishing SwiftUI state. Visibility
         // callbacks select the actual row under the reader when history loads.
         let anchorGroup = historyAnchor.flatMap { anchor in groups.first { $0.rows.contains { $0.id == anchor.anchorRowID } } }
-        // A lazy column builds and lays out only the rows around the viewport.
-        // The spacing and row styling stay identical to the old eager stack.
-        LazyVStack(alignment: .leading, spacing: 20) {
+        // An ordinary stack, deliberately: a lazy column estimates the height
+        // of the rows it has not realized, and every one of those estimates is
+        // wrong the moment the row is realized. Content height then swings by
+        // hundreds of points while the reader scrolls (the on-device trace
+        // showed ±1000pt per sample), which moves the content they are reading
+        // and makes the history restore compute a target from a guess. With
+        // every row laid out for real, the geometry the follow and restore
+        // paths read is exact. NATIVE_CHAT.md records this as the original
+        // design; the lazy column was the regression.
+        VStack(alignment: .leading, spacing: 20) {
             if hasOlderItems || keepsOlderPrompt {
                 Group {
                     if isLoadingOlder {
