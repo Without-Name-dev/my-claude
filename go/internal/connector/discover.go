@@ -98,6 +98,13 @@ func (d *Discovery) Scan() ([]SessionRecord, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			return nil
 		}
+		// Subagent transcripts (and the workflow journals beside them) are
+		// JSONL files with session-like records, but they are not conversations
+		// the person can open. Importing them invented sessions named after a
+		// subagent or "journal" in the client.
+		if strings.Contains(filepath.ToSlash(path), "/subagents/") {
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil

@@ -235,10 +235,31 @@ func (a *App) publishTimelineReset(ctx context.Context, sessionID string) {
 	for _, item := range items {
 		views = append(views, toView(item, session.Runtime))
 	}
-	payload := map[string]any{"items": views}
-	frame, err := newEnvelope(sessionID, session.Seq, EventTimelineReset, payload)
-	if err != nil {
-		return
+	// One frame with 500 long messages can exceed the clients' 1 MiB message
+	// limit; the receiver then tore the whole stream down and reconnected in a
+	// loop. Clients merge snapshot frames, so publish it in bounded chunks.
+	const chunkBytes = 512 << 10
+	chunk := make([]ItemView, 0, 64)
+	size := 0
+	flush := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		frame, err := newEnvelope(sessionID, session.Seq, EventTimelineReset, map[string]any{"items": chunk})
+		if err != nil {
+			return
+		}
+		a.broker.Publish(sessionID, frame)
+		chunk = make([]ItemView, 0, 64)
+		size = 0
 	}
-	a.broker.Publish(sessionID, frame)
+	for _, view := range views {
+		encoded, err := json.Marshal(view)
+		if err == nil && size+len(encoded) > chunkBytes {
+			flush()
+		}
+		chunk = append(chunk, view)
+		size += len(encoded)
+	}
+	flush()
 }
