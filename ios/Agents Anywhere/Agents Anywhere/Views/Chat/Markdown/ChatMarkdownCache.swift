@@ -30,10 +30,16 @@ nonisolated final class ChatMarkdownCache: @unchecked Sendable {
     /// still holding more history than the reader normally scrolls back
     /// through: an evicted message would be laid out at zero height again.
     private let limit = 600
-    /// A single very long message is cheaper to re-parse than to keep.
-    private let maximumTextLength = 24_000
+    /// Memory is bounded by the text the entries were parsed from, not by a
+    /// per-message cutoff. A dropped parse is a row that lays out at zero
+    /// height again and pushes the reader's content down when it inflates.
+    private let characterBudget = 2_000_000
+    /// Only an absurd single message is refused: it would evict everything.
+    private let maximumTextLength = 200_000
     private var entries: [Key: Value] = [:]
     private var order: [Key] = []
+    private var charactersByKey: [Key: Int] = [:]
+    private var totalCharacters = 0
 
     func value(for text: String, resolvesFileReferences: Bool) -> Value? {
         let key = Key(text: text, resolvesFileReferences: resolvesFileReferences)
@@ -47,10 +53,16 @@ nonisolated final class ChatMarkdownCache: @unchecked Sendable {
         guard text.count <= maximumTextLength else { return }
         let key = Key(text: text, resolvesFileReferences: resolvesFileReferences)
         lock.lock(); defer { lock.unlock() }
+        if let previous = charactersByKey[key] { totalCharacters -= previous }
         entries[key] = value
+        charactersByKey[key] = text.count
+        totalCharacters += text.count
         touch(key)
-        while order.count > limit {
-            entries.removeValue(forKey: order.removeFirst())
+        while order.count > limit || (totalCharacters > characterBudget && order.count > 1) {
+            let oldest = order.removeFirst()
+            totalCharacters -= charactersByKey[oldest] ?? 0
+            charactersByKey.removeValue(forKey: oldest)
+            entries.removeValue(forKey: oldest)
         }
     }
 
