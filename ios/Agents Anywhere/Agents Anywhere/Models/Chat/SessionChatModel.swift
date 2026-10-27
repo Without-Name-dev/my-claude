@@ -271,6 +271,15 @@ final class SessionChatModel {
         }
         if let data = repository.cached(sessionId: session.id) {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
+        } else {
+            // If no cached data, mark as presented to avoid infinite loading
+            // User can manually refresh if data doesn't arrive
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                if !timeline.hasPresentedSnapshot {
+                    timeline.presentOpening([], pendingMessages: session.pendingMessages)
+                }
+            }
         }
         isOpeningPrepared = true
     }
