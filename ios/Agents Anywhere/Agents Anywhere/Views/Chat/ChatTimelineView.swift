@@ -478,7 +478,7 @@ private struct ChatTimelineContent: View, Equatable {
     let keepsOlderPrompt: Bool
     let historyAnchor: TimelineHistoryLayout?
     let timelineRevision: Int
-    let notices: [V2RuntimeNotice]
+    let notices: [SessionNoticeModel]
     let isRunning: Bool
     let hasOlderItems: Bool
     let hasNewerItems: Bool
