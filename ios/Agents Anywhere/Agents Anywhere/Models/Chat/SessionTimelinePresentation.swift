@@ -226,7 +226,7 @@ final class SessionTimelinePresentation {
                     // lazy stack's diff, so coalescing bursts here keeps the
                     // main thread free for the scroll gesture it is serving.
                     do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
-                    guard !Task.isCancelled, let self else { return }
+                    guard !Task.isCancelled else { return }
                     repeat {
                         // Transport frames are coalesced, then presented in one
                         // main-actor update without an artificial reveal delay.
