@@ -72,6 +72,10 @@ type TurnWatcher struct {
 	seenTool  map[string]bool
 	endedTool map[string]bool
 	agentsKey string
+	// agentsSynced forces the first snapshot of every turn onto the wire, even
+	// when it is empty. A watcher that skipped the empty set left the previous
+	// turn's subagents "running" on the server until it restarted.
+	agentsSynced bool
 }
 
 // NewTurnWatcher prepares a watcher for a message that was just queued.
@@ -179,7 +183,11 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			// desktop already finished.
 			current, currentErr := w.bridge.ReadOutbox(w.externalSessionID)
 			if currentErr == nil && current != nil && alive() {
-				if current.TurnID != "" && current.TurnID != w.previousID &&
+				// Request-scoped watchers run concurrently. A session-level outbox
+				// can only stand in for this request when it carries the exact
+				// request id; turn id and timestamp alone let every watcher adopt
+				// the same first turn when several messages were queued together.
+				if current.RequestID == w.messageID && current.TurnID != "" && current.TurnID != w.previousID &&
 					(current.TS == 0 || current.TS >= w.queuedAt) {
 					w.requestScoped = false
 					box, err = current, nil
@@ -480,9 +488,10 @@ func (w *TurnWatcher) emitAgents(turnID string) {
 			entry.Detail + "\x00" +
 			entry.Text + "\x1e"
 	}
-	if key == w.agentsKey {
+	if w.agentsSynced && key == w.agentsKey {
 		return
 	}
+	w.agentsSynced = true
 	w.agentsKey = key
 
 	agents := make([]protocol.AgentRunning, 0, len(entries))

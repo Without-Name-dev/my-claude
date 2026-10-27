@@ -449,6 +449,10 @@ func (a *App) ServeConnectorWS(w http.ResponseWriter, r *http.Request) {
 			// Questions this connector was blocked on can no longer be
 			// answered; retract them instead of leaving dead cards behind.
 			a.expireConnectorApprovals(ctx, connector.ID)
+			// Subagents it was running stopped with it. Publishing the empty
+			// set now clears the phone's status line instead of leaving it
+			// "运行中" until the staleness bound expires.
+			a.clearConnectorActivity(ctx, connector.ID)
 			// unregister already removed the socket, so these views render the
 			// connector as offline. publishConnectorPresence also wakes the
 			// dashboard lists, which read a snapshot rather than this broker.
