@@ -141,6 +141,37 @@ func (a *App) clearConnectorActivity(ctx context.Context, connectorID string) {
 	}
 }
 
+// onRuntimeState applies a busy/idle observation reported by the runtime
+// itself. It exists for turns that were started outside a queued message:
+// those have no turn watcher, so without this the session stayed "idle" on
+// every client while the machine was actually working.
+func (a *App) onRuntimeState(ctx context.Context, conn *connectorConn, msg protocol.RuntimeState) {
+	sessionID := msg.SessionID
+	if sessionID == "" && msg.ExternalSessionID != "" {
+		session, err := a.db.SessionByExternalID(ctx, conn.id, msg.ExternalSessionID)
+		if err != nil {
+			return
+		}
+		sessionID = session.ID
+	}
+	if sessionID == "" {
+		return
+	}
+	session, err := a.ownedSessionForConnector(ctx, conn, sessionID)
+	if err != nil {
+		return
+	}
+	// Anything else (waiting for approval, stopping, error) is decided by the
+	// server's own state machine and must not be overwritten from here.
+	if msg.Status != "running" && msg.Status != "idle" {
+		return
+	}
+	if session.Status == msg.Status {
+		return
+	}
+	a.setSessionStatus(ctx, session.ID, msg.Status)
+}
+
 // handleSessionActivity returns the current subagent list.
 func (a *App) handleSessionActivity(w http.ResponseWriter, r *http.Request, user store.User) {
 	session, ok := a.ownedSession(w, r, user)

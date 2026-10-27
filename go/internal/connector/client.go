@@ -193,6 +193,7 @@ func (c *Client) Run(ctx context.Context) {
 	go c.runTurns(ctx)
 	go c.runTurnWatchers(ctx)
 	go c.watchAgentActivity(ctx)
+	go c.watchRuntimeState(ctx)
 	for range historyWorkerCount {
 		go c.runHistory(ctx)
 	}
@@ -1132,6 +1133,74 @@ func (c *Client) watchAgentActivity(ctx context.Context) {
 			c.emit(protocol.TypeAgentActivity, protocol.AgentActivity{
 				ExternalSessionID: externalID,
 				Agents:            agents,
+			})
+		}
+	}
+}
+
+// runtimePollInterval is how often a live conversation's outbox is checked for
+// a turn that no message of the phone's started.
+const runtimePollInterval = 900 * time.Millisecond
+
+// watchRuntimeState reports turns begun in the terminal.
+//
+// A turn that was not queued here has no turn watcher, so the server never
+// learned it was running: the phone showed idle, with no progress line and no
+// stop button, while the machine was working. The plugin writes the turn's
+// status to its outbox either way.
+func (c *Client) watchRuntimeState(ctx context.Context) {
+	if c.Bridge == nil {
+		return
+	}
+	ticker := time.NewTicker(runtimePollInterval)
+	defer ticker.Stop()
+	// Only sessions this connector has reported as running are tracked: an
+	// initial "idle" must not overwrite the server's waiting/stopping state.
+	running := map[string]bool{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		live := map[string]bool{}
+		for _, id := range c.Bridge.LiveSessions(bridge.DefaultLiveTTL) {
+			live[id] = true
+		}
+		ids := make([]string, 0, len(live)+len(running))
+		for id := range live {
+			ids = append(ids, id)
+		}
+		for id := range running {
+			if !live[id] {
+				ids = append(ids, id)
+			}
+		}
+		for _, externalID := range ids {
+			streaming := false
+			if live[externalID] {
+				if box, err := c.Bridge.ReadOutbox(externalID); err == nil && box != nil {
+					streaming = box.Status == "streaming"
+				}
+			}
+			if streaming {
+				if running[externalID] {
+					continue
+				}
+				running[externalID] = true
+				c.emit(protocol.TypeRuntimeState, protocol.RuntimeState{
+					ExternalSessionID: externalID,
+					Status:            "running",
+				})
+				continue
+			}
+			if !running[externalID] {
+				continue
+			}
+			delete(running, externalID)
+			c.emit(protocol.TypeRuntimeState, protocol.RuntimeState{
+				ExternalSessionID: externalID,
+				Status:            "idle",
 			})
 		}
 	}

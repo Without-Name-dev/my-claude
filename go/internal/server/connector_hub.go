@@ -545,6 +545,12 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 			return
 		}
 		a.onAgentActivity(ctx, conn, msg)
+	case protocol.TypeRuntimeState:
+		var msg protocol.RuntimeState
+		if err := json.Unmarshal(env.Data, &msg); err != nil {
+			return
+		}
+		a.onRuntimeState(ctx, conn, msg)
 	case protocol.TypeRPCResponse:
 		a.deliverRPC(env.Data)
 	case protocol.TypeHistory:

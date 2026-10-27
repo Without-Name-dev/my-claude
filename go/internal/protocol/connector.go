@@ -421,6 +421,19 @@ type RPCError struct {
 // TypeAgentActivity reports the subagents running beside the main turn.
 const TypeAgentActivity = "agent.activity"
 
+// TypeRuntimeState reports that a runtime session started or stopped working
+// outside a queued message. A turn begun in the terminal has no watcher, so
+// without this the phone kept showing idle while the machine was busy.
+const TypeRuntimeState = "runtime.state"
+
+// RuntimeState is one observation of a conversation's busy/idle state.
+type RuntimeState struct {
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	// Status is "running" while a turn is streaming and "idle" once it ends.
+	Status string `json:"status"`
+}
+
 // AgentActivity is the status line the phone shows under the conversation.
 //
 // ExternalSessionID names the runtime conversation the snapshot came from, so
