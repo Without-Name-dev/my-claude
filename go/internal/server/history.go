@@ -156,18 +156,60 @@ func (l *historyLimiter) allow(sessionID string, cooldown time.Duration) bool {
 // knownMessages counts messages already stored outside transcript imports.
 // Counts preserve repeated identical prompts while still matching the copy
 // Claude writes for messages sent through this server.
-func (a *App) knownMessages(ctx context.Context, sessionID string) (map[string]int, error) {
+func (a *App) knownMessages(ctx context.Context, sessionID string) (map[string]int, []string, error) {
 	known := map[string]int{}
+	var assistants []string
 	items, err := a.db.TimelineNonHistoryMessages(ctx, a.db.Read(), sessionID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, item := range items {
 		if role, text, ok := messageIdentity(item.Role, item.Payload); ok {
 			known[role+"|"+text]++
+			if role == "assistant" && text != "" {
+				assistants = append(assistants, text)
+			}
 		}
 	}
-	return known, nil
+	return known, assistants, nil
+}
+
+// assistantPrefixLength is how much of a live assistant message is indexed for
+// the fragment check. Sixteen characters are enough to make an accidental
+// collision between two different messages implausible.
+const assistantPrefixLength = 16
+
+// assistantPrefixIndex keys live assistant messages by their opening text.
+func assistantPrefixIndex(texts []string) map[string][]string {
+	index := make(map[string][]string, len(texts))
+	for _, text := range texts {
+		if len(text) < assistantPrefixLength {
+			continue
+		}
+		key := text[:assistantPrefixLength]
+		index[key] = append(index[key], text)
+	}
+	return index
+}
+
+// isAssistantFragment reports whether a transcript message is one model step of
+// a turn the server already recorded in full.
+//
+// Claude writes one assistant record per model step, so a single reply that
+// used tools appears as several records: the opening prose, then the rest. The
+// live turn recorded the whole reply as one row. Importing the opening as its
+// own message put the start of the reply a second time, below the reply — the
+// conversation looked like it had reordered itself.
+func isAssistantFragment(text string, index map[string][]string) bool {
+	if len(text) < assistantPrefixLength {
+		return false
+	}
+	for _, existing := range index[text[:assistantPrefixLength]] {
+		if len(existing) > len(text) && strings.HasPrefix(existing, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // The connector prepends this block to the text it actually runs, so the
@@ -243,17 +285,20 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 	// followed) must not be imported again: the transcript copy has a different
 	// id, so only the role and the text identify it.
 	known := map[string]int{}
+	var assistantIndex map[string][]string
 	var seq int64
 	changed := 0
 	written := make([]store.TimelineItem, 0, len(msg.Items))
 	created := make([]bool, 0, len(msg.Items))
 	err = a.db.WithSession(session.ID, func() error {
 		if len(msg.Items) > 0 {
+			var assistantTexts []string
 			var err error
-			known, err = a.knownMessages(ctx, session.ID)
+			known, assistantTexts, err = a.knownMessages(ctx, session.ID)
 			if err != nil {
 				return err
 			}
+			assistantIndex = assistantPrefixIndex(assistantTexts)
 		}
 		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 			rows := make([]store.TimelineItem, 0, len(msg.Items))
@@ -263,6 +308,12 @@ func (a *App) applyHistory(ctx context.Context, conn *connectorConn, msg protoco
 					key := role + "|" + text
 					if known[key] > 0 {
 						known[key]--
+						continue
+					}
+					// One model step of a reply the server already recorded in
+					// full: importing it would repeat the opening below the
+					// reply itself.
+					if role == "assistant" && isAssistantFragment(text, assistantIndex) {
 						continue
 					}
 				}
