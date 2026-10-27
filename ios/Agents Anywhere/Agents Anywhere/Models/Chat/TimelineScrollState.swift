@@ -92,6 +92,10 @@ nonisolated struct TimelineScrollState: Equatable {
     @discardableResult
     mutating func requestBottom() -> Bool {
         guard !userIsScrolling else { return false }
+        // Keyboard animation and streamed layout changes can request the same
+        // return repeatedly. Keep its generation stable; the viewport value
+        // itself still changes and schedules a fresh target when needed.
+        guard mode != .returning else { return true }
         armBottomReturn()
         return true
     }

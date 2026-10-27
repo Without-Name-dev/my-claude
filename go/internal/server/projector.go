@@ -497,11 +497,33 @@ func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.T
 		case "done", "failed", "cancelled":
 			// A connector may resend after the database commit if its ack was lost.
 			// The item id is the durable turn key, so preserve the first final result.
+			// Also repair the submitted user item: transcript recovery may have
+			// completed the assistant item before this replay reaches the projector.
 			a.turns.end(msg.TurnID)
 			seq := a.currentSeq(ctx, msg.SessionID)
 			userItemID := ""
 			if msg.RequestID != "" {
 				userItemID = "msg_" + msg.RequestID + "_user"
+				userItem, userErr := a.db.TimelineItemByID(ctx, a.db.Read(), msg.SessionID, userItemID)
+				if userErr == nil && userItem.Type == "message" && userItem.Role == "user" &&
+					userItem.Status != existingItem.Status && userItem.Status != "done" &&
+					userItem.Status != "failed" && userItem.Status != "cancelled" {
+					var updatedID string
+					seq, err = a.writeTimeline(ctx, msg.SessionID, func(tx *sql.Tx, seq int64) error {
+						var updateErr error
+						updatedID, updateErr = a.updateSubmittedMessageStatus(
+							ctx, tx, msg.SessionID, msg.RequestID, existingItem.Status, seq,
+						)
+						return updateErr
+					})
+					if err != nil {
+						a.log.Warn("could not reconcile submitted message status", "session", msg.SessionID, "request", msg.RequestID, "error", err)
+						return false
+					}
+					userItemID = updatedID
+				} else if userErr != nil {
+					userItemID = ""
+				}
 			}
 			a.finishTurnEnd(ctx, session, itemID, userItemID, existingItem.Status, seq)
 			return true

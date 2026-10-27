@@ -58,6 +58,7 @@ final class SessionTimelinePresentation {
     private(set) var rows: [ChatTimelineRowModel] = []
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
+    private(set) var presentationRevision = 0
     /// The live subagent status line for the current turn, if the server has
     /// reported one. It is presentation-only; the server does not replay the
     /// event into a durable snapshot.
@@ -136,6 +137,7 @@ final class SessionTimelinePresentation {
             var updated: [ChatTimelineRowModel] = []
             updated.reserveCapacity(pending.count)
             var orderChanged = pending.count != rows.count
+            var contentChanged = orderChanged
             for (index, value) in pending.enumerated() {
                 let existing = rowsByID[value.id]
                 // A live batch republishes the whole projection with one
@@ -153,10 +155,13 @@ final class SessionTimelinePresentation {
                     row = ChatTimelineRowModel(value)
                     rowsByID[value.id] = row
                 }
+                let previousContentRevision = row.contentRevision
                 row.flush(value)
+                if row.contentRevision != previousContentRevision { contentChanged = true }
                 if !orderChanged, rows[index] !== row { orderChanged = true }
                 updated.append(row)
             }
+            let firstPresentation = !hasPresentedSnapshot
             if orderChanged {
                 // An older page changes the first published row. Publish it in
                 // a transaction with animations disabled; even if a caller has
@@ -181,7 +186,8 @@ final class SessionTimelinePresentation {
                     rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
                 }
             }
-            if !hasPresentedSnapshot { hasPresentedSnapshot = true }
+            if firstPresentation { hasPresentedSnapshot = true }
+            if contentChanged || orderChanged || firstPresentation { presentationRevision &+= 1 }
             self.pending = nil
         }
     }
@@ -233,7 +239,10 @@ final class SessionTimelinePresentation {
             activityPendingBoundary = boundary
             if boundary != nil, subagentActivity?.isRunning == false { subagentActivity = nil }
         }
-        if pendingMessages.map(\.id) != visible.map(\.id) { pendingMessages = visible }
+        if pendingMessages.map(\.id) != visible.map(\.id) {
+            pendingMessages = visible
+            presentationRevision &+= 1
+        }
     }
 }
 

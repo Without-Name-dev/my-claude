@@ -24,6 +24,14 @@ struct ChatComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var glass
 
+    private var hasSendableContent: Bool { draft.hasSendableContent }
+    private var showsStopAction: Bool { !hasSendableContent && isStreaming }
+    private var primaryActionEnabled: Bool {
+        if hasSendableContent { return canSend && !isBusy && !draft.isComposing }
+        if isStreaming { return canStop && !isBusy }
+        return false
+    }
+
     var body: some View {
         GlassEffectContainer(spacing: 12) {
             VStack(spacing: 0) {
@@ -49,20 +57,28 @@ struct ChatComposer: View {
                         NativeComposerEditor(draft: draft, controller: editor, maximumHeight: maximumEditorHeight, onCommandSend: onSend)
                     }
 
-                    Button(action: onSend) {
-                        AppSymbol("arrow.up", size: 18)
+                    Button {
+                        if hasSendableContent { onSend() }
+                        else if showsStopAction { onStop() }
+                    } label: {
+                        AppSymbol(showsStopAction ? "stop.fill" : "arrow.up", size: showsStopAction ? 13 : 18)
                             .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(AppTheme.primaryControlForeground(colorScheme))
+                            .foregroundStyle(showsStopAction ? Color.red : AppTheme.primaryControlForeground(colorScheme))
                             .frame(width: controls.sendDiameter, height: controls.sendDiameter)
-                            .background(AppTheme.primaryControlBackground(colorScheme).opacity((canSend && draft.canAttemptSend) && !isBusy ? 1 : 0.42), in: Circle())
+                            .background(
+                                showsStopAction
+                                    ? Color.red.opacity(primaryActionEnabled ? 0.12 : 0.06)
+                                    : AppTheme.primaryControlBackground(colorScheme).opacity(primaryActionEnabled ? 1 : 0.42),
+                                in: Circle()
+                            )
                             .frame(width: controls.touchTarget, height: controls.touchTarget)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(isBusy || !canSend || !draft.canAttemptSend)
-                    .accessibilityLabel(String(localized: "发送消息"))
+                    .disabled(!primaryActionEnabled)
+                    .accessibilityLabel(String(localized: showsStopAction ? "停止生成" : "发送消息"))
                     .accessibilityHint(draft.isComposing ? String(localized: "请先确认输入法候选文字") : "")
-                    .accessibilityIdentifier("chat.composer.send")
+                    .accessibilityIdentifier(showsStopAction ? "chat.composer.stop" : "chat.composer.send")
 
                     if showsCommands {
                         Button(action: onCommands) {
@@ -75,18 +91,6 @@ struct ChatComposer: View {
                         .accessibilityLabel(String(localized: "指令"))
                         .accessibilityAddTraits(commandsActive ? .isSelected : [])
                         .accessibilityIdentifier("chat.composer.commands")
-                    }
-                    if isStreaming {
-                        Button(action: onStop) {
-                            AppSymbol("stop.fill", size: 13)
-                                .foregroundStyle(.red)
-                                .frame(width: controls.touchTarget, height: controls.touchTarget)
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canStop || isBusy)
-                        .accessibilityLabel(String(localized: "停止生成"))
-                        .accessibilityIdentifier("chat.composer.stop")
                     }
                 }
             }

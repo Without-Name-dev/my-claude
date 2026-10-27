@@ -53,6 +53,7 @@ struct ChatTimelineView: View {
                     latestPullReady: latestPull.isReady, isLoadingLatest: latestLoadRequest != nil,
                     olderPullReady: olderPull.isReady, isLoadingOlder: olderLoadRequest != nil,
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
+                    timelineRevision: model.timeline.presentationRevision,
                     subagentActivity: model.timeline.subagentActivity,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryRowLayout: { rowID, layout, frame in
@@ -153,11 +154,13 @@ struct ChatTimelineView: View {
                     viewportSample.value = value
                     let previous = scrolling.viewport
                     let contentHeightChanged = abs(previous.contentHeight - value.contentHeight) > 0.5
+                    let visibleHeightChanged = abs(previous.visibleHeight - value.visibleHeight) > 0.5
                     if contentHeightChanged || previous.visibleHeight != value.visibleHeight
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    if contentHeightChanged && scrolling.mayFollowNewContent {
+                    if (contentHeightChanged && scrolling.mayFollowNewContent)
+                        || (keyboardIsVisible && visibleHeightChanged && scrolling.mayFollowNewContent) {
                         scrolling.requestBottom()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
@@ -191,6 +194,15 @@ struct ChatTimelineView: View {
                 // could scroll to the previous bottom and leave the bubble one
                 // row below the viewport.
                 if model.isOpeningReady, id != nil && !hasInteractions { scrolling.requestBottom() }
+            }
+            .onChange(of: model.timeline.rows.last?.id) { oldID, newID in
+                // Incoming terminal messages can append a row without changing
+                // the user's optimistic-send state. Follow that explicit event
+                // while parked at the live tail; geometry remains responsible
+                // for later height changes within the same streaming row.
+                guard model.isOpeningReady, newID != nil, newID != oldID,
+                      !hasInteractions, scrolling.mayFollowNewContent else { return }
+                scrolling.requestBottom()
             }
             .onChange(of: model.responseRevision) { _, _ in
                 // An approval response belongs to the current turn. Follow it
@@ -311,9 +323,10 @@ struct ChatTimelineView: View {
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
-            // The keyboard covers the newest rows. A reader who was following
-            // the tail must not be left looking at a cut-off message.
-            if scrolling.mayFollowNewContent { scrolling.requestBottom() }
+            // Editing is an explicit request to bring the latest conversation
+            // into the unobscured viewport. Geometry updates during the keyboard
+            // animation keep the tail aligned after the available height settles.
+            scrolling.requestBottom()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardIsVisible = false
@@ -456,6 +469,7 @@ private struct ChatTimelineContent: View, Equatable {
     let isLoadingOlder: Bool
     let keepsOlderPrompt: Bool
     let historyAnchor: TimelineHistoryLayout?
+    let timelineRevision: Int
     let subagentActivity: SubagentActivityPresentation?
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
@@ -469,6 +483,7 @@ private struct ChatTimelineContent: View, Equatable {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
+            && lhs.timelineRevision == rhs.timelineRevision
             && lhs.subagentActivity == rhs.subagentActivity
     }
     var body: some View {
