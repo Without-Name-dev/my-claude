@@ -160,6 +160,9 @@ struct ChatTimelineView: View {
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
             } action: { previous, value in
+                TimelineTrace.shared.offsetSample(previous: previous, value: value,
+                    phase: scrolling.phase, mode: scrolling.mode,
+                    rows: "\(model.timeline.rows.count):\(model.timeline.rows.first?.id.prefix(10) ?? "-")")
                 scrolling.noteUpwardMovement(from: previous, to: value)
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
@@ -385,6 +388,7 @@ struct ChatTimelineView: View {
             visibleTop: viewport.isMeasured ? viewport.visibleBottom - viewport.visibleHeight : nil,
             visibleBottom: viewport.isMeasured ? viewport.visibleBottom : nil)
         historyLayout.value = layout
+        TimelineTrace.shared.record("LOAD.OLDER", "offset=\(Int(viewport.offsetY)) rows=\(model.timeline.rows.count)")
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
             contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
@@ -411,12 +415,15 @@ struct ChatTimelineView: View {
         let animation: Animation? = reduceMotion ? nil :
             (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12))
 
+        TimelineTrace.shared.record("RETURN", "h=\(Int(command.request.contentHeight)) g=\(command.request.generation)")
         withAnimation(animation, completionCriteria: .removed) {
             // A proxy command targets the tail once. A persistent edge target
             // can compete with the user's next drag or with history restoration.
             proxy.scrollTo("tail", anchor: .bottom)
         } completion: {
-            if scrolling.complete(command) { releaseScrollPosition() }
+            let landed = scrolling.complete(command)
+            TimelineTrace.shared.record("RETURN.done", "landed=\(landed)")
+            if landed { releaseScrollPosition() }
         }
     }
     /// Stops a history point restoration from overriding a new scroll gesture.
@@ -441,6 +448,7 @@ struct ChatTimelineView: View {
         let offset = restoration.laidOut(layout, generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
+        TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(y: offset) }
@@ -459,6 +467,7 @@ struct ChatTimelineView: View {
             generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
+        TimelineTrace.shared.record("RESTORE.height", "y=\(Int(offset))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(y: offset) }
@@ -743,4 +752,51 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
             .min { $0.frame.minY < $1.frame.minY }?.layout
     }
 
+}
+
+/// A short in-memory record of everything that moves the transcript's offset.
+///
+/// Static review has proven and fixed the mechanisms it can prove; a jump that
+/// survives that needs to be attributed to a writer instead of guessed at.
+/// Only suspicious events are kept — an offset change with no gesture, a
+/// content-height change, an explicit scroll, a row that inflates after its
+/// parse — so the buffer holds minutes of history without recording every
+/// frame. "复制滚动诊断" in the session options copies this text.
+@MainActor
+final class TimelineTrace {
+    static let shared = TimelineTrace()
+
+    private struct Event {
+        let at: TimeInterval
+        let kind: String
+        let detail: String
+    }
+
+    private var events: [Event] = []
+    private let limit = 1200
+
+    func record(_ kind: String, _ detail: @autoclosure () -> String = "") {
+        let at = Date.timeIntervalSinceReferenceDate
+        events.append(Event(at: at, kind: kind, detail: detail()))
+        if events.count > limit { events.removeFirst(events.count - limit) }
+    }
+
+    func offsetSample(previous: TimelineViewport, value: TimelineViewport,
+                      phase: TimelineScrollState.Phase, mode: TimelineScrollState.Mode, rows: String) {
+        let dy = value.offsetY - previous.offsetY
+        if abs(dy) > 2, phase == .idle {
+            record("JUMP", "dy=\(Int(dy)) offset=\(Int(value.offsetY)) h=\(Int(value.contentHeight)) mode=\(mode)")
+        }
+        let dh = value.contentHeight - previous.contentHeight
+        if abs(dh) > 1 {
+            record("HEIGHT", "dh=\(Int(dh)) offset=\(Int(value.offsetY)) phase=\(phase) rows=\(rows)")
+        }
+    }
+
+    func text() -> String {
+        guard let first = events.first?.at else { return "no events" }
+        return events.map {
+            String(format: "%7.1fms ", ($0.at - first) * 1000) + $0.kind + " " + $0.detail
+        }.joined(separator: "\n")
+    }
 }

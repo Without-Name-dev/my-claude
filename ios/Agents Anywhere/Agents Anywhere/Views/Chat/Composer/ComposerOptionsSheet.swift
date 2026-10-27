@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ComposerOptionsSheet: View {
     @Bindable var settings: ConversationSettings
@@ -18,6 +19,7 @@ struct ComposerOptionsSheet: View {
     @State private var showsApplyError = false
     @State private var path: [Page] = []
     @State private var expandedModelID: String?
+    @State private var diagnosticsCopied = false
     @Environment(\.dismiss) private var dismiss
 
     private enum Page: Hashable { case models, permissions }
@@ -70,6 +72,25 @@ struct ComposerOptionsSheet: View {
                             }
                         }.padding(16).background { ComposerOptionSurface() }
                     }
+                    // Copies the transcript's scroll trace, so a jump that the
+                    // code review cannot explain can be attributed to the
+                    // writer that moved the offset.
+                    Button {
+                        UIPasteboard.general.string = TimelineTrace.shared.text()
+                        diagnosticsCopied = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            AppSymbol(diagnosticsCopied ? "checkmark.circle" : "doc.on.doc", size: 15)
+                                .foregroundStyle(.secondary)
+                            Text(diagnosticsCopied ? String(localized: "已复制滚动诊断") : String(localized: "复制滚动诊断"))
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .background { ComposerOptionSurface() }
                 }
                 .padding(20)
             }

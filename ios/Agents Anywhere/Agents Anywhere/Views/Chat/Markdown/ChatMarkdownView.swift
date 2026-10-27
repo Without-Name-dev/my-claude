@@ -96,6 +96,11 @@ struct ChatMarkdownView: View {
             }
             let next = parsed.blocks
             guard blocks != next else { return }
+            if !isStreaming {
+                // A settled row changing height after its first layout is what
+                // pushes the reader's content around; the trace pins it.
+                TimelineTrace.shared.record("INFLATE", "len=\(text.count) blocks=\(next.count)")
+            }
             if isStreaming {
                 // Set in the same update as the text, so the first frame of new
                 // glyphs already has a running clock.
