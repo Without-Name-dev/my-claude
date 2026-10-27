@@ -422,9 +422,14 @@ type RPCError struct {
 const TypeAgentActivity = "agent.activity"
 
 // AgentActivity is the status line the phone shows under the conversation.
+//
+// ExternalSessionID names the runtime conversation the snapshot came from, so
+// a connector that is not answering a queued message (a plain background poll)
+// can report its subagents without knowing the server's session id.
 type AgentActivity struct {
-	SessionID string         `json:"sessionId"`
-	Agents    []AgentRunning `json:"agents"`
+	SessionID         string         `json:"sessionId"`
+	ExternalSessionID string         `json:"externalSessionId,omitempty"`
+	Agents            []AgentRunning `json:"agents"`
 }
 
 // AgentRunning is one subagent's state.

@@ -58,9 +58,10 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// How far above the remembered tail still counts as being at it.
     ///
-    /// Need enough tolerance to handle streaming content layout changes
-    /// without accidentally leaving follow mode. Too strict causes drift.
-    static let bottomTolerance: CGFloat = 48
+    /// A real upward swipe must leave follow mode. Anything larger turns every
+    /// deliberate small scroll into "still at the bottom", so the next streamed
+    /// token pulls the reader back down — the ratchet that made the page jump.
+    static let bottomTolerance: CGFloat = 8
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
@@ -157,15 +158,24 @@ nonisolated struct TimelineScrollState: Equatable {
         guard !navigationIsSuspended else { return false }
         let beganGesture = next == .tracking && phase != .tracking
             || next == .interacting && phase != .tracking && phase != .interacting
-        if beganGesture {
+        // A busy main thread can deliver one merged callback that lands on
+        // .decelerating. The reader still owns the offset then; waiting for a
+        // .tracking callback that will never arrive left the timeline following
+        // the tail, so the next streamed token pulled the page back down.
+        let userPhase = next == .tracking || next == .interacting || next == .decelerating
+        if beganGesture, mode == .following, !returningToBottom {
             // The true tail moves down while content arrives, and the offset
-            // remembered when the last return completed is already stale. The
-            // moment a gesture starts is the one moment it is known to be the
-            // tail (the page was following until now), so refresh it here.
-            // Without this, a light upward swipe stayed above the stale value,
-            // read as "at the bottom", and the next token pulled the page back.
-            if mode != .reading { bottomOffset = viewport.offsetY }
-            browseHistory()
+            // remembered when the last return completed is already stale, so a
+            // following page refreshes it when a gesture starts.
+            //
+            // Only a page that was actually following may do this. Refreshing
+            // from a return still in flight records an offset part-way through
+            // the animation as "the bottom", which then keeps the reader inside
+            // the tolerance while they are hundreds of points above the tail.
+            bottomOffset = viewport.offsetY
+        }
+        if userPhase {
+            if mode != .reading { browseHistory() }
             awaitsUserScrollSettlement = true
         }
         phase = next
@@ -211,9 +221,14 @@ nonisolated struct TimelineScrollState: Equatable {
         activeCommand = nil
         if returningToBottom {
             mode = interactionIsPresented ? .reading : .following
-            // The return landed on the tail: this offset is the bottom, whether
-            // it is higher or lower than the one remembered before.
-            if viewport.isMeasured { bottomOffset = viewport.offsetY }
+            // Only a return that finished against the layout it was issued for
+            // proves where the tail is. Content that grew during the animation
+            // leaves the viewport short of the target; recording that offset as
+            // the bottom would let a small upward swipe read as "still at the
+            // tail" and be pulled back by the next streamed token.
+            let landed = viewport.isMeasured
+                && abs(viewport.contentHeight - command.request.contentHeight) <= 0.5
+            if landed { bottomOffset = viewport.offsetY }
         }
         return true
     }

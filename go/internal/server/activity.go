@@ -100,18 +100,31 @@ func (r *activityRegistry) clearConnector(connectorID string) []string {
 
 // onAgentActivity records and forwards the subagents running beside a turn.
 func (a *App) onAgentActivity(ctx context.Context, conn *connectorConn, msg protocol.AgentActivity) {
-	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+	sessionID := msg.SessionID
+	// A background poll reports by runtime id, because it is not answering a
+	// queued message and therefore has no server session id in hand.
+	if sessionID == "" && msg.ExternalSessionID != "" {
+		session, err := a.db.SessionByExternalID(ctx, conn.id, msg.ExternalSessionID)
+		if err != nil {
+			return
+		}
+		sessionID = session.ID
+	}
+	if sessionID == "" {
 		return
 	}
-	a.activity.set(msg.SessionID, conn.id, msg.Agents)
+	if _, err := a.ownedSessionForConnector(ctx, conn, sessionID); err != nil {
+		return
+	}
+	a.activity.set(sessionID, conn.id, msg.Agents)
 
-	frame, err := newEnvelope(msg.SessionID, a.currentSeq(ctx, msg.SessionID), EventActivity, map[string]any{
+	frame, err := newEnvelope(sessionID, a.currentSeq(ctx, sessionID), EventActivity, map[string]any{
 		"agents": msg.Agents,
 	})
 	if err != nil {
 		return
 	}
-	a.broker.Publish(msg.SessionID, frame)
+	a.broker.Publish(sessionID, frame)
 }
 
 // clearConnectorActivity ends the status lines a disconnected connector owned.

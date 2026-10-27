@@ -192,6 +192,7 @@ func (c *Client) SetDurableDir(dir string) { c.DurableDir = dir }
 func (c *Client) Run(ctx context.Context) {
 	go c.runTurns(ctx)
 	go c.runTurnWatchers(ctx)
+	go c.watchAgentActivity(ctx)
 	for range historyWorkerCount {
 		go c.runHistory(ctx)
 	}
@@ -1059,6 +1060,102 @@ func (c *Client) ToolEnd(msg protocol.ToolEnd) { c.emit(protocol.TypeToolEnd, ms
 // AgentActivity implements TurnSink.
 func (c *Client) AgentActivity(msg protocol.AgentActivity) {
 	c.emit(protocol.TypeAgentActivity, msg)
+}
+
+// agentPollInterval is how often a live conversation's subagent snapshot is
+// read when no turn watcher is running. A turn watcher only exists for a
+// message this connector queued, so without this poll a background subagent
+// (and the moment it finishes) reached the phone only when the person sent
+// something — the status line kept the count it had when the last turn ended.
+const agentPollInterval = 700 * time.Millisecond
+
+// watchAgentActivity forwards subagent snapshots outside turn watchers.
+func (c *Client) watchAgentActivity(ctx context.Context) {
+	if c.Bridge == nil {
+		return
+	}
+	ticker := time.NewTicker(agentPollInterval)
+	defer ticker.Stop()
+	// Key per runtime session; empty means "reported, nothing running".
+	snapshots := map[string]string{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		live := map[string]bool{}
+		for _, id := range c.Bridge.LiveSessions(bridge.DefaultLiveTTL) {
+			live[id] = true
+		}
+		ids := make([]string, 0, len(live)+len(snapshots))
+		for id := range live {
+			ids = append(ids, id)
+		}
+		for id := range snapshots {
+			if !live[id] {
+				ids = append(ids, id)
+			}
+		}
+		for _, externalID := range ids {
+			// A conversation whose plugin stopped stamping itself live has no
+			// running subagents; its file may still say otherwise.
+			var entries []bridge.AgentEntry
+			if live[externalID] {
+				entries = c.Bridge.Agents(externalID)
+			}
+			key := agentSnapshotKey(entries)
+			previous, seen := snapshots[externalID]
+			if seen && key == previous {
+				if key == "" && !live[externalID] {
+					delete(snapshots, externalID)
+				}
+				continue
+			}
+			// The first observation is sent even when empty: the server may
+			// still hold a snapshot from before this connector started, and
+			// nothing else would ever retract it.
+			snapshots[externalID] = key
+			agents := make([]protocol.AgentRunning, 0, len(entries))
+			for _, entry := range entries {
+				agents = append(agents, protocol.AgentRunning{
+					AgentID:   entry.AgentID,
+					Label:     entry.Label,
+					Status:    entry.Status,
+					StartedAt: entry.StartedAt,
+					UpdatedAt: entry.UpdatedAt,
+					Tool:      entry.Tool,
+					Detail:    entry.Detail,
+					Text:      entry.Text,
+				})
+			}
+			c.emit(protocol.TypeAgentActivity, protocol.AgentActivity{
+				ExternalSessionID: externalID,
+				Agents:            agents,
+			})
+		}
+	}
+}
+
+// agentSnapshotKey is the change key that decides whether a snapshot is worth
+// sending; the live fields are part of it on purpose.
+func agentSnapshotKey(entries []bridge.AgentEntry) string {
+	var builder strings.Builder
+	for _, entry := range entries {
+		builder.WriteString(entry.AgentID)
+		builder.WriteByte(0)
+		builder.WriteString(entry.Status)
+		builder.WriteByte(0)
+		builder.WriteString(entry.Label)
+		builder.WriteByte(0)
+		builder.WriteString(entry.Tool)
+		builder.WriteByte(0)
+		builder.WriteString(entry.Detail)
+		builder.WriteByte(0)
+		builder.WriteString(entry.Text)
+		builder.WriteByte(0x1e)
+	}
+	return builder.String()
 }
 
 func (c *Client) emit(frameType string, value any) {

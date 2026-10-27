@@ -52,7 +52,10 @@ nonisolated struct TimelineHistoryPosition: Equatable {
     mutating func cancelRestoration() { restorationCancelled = true }
 
     mutating func laidOut(_ layout: TimelineHistoryLayout, generation: Int) -> CGFloat? {
-        guard !restorationCancelled, generation == id, let origin,
+        // The two channels must not both correct: applying the anchor after the
+        // height fallback moved the page once would move it again to a
+        // different offset, which is the second jump of a "double bounce".
+        guard !restorationCancelled, !restoredByHeight, generation == id, let origin,
               layout.anchorRowID == origin.anchorRowID, layout.edge == origin.edge,
               layout.firstRowID != origin.firstRowID else { return nil }
         guard expectedFirstRowID == nil || layout.firstRowID == expectedFirstRowID else { return nil }

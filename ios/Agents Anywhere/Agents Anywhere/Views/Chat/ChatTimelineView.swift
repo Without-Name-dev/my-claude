@@ -125,8 +125,11 @@ struct ChatTimelineView: View {
                 if navigationIsSuspended { return }
                 if scrolling.phaseChanged(mapped, viewport: current) {
                     // Release a history point restoration as soon as the user
-                    // takes over, including interrupted animations.
+                    // takes over, including interrupted animations. Measurements
+                    // queued by that restoration would otherwise be applied on
+                    // the next main-queue turn, after the gesture had begun.
                     releaseScrollPosition()
+                    historyUpdates.cancel(); historyHeights.cancel()
                     historyPosition?.cancelRestoration()
                     olderPull.begin(at: current, promptVisible: olderPromptVisible,
                         canLoad: model.session.hasOlderItems && !model.session.isLoadingHistory && olderLoadRequest == nil && latestLoadRequest == nil)
@@ -204,7 +207,7 @@ struct ChatTimelineView: View {
                 // requesting it on `session.pendingMessages` (or at send start)
                 // could scroll to the previous bottom and leave the bubble one
                 // row below the viewport.
-                if model.isOpeningReady, id != nil { scrolling.requestBottom() }
+                if model.isOpeningReady, id != nil, scrolling.mayFollowNewContent { scrolling.requestBottom() }
             }
             .onChange(of: model.timeline.rows.last?.id) { oldID, newID in
                 // Incoming terminal messages can append a row without changing
@@ -334,6 +337,9 @@ struct ChatTimelineView: View {
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel(); historyHeights.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardIsVisible = true
+            // Typing is a reason to bring the tail back only for a reader who
+            // is still there. Someone reading history keeps their position.
+            guard scrolling.mode == .following || scrolling.atContentBottom else { return }
             // Editing is an explicit request to bring the latest conversation
             // into the unobscured viewport. Geometry updates during the keyboard
             // animation keep the tail aligned after the available height settles.
@@ -418,7 +424,11 @@ struct ChatTimelineView: View {
     }
 
     private func applyHistoryHeight(_ height: CGFloat) {
-        guard !navigationIsSuspended, !scrolling.userIsScrolling,
+        // The height difference between two samples cannot tell "a page was
+        // prepended" apart from "the reply at the tail grew". While a reply
+        // streams, that fallback would restore by the wrong amount and jump the
+        // page; the anchor measurement is the only trustworthy channel then.
+        guard !navigationIsSuspended, !scrolling.userIsScrolling, !model.isRunning,
               var restoration = historyPosition else { return }
         let offset = restoration.laidOutContentHeight(height,
             firstRowID: model.timeline.rows.first?.id,
