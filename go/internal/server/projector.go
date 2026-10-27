@@ -259,6 +259,7 @@ func (a *App) publishNoticeUpdate(
 
 // onTurnBegin starts an assistant message item.
 func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol.TurnBegin) {
+	a.log.Info("received runtime turn begin", "session", msg.SessionID, "request", msg.RequestID, "turn", msg.TurnID)
 	session, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID)
 	if err != nil {
 		a.log.Warn("turn.begin for an unknown session", "session", msg.SessionID)
@@ -314,6 +315,7 @@ func (a *App) updateSubmittedMessageStatus(
 	itemID := "msg_" + requestID + "_user"
 	item, err := a.db.TimelineItemByID(ctx, tx, sessionID, itemID)
 	if errors.Is(err, store.ErrNotFound) {
+		a.log.Warn("submitted message status target missing", "session", sessionID, "request", requestID, "status", status)
 		return "", nil
 	}
 	if err != nil {
@@ -325,11 +327,14 @@ func (a *App) updateSubmittedMessageStatus(
 	if item.Status == "done" || item.Status == "failed" || item.Status == "cancelled" {
 		return "", nil
 	}
+	previousStatus := item.Status
 	item.Status = status
 	item.UpdatedSeq = seq
 	if err := store.UpsertTimelineItem(ctx, tx, item, store.NowMS()); err != nil {
 		return "", err
 	}
+	a.log.Info("submitted message status changed", "session", sessionID, "request", requestID,
+		"from", previousStatus, "to", status, "seq", seq)
 	return itemID, nil
 }
 
@@ -439,6 +444,8 @@ func (a *App) publishStreamingView(
 
 // onTurnEnd closes the assistant message and returns the session to idle.
 func (a *App) onTurnEnd(ctx context.Context, conn *connectorConn, msg protocol.TurnEnd) bool {
+	a.log.Info("received runtime turn end", "session", msg.SessionID, "request", msg.RequestID,
+		"turn", msg.TurnID, "status", msg.Status, "text_bytes", len(msg.Text), "has_error", msg.Error != "")
 	if msg.SessionID == "" || msg.TurnID == "" {
 		return false
 	}

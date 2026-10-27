@@ -785,9 +785,14 @@ func (c *Client) runSessionTurnWatchers(ctx context.Context, sessionID string, j
 			requestScoped := c.waitForRequestOutbox(ctx, job.msg.ExternalSessionID)
 			watcher := NewTurnWatcher(c.Bridge, c, job.msg.SessionID, job.msg.ExternalSessionID,
 				job.msg.RequestID, job.sub)
+			watcher.log = c.Log
 			watcher.Closed = func() bool { return c.sessionWasClosed(job.msg.SessionID) }
+			c.Log.Info("watching submitted message", "session", job.msg.SessionID,
+				"external", job.msg.ExternalSessionID, "request", job.msg.RequestID)
 			if requestScoped {
 				watcher.requestScoped = true
+				c.Log.Info("using request-scoped plugin outbox", "session", job.msg.SessionID,
+					"external", job.msg.ExternalSessionID, "request", job.msg.RequestID)
 				go func(watcher *TurnWatcher, serverSessionID, externalSessionID, requestID string) {
 					watcher.Run(ctx)
 					c.unmarkWatching(serverSessionID, requestID)
@@ -842,6 +847,7 @@ func (c *Client) TurnBegin(msg protocol.TurnBegin) {
 		c.turnSessions[msg.TurnID] = msg.SessionID
 		c.turnMu.Unlock()
 	}
+	c.Log.Info("runtime turn began", "session", msg.SessionID, "request", msg.RequestID, "turn", msg.TurnID)
 	c.emit(protocol.TypeTurnBegin, msg)
 }
 
@@ -949,6 +955,8 @@ func writeDurableAtomic(path string, body []byte) error {
 //
 // The spool remains until the server confirms its database commit.
 func (c *Client) TurnEnd(msg protocol.TurnEnd) {
+	c.Log.Info("runtime turn ended", "session", msg.SessionID, "request", msg.RequestID,
+		"turn", msg.TurnID, "status", msg.Status, "text_bytes", len(msg.Text), "has_error", msg.Error != "")
 	externalSessionID := ""
 	if c.Bridge != nil && msg.RequestID != "" {
 		if accepted, err := c.Bridge.AcceptedRequest(msg.SessionID, msg.RequestID); err == nil && accepted != nil {

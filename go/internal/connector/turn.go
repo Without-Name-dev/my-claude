@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ type TurnWatcher struct {
 	previousID    string
 	queuedAt      int64
 	requestScoped bool
+	log           *slog.Logger
 	// Closed, when set, reports that the person ended this conversation's
 	// terminal from the phone. The watcher then closes the turn instead of
 	// polling for an answer that can never arrive.
@@ -180,6 +182,12 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 				return ""
 			}
 			if time.Now().After(deadline) && w.turnID == "" {
+				if w.log != nil {
+					w.log.Error("turn watcher timed out before correlated outbox appeared",
+						"session", w.sessionID, "external", w.externalSessionID, "request", w.messageID,
+						"request_scoped", w.requestScoped, "shared_turn", outboxTurnID(w.bridge, w.externalSessionID),
+					)
+				}
 				w.cancelQueued()
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
@@ -215,6 +223,13 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			(w.turnID == "" && box.TS > 0 && box.TS < w.queuedAt)
 		if stale {
 			if time.Now().After(deadline) && w.turnID == "" {
+				if w.log != nil {
+					w.log.Error("turn watcher timed out without matching outbox",
+						"session", w.sessionID, "external", w.externalSessionID, "request", w.messageID,
+						"request_scoped", w.requestScoped, "outbox_request", box.RequestID,
+						"outbox_turn", box.TurnID, "outbox_status", box.Status,
+					)
+				}
 				w.cancelQueued()
 				w.sink.TurnEnd(protocol.TurnEnd{
 					SessionID: w.sessionID,
@@ -235,6 +250,12 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			w.rev = 0
 			w.seenTool = map[string]bool{}
 			w.endedTool = map[string]bool{}
+			if w.log != nil {
+				w.log.Info("turn watcher correlated outbox",
+					"session", w.sessionID, "external", w.externalSessionID, "request", w.messageID,
+					"turn", box.TurnID, "outbox_request", box.RequestID, "request_scoped", w.requestScoped,
+				)
+			}
 			w.sink.TurnBegin(protocol.TurnBegin{
 				SessionID: w.sessionID,
 				TurnID:    box.TurnID,
@@ -297,6 +318,14 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 			return ""
 		}
 	}
+}
+
+func outboxTurnID(b *bridge.Bridge, externalSessionID string) string {
+	box, err := b.ReadOutbox(externalSessionID)
+	if err != nil || box == nil {
+		return ""
+	}
+	return box.TurnID
 }
 
 // cancelQueued withdraws a prompt the plugin never picked up. The phone has
