@@ -123,6 +123,14 @@ final class SessionTimelinePresentation {
         var activity = subagentActivity ?? SubagentActivityPresentation()
         // An empty authoritative set finishes every agent that is still shown.
         activity.receive(runs, at: date)
+        guard activity.isRunning else {
+            // The status line reports work that is happening now. Once the last
+            // agent ends, a finished-only block ("已结束 N 个子代理") is residue
+            // from the previous turn and stays under every new reply, so it is
+            // retired instead of kept.
+            if subagentActivity != nil { subagentActivity = nil }
+            return
+        }
         if subagentActivity != activity { subagentActivity = activity }
     }
 
