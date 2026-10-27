@@ -59,7 +59,6 @@ struct ChatTimelineView: View {
                     hasOlderItems: model.session.hasOlderItems,
                     hasNewerItems: model.session.hasNewerItems,
                     hasPendingUserMessage: !model.timeline.pendingMessages.isEmpty || !model.session.pendingMessages.isEmpty,
-                    sendingPlaceholder: model.sendingPlaceholder,
                     subagentActivity: model.timeline.subagentActivity,
                     onLoadOlder: loadOlder, onLoadLatest: loadLatest,
                     onHistoryRowLayout: { rowID, layout, frame in
@@ -497,7 +496,6 @@ private struct ChatTimelineContent: View, Equatable {
     let hasOlderItems: Bool
     let hasNewerItems: Bool
     let hasPendingUserMessage: Bool
-    let sendingPlaceholder: String?
     let subagentActivity: SubagentActivityPresentation?
     let onLoadOlder: () -> Void
     let onLoadLatest: () -> Void
@@ -515,7 +513,6 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.notices.map(\.id) == rhs.notices.map(\.id) && lhs.isRunning == rhs.isRunning
             && lhs.hasOlderItems == rhs.hasOlderItems && lhs.hasNewerItems == rhs.hasNewerItems
             && lhs.hasPendingUserMessage == rhs.hasPendingUserMessage
-            && lhs.sendingPlaceholder == rhs.sendingPlaceholder
             && lhs.subagentActivity == rhs.subagentActivity
     }
     var body: some View {
@@ -605,17 +602,11 @@ private struct ChatTimelineContent: View, Equatable {
                 .disabled(model.session.isLoadingHistory || isLoadingLatest || isLoadingOlder)
                 .onScrollVisibilityChange { onPromptVisibility($0) }
             }
-            // Constant breathing room: status text and card counts cannot
-            // change this spacer or create a spurious follow request.
-            Group {
-                if let text = sendingPlaceholder {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                } else { Color.clear }
-            }.frame(height: 32)
+            // Constant breathing room under the last row. Session progress is
+            // reported by the header, not drawn inside the transcript: a
+            // status line here scrolled with the content and ended up half
+            // hidden under the composer.
+            Color.clear.frame(height: 32)
                 .overlay(alignment: .bottom) {
                     Color.clear.frame(height: 96)
                         .onScrollVisibilityChange(threshold: 0.01) { onTailVisibility(.near, $0) }

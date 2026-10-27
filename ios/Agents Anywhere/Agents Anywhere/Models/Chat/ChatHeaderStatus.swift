@@ -48,6 +48,13 @@ extension SessionChatModel {
             || session.runtime.state?.status == .waitingApproval { return .waitingForResponse }
         if session.runtime.state?.status == .stopping { return .stopping }
         if let reason = session.runtime.state?.statusReason, !reason.isEmpty { return .information(reason) }
-        return nil
+        // Progress belongs to the header, outside message geometry. It used to
+        // be drawn in a spacer at the end of the transcript, where it sat under
+        // the composer and moved with the content.
+        switch session.runtime.state?.status {
+        case .running: return .working
+        case .waiting, .pending: return .waitingForResponse
+        default: return nil
+        }
     }
 }
