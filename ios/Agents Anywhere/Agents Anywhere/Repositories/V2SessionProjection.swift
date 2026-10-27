@@ -89,6 +89,8 @@ struct V2SessionProjection {
                 if let index = data.notices.firstIndex(where: { $0.id == notice.id }),
                    notice.revision >= data.notices[index].revision {
                     data.notices[index] = notice
+                } else if !data.notices.contains(where: { $0.id == notice.id }) {
+                    data.notices.append(notice)
                 }
             default:
                 // State and snapshots have no revision guard of their own; an
@@ -178,28 +180,57 @@ struct V2SessionProjection {
 
     private mutating func merge(_ incoming: [V2TimelineItem], history: Bool, preservingCurrentWindow: Bool = false) {
         if !history, incoming.count == 1 { mergeOne(incoming[0]); return }
-        var byID = Dictionary(uniqueKeysWithValues: data.items.map { ($0.id, $0) })
+        // Build index only once for lookups, not full dictionary rebuild
+        var itemIndex = Dictionary(uniqueKeysWithValues: data.items.enumerated().map { ($1.id, $0) })
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
+        var needsSort = false
+
         for item in incoming where item.sessionId == data.session.id {
-            if let old = byID[item.id] {
+            if let idx = itemIndex[item.id] {
+                let old = data.items[idx]
                 guard item.revision > old.revision || (item.revision == old.revision && item.updatedSeq >= old.updatedSeq) else { continue }
+                // Update in place if orderSeq unchanged, otherwise mark for re-sort
+                if old.orderSeq == item.orderSeq {
+                    data.items[idx] = item
+                } else {
+                    data.items[idx] = item
+                    needsSort = true
+                }
             } else if !history, data.hasOlderItems, item.orderSeq < start {
-                continue // Recovery must not reinsert older rows outside the selected window.
+                continue
             } else if !history, data.hasNewerItems, item.orderSeq > end {
-                continue // Preserve the history window until the caller explicitly loads latest.
+                continue
+            } else {
+                // New item: binary search insert
+                let key = (item.orderSeq, item.id)
+                let position = insertionIndex(of: key)
+                data.items.insert(item, at: position)
+                // Update all indices after insertion
+                for i in position..<data.items.count {
+                    itemIndex[data.items[i].id] = i
+                }
             }
-            byID[item.id] = item
         }
-        let sorted = byID.values.sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
+
+        // Only sort if orderSeq changed for existing items
+        if needsSort {
+            data.items.sort { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
+        }
+
+        // Apply window limits
         if preservingCurrentWindow {
-            data.items = sorted
+            // Keep all
         } else if history {
-            data.items = Array(sorted.prefix(maximumItems))
-            data.hasNewerItems = data.hasNewerItems || sorted.count > maximumItems
+            if data.items.count > maximumItems {
+                data.items = Array(data.items.prefix(maximumItems))
+                data.hasNewerItems = true
+            }
         } else {
-            data.items = Array(sorted.suffix(maximumItems))
-            data.hasOlderItems = data.hasOlderItems || sorted.count > maximumItems
+            if data.items.count > maximumItems {
+                data.items = Array(data.items.suffix(maximumItems))
+                data.hasOlderItems = true
+            }
         }
     }
 

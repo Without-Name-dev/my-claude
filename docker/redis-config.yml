@@ -1,0 +1,34 @@
+# Docker Compose - 添加 Redis 支持
+
+# 在现有的 docker-compose.yml 中添加 Redis 服务
+# 将以下内容添加到 services 部分：
+
+  redis:
+    image: redis:7-alpine
+    container_name: aa-redis
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+# 在 volumes 部分添加：
+volumes:
+  redis-data:
+    driver: local
+
+# Server 服务添加环境变量：
+  aa-server:
+    environment:
+      - REDIS_URL=redis://redis:6379
+      # 其他现有环境变量...
+
+# 可选：Redis 持久化配置
+# 如果需要更强的持久化保证，修改 command 为：
+# command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru --appendonly yes --appendfsync everysec

@@ -153,8 +153,8 @@ final class SessionChatModel {
     func commandBlockMessage(_ command: V2RuntimeCommand, _ block: RuntimeCommandBlock) -> String {
         switch block {
         case .busy: return String(localized: "Agent 忙碌中，暂时不能执行")
-        case .readOnly: return String(localized: "开启接管后才能执行指令")
-        case .offline: return String(localized: "设备离线")
+        case .readOnly: return String(localized: "需要接管会话才能执行此操作。点击上方接管按钮。")
+        case .offline: return String(localized: "设备离线，消息会在恢复连接后发送")
         case .unavailable: return String(localized: "此会话暂时无法使用指令")
         case .disabled:
             switch command.disabledReason {
@@ -228,7 +228,25 @@ final class SessionChatModel {
     }
 
     private func fail(_ message: String) {
-        commandFailure = CommandFeedback(title: String(localized: "无法执行指令"), message: message)
+        // Provide specific, actionable error messages based on common failure scenarios
+        var title = String(localized: "无法执行指令")
+        var enhancedMessage = message
+
+        // Detect common error patterns and provide guidance
+        if message.contains("offline") || message.contains("network") || message.contains("连接") {
+            title = String(localized: "设备离线")
+            enhancedMessage = String(localized: "设备离线，消息会在恢复连接后发送。")
+        } else if message.contains("permission") || message.contains("权限") || message.contains("takeover") {
+            title = String(localized: "需要接管会话")
+            enhancedMessage = String(localized: "需要接管会话才能执行此操作。点击上方接管按钮。")
+        } else if message.contains("argument") || message.contains("parameter") || message.contains("参数") {
+            title = String(localized: "缺少参数")
+            enhancedMessage = String(localized: "此指令需要参数。示例：/command <参数>")
+        } else if !message.isEmpty {
+            enhancedMessage = message + "\n\n" + String(localized: "请检查网络连接或联系支持。")
+        }
+
+        commandFailure = CommandFeedback(title: title, message: enhancedMessage)
     }
 
     func prepareOpening() async {
