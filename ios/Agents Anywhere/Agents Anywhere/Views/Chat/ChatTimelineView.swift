@@ -498,7 +498,7 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
             && lhs.timelineRevision == rhs.timelineRevision
-            && lhs.notices == rhs.notices && lhs.isRunning == rhs.isRunning
+            && lhs.notices.map(\.id) == rhs.notices.map(\.id) && lhs.isRunning == rhs.isRunning
             && lhs.hasOlderItems == rhs.hasOlderItems && lhs.hasNewerItems == rhs.hasNewerItems
             && lhs.hasPendingUserMessage == rhs.hasPendingUserMessage
             && lhs.sendingPlaceholder == rhs.sendingPlaceholder
