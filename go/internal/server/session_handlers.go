@@ -615,6 +615,8 @@ func (a *App) deliverMessage(
 			}
 		} else {
 			a.publishItem(ctx, session.ID, userItemID, seq, true)
+			a.log.Info("submitted message persisted", "session", session.ID, "request", messageID,
+				"connector", session.ConnectorID, "external", session.ExternalID, "seq", seq, "status", "pending")
 			if previousStatus != "running" {
 				a.setSessionStatus(ctx, session.ID, "waiting")
 			}
@@ -644,6 +646,8 @@ func (a *App) deliverMessage(
 		return session, err
 	}
 	a.publishItem(ctx, session.ID, userItemID, seq, true)
+	a.log.Info("submitted message persisted", "session", session.ID, "request", messageID,
+		"connector", session.ConnectorID, "external", session.ExternalID, "seq", seq, "status", "pending")
 	if previousStatus != "running" {
 		a.setSessionStatus(ctx, session.ID, "waiting")
 	}

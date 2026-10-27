@@ -187,6 +187,8 @@ func (a *App) applySubmitAck(ctx context.Context, conn *connectorConn, ack proto
 			a.log.Warn("could not commit submit acknowledgement", "session", ack.SessionID, "request", ack.RequestID, "error", err)
 			return
 		}
+		a.log.Info("connector accepted submit", "connector", conn.id, "session", ack.SessionID,
+			"external", ack.ExternalSessionID, "request", ack.RequestID)
 		a.scheduleSubmitReplay(conn.id)
 		return
 	}

@@ -628,6 +628,8 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 		}
 		return
 	}
+	c.Log.Info("submit written to plugin queue", "session", msg.SessionID, "external", msg.ExternalSessionID,
+		"request", msg.RequestID, "queued_at", sub.QueuedAt, "duplicate", sub.Duplicate)
 	c.ackSubmit(msg, true, "")
 	c.setActive(msg.SessionID, msg.ExternalSessionID)
 	c.clearSessionClosed(msg.SessionID)
