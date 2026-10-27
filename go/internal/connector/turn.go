@@ -27,6 +27,13 @@ const pollInterval = 120 * time.Millisecond
 // minutes to observe.
 var pickupTimeout = 2 * time.Minute
 
+// pickupMaxWait bounds how long a queued message may ride on a "running"
+// session it has no correlation with. The deadline above slides while any turn
+// is running, and a stale snapshot (or a plugin restarted mid-turn) can keep
+// reporting one: the phone then showed the message as pending for hours with
+// no error and no way out.
+var pickupMaxWait = 45 * time.Minute
+
 // turnStallTTL is how long a running turn may show no sign of life before the
 // connector declares it dead.
 //
@@ -191,8 +198,13 @@ func (w *TurnWatcher) Run(ctx context.Context) string {
 					(current.TS == 0 || current.TS >= w.queuedAt) {
 					w.requestScoped = false
 					box, err = current, nil
-				} else if current.Running() {
-					// A prompt may wait behind a long-running terminal turn.
+				} else if current.Running() && time.Now().UnixMilli()-w.queuedAt < pickupMaxWait.Milliseconds() {
+					// A prompt may wait behind a long-running turn — but not
+					// forever. With no per-request outbox and no correlation the
+					// session-level "running" state can belong to an unrelated
+					// turn (or a stale snapshot kept fresh by a restarted
+					// plugin), and the sliding deadline left the phone's message
+					// pending indefinitely with no error. Bound the wait.
 					lastActivity = time.Now()
 					deadline = lastActivity.Add(pickupTimeout)
 				}
