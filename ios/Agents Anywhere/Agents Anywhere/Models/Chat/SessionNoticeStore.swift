@@ -36,6 +36,14 @@ final class SessionNoticeModel: Identifiable {
     func isExpired(at now: Date) -> Bool {
         expiresAt.map { $0 <= now } ?? false
     }
+    /// A question that has been open this long is almost certainly orphaned:
+    /// the desktop answered it, or the plugin stopped answering. The card
+    /// stays visible and answerable; it just no longer disables the composer,
+    /// which had left the person unable to send anything with no way out.
+    func isStale(at now: Date = Date()) -> Bool {
+        guard let created = V2Timestamp.date(notice.createdAt) else { return false }
+        return now.timeIntervalSince(created) > 30 * 60
+    }
     func canRespond(fresh: Bool, at now: Date = Date()) -> Bool {
         fresh && notice.type == "interaction" && [.open, .failed].contains(notice.status)
             && submission == .idle && composingFields.isEmpty && !isExpired(at: now)

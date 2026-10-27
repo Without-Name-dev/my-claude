@@ -119,7 +119,12 @@ final class V2SessionModel: Identifiable {
         self.id = id; self.scope = scope; self.repository = repository
     }
 
-    var canSend: Bool { isValid && runtime.allows("session.send_message") && !notices.notices.contains { $0.blocks(id) } }
+    var canSend: Bool {
+        isValid && runtime.allows("session.send_message")
+            // An orphaned card (desktop answered, plugin stopped answering)
+            // used to disable the composer indefinitely with no way out.
+            && !notices.notices.contains { $0.blocks(id) && !$0.isStale() }
+    }
     var hasLocalWork: Bool { !draft.isEmpty || !composer.attachments.isEmpty || !draftAttachmentIDs.isEmpty || !pendingMessages.isEmpty || notices.hasDraft }
 
     func connect() async {
