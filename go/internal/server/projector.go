@@ -746,7 +746,20 @@ func (a *App) onApprovalRequest(ctx context.Context, conn *connectorConn, msg pr
 
 // onApprovalCancel retracts a question.
 func (a *App) onApprovalCancel(ctx context.Context, conn *connectorConn, msg protocol.ApprovalCancel) {
-	if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+	sessionID := msg.SessionID
+	// A question raised by a terminal turn has no server session id in the
+	// plugin; its runtime id is the only handle the connector has.
+	if sessionID == "" && msg.ExternalSessionID != "" {
+		session, err := a.db.SessionByExternalID(ctx, conn.id, msg.ExternalSessionID)
+		if err != nil {
+			return
+		}
+		sessionID = session.ID
+	}
+	if sessionID == "" {
+		return
+	}
+	if _, err := a.ownedSessionForConnector(ctx, conn, sessionID); err != nil {
 		return
 	}
 	noticeID := noticeIDFor(msg.ToolUseID)
@@ -754,12 +767,12 @@ func (a *App) onApprovalCancel(ctx context.Context, conn *connectorConn, msg pro
 	if !ok {
 		return
 	}
-	a.publishNoticeUpdate(ctx, msg.SessionID, noticeID, request, "cancelled", 0)
-	status := a.approvals.statusForSession(msg.SessionID)
+	a.publishNoticeUpdate(ctx, sessionID, noticeID, request, "cancelled", 0)
+	status := a.approvals.statusForSession(sessionID)
 	if status == "" {
 		status = "running"
 	}
-	a.setSessionStatus(ctx, msg.SessionID, status)
+	a.setSessionStatus(ctx, sessionID, status)
 }
 
 // ownedSessionForConnector loads a session and proves the connector owns it.

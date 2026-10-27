@@ -221,6 +221,12 @@ final class SessionTimelinePresentation {
             group.addTask { @MainActor [weak self] in
                 for await _ in signal.stream {
                     guard !Task.isCancelled, let self else { return }
+                    // The server publishes a streaming item every 120 ms. Each
+                    // flush re-groups the whole transcript and re-runs the
+                    // lazy stack's diff, so coalescing bursts here keeps the
+                    // main thread free for the scroll gesture it is serving.
+                    do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+                    guard !Task.isCancelled, let self else { return }
                     repeat {
                         // Transport frames are coalesced, then presented in one
                         // main-actor update without an artificial reveal delay.

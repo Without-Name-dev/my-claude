@@ -9,6 +9,9 @@ struct ChatTimelineView: View {
     @State private var visibleHistoryRows = ChatVisibleHistoryRows()
     @State private var historyPosition: TimelineHistoryPosition?
     @State private var hasRequestedOlder = false
+    /// Reading position the markdown prewarm last covered. Not published: it
+    /// moves while the person scrolls and must not invalidate the view.
+    @State private var prewarmCursor = ChatPrewarmCursor()
     @State private var position = ScrollPosition()
     @State private var scrolling = TimelineScrollState()
     @State private var viewportSample = ChatViewportSample()
@@ -69,6 +72,7 @@ struct ChatTimelineView: View {
                     },
                     onHistoryRowVisibility: { rowID, visible in
                         visibleHistoryRows.setVisible(visible, rowID: rowID)
+                        prewarmAroundReader()
                     },
                     onPromptVisibility: { latestPromptVisible = $0 },
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
@@ -350,6 +354,24 @@ struct ChatTimelineView: View {
     }
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    /// Keeps the rows just above the reader parsed before they are realized.
+    ///
+    /// A row that enters a lazy stack above the viewport at zero height and
+    /// then inflates pushes the visible content down, which is the jump people
+    /// see when swiping up through history. Parsing ahead of the gesture makes
+    /// the row arrive at its final height instead.
+    private func prewarmAroundReader() {
+        let rows = model.timeline.rows
+        guard !rows.isEmpty,
+              let topID = visibleHistoryRows.topmostVisibleRowID(),
+              let index = rows.firstIndex(where: { $0.id == topID }) else { return }
+        guard abs(index - prewarmCursor.index) >= 8 else { return }
+        prewarmCursor.index = index
+        let lower = max(0, index - 60)
+        let upper = min(rows.count, index + 12)
+        ChatMarkdownView.prewarm(rows[lower..<upper].map(\.text))
     }
     private func loadOlder() {
         guard model.session.isValid, model.session.hasOlderItems,
@@ -672,6 +694,12 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
     let maxY: CGFloat
 }
 
+/// The row whose markdown prewarm last ran, so a scroll that stays within one
+/// window does not restart the parse.
+@MainActor private final class ChatPrewarmCursor {
+    var index = -1
+}
+
 @MainActor private final class ChatVisibleHistoryRows {
     private struct Entry {
         var layout: TimelineHistoryLayout
@@ -691,6 +719,14 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
             visibleIDs.remove(rowID)
             entries.removeValue(forKey: rowID)
         }
+    }
+
+    /// The row id of the visible group nearest the top of the content, which
+    /// is where an upward scroll is heading next.
+    func topmostVisibleRowID() -> String? {
+        visibleIDs.compactMap { entries[$0] }
+            .min { $0.frame.minY < $1.frame.minY }?
+            .layout.anchorRowID
     }
 
     func anchor(firstRowID: String?, rowIDs: Set<String>, visibleTop: CGFloat?, visibleBottom: CGFloat?) -> TimelineHistoryLayout? {

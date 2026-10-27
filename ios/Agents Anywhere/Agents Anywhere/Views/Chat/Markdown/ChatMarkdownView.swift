@@ -147,6 +147,30 @@ struct ChatMarkdownView: View {
     }
 }
 
+extension ChatMarkdownView {
+    /// Parses messages the reader is about to scroll into view.
+    ///
+    /// A lazily realized row whose markdown is not cached yet is laid out at
+    /// zero height and inflates when its parse lands. When that row appears
+    /// above the viewport, everything the person is looking at is pushed down
+    /// — the jump seen when swiping up through old messages. Parsing a window
+    /// around the reading position in the background means a row arrives at
+    /// its final height on the first frame instead.
+    nonisolated static func prewarm(_ texts: [String]) {
+        guard !texts.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            for text in texts where !text.isEmpty {
+                if ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: true) != nil { continue }
+                let request = ParseRequest(text: text, resolvesFileReferences: true, streaming: false)
+                guard let parsed = try? parse(request, previous: nil) else { continue }
+                ChatMarkdownCache.shared.store(
+                    ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
+                    for: text, resolvesFileReferences: true)
+            }
+        }
+    }
+}
+
 private struct MarkdownBlockView: View, Equatable {
     let block: MarkdownBlockSnapshot
     let isStreaming: Bool

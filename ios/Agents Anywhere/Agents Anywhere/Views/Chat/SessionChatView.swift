@@ -17,6 +17,9 @@ struct SessionChatView: View, Equatable {
     }
     @State private var previewURL: URL?
     @State private var previewDirectory: URL?
+    /// Images open in their own viewer: QuickLook needs a file name it can type
+    /// from, so an attachment without an extension opened to a blank page.
+    @State private var previewImage: ImagePreviewItem?
     @State private var isDownloading = false
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
@@ -206,6 +209,9 @@ struct SessionChatView: View, Equatable {
             return ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
         })
         .quickLookPreview($previewURL)
+        .sheet(item: $previewImage) { item in
+            ChatImagePreview(image: item.image)
+        }
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
         .onDisappear { if previewURL == nil { cleanPreview() } }
         .onChange(of: session.failure, initial: true) { _, failure in
@@ -242,14 +248,22 @@ struct SessionChatView: View, Equatable {
 
     private var takeoverPill: some View {
         Button { pendingTakeover = true } label: {
-            Label(String(localized: "接管会话以继续交互"), appSymbol: "hand.raised")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(AppTheme.primaryText(colorScheme))
-                .padding(.horizontal, 14).frame(minHeight: takeoverPillHeight)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .frame(minHeight: 44).contentShape(Rectangle())
+            HStack(spacing: 8) {
+                if model.isWorking {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.8)
+                        .tint(AppTheme.primaryText(colorScheme))
+                }
+                Label(String(localized: "接管会话以继续交互"), appSymbol: "hand.raised")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(AppTheme.primaryText(colorScheme))
+            }
+            .padding(.horizontal, 14).frame(minHeight: takeoverPillHeight)
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .frame(minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(!model.canChangeTakeover)
+        .buttonStyle(.plain).disabled(!model.canChangeTakeover || model.isWorking)
         .accessibilityIdentifier("chat.session.takeover")
         .padding(.horizontal, 20).padding(.bottom, 4)
     }
@@ -267,14 +281,29 @@ struct SessionChatView: View, Equatable {
             model.error = String(localized: "附件还没有上传完成，暂时无法预览。")
             return
         }
-        guard !isDownloading, let fileID = file.fileId else { return }
+        guard !isDownloading else { return }
+        guard let fileID = file.fileId else {
+            // Without an id there is nothing to fetch; say so instead of
+            // swallowing the tap.
+            model.error = String(localized: "这个附件暂时无法预览。")
+            return
+        }
         isDownloading = true
         model.error = nil
+        // Show downloading indicator
+        toasts.update(source: "download", failure: nil)
         Task { @MainActor in
-            defer { isDownloading = false }
+            defer {
+                isDownloading = false
+                toasts.update(source: "download", failure: nil)
+            }
             do {
                 let data = try await model.download(fileID)
                 guard session.isValid, sheet == nil else { return }
+                if file.isImage, let image = UIImage(data: data) {
+                    previewImage = ImagePreviewItem(image: image)
+                    return
+                }
                 cleanPreview()
                 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aa-preview-\(UUID().uuidString)", isDirectory: true)
                 let name = (file.name ?? String(localized: "Attachment")) as NSString
@@ -283,7 +312,10 @@ struct SessionChatView: View, Equatable {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
                 previewDirectory = directory; previewURL = url
-            } catch { model.error = error.localizedDescription }
+            } catch {
+                toasts.update(source: "download", failure: nil)
+                model.error = error.localizedDescription
+            }
         }
     }
     private func cleanPreview() {
@@ -319,5 +351,63 @@ private struct CommandSuccessToast: View {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { onDismiss() }
         }
+    }
+}
+
+/// One downloaded image, kept for the viewer only.
+private struct ImagePreviewItem: Identifiable {
+    let id = UUID()
+    let image: UIImage
+}
+
+/// Full-screen image viewer for attachments and pictures in messages.
+///
+/// QuickLook was the previous destination, but it needs a file name it can type
+/// from: an attachment stored without an extension (or with a name the system
+/// does not recognise) opened to a blank page, which is why tapping a sent photo
+/// looked like nothing happened.
+private struct ChatImagePreview: View {
+    let image: UIImage
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+    @State private var settledScale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale)
+                .gesture(
+                    MagnifyGesture()
+                        .onChanged { value in
+                            scale = min(max(settledScale * value.magnification, 1), 6)
+                        }
+                        .onEnded { _ in settledScale = scale }
+                )
+                .onTapGesture(count: 2) {
+                    withAnimation(.snappy) {
+                        scale = scale > 1 ? 1 : 2.5
+                        settledScale = scale
+                    }
+                }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { dismiss() } label: {
+                        AppSymbol("xmark", size: 16)
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.black.opacity(0.45), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "关闭"))
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .statusBarHidden()
     }
 }

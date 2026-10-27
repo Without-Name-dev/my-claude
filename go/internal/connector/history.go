@@ -343,6 +343,23 @@ func (b *historyBuilder) flushPage(count int, complete bool) error {
 	return nil
 }
 
+// cleanedContentJSON removes the runtime's own framing from a tool result.
+// A notification injected while the command ran is not the command's output,
+// and showing it makes the transcript look like a log file. The rewrite runs
+// on the encoded value (a string or a block array alike) and is only kept when
+// the result is still valid JSON.
+func cleanedContentJSON(raw json.RawMessage) (json.RawMessage, bool) {
+	text := string(raw)
+	cleaned := cleanTranscriptText(text)
+	if cleaned == text {
+		return nil, false
+	}
+	if !json.Valid([]byte(cleaned)) {
+		return nil, false
+	}
+	return json.RawMessage(cleaned), true
+}
+
 func (b *historyBuilder) rememberPendingTool(id string, item protocol.HistoryItem) {
 	if _, exists := b.pendingToolItems[id]; !exists {
 		b.pendingToolOrder = append(b.pendingToolOrder, id)
@@ -356,6 +373,9 @@ func (b *historyBuilder) rememberPendingTool(id string, item protocol.HistoryIte
 }
 
 func boundedHistoryJSON(raw json.RawMessage) json.RawMessage {
+	if cleaned, ok := cleanedContentJSON(raw); ok {
+		raw = cleaned
+	}
 	if len(raw) <= historyValueMaxBytes {
 		return raw
 	}
@@ -467,6 +487,7 @@ var (
 	commandMsg    = regexp.MustCompile(`(?s)<\\?command-message>.*?<\\?/command-message>`)
 	commandArgs   = regexp.MustCompile(`(?s)<\\?command-args>.*?<\\?/command-args>`)
 	systemRemind  = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+	taskNotify    = regexp.MustCompile(`(?s)<task-notification>.*?</task-notification>`)
 	stdoutTagOpen = regexp.MustCompile(`<\\?/?local-command-stdout>`)
 )
 
@@ -478,6 +499,7 @@ func cleanTranscriptText(text string) string {
 	cleaned = commandMsg.ReplaceAllString(cleaned, "")
 	cleaned = commandArgs.ReplaceAllString(cleaned, "")
 	cleaned = systemRemind.ReplaceAllString(cleaned, "")
+	cleaned = taskNotify.ReplaceAllString(cleaned, "")
 	// The command's output itself is worth keeping; only its wrapper goes.
 	cleaned = stdoutTagOpen.ReplaceAllString(cleaned, "")
 	return strings.TrimSpace(cleaned)

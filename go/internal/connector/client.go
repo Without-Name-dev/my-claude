@@ -1329,11 +1329,18 @@ func (c *Client) abortTarget(sessionID, externalSessionID string) (target string
 		}
 		return activeExternal, false, true
 	}
-	if _, ok := c.queued[sessionID]; !ok {
-		return "", false, false
+	if _, queued := c.queued[sessionID]; queued {
+		c.cancelled[sessionID]++
+		return externalSessionID, true, true
 	}
-	c.cancelled[sessionID]++
-	return externalSessionID, true, true
+	// A turn started in the terminal was never queued here, so neither map
+	// knows it. The server names the runtime session, and that is enough: the
+	// plugin ignores an abort for a conversation it is not running. Without
+	// this, stopping a terminal turn from the phone did nothing at all.
+	if externalSessionID != "" {
+		return externalSessionID, false, true
+	}
+	return "", false, false
 }
 
 // consumeAbort reports whether a stop is waiting for this session and takes it
@@ -1427,6 +1434,14 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 		return nil, errors.New("approval request has no toolUseId")
 	}
 
+	// The plugin withdraws a question it can no longer wait for — the person
+	// answered it in the terminal, or the hook was abandoned. Retract the card
+	// instead of leaving it on the phone until the turn ends.
+	if stringField(request, "action") == "cancel" {
+		c.cancelApproval(toolUseID, stringField(request, "sessionId"), stringField(request, "externalSessionId"))
+		return map[string]any{"decision": "cancelled"}, nil
+	}
+
 	// The pane answers by posting the decision to this same endpoint. Settle
 	// the hook that is waiting on this tool instead of treating the decision
 	// as another question.
@@ -1506,6 +1521,23 @@ func (c *Client) Ask(ctx context.Context, request map[string]any) (map[string]an
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// cancelApproval forgets a pending question and tells the server to retract it.
+func (c *Client) cancelApproval(toolUseID, sessionID, externalSessionID string) {
+	c.pendingMu.Lock()
+	_, ok := c.pending[toolUseID]
+	delete(c.pending, toolUseID)
+	delete(c.pendingTools, toolUseID)
+	c.pendingMu.Unlock()
+	if !ok {
+		return
+	}
+	c.emit(protocol.TypeApprovalCancel, protocol.ApprovalCancel{
+		SessionID:         sessionID,
+		ExternalSessionID: externalSessionID,
+		ToolUseID:         toolUseID,
+	})
 }
 
 // settle stores a decision for a pending question and hands it to the hook

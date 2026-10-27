@@ -224,9 +224,14 @@ type ApprovalRequest struct {
 }
 
 // ApprovalCancel retracts a question that no longer needs an answer.
+//
+// ExternalSessionID names the runtime conversation for a question raised by a
+// turn this connector is not watching, which is the case whenever the person
+// answered it in the terminal instead of on the phone.
 type ApprovalCancel struct {
-	SessionID string `json:"sessionId"`
-	ToolUseID string `json:"toolUseId"`
+	SessionID         string `json:"sessionId"`
+	ExternalSessionID string `json:"externalSessionId,omitempty"`
+	ToolUseID         string `json:"toolUseId"`
 }
 
 // Submit asks the connector to run a turn.

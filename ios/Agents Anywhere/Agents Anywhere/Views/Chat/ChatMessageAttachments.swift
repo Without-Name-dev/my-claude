@@ -53,6 +53,11 @@ private struct ChatMessageImage: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(.quaternary.opacity(0.6))
                 if let image {
+                    // A blurred fill of the same photo keeps the fixed
+                    // footprint without the empty bands a fitted portrait
+                    // leaves, and the photo stays uncropped on top.
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .blur(radius: 16).opacity(0.28)
                     Image(uiImage: image).resizable().scaledToFit()
                 } else if failed {
                     Label(String(localized: "轻点重试预览"), appSymbol: "arrow.clockwise").font(.caption).foregroundStyle(.secondary)
@@ -107,11 +112,14 @@ struct ChatComposerAttachment: View {
             }
         }
         .overlay(alignment: .topTrailing) {
+            // Inside the tile on purpose: the tray is a horizontal ScrollView,
+            // which clips anything drawn outside the item's bounds, so an
+            // offset badge never appeared.
             Button(action: onRemove) {
                 AppSymbol("xmark.circle.fill").symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, .black.opacity(0.7)).font(.system(size: 19))
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).offset(x: 9, y: -9).accessibilityLabel(String(localized: "移除 \(attachment.name)"))
+                    .foregroundStyle(.white, .black.opacity(0.7)).font(.system(size: 20))
+                    .frame(width: 32, height: 32).contentShape(Rectangle())
+            }.buttonStyle(.plain).padding(2).accessibilityLabel(String(localized: "移除 \(attachment.name)"))
         }
         .task(id: attachment.id) {
             if let data = attachment.previewData { image = UIImage(data: data) }
