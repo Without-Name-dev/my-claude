@@ -146,6 +146,22 @@ nonisolated struct TimelineScrollState: Equatable {
 
     mutating func geometryChanged(_ next: TimelineViewport) { viewport = next }
 
+    /// Claims the offset for the reader the moment it moves upward.
+    ///
+    /// A geometry sample can arrive a frame before the phase callback. In that
+    /// window the timeline still believes it is following, and a follow request
+    /// armed by the same frame would scroll a page the person is already
+    /// dragging. An upward offset change while idle has no other author: the
+    /// return animation and history restoration both move the page down or only
+    /// while reading.
+    mutating func noteUpwardMovement(from previous: TimelineViewport, to next: TimelineViewport) {
+        guard phase == .idle, mode != .reading, !returningToBottom, next.isMeasured else { return }
+        guard next.offsetY < previous.offsetY - 2 else { return }
+        // The frame before the movement is the last one known to be the tail.
+        if mode == .following { bottomOffset = previous.offsetY }
+        browseHistory()
+    }
+
     mutating func tailVisibilityChanged(_ region: TimelineTailVisibility.Region, visible: Bool) {
         tail.update(region, visible: visible)
     }

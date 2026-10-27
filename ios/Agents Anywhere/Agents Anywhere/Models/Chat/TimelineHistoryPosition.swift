@@ -19,6 +19,11 @@ nonisolated struct TimelineHistoryPosition: Equatable {
     private let originOffset: CGFloat
     private let originContentHeight: CGFloat?
     private let originFirstRowID: String?
+    /// The newest row when the page was requested. Any row appended after that
+    /// grew the tail, and the height difference between two samples then mixes
+    /// "a page was prepended" with "the reply grew" — the height fallback is
+    /// only trustworthy while this still matches.
+    private let originLastRowID: String?
     private var prePublicationContentHeight: CGFloat?
     private var hasReceivedPage = false
     private var expectedFirstRowID: String?
@@ -29,11 +34,13 @@ nonisolated struct TimelineHistoryPosition: Equatable {
 
     init(id: Int, layout: TimelineHistoryLayout?, offsetY: CGFloat, topInset: CGFloat,
          contentHeight: CGFloat? = nil,
-         originFirstRowID: String? = nil) {
+         originFirstRowID: String? = nil,
+         originLastRowID: String? = nil) {
         self.id = id
         origin = layout
         originContentHeight = contentHeight
         self.originFirstRowID = originFirstRowID ?? layout?.firstRowID
+        self.originLastRowID = originLastRowID
         // An outward pull can still be bouncing when the request starts.
         originOffset = max(-topInset, offsetY)
     }
@@ -52,10 +59,10 @@ nonisolated struct TimelineHistoryPosition: Equatable {
     mutating func cancelRestoration() { restorationCancelled = true }
 
     mutating func laidOut(_ layout: TimelineHistoryLayout, generation: Int) -> CGFloat? {
-        // The two channels must not both correct: applying the anchor after the
-        // height fallback moved the page once would move it again to a
-        // different offset, which is the second jump of a "double bounce".
-        guard !restorationCancelled, !restoredByHeight, generation == id, let origin,
+        // The anchor is the trustworthy channel, so it may correct an earlier
+        // height-based guess (that one can be polluted). The reverse is not
+        // allowed: see laidOutContentHeight.
+        guard !restorationCancelled, generation == id, let origin,
               layout.anchorRowID == origin.anchorRowID, layout.edge == origin.edge,
               layout.firstRowID != origin.firstRowID else { return nil }
         guard expectedFirstRowID == nil || layout.firstRowID == expectedFirstRowID else { return nil }
@@ -66,9 +73,13 @@ nonisolated struct TimelineHistoryPosition: Equatable {
         return offset
     }
 
-    mutating func laidOutContentHeight(_ height: CGFloat, firstRowID: String?, generation: Int) -> CGFloat? {
+    mutating func laidOutContentHeight(_ height: CGFloat, firstRowID: String?, lastRowID: String?, generation: Int) -> CGFloat? {
         guard !restorationCancelled, !restoredByHeight, generation == id,
               let originContentHeight, originContentHeight > 0 else { return nil }
+        // Something was appended at the tail since the page was requested; the
+        // height delta now includes that growth, so the fallback would restore
+        // by the wrong amount.
+        if let originLastRowID, lastRowID != originLastRowID { return nil }
         guard hasReceivedPage, let expectedFirstRowID else {
             if firstRowID == originFirstRowID { prePublicationContentHeight = height }
             return nil

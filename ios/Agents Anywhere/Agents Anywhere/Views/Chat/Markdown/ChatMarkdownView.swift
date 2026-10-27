@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import Textual
 
@@ -21,6 +22,15 @@ struct ChatMarkdownView: View {
     /// Completed blocks parsed so far; each batch re-parses only the open tail.
     @State private var parseState = MarkdownParseState()
 
+    /// Messages up to this length are parsed before the row is laid out.
+    ///
+    /// A settled row that starts at zero height and inflates after an
+    /// asynchronous parse pushes everything below it when it sits above the
+    /// viewport — the jump seen when swiping up through history. Parsing a
+    /// normal message costs a few milliseconds and happens only when the row is
+    /// realized, so the first layout is already its final height.
+    private static let synchronousParseLimit = 4_000
+
     init(text: String, isStreaming: Bool = false, resolvesFileReferences: Bool = false, layoutGeneration: Int = 0) {
         self.text = text
         self.isStreaming = isStreaming
@@ -33,6 +43,15 @@ struct ChatMarkdownView: View {
            let cached = ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: resolvesFileReferences) {
             _blocks = State(initialValue: cached.blocks)
             _parseState = State(initialValue: cached.state)
+        } else if !isStreaming, text.count <= Self.synchronousParseLimit,
+                  let parsed = try? Self.parse(
+                    ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, streaming: false),
+                    previous: nil) {
+            _blocks = State(initialValue: parsed.blocks)
+            _parseState = State(initialValue: parsed.state)
+            ChatMarkdownCache.shared.store(
+                ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
+                for: text, resolvesFileReferences: resolvesFileReferences)
         }
     }
 
@@ -147,6 +166,26 @@ struct ChatMarkdownView: View {
     }
 }
 
+/// Texts a prewarm pass is already parsing. Two passes racing over the same
+/// message would parse it twice and starve the row that is about to need it.
+nonisolated private final class ChatMarkdownPrewarmSet: @unchecked Sendable {
+    static let shared = ChatMarkdownPrewarmSet()
+    private let lock = NSLock()
+    private var inFlight: Set<String> = []
+
+    func begin(_ key: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if inFlight.contains(key) { return false }
+        inFlight.insert(key)
+        return true
+    }
+
+    func end(_ key: String) {
+        lock.lock(); defer { lock.unlock() }
+        inFlight.remove(key)
+    }
+}
+
 extension ChatMarkdownView {
     /// Parses messages the reader is about to scroll into view.
     ///
@@ -154,12 +193,15 @@ extension ChatMarkdownView {
     /// zero height and inflates when its parse lands. When that row appears
     /// above the viewport, everything the person is looking at is pushed down
     /// — the jump seen when swiping up through old messages. Parsing a window
-    /// around the reading position in the background means a row arrives at
+    /// around the reading position ahead of the gesture means a row arrives at
     /// its final height on the first frame instead.
     nonisolated static func prewarm(_ texts: [String]) {
         guard !texts.isEmpty else { return }
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .userInitiated) {
             for text in texts where !text.isEmpty {
+                if ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: true) != nil { continue }
+                guard ChatMarkdownPrewarmSet.shared.begin(text) else { continue }
+                defer { ChatMarkdownPrewarmSet.shared.end(text) }
                 if ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: true) != nil { continue }
                 let request = ParseRequest(text: text, resolvesFileReferences: true, streaming: false)
                 guard let parsed = try? parse(request, previous: nil) else { continue }

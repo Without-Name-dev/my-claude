@@ -160,6 +160,7 @@ struct ChatTimelineView: View {
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
             } action: { previous, value in
+                scrolling.noteUpwardMovement(from: previous, to: value)
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
                     // the rendered page. Publish only dimensions used by following.
@@ -367,10 +368,10 @@ struct ChatTimelineView: View {
         guard !rows.isEmpty,
               let topID = visibleHistoryRows.topmostVisibleRowID(),
               let index = rows.firstIndex(where: { $0.id == topID }) else { return }
-        guard abs(index - prewarmCursor.index) >= 8 else { return }
+        guard abs(index - prewarmCursor.index) >= 4 else { return }
         prewarmCursor.index = index
-        let lower = max(0, index - 60)
-        let upper = min(rows.count, index + 12)
+        let lower = max(0, index - 100)
+        let upper = min(rows.count, index + 16)
         ChatMarkdownView.prewarm(rows[lower..<upper].map(\.text))
     }
     private func loadOlder() {
@@ -387,7 +388,8 @@ struct ChatTimelineView: View {
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
             contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
-            originFirstRowID: model.timeline.rows.first?.id)
+            originFirstRowID: model.timeline.rows.first?.id,
+            originLastRowID: model.timeline.rows.last?.id)
         hasRequestedOlder = true
         olderLoadRequest = scrolling.navigationGeneration
     }
@@ -453,6 +455,7 @@ struct ChatTimelineView: View {
               var restoration = historyPosition else { return }
         let offset = restoration.laidOutContentHeight(height,
             firstRowID: model.timeline.rows.first?.id,
+            lastRowID: model.timeline.rows.last?.id,
             generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }

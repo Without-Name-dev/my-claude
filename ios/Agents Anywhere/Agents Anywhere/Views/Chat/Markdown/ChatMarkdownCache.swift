@@ -26,8 +26,10 @@ nonisolated final class ChatMarkdownCache: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    /// One entry is a message; the cap keeps a long conversation bounded.
-    private let limit = 240
+    /// One entry is a message. The cap keeps a long conversation bounded while
+    /// still holding more history than the reader normally scrolls back
+    /// through: an evicted message would be laid out at zero height again.
+    private let limit = 600
     /// A single very long message is cheaper to re-parse than to keep.
     private let maximumTextLength = 24_000
     private var entries: [Key: Value] = [:]
