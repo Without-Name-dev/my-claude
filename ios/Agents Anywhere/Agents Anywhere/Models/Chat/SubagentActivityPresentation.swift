@@ -165,8 +165,14 @@ nonisolated struct SubagentActivityPresentation: Identifiable, Equatable {
         if isRunning {
             let running = agents.filter(\.isRunning)
             let duration = Self.durationText(from: startedAt ?? now, to: now)
-            if running.count == 1, let agent = running.first {
+            if running.count == 1, agents.count == 1, let agent = running.first {
                 return String(localized: "子代理 \(agent.displayLabel) · 运行中 \(duration)")
+            }
+            // A turn's terminal lists every subagent it spawned, finished ones
+            // included. Showing only the running count here made the phone look
+            // like it had lost agents that had simply finished.
+            if running.count < agents.count {
+                return String(localized: "\(running.count) 个运行中 · 共 \(agents.count) 个子代理 · \(duration)")
             }
             return String(localized: "\(running.count) 个子代理 · 运行中 \(duration)")
         }
