@@ -54,7 +54,11 @@ extension SessionChatModel {
         switch session.runtime.state?.status {
         case .running: return .working
         case .waiting, .pending: return .waitingForResponse
-        default: return nil
+        default: break
         }
+        // A message that is still being delivered has no runtime status yet;
+        // its own line ("等待 X 回应…") is what the header shows meanwhile.
+        if let placeholder = sendingPlaceholder, !placeholder.isEmpty { return .information(placeholder) }
+        return nil
     }
 }
