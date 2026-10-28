@@ -397,10 +397,11 @@ struct ChatTimelineView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             // Typing is a reason to bring the tail back only for a reader who
             // is still there. Someone reading history keeps their position.
-            // The pin itself is not animated: the keyboard already animates,
-            // and per-frame instant pins track it exactly.
+            // The arm ignores atContentBottom: neither at-bottom signal is
+            // usable during the keyboard's rise (stale probe, double-counted
+            // insets), and gating on them swallowed every keyboard frame.
             guard scrolling.mode == .following || scrolling.atContentBottom else { return }
-            scrolling.requestBottom(animated: false)
+            scrolling.armKeyboardFollow()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
             // One settled, non-animated pin against the final height.

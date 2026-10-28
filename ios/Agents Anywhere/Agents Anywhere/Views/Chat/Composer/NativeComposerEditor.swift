@@ -142,7 +142,34 @@ struct NativeComposerEditor: UIViewRepresentable {
         /// The desired focus state this view last acted on. Nil until the
         /// first update, so an initial draft.isFocused == true still focuses.
         var desiredFocus: Bool?
-        init(_ parent: NativeComposerEditor) { self.parent = parent }
+        /// Whether the editor held focus when the app deactivated. A
+        /// screenshot or a notification-center pull resigns the first
+        /// responder during the snapshot; without remembering it, the
+        /// keyboard never came back afterwards.
+        private var refocusOnActivation = false
+        private var observers: [NSObjectProtocol] = []
+        init(_ parent: NativeComposerEditor) {
+            self.parent = parent
+            super.init()
+            observers.append(NotificationCenter.default.addObserver(
+                forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.refocusOnActivation = self.parent.controller.textView?.isFirstResponder == true
+            })
+            observers.append(NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self, self.refocusOnActivation else { return }
+                self.refocusOnActivation = false
+                // The user may have tapped elsewhere meanwhile; only the
+                // editor that still owns the draft's focus state returns.
+                if self.parent.draft.isFocused || self.parent.draft.isExpanded {
+                    self.parent.controller.textView?.becomeFirstResponder()
+                }
+            })
+        }
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
         func textViewDidChange(_ textView: UITextView) {
             synchronize()
             textView.invalidateIntrinsicContentSize()

@@ -102,19 +102,11 @@ nonisolated struct TimelineScrollState: Equatable {
     @discardableResult
     mutating func requestBottom(animated: Bool = true) -> Bool {
         guard !userIsScrolling else { return false }
-        // Already parked at the tail: the insets changed around us and the
-        // native offset tracks the bottom edge on its own. Arming a return
-        // here made every frame of a keyboard HIDE issue a spring against it.
-        if mode == .following, atContentBottom {
-            pendingAnimated = animated
-            return true
-        }
-        // Keyboard animation and streamed layout changes can request the same
-        // return repeatedly. Keep its generation stable while the target is
-        // unchanged, but retarget when the layout moved under the animation: a
-        // new row or the keyboard inset used to be dropped because the mode was
-        // .returning, which left the newest message below the fold.
-        if mode == .returning, let lastRequest,
+        // Nothing to do only when the layout is identical to the last issued
+        // command. "At bottom" alone is not sufficient: during a keyboard
+        // transition the tail probe is stale and the insets double-count, so a
+        // following page with a changed layout must still arm.
+        if let lastRequest,
            lastRequest.animated == animated,
            abs(lastRequest.contentHeight - viewport.contentHeight.rounded()) <= 0.5,
            abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5 {
@@ -134,6 +126,21 @@ nonisolated struct TimelineScrollState: Equatable {
         mode = .returning
         awaitsUserScrollSettlement = false
         invalidateNavigation()
+    }
+
+    /// Arms the keyboard follow without consulting atContentBottom.
+    ///
+    /// Tapping the composer is an explicit intent to type at the live tail.
+    /// During the keyboard's rise neither at-bottom signal is usable — the
+    /// tail probe is stale-true until the keyboard actually covers the
+    /// marker, and the inset math double-counts the keyboard — so the normal
+    /// requestBottom early-return swallowed every keyboard frame and the
+    /// newest message stayed behind the keyboard.
+    mutating func armKeyboardFollow() {
+        guard !userIsScrolling else { return }
+        guard mode == .following || mode == .returning else { return }
+        pendingAnimated = false
+        armBottomReturn()
     }
 
     mutating func browseHistory() {
@@ -237,8 +244,11 @@ nonisolated struct TimelineScrollState: Equatable {
               mode != .reading,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
-        // changes only need correction when they actually move away from bottom.
-        if atContentBottom && (mode == .following || lastRequest != nil) { return nil }
+        // changes only need correction when they actually move away from
+        // bottom. The lastRequest clause is deliberately gone: with it, one
+        // issued command plus a stale at-bottom reading suppressed the rest
+        // of a keyboard transition's per-frame pins after the first frame.
+        if mode == .following, atContentBottom { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded(),
             animated: pendingAnimated)
