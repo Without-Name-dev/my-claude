@@ -678,8 +678,14 @@ final class V2SessionRepository {
             defer { if entry.connectionID == version { entry.recoveryTask = nil } }
             if entry.projection == nil { _ = try await hydrate(entry) }
             var recoveryCursor = entry.projection!.data.cursor
-            var recoveryEvents: [V2SessionEvent] = []
             var needsSnapshot = false
+            // Whatever this pass applied must be persisted even if a later
+            // page fails: replaying a multi-megabyte backlog from the same
+            // cursor never converges on a slow link.
+            defer {
+                entry.isDirty = true
+                schedulePersistence()
+            }
             while true {
                 let recovery = try await detail.recover(sessionId: entry.id, after: recoveryCursor)
                 try requireCurrent(entry)
@@ -690,17 +696,17 @@ final class V2SessionRepository {
                     needsSnapshot = true
                     break
                 }
-                recoveryEvents.append(contentsOf: recovery.events)
+                // Apply and advance per page, so a timeout on a later page
+                // resumes where it stopped instead of starting over.
+                for event in recovery.events {
+                    try entry.projection?.apply(event)
+                }
+                entry.projection?.advanceCursor(recovery.nextCursor)
                 recoveryCursor = recovery.nextCursor
                 if !recovery.snapshotRequired { break }
             }
             if needsSnapshot {
                 _ = try await hydrate(entry)
-            } else {
-                for event in recoveryEvents {
-                    try entry.projection?.apply(event)
-                }
-                entry.projection?.advanceCursor(recoveryCursor)
             }
             entry.projection?.markStale()
             invalidateCatalogs(entry)

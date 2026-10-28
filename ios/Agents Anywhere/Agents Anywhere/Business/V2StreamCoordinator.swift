@@ -60,6 +60,12 @@ final class V2StreamCoordinator {
     private var isInvalidated = false
     private var isSuspended = false
     private var isOffline = false
+    /// When the shared socket last delivered any frame. While the socket is
+    /// down the retry loop is silent; without this a persistent failure left
+    /// every page marked connected with no events behind it, forever.
+    private var lastFrameAt = ContinuousClock.now
+    private var connectionStartedAt = ContinuousClock.now
+    private var stallWatchdog: Task<Void, Never>?
 
     /// Called once, when the first dashboard snapshot arrives.
     var prefetchSessions: (([V2SessionMeta]) -> Void)?
@@ -165,6 +171,8 @@ final class V2StreamCoordinator {
         connectionGeneration &+= 1
         connectionTask?.cancel()
         connectionTask = nil
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
         state = .idle
         for continuation in dashboardObservers.values { continuation.finish() }
         dashboardObservers.removeAll()
@@ -239,12 +247,44 @@ final class V2StreamCoordinator {
         guard state == .idle, connectionTask == nil, !isSuspended, !isOffline,
               !isInvalidated, !Self.processFallbackEngaged else { return }
         state = .connecting
+        connectionStartedAt = .now
         connectionGeneration &+= 1
         let generation = connectionGeneration
         connectionTask = Task { [weak self] in
             guard let self else { return }
             await self.runConnectionLoop(generation: generation)
         }
+        startStallWatchdog()
+    }
+
+    /// Watches the shared socket, not the individual requests: when it has been
+    /// down without a single frame for a minute, the endpoint is not coming
+    /// back on its own. Consumers are moved to the legacy sockets instead of
+    /// sitting on a fan-out that will never yield again while every page still
+    /// claims to be connected.
+    private func startStallWatchdog() {
+        guard stallWatchdog == nil else { return }
+        stallWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self else { return }
+                self.checkForStall()
+            }
+        }
+    }
+
+    private func checkForStall() {
+        guard !isInvalidated, !isSuspended, !isOffline, state != .fallback else { return }
+        // A connected socket has its own heartbeat watchdog; this one only
+        // measures how long the endpoint has been failing to come up.
+        guard state != .connected else { return }
+        // A reconnect that started a moment ago (a resume, a path change) gets
+        // its full window; only a failure older than the window counts.
+        let since = lastFrameAt > connectionStartedAt ? lastFrameAt : connectionStartedAt
+        guard ContinuousClock.now - since >= .seconds(60) else { return }
+        engageFallback()
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
     }
 
     /// Drops the socket without declaring the endpoint unusable. Observers stay
@@ -300,6 +340,7 @@ final class V2StreamCoordinator {
                 var sawReady = false
                 state = .connecting
                 for try await frame in frames {
+                    lastFrameAt = .now
                     switch frame {
                     case .keepalive:
                         break
@@ -383,6 +424,8 @@ final class V2StreamCoordinator {
         connectionGeneration &+= 1
         connectionTask?.cancel()
         connectionTask = nil
+        stallWatchdog?.cancel()
+        stallWatchdog = nil
         for continuation in dashboardObservers.values { continuation.finish() }
         dashboardObservers.removeAll()
         for observers in sessionObservers.values {
