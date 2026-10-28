@@ -55,10 +55,13 @@ func (a *App) applyInventory(ctx context.Context, conn *connectorConn, inv proto
 		if !existed {
 			created++
 		}
-		// Changed records refresh the recent tail. A periodic full inventory
-		// repairs gaps that may have accumulated while the server was offline.
+		// Changed records refresh the recent tail. A full transcript is only
+		// requested when a person opens the session: asking for it here
+		// re-uploaded hundreds of items every minute for an active
+		// conversation and published a timeline reset with every full pass,
+		// which is what made the phone's sync crawl.
 		if existed {
-			a.requestChangedHistory(ctx, session, maxHistoryRequest, inv.Full)
+			a.requestChangedHistory(ctx, session, historyRefreshLimit, false)
 		}
 	}
 	for _, externalID := range inv.Removed {

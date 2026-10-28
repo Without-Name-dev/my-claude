@@ -111,6 +111,9 @@ type Client struct {
 	spawnRequests map[string]time.Time
 
 	// historyMu guards historyStamps: versions the server confirmed committing.
+	// They are mirrored to DurableDir so a restart does not re-upload every
+	// transcript it had already sent (a burst of hundreds of items that made
+	// the phone crawl right after every restart).
 	historyMu          sync.Mutex
 	historyStamps      map[string]string
 	historyFullStamps  map[string]string
@@ -158,7 +161,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 	if b != nil {
 		durableDir = b.Dir
 	}
-	return &Client{
+	client := &Client{
 		URL:                 url,
 		Token:               token,
 		BootID:              strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36),
@@ -186,6 +189,8 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		historyJobs:         map[string]*historyJob{},
 		watching:            map[string]struct{}{},
 	}
+	client.loadHistoryStamps()
+	return client
 }
 
 // SetDurableDir configures connector-owned state when plugin delivery is off.
@@ -474,6 +479,9 @@ func (c *Client) dispatch(env protocol.Envelope) {
 			c.historyStamps[msg.SessionID] = msg.Version
 		}
 		c.historyMu.Unlock()
+		// Persist what the server confirmed, so a restart does not re-upload
+		// every transcript it already sent.
+		c.saveHistoryStamps()
 	case protocol.TypeTerminal:
 		c.handleTerminalFrame(env.Data)
 	case protocol.TypeSessionOpen:
@@ -1843,6 +1851,83 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 		return
 	}
 	c.Log.Info("sent history", "session", req.SessionID, "items", len(items))
+}
+
+// historyStampsLimit bounds the persisted map so a long-lived connector cannot
+// grow the file without limit.
+const historyStampsLimit = 1000
+
+type historyStampsFile struct {
+	Tail map[string]string `json:"tail"`
+	Full map[string]string `json:"full"`
+}
+
+func (c *Client) historyStampsPath() string {
+	if c.DurableDir == "" {
+		return ""
+	}
+	return filepath.Join(c.DurableDir, "history-stamps.json")
+}
+
+// loadHistoryStamps restores the versions this connector already sent and the
+// server acknowledged. Without it, every restart made the server request every
+// transcript again and the connector uploaded hundreds of items per session.
+func (c *Client) loadHistoryStamps() {
+	path := c.historyStampsPath()
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var body historyStampsFile
+	if json.Unmarshal(raw, &body) != nil {
+		return
+	}
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+	for id, version := range body.Tail {
+		if id != "" && version != "" {
+			c.historyStamps[id] = version
+		}
+	}
+	for id, version := range body.Full {
+		if id != "" && version != "" {
+			c.historyFullStamps[id] = version
+		}
+	}
+}
+
+func (c *Client) saveHistoryStamps() {
+	path := c.historyStampsPath()
+	if path == "" {
+		return
+	}
+	c.historyMu.Lock()
+	body := historyStampsFile{Tail: map[string]string{}, Full: map[string]string{}}
+	for id, version := range c.historyStamps {
+		if len(body.Tail) >= historyStampsLimit {
+			break
+		}
+		body.Tail[id] = version
+	}
+	for id, version := range c.historyFullStamps {
+		if len(body.Full) >= historyStampsLimit {
+			break
+		}
+		body.Full[id] = version
+	}
+	c.historyMu.Unlock()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func historyRetryDelay(modifiedAt, now time.Time) time.Duration {

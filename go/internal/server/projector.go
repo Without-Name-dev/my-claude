@@ -656,8 +656,10 @@ func (a *App) finishTurnEnd(
 	}
 	a.setSessionStatus(ctx, session.ID, nextStatus)
 	// A desktop prompt does not pass through the server's turn watcher. Once a
-	// watched turn closes, reconcile the now-settled transcript for every client.
-	a.requestChangedHistory(ctx, session, maxHistoryRequest, false)
+	// watched turn closes, reconcile the now-settled transcript for every
+	// client. The settled turn wrote its own rows, so the tail is enough; a
+	// 400-item rewrite here competed with the next turn's stream.
+	a.requestChangedHistory(ctx, session, historyRefreshLimit, false)
 }
 
 func (a *App) hasPendingUserMessages(ctx context.Context, sessionID string) bool {
