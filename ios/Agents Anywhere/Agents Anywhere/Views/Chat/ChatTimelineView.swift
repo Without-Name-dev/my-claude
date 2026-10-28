@@ -23,6 +23,12 @@ struct ChatTimelineView: View {
     @State private var olderLoadRequest: Int?
     @State private var latestPromptVisible = false
     @State private var latestLoadRequest: Int?
+    /// A pull-release requested an adjacent page. It is issued after the
+    /// scroll settles: inserting a page while the release bounce is still
+    /// moving the offset shifts the content under the reader (a jump), and the
+    /// correction can only land once the native scroll is idle.
+    @State private var pendingOlderLoad = false
+    @State private var pendingLatestLoad = false
     @State private var nativePhase = TimelineScrollState.Phase.idle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
@@ -122,8 +128,13 @@ struct ChatTimelineView: View {
                 @unknown default: mapped = .idle
                 }
                 let current = TimelineViewport(geometry: context.geometry)
+                // Enough to read back what the scroll view actually reported
+                // around a keyboard transition (the reported visible rect and
+                // the real insets disagreed once already).
+                let geometry = context.geometry
+                TimelineTrace.shared.record("GEOM",
+                    "m=\(mapped) con=\(Int(geometry.containerSize.height)) top=\(Int(geometry.contentInsets.top)) bot=\(Int(geometry.contentInsets.bottom)) vis=\(Int(geometry.visibleRect.height)) vmin=\(Int(geometry.visibleRect.minY)) off=\(Int(geometry.contentOffset.y))")
                 let wasUserScrolling = scrolling.userIsScrolling
-                let wasInteracting = scrolling.phase == .interacting
                 // Capture growth before publishing this sample: the coalesced
                 // geometry action below compares against scrolling.viewport,
                 // so growth observed here would otherwise be swallowed and the
@@ -154,11 +165,22 @@ struct ChatTimelineView: View {
                 if mapped == .interacting { latestPull.update(current); olderPull.update(current) }
                 if mapped == .idle || mapped == .decelerating {
                     let shouldLoadLatest = latestPull.end(), shouldLoadOlder = olderPull.end()
-                    if wasInteracting {
-                        if shouldLoadOlder { loadOlder() }
-                        else if shouldLoadLatest { loadLatest() }
-                    }
+                    if shouldLoadOlder { pendingOlderLoad = true }
+                    if shouldLoadLatest { pendingLatestLoad = true }
                 } else if mapped == .animating { latestPull.cancel(); olderPull.cancel() }
+                if mapped == .idle {
+                    // Wait for the release bounce to settle before the page is
+                    // inserted; requesting on .decelerating put a page into a
+                    // moving scroll view and the anchor correction ran after
+                    // the reader had already seen the shift.
+                    if pendingOlderLoad {
+                        pendingOlderLoad = false
+                        loadOlder()
+                    } else if pendingLatestLoad {
+                        pendingLatestLoad = false
+                        loadLatest()
+                    }
+                }
                 if mapped == .idle && wasUserScrolling {
                     // A history page can finish laying out while native
                     // deceleration still owns the offset. Its measurements
@@ -176,7 +198,7 @@ struct ChatTimelineView: View {
             } action: { previous, value in
                 TimelineTrace.shared.offsetSample(previous: previous, value: value,
                     phase: scrolling.phase, mode: scrolling.mode,
-                    rows: "\(model.timeline.rows.count):\(model.timeline.rows.first?.id.prefix(10) ?? "-")")
+                    rows: "\(model.timeline.rows.count):\(model.timeline.rows.first?.id.prefix(8) ?? "-")…\(model.timeline.rows.last?.id.prefix(8) ?? "-") act=\(model.timeline.subagentActivity?.id.prefix(8) ?? "-")")
                 scrolling.noteUpwardMovement(from: previous, to: value)
                 viewportUpdates.submit(value) { value in
                     // Offset samples are needed for restoration, but do not change
@@ -416,7 +438,8 @@ struct ChatTimelineView: View {
             visibleBottom: viewport.isMeasured ? viewport.visibleBottom : nil)
             ?? visibleHistoryRows.measuredAnchor(firstRowID: model.timeline.rows.first?.id, rowIDs: visibleRowIDs)
         historyLayout.value = layout
-        TimelineTrace.shared.record("LOAD.OLDER", "offset=\(Int(viewport.offsetY)) rows=\(model.timeline.rows.count)")
+        TimelineTrace.shared.record("LOAD.OLDER",
+            "offset=\(Int(viewport.offsetY)) rows=\(model.timeline.rows.count) anchor=\(layout == nil ? 0 : 1)")
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
             offsetY: viewport.offsetY, topInset: viewport.topInset,
             contentHeight: viewport.contentHeight > 0 ? viewport.contentHeight : nil,
@@ -465,6 +488,12 @@ struct ChatTimelineView: View {
         // cancels the coalesced apply, and the idle replay would then restore
         // the pre-page layout and let the inserted page shift the viewport.
         historyLayout.value = layout
+        // Apply immediately when the page has arrived. The coalesced hop ran
+        // one main-queue turn later, so the shifted content rendered for a
+        // frame before the offset was corrected — the visible jump.
+        if historyPosition?.pageArrived == true {
+            applyHistoryLayout(layout)
+        }
         historyUpdates.submit(layout) { layout in
             applyHistoryLayout(layout)
         }
@@ -472,15 +501,17 @@ struct ChatTimelineView: View {
 
     private func applyHistoryLayout(_ layout: TimelineHistoryLayout) {
         historyLayout.value = layout
-        // Point restoration is a forced scroll too: a live gesture always
-        // wins, even if a coalesced measurement arrives after it began.
-        guard !navigationIsSuspended, !scrolling.userIsScrolling,
+        // A finger on the screen always wins. Inertia does not: three pages
+        // loaded during one pull were inserted while the view was still
+        // decelerating, every correction was skipped, and the reader got one
+        // huge offset jump when the scroll finally went idle.
+        guard !navigationIsSuspended, !scrolling.fingerIsDown,
               var restoration = historyPosition else { return }
         let offset = restoration.laidOut(layout, currentOffset: viewport.offsetY,
                                          generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
-        TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset))")
+        TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset)) cur=\(Int(viewport.offsetY))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) { position.scrollTo(y: offset) }

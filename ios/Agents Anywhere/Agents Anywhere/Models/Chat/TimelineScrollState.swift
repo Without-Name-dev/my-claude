@@ -33,6 +33,10 @@ nonisolated struct TimelineScrollState: Equatable {
     private var followedBeforeInteraction = false
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
+    /// The person's finger is still on the screen. Deceleration is not a
+    /// gesture: content inserted above the reader during the release bounce
+    /// must still be compensated.
+    var fingerIsDown: Bool { phase == .tracking || phase == .interacting }
     var returningToBottom: Bool { mode == .returning }
     var needsUserScrollSettlement: Bool {
         awaitsUserScrollSettlement && phase == .idle && viewport.isMeasured && !navigationIsSuspended
