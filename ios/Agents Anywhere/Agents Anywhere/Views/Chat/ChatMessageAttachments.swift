@@ -45,6 +45,32 @@ private struct ChatMessageImage: View {
     @State private var failed = false
     @State private var retry = 0
 
+    /// Bounds for the rendered image; the ratio comes from the decoded image so
+    /// screenshots keep their original shape instead of being cropped into a
+    /// fixed 4:3 tile.
+    private static let maximumWidth: CGFloat = 240
+    private static let maximumHeight: CGFloat = 320
+
+    private var displaySize: CGSize {
+        guard let image, image.size.width > 0, image.size.height > 0 else {
+            return CGSize(width: Self.maximumWidth, height: 180)
+        }
+        let ratio = image.size.width / image.size.height
+        var width = Self.maximumWidth
+        var height = width / ratio
+        if height > Self.maximumHeight {
+            height = Self.maximumHeight
+            width = height * ratio
+        }
+        // Never upscale a small image past its native size.
+        let nativeWidth = image.size.width / max(image.scale, 1)
+        if width > nativeWidth {
+            width = nativeWidth
+            height = width / ratio
+        }
+        return CGSize(width: max(width, 1), height: max(height, 1))
+    }
+
     var body: some View {
         Button {
             // A failed thumbnail must not lock the attachment: the preview
@@ -56,20 +82,14 @@ private struct ChatMessageImage: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(.quaternary.opacity(0.6))
                 if let image {
-                    // Fill + clip: a portrait screenshot becomes a thumbnail
-                    // instead of a full-height page. The frame below is a hard
-                    // size, so no proposal from the row can stretch it.
-                    Image(uiImage: image).resizable().scaledToFill()
+                    Image(uiImage: image).resizable().scaledToFit()
                 } else if failed {
                     Label(String(localized: "轻点查看图片"), appSymbol: "photo").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ProgressView().progressViewStyle(.circular)
                 }
             }
-            // A fixed footprint: decoding or switching from local bytes to a
-            // remote thumbnail cannot move the surrounding conversation, and
-            // the attachment can never take over the screen.
-            .frame(width: 240, height: 180)
+            .frame(width: displaySize.width, height: displaySize.height)
             .clipShape(.rect(cornerRadius: 16))
             .contentShape(.rect(cornerRadius: 16))
             // The spinner → decoded image swap used to be a hard cut.
