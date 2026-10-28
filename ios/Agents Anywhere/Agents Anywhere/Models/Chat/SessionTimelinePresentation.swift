@@ -195,15 +195,15 @@ final class SessionTimelinePresentation {
                     // once. Opacity changes no layout: every row's final
                     // height is applied in this same pass, so the follow and
                     // history logic is not chasing an animation.
-                    let publish = {
-                        rows = updated
-                        rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
-                    }
                     if firstPresentation {
                         // Opening uses the mask fade, not a transcript fade.
-                        publish()
+                        rows = updated
+                        rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
                     } else {
-                        withAnimation(.easeOut(duration: 0.22)) { publish() }
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            self.rows = updated
+                            self.rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                        }
                     }
                 }
             }
