@@ -158,6 +158,11 @@ nonisolated struct TimelineScrollState: Equatable {
     /// while reading.
     mutating func noteUpwardMovement(from previous: TimelineViewport, to next: TimelineViewport) {
         guard phase == .idle, mode != .reading, !returningToBottom, next.isMeasured else { return }
+        // The keyboard (and the IME candidate bar) moves the offset together
+        // with the visible height. That is layout, not the reader swiping up;
+        // treating it as a gesture flipped the page to reading and stopped
+        // following while the person was typing at the live tail.
+        guard abs(next.visibleHeight - previous.visibleHeight) <= 0.5 else { return }
         guard next.offsetY < previous.offsetY - 2 else { return }
         browseHistory()
     }

@@ -712,8 +712,16 @@ private struct ChatTimelineContent: View, Equatable {
 
 private extension TimelineViewport {
     init(geometry: ScrollGeometry) {
-        self.init(contentHeight: geometry.contentSize.height, containerHeight: geometry.containerSize.height,
-            topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom, offsetY: geometry.contentOffset.y)
+        // visibleRect already accounts for the top and bottom insets (the
+        // composer safe area and the keyboard). Deriving the viewport by
+        // subtracting both insets from the container double-counted them and
+        // reported vh=0 while the keyboard was up.
+        let visible = geometry.visibleRect
+        self.init(contentHeight: geometry.contentSize.height,
+            visibleHeight: visible.height,
+            visibleBottom: visible.maxY,
+            offsetY: geometry.contentOffset.y,
+            topInset: geometry.contentInsets.top)
     }
 }
 
