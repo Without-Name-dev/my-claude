@@ -161,15 +161,17 @@ jobs:
         working-directory: go
         run: go build ./cmd/aa-server ./cmd/aa-connector
 
-  deploy-server:
-    name: Deploy server binary
+  publish-server:
+    name: Publish server release
     needs: [changes, go]
-    # Push to main only, and only when Go sources changed. The server applies it
-    # from /opt/agents-anywhere/incoming within a minute (root-owned timer), so
-    # CI never needs a root key or sudo.
+    # Push to main only, and only when Go sources changed. The server pulls the
+    # public release asset on a timer, verifies its digest, and restarts with a
+    # health check and rollback. No credentials are stored for this.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -183,32 +185,24 @@ jobs:
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o aa-server ./cmd/aa-server
           sha256sum aa-server
-      - name: Stage it on the server
+      - name: Publish the release asset
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "$SSH_KEY" ]; then
-            echo "::notice::DEPLOY_SSH_KEY is not set; skipping the server deploy"
-            exit 0
-          fi
-          install -m 600 /dev/null ~/.ssh/deploy_key
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            go/aa-server deploy@8.166.138.207:/opt/agents-anywhere/incoming/aa-server.part
-          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            deploy@8.166.138.207 'mv /opt/agents-anywhere/incoming/aa-server.part /opt/agents-anywhere/incoming/aa-server'
+          gh release delete server-latest --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create server-latest go/aa-server             --title "Server latest"             --notes "Built from ${GITHUB_SHA} on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
 
-  deploy-web:
-    name: Deploy Web client
+  publish-web:
+    name: Publish Web release
     needs: [changes, web]
-    # Push to main only, and only when web sources changed. The same root-owned
-    # applier swaps the extracted directory, keeping the previous build.
+    # Push to main only, and only when web sources changed. Same pull model as
+    # the server: the host fetches the public asset and swaps the directory,
+    # keeping the previous build.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: web-next
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -219,26 +213,18 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
       - name: Install client dependencies
+        working-directory: web-next
         run: corepack yarn install
       - name: Build the static export
+        working-directory: web-next
         env:
           NEXT_OUTPUT: export
         run: corepack yarn build
       - name: Package the export
-        working-directory: .
-        run: tar -czf web.tar.gz -C web-next/out .
-      - name: Stage it on the server
-        working-directory: .
+        run: tar -czf web-static.tar.gz -C web-next/out .
+      - name: Publish the release asset
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "$SSH_KEY" ]; then
-            echo "::notice::DEPLOY_SSH_KEY is not set; skipping the web deploy"
-            exit 0
-          fi
-          install -m 600 /dev/null ~/.ssh/deploy_key
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            web.tar.gz deploy@8.166.138.207:/opt/agents-anywhere/incoming/web.tar.gz.part
-          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
-            deploy@8.166.138.207 'mv /opt/agents-anywhere/incoming/web.tar.gz.part /opt/agents-anywhere/incoming/web.tar.gz'
+          gh release delete web-latest --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create web-latest web-static.tar.gz             --title "Web latest"             --notes "Built from ${GITHUB_SHA} on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
