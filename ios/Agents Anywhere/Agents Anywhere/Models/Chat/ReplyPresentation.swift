@@ -5,10 +5,22 @@ nonisolated enum ReplyPresentation {
     /// of the blur-and-rise reveal.
     static let plainFadeKey = "aa.native.chat.reveal.plain-fade"
     static let revealSeconds: TimeInterval = 0.24
+    /// Streamed text is revealed in small groups instead of all at once. A
+    /// network frame carries a whole sentence or paragraph; fading one batch
+    /// as a unit looked like blocks popping in every few hundred milliseconds.
+    /// Spreading the glyphs makes the reply read as it is written, and the cap
+    /// keeps the text from trailing the network for long.
+    static let revealRate: Double = 140
+    static let maximumRevealSpread: TimeInterval = 0.6
+    static let revealGroupSize = 4
+    /// A block's drawing clock must outlive the last scheduled group.
+    static var revealClock: TimeInterval { maximumRevealSpread + revealSeconds + drawSlack }
     /// A published batch starts drawing after its Markdown parse and the next
     /// frame. Drawing clocks stay alive this much longer than the reveal.
     static let drawSlack: TimeInterval = 0.1
-    static let settleDelay: Duration = .seconds(revealSeconds + drawSlack)
+    /// A completed block keeps its drawing clock until the staggered glyphs
+    /// have finished, then switches to native text drawing.
+    static let settleDelay: Duration = .seconds(revealClock)
 }
 
 /// Advance deadlines independently of the work done at each one, so processing

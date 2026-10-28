@@ -103,8 +103,9 @@ struct ChatMarkdownView: View {
             }
             if isStreaming {
                 // Set in the same update as the text, so the first frame of new
-                // glyphs already has a running clock.
-                let deadline = Date.now.addingTimeInterval(ReplyPresentation.revealSeconds + ReplyPresentation.drawSlack)
+                // glyphs already has a running clock. The clock must outlive
+                // the staggered groups scheduled by the reveal ledger.
+                let deadline = Date.now.addingTimeInterval(ReplyPresentation.revealClock)
                 let previous = Dictionary(blocks.map { ($0.id, $0.digest) }, uniquingKeysWith: { $1 })
                 var deadlines = revealDeadlines.filter { id, _ in next.contains { $0.id == id } }
                 for block in next where previous[block.id] != block.digest { deadlines[block.id] = deadline }

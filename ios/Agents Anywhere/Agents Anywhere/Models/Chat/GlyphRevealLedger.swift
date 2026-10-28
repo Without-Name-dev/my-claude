@@ -36,6 +36,9 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
     // One entry per flush, oldest first. A frame costs O(batches), not
     // O(characters), however long the paragraph grows.
     private var births: [(count: Int, born: TimeInterval)] = []
+    /// When the next appended glyph should be born, so batches stay ordered
+    /// across flushes instead of interleaving later text with earlier text.
+    private var nextBirth: TimeInterval = 0
 
     init(duration: TimeInterval = ReplyPresentation.revealSeconds) {
         precondition(duration > 0 && duration.isFinite)
@@ -51,6 +54,7 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
         guard enabled else {
             settledCount = count
             births.removeAll(keepingCapacity: false)
+            nextBirth = now
             return nil
         }
         settledCount = min(settledCount, count)
@@ -61,7 +65,48 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
             if removed == last.count { births.removeLast() } else { births[births.count - 1].count -= removed }
             birthCount -= removed
         }
-        if revealingCount > birthCount { births.append((revealingCount - birthCount, now)) }
+        // A replacement (not an append) can shorten the text. Keep the next
+        // birth after the remaining queue instead of leaving it in the future.
+        if births.isEmpty {
+            nextBirth = min(nextBirth, now)
+        } else if let lastBorn = births.last?.born, nextBirth > lastBorn + ReplyPresentation.maximumRevealSpread {
+            nextBirth = lastBorn + ReplyPresentation.maximumRevealSpread
+        }
+        if revealingCount > birthCount {
+            // A flush can append a whole paragraph. One shared birth time made
+            // all of it fade in together, which reads as a block popping in.
+            // Schedule small groups a few milliseconds apart instead.
+            //
+            // Births must stay ordered across flushes: scheduling a new chunk
+            // from "now" while the previous chunk still has groups queued made
+            // later text visible before earlier text. Continue from the end of
+            // the existing queue and keep the lead bounded — when the network
+            // outruns the reveal, new glyphs join the end without extending it.
+            let added = revealingCount - birthCount
+            let start = max(now, nextBirth)
+            let lead = start - now
+            let spread: TimeInterval
+            if lead > ReplyPresentation.maximumRevealSpread {
+                spread = 0
+            } else {
+                spread = min(ReplyPresentation.maximumRevealSpread - lead,
+                             Double(added) / ReplyPresentation.revealRate)
+            }
+            // At most ~150 groups keeps the per-frame batch walk bounded even
+            // for a large recovery chunk.
+            let groups = max(1, min(150, Int((Double(added) / Double(ReplyPresentation.revealGroupSize)).rounded(.up))))
+            let size = max(1, Int((Double(added) / Double(groups)).rounded(.up)))
+            let interval = groups > 1 ? spread / Double(groups - 1) : 0
+            var remaining = added
+            var born = start
+            while remaining > 0 {
+                let step = min(remaining, size)
+                births.append((step, born))
+                remaining -= step
+                born += interval
+            }
+            nextBirth = start + spread
+        }
         // Finished batches join the settled prefix and leave the per-frame work.
         while let first = births.first, now - first.born >= duration {
             settledCount += first.count
