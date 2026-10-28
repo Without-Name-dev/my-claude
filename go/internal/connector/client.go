@@ -197,6 +197,7 @@ func (c *Client) Run(ctx context.Context) {
 	go c.runTurnWatchers(ctx)
 	go c.watchAgentActivity(ctx)
 	go c.watchRuntimeState(ctx)
+	go c.watchRebinds(ctx)
 	for range historyWorkerCount {
 		go c.runHistory(ctx)
 	}
@@ -1208,6 +1209,45 @@ func (c *Client) watchRuntimeState(ctx context.Context) {
 				ExternalSessionID: externalID,
 				Status:            "idle",
 			})
+		}
+	}
+}
+
+// rebindPollInterval is how often the plugin's /clear records are checked.
+const rebindPollInterval = 1500 * time.Millisecond
+
+// watchRebinds forwards the plugin's /clear records.
+//
+// After /clear the terminal keeps running under a new transcript id. Nothing
+// on the server knows that transition, so the conversation the person is
+// looking at refused every message addressed to the old id. The plugin writes
+// a rebind record; this forwards it and removes it once the server has it.
+func (c *Client) watchRebinds(ctx context.Context) {
+	if c.Bridge == nil {
+		return
+	}
+	ticker := time.NewTicker(rebindPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, rebind := range c.Bridge.RebindRequests() {
+			c.Log.Info("conversation changed its transcript id",
+				"from", rebind.From, "to", rebind.To)
+			if err := c.send(protocol.TypeSessionRebind, protocol.SessionRebind{
+				FromExternalID: rebind.From,
+				ToExternalID:   rebind.To,
+			}); err != nil {
+				// The socket is down; leave the record for the next attempt.
+				c.Log.Debug("could not forward a session rebind", "error", err)
+				continue
+			}
+			if err := c.Bridge.RemoveRebind(rebind.Path); err != nil {
+				c.Log.Warn("could not remove a processed rebind record", "error", err)
+			}
 		}
 	}
 }

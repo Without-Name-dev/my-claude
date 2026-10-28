@@ -62,6 +62,10 @@ const (
 	// TypeSessionClose asks the connector to stop the terminal it is running
 	// for one conversation, so a person can restart it from the phone.
 	TypeSessionClose = "session.close"
+	// TypeSessionRebind reports that one runtime session id was replaced by
+	// another inside the same terminal (/clear), so the conversation the
+	// person is looking at keeps accepting messages from the new transcript.
+	TypeSessionRebind = "session.rebind"
 	// TypePing is a liveness probe; the connector answers with TypeBeat.
 	TypePing = "ping"
 	// TypeTurnEndAck confirms the server committed a turn.end frame.
@@ -291,6 +295,15 @@ type SessionOpen struct {
 type SessionClose struct {
 	SessionID         string `json:"sessionId"`
 	ExternalSessionID string `json:"externalSessionId"`
+}
+
+// SessionRebind carries a /clear transition: the terminal kept running but its
+// transcript id changed. The server moves the conversation to the new id so the
+// next message lands, and remembers the old one so discovery does not surface
+// it as a second conversation.
+type SessionRebind struct {
+	FromExternalID string `json:"fromExternalId"`
+	ToExternalID   string `json:"toExternalId"`
 }
 
 // Abort asks the connector to stop the running turn.

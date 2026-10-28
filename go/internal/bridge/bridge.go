@@ -303,6 +303,56 @@ func (b *Bridge) TokenPath() string    { return filepath.Join(b.Dir, "auth.json"
 func (b *Bridge) ApprovalPath() string { return filepath.Join(b.Dir, "approval.json") }
 func (b *Bridge) LiveDir() string      { return filepath.Join(b.Dir, "live") }
 
+// RebindRequest is one /clear transition the plugin recorded: the terminal
+// kept running, but the runtime session id (and transcript) changed.
+type RebindRequest struct {
+	Path string
+	From string
+	To   string
+	At   int64
+}
+
+// RebindRequests lists rebind records the plugin left for this process. A
+// malformed record is removed rather than retried forever.
+func (b *Bridge) RebindRequests() []RebindRequest {
+	entries, err := os.ReadDir(b.Dir)
+	if err != nil {
+		return nil
+	}
+	out := make([]RebindRequest, 0, 4)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "rebind.") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(b.Dir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var body struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+			At   int64  `json:"at"`
+		}
+		if json.Unmarshal(raw, &body) != nil || body.From == "" || body.To == "" || body.From == body.To {
+			_ = os.Remove(path)
+			continue
+		}
+		out = append(out, RebindRequest{Path: path, From: body.From, To: body.To, At: body.At})
+	}
+	return out
+}
+
+// RemoveRebind deletes a processed record.
+func (b *Bridge) RemoveRebind(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // RemoveLiveStamp withdraws one conversation's presence.
 //
 // Used when the connector itself ends the process: the plugin never gets to

@@ -149,8 +149,10 @@ final class SessionChatModel {
 
     func commandBlock(_ command: V2RuntimeCommand) -> RuntimeCommandBlock? {
         if isRunningCommand || isWorking { return .busy }
+        // Control is not a mode any more: the phone can always drive a
+        // conversation, so a command is never refused as "read only".
         return command.block(status: session.runtime.state?.status, capability: canUseCommands,
-            writable: session.metadata?.takeover == true, online: connectorOnline)
+            writable: true, online: connectorOnline)
     }
 
     func commandBlockMessage(_ command: V2RuntimeCommand, _ block: RuntimeCommandBlock) -> String {

@@ -1236,13 +1236,17 @@ func (a *App) handleTakeover(w http.ResponseWriter, r *http.Request, user store.
 	httpx.OK(w, map[string]any{"session": a.sessionView(r.Context(), updated)})
 }
 
-// handleReleaseTakeover returns control to the desk.
+// handleReleaseTakeover used to return control to the desk.
+//
+// Control is no longer a mode: a conversation can always be driven from the
+// phone, so releasing is a no-op kept for older clients. Setting the flag back
+// to false here would re-create the read-only state the product dropped.
 func (a *App) handleReleaseTakeover(w http.ResponseWriter, r *http.Request, user store.User) {
 	session, ok := a.ownedSession(w, r, user)
 	if !ok {
 		return
 	}
-	updated, err := a.db.SetSessionTakeover(r.Context(), session.ID, false)
+	updated, err := a.db.SetSessionTakeover(r.Context(), session.ID, true)
 	if err != nil {
 		httpx.Fail(w, err)
 		return

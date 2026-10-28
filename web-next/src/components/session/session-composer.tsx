@@ -15,7 +15,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
   AttachmentButton,
@@ -74,7 +73,6 @@ export function SessionComposer({
   creatingSession = false,
   sending,
   interrupting,
-  takeoverBusy,
   value,
   effectiveCapabilities,
   modelCatalog,
@@ -88,7 +86,6 @@ export function SessionComposer({
   onSend,
   onInterrupt,
   onCommand,
-  onToggleTakeover,
 }: {
   token: string
   session: SessionView
@@ -97,7 +94,6 @@ export function SessionComposer({
   creatingSession?: boolean
   sending: boolean
   interrupting: boolean
-  takeoverBusy: boolean
   value: string
   effectiveCapabilities: ProtocolCapabilitySet | null
   modelCatalog: ProtocolModelCatalog | null
@@ -116,7 +112,6 @@ export function SessionComposer({
   ) => Promise<boolean>
   onInterrupt: () => void
   onCommand: (command: string, options: { args: string[]; raw: string }) => Promise<CommandOutcome>
-  onToggleTakeover: () => void
 }) {
   const tSession = useTranslations("dashboard.session")
   const tNew = useTranslations("dashboard.new")
@@ -337,8 +332,6 @@ export function SessionComposer({
     ? tSession("creatingPlaceholder")
     : sourceUnavailable
       ? tSession("sourceUnavailablePlaceholder")
-    : !session.takeover
-    ? tSession("readOnlyPlaceholder")
     : isDisconnected || !connectorOnline
       ? tSession("deviceOfflinePlaceholder")
       : pendingInteractionCount > 0
@@ -392,7 +385,7 @@ export function SessionComposer({
   const commandBusy = sending || interrupting || commandPending
   const blockOf = (command: RuntimeCommand): CommandBlock | null => commandBusy ? "busy" : commandBlock(command, runtimeStatus, {
     capability: canUseCommands,
-    writable: session.takeover && !sourceUnavailable && !creatingSession,
+    writable: !sourceUnavailable && !creatingSession,
     online: connectorOnline,
   })
   const blockMessage = (command: RuntimeCommand, block: CommandBlock): string => {
@@ -404,7 +397,6 @@ export function SessionComposer({
   const canSubmitCommand = mode.kind === "command" && !sending && !interrupting && !commandPending && connectorOnline
   const canSubmitMessage =
     canSend &&
-    session.takeover &&
     hasInput &&
     attachmentsReady &&
     (attachments.length === 0 || canUseAttachments) && mode.kind === "message"
@@ -649,13 +641,13 @@ export function SessionComposer({
                 }
               }}
               placeholder={placeholder}
-              readOnly={!session.takeover}
+              readOnly={sourceUnavailable || creatingSession}
               disabled={!connectorOnline || creatingSession || sourceUnavailable}
               className="min-h-12 max-h-40 resize-none overflow-y-auto rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
             />
           </div>
-          {/* No wrapping: the option controls shrink instead, so the takeover
-              switch and send button always stay on the same row. */}
+          {/* No wrapping: the option controls shrink instead, so they and the
+              send button always stay on the same row. */}
           <div className="flex items-center gap-1 px-3 pb-3 pt-2">
             {canUseAttachments ? (
               <AttachmentButton
@@ -818,43 +810,7 @@ export function SessionComposer({
                 </>
               )
             ) : null}
-            <div
-              role="switch"
-              aria-checked={session.takeover}
-              aria-disabled={!connectorOnline || takeoverBusy || creatingSession}
-              tabIndex={connectorOnline && !takeoverBusy && !creatingSession ? 0 : -1}
-              className={cn(
-                "ml-auto flex h-8 shrink-0 items-center gap-2 rounded-xl px-2.5 text-sm text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                connectorOnline && !takeoverBusy && !creatingSession && "cursor-pointer hover:bg-accent hover:text-accent-foreground",
-                (!connectorOnline || takeoverBusy || creatingSession) && "opacity-50",
-                session.takeover && "text-foreground",
-              )}
-              onClick={() => {
-                if (!connectorOnline || takeoverBusy || creatingSession) return
-                onToggleTakeover()
-              }}
-              onKeyDown={(event) => {
-                if (!connectorOnline || takeoverBusy || creatingSession) return
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault()
-                  onToggleTakeover()
-                }
-              }}
-            >
-              {takeoverBusy ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Switch
-                  size="sm"
-                  checked={session.takeover}
-                  tabIndex={-1}
-                  aria-hidden
-                  className="pointer-events-none"
-                />
-              )}
-              {tSession("takeover")}
-            </div>
-            <span className="mx-1 h-5 w-px shrink-0 bg-border" />
+            <span className="ml-auto mr-1 h-5 w-px shrink-0 bg-border" />
             {showInterruptAction ? (
               <Button
                 type="button"

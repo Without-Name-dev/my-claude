@@ -454,16 +454,10 @@ function SessionDetailView({
   activeSessionIdRef.current = sessionId
   const sendBatchesRef = React.useRef(new Map<string, SessionSendBatch>())
   const [interrupting, setInterrupting] = React.useState(false)
-  const [takeoverBusy, setTakeoverBusy] = React.useState(false)
   const [resolvingNoticeId, setResolvingNoticeId] = React.useState<string | null>(null)
   const [resolvingActionId, setResolvingActionId] = React.useState<string | null>(null)
   const [showScrollBottom, setShowScrollBottom] = React.useState(false)
   const [loadingOlder, setLoadingOlder] = React.useState(false)
-  const [pendingTakeover, setPendingTakeover] = React.useState<boolean | null>(null)
-  const interactionTakeoverRef = React.useRef<{
-    sessionId: string
-    resolve: (confirmed: boolean) => void
-  } | null>(null)
   const [sourceErrorCode, setSourceErrorCode] = React.useState<SessionSourceErrorCode | null>(null)
   const [commandQuery, setCommandQuery] = React.useState<string | null>(null)
   const [catalogRecoveryGeneration, setCatalogRecoveryGeneration] = React.useState(0)
@@ -546,14 +540,6 @@ function SessionDetailView({
     setSourceErrorCode(null)
     activeCommandRequestRef.current = null
     return () => { activeCommandRequestRef.current = null }
-  }, [sessionId])
-
-  React.useEffect(() => {
-    setPendingTakeover(null)
-    return () => {
-      interactionTakeoverRef.current?.resolve(false)
-      interactionTakeoverRef.current = null
-    }
   }, [sessionId])
 
   React.useEffect(() => {
@@ -1608,36 +1594,6 @@ function SessionDetailView({
     }
   }
 
-  const handleDismissTakeover = () => {
-    setPendingTakeover(null)
-    interactionTakeoverRef.current?.resolve(false)
-    interactionTakeoverRef.current = null
-  }
-
-  const handleConfirmTakeover = async () => {
-    if (!session || takeoverBusy) return
-    const interactionTakeover = interactionTakeoverRef.current
-    const nextTakeover = pendingTakeover ?? !session.takeover
-    setTakeoverBusy(true)
-    try {
-      const result = nextTakeover
-        ? await dashboardApi.enableTakeover(token, session.id)
-        : await dashboardApi.disableTakeover(token, session.id)
-      setState((current) => current ? { ...current, session: result.session } : current)
-      onSessionUpdated?.(result.session)
-      setPendingTakeover(null)
-      if (interactionTakeover?.sessionId === session.id
-        && interactionTakeoverRef.current === interactionTakeover) {
-        interactionTakeoverRef.current = null
-        interactionTakeover.resolve(result.session.takeover)
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : tSession("updateTakeoverFailed"))
-    } finally {
-      setTakeoverBusy(false)
-    }
-  }
-
   const handleInterrupt = async () => {
     if (!session || interrupting) return
     setInterrupting(true)
@@ -1692,17 +1648,10 @@ function SessionDetailView({
     actionId: string,
     input?: Record<string, unknown>,
   ) => {
-    if (!session || resolvingNoticeId || interactionTakeoverRef.current) return
+    if (!session || resolvingNoticeId) return
     setResolvingNoticeId(noticeId)
     setResolvingActionId(actionId)
     try {
-      if (!session.takeover) {
-        const confirmed = await new Promise<boolean>((resolve) => {
-          interactionTakeoverRef.current = { sessionId: session.id, resolve }
-          setPendingTakeover(true)
-        })
-        if (!confirmed) return
-      }
       const response = await dashboardApi.respondInteraction(token, session.id, noticeId, actionId, input)
       if (response.ok) {
         removeNoticeFromState(noticeId)
@@ -1962,7 +1911,6 @@ function SessionDetailView({
 
   if (!session) return null
 
-  const takeoverTarget = pendingTakeover ?? false
   const sourceErrorDialog = sourceErrorCode
     ? sourceErrorDialogContent(sourceErrorCode, tSession, runtimeLabel(sessionRuntimeType(session)))
     : null
@@ -1971,11 +1919,6 @@ function SessionDetailView({
     setSourceErrorCode(null)
     if (shouldLeaveSession) replaceHome()
   }
-  const takeoverAgent = session.runtimeName?.trim() || runtimeLabel(sessionRuntimeType(session))
-  const takeoverDescription = (tSession.raw(
-    takeoverTarget ? "takeoverEnableDescription" : "takeoverDisableDescription",
-  ) as string[]).map((line) => line.replaceAll("{agent}", takeoverAgent))
-
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden overscroll-none">
       {error ? (
@@ -2074,8 +2017,8 @@ function SessionDetailView({
                 <Loader2 className="size-4 animate-spin" />
                 <span>
                   {runtimeStatus === "waiting" || runtimeStatus === "pending"
-                    ? tSession("runtimePending", { runtime: takeoverAgent })
-                    : tSession("runtimeWorking", { runtime: takeoverAgent })}
+                    ? tSession("runtimePending", { runtime: session.runtimeName?.trim() || runtimeLabel(sessionRuntimeType(session)) })
+                    : tSession("runtimeWorking", { runtime: session.runtimeName?.trim() || runtimeLabel(sessionRuntimeType(session)) })}
                 </span>
               </div>
             ) : null}
@@ -2116,7 +2059,6 @@ function SessionDetailView({
             creatingSession={isLocalOptimisticSession}
             sending={sending}
             interrupting={interrupting}
-            takeoverBusy={takeoverBusy}
             value={composerDraft}
             effectiveCapabilities={state?.effectiveCapabilities ?? null}
             modelCatalog={state?.catalogs.model ?? null}
@@ -2130,40 +2072,9 @@ function SessionDetailView({
             onSend={handleSend}
             onInterrupt={handleInterrupt}
             onCommand={handleSessionCommand}
-            onToggleTakeover={() => setPendingTakeover(!session.takeover)}
           />
         </div>
       </div>
-      <Dialog
-        open={pendingTakeover !== null}
-        onOpenChange={(open: boolean) => {
-          if (!open && !takeoverBusy) handleDismissTakeover()
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {takeoverTarget ? tSession("takeoverEnableTitle") : tSession("takeoverDisableTitle")}
-            </DialogTitle>
-            <DialogDescription asChild>
-              <ul className="flex list-disc flex-col gap-1 pl-5">
-                {takeoverDescription.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={handleDismissTakeover} disabled={takeoverBusy}>
-              {tCommon("cancel")}
-            </Button>
-            <Button onClick={handleConfirmTakeover} disabled={takeoverBusy}>
-              {takeoverBusy ? <Loader2 className="size-4 animate-spin" /> : null}
-              {takeoverTarget ? tSession("takeoverEnableConfirm") : tSession("takeoverDisableConfirm")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <Dialog
         open={sourceErrorDialog !== null}
         onOpenChange={(open: boolean) => {

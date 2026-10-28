@@ -24,8 +24,15 @@ func (a *App) applyInventory(ctx context.Context, conn *connectorConn, inv proto
 	for _, session := range existingSessions {
 		existing[session.ExternalID] = session
 	}
+	// Transcripts retired by a /clear still sit on disk. The conversation has
+	// already moved to the new id; discovering the old one again would add a
+	// duplicate session for the same conversation.
+	superseded, err := a.db.SupersededExternals(ctx, conn.id)
+	if err != nil {
+		a.log.Debug("could not read rebind history", "connector", conn.id, "error", err)
+	}
 	for _, record := range inv.Sessions {
-		if record.ExternalID == "" {
+		if record.ExternalID == "" || superseded[record.ExternalID] {
 			continue
 		}
 		_, existed := existing[record.ExternalID]

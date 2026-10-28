@@ -14,7 +14,6 @@ struct ComposerOptionsSheet: View {
     var onApply: () async -> Bool = { true }
     var applyError: () -> String? = { nil }
     var sessionChat: SessionChatModel?
-    @State private var pendingTakeover: Bool?
     @State private var isApplying = false
     @State private var showsApplyError = false
     @State private var path: [Page] = []
@@ -54,24 +53,6 @@ struct ComposerOptionsSheet: View {
                         .disabled(isLoading || !canSelectPermission || settings.catalog.permissions.isEmpty)
                     }
                     .background { ComposerOptionSurface() }
-                    if let chat = sessionChat, let meta = chat.session.metadata {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Toggle(isOn: Binding(get: { meta.takeover }, set: { pendingTakeover = $0 })) {
-                                Label(String(localized: "接管会话"), appSymbol: "hand.raised")
-                            }
-                            .toggleStyle(.switch).tint(nil).accentColor(nil)
-                            .disabled(!chat.canChangeTakeover)
-                            Text(meta.takeover ? String(localized: "已开启，可从 My Claude 继续操作。") : String(localized: "只读模式，开启接管后可以继续发送消息。"))
-                                .font(.footnote).foregroundStyle(.secondary)
-                            if let error = chat.takeoverError {
-                                Text(error).font(.footnote).foregroundStyle(.secondary)
-                            }
-                            if chat.takeoverUncertain || !chat.session.runtime.isFresh {
-                                Button(String(localized: "刷新接管状态")) { Task { await chat.refreshTakeover() } }
-                                    .font(.footnote).disabled(chat.isWorking || chat.session.network.availability == .offline)
-                            }
-                        }.padding(16).background { ComposerOptionSurface() }
-                    }
                     // Copies the transcript's scroll trace, so a jump that the
                     // code review cannot explain can be attributed to the
                     // writer that moved the offset.
@@ -110,9 +91,6 @@ struct ComposerOptionsSheet: View {
         .appSheetPresentation(.compact)
         .disabled(isApplying)
         .interactiveDismissDisabled(isApplying)
-        .modifier(SessionTakeoverConfirmation(pending: $pendingTakeover, isDsh: sessionChat?.isDsh ?? false) { enabled in
-            if let chat = sessionChat { _ = await chat.setTakeover(enabled) }
-        })
         .alert(String(localized: "无法更改设置"), isPresented: $showsApplyError) {
             Button(String(localized: "好"), role: .cancel) {}
         } message: { Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。")) }

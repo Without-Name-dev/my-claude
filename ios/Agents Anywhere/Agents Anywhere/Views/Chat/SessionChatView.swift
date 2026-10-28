@@ -26,13 +26,11 @@ struct SessionChatView: View, Equatable {
     /// does not need a second tap after the first finishes.
     @State private var downloadTask: Task<Void, Never>?
     @State private var toasts = ChatToastStore()
-    @State private var pendingTakeover: Bool?
     @State private var confirmsOpenOnComputer = false
     @State private var confirmsCloseTerminal = false
     @State private var hasStartedLoading = false
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var bodyLineHeight: CGFloat = 22
-    @ScaledMetric(relativeTo: .footnote) private var takeoverPillHeight: CGFloat = 32
 
     init(session: V2SessionModel, services: V2ClientServices, deviceName: String?,
          onMenu: @escaping () -> Void) {
@@ -52,7 +50,6 @@ struct SessionChatView: View, Equatable {
     }
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
     private var session: V2SessionModel { model.session }
-    private var requiresTakeover: Bool { session.metadata?.takeover == false }
     // Sidebar motion changes the containing card, not the session. Observable
     // model changes and real size/environment changes still update this subtree.
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -86,7 +83,7 @@ struct SessionChatView: View, Equatable {
                             canSelectModel: session.runtime.allows("catalog.model"),
                             canSelectPermission: session.runtime.allows("catalog.permission"),
                             isStreaming: model.isRunning, canStop: session.runtime.allows("session.interrupt"),
-                            isBusy: model.isWorking || !model.isOpeningReady, placeholder: requiresTakeover ? String(localized: "请先接管") : String(localized: "询问 Agents"),
+                            isBusy: model.isWorking || !model.isOpeningReady, placeholder: String(localized: "询问 Agents"),
                             isLoadingSettings: model.isLoadingSettings,
                             settingsError: model.settingsError, sessionChat: model,
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
@@ -101,9 +98,6 @@ struct SessionChatView: View, Equatable {
                     VStack(alignment: .leading, spacing: 4) {
                         // Metadata can arrive after history. Transient controls
                         // float below the header instead of resizing its inset.
-                        if requiresTakeover {
-                            takeoverPill.frame(maxWidth: .infinity, alignment: .center)
-                        }
                         ChatErrorToasts(store: toasts, isRetrying: session.isLoading,
                             onRetry: { _ in await session.refresh() },
                             onOpenOnComputer: { _ in _ = await model.openOnComputer() },
@@ -144,10 +138,6 @@ struct SessionChatView: View, Equatable {
                 .accessibilityLabel(String(localized: "会话菜单"))
             }
         }
-        .modifier(SessionTakeoverConfirmation(pending: $pendingTakeover, isDsh: model.isDsh) { enabled in
-            model.error = nil
-            if !(await model.setTakeover(enabled)), let error = model.takeoverError { model.error = error }
-        })
         .confirmationDialog(String(localized: "关闭这个会话的终端？"),
             isPresented: $confirmsCloseTerminal, titleVisibility: .visible) {
             Button(String(localized: "关闭终端"), role: .destructive) {
@@ -267,28 +257,6 @@ struct SessionChatView: View, Equatable {
             .padding(24).frame(maxWidth: 320)
         }
         .transition(.identity)
-    }
-
-    private var takeoverPill: some View {
-        Button { pendingTakeover = true } label: {
-            HStack(spacing: 8) {
-                if model.isWorking {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .scaleEffect(0.8)
-                        .tint(AppTheme.primaryText(colorScheme))
-                }
-                Label(String(localized: "接管会话以继续交互"), appSymbol: "hand.raised")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(AppTheme.primaryText(colorScheme))
-            }
-            .padding(.horizontal, 14).frame(minHeight: takeoverPillHeight)
-            .glassEffect(.regular.interactive(), in: .capsule)
-            .frame(minHeight: 44).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).disabled(!model.canChangeTakeover || model.isWorking)
-        .accessibilityIdentifier("chat.session.takeover")
-        .padding(.horizontal, 20).padding(.bottom, 4)
     }
 
     private func openFile(_ path: String) {

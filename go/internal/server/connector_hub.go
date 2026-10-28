@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -656,9 +657,41 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 			return
 		}
 		a.onApprovalCancel(ctx, conn, msg)
+	case protocol.TypeSessionRebind:
+		var msg protocol.SessionRebind
+		if err := json.Unmarshal(env.Data, &msg); err != nil {
+			return
+		}
+		a.onSessionRebind(ctx, conn, msg)
 	default:
 		a.log.Debug("ignoring unknown connector frame", "type", env.Type)
 	}
+}
+
+// onSessionRebind moves a conversation to the transcript id that replaced it
+// (/clear). The person keeps the same session entry, and later messages are
+// addressed to an id the terminal is actually running under.
+func (a *App) onSessionRebind(ctx context.Context, conn *connectorConn, msg protocol.SessionRebind) {
+	from := strings.TrimSpace(msg.FromExternalID)
+	to := strings.TrimSpace(msg.ToExternalID)
+	if from == "" || to == "" || from == to {
+		return
+	}
+	sessionID, err := a.db.RebindSession(ctx, conn.id, from, to)
+	if err != nil {
+		a.log.Warn("could not rebind a conversation", "from", from, "to", to, "error", err)
+		return
+	}
+	if sessionID == "" {
+		a.log.Info("rebind for an unknown conversation", "from", from, "to", to)
+		return
+	}
+	a.log.Info("conversation rebound to its new transcript",
+		"session", sessionID, "from", from, "to", to)
+	if session, err := a.db.SessionByIDAny(ctx, a.db.Read(), sessionID); err == nil {
+		a.publishSessionMeta(ctx, session)
+	}
+	a.dashboards.notify(conn.userID)
 }
 
 // authenticateConnector resolves the bearer token to a connector.

@@ -20,7 +20,6 @@ struct SessionDetailsSheet: View {
                         row(String(localized: "Agent 类型"), meta.runtimeTypeDisplayName ?? meta.runtimeType ?? meta.runtime)
                         row(String(localized: "状态"), (chat.session.runtime.state?.status ?? meta.status).displayName)
                         row(String(localized: "dashboard.session.workspace"), meta.cwd ?? String(localized: "无"))
-                        row(String(localized: "接管"), meta.takeover ? String(localized: "已开启") : String(localized: "只读"))
                     }
                     Section(String(localized: "标识与时间线")) {
                         row(String(localized: "Session ID"), meta.id)

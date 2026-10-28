@@ -115,8 +115,8 @@ func (s *Store) CreateSession(ctx context.Context, in Session) (Session, error) 
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions (id, connector_id, project_id, runtime, runtime_id, origin,
 			                      external_session_id, title, cwd, status, source_state,
-			                      sort_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, ?, ?)`,
+			                      takeover, sort_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', 1, ?, ?, ?)`,
 			in.ID, in.ConnectorID, projectID, in.Runtime, in.RuntimeID, in.Origin,
 			externalID, in.Title, in.CWD, in.Status, now, now, now)
 		if err == nil {
@@ -438,6 +438,96 @@ func (s *Store) SessionsForConnector(ctx context.Context, connectorID string) ([
 	return out, rows.Err()
 }
 
+// RebindSession moves one conversation's record to the runtime id that
+// replaced it. /clear keeps the terminal process but starts a new transcript,
+// so the conversation the person is looking at must follow the new id or every
+// later message is refused as addressed to another session.
+//
+// If the inventory already created a row for the new transcript, its timeline
+// items are folded into the surviving conversation and the row is dropped.
+// The old external id is remembered so discovery does not surface the retired
+// transcript as a second conversation.
+func (s *Store) RebindSession(ctx context.Context, connectorID, fromExternalID, toExternalID string) (string, error) {
+	if connectorID == "" || fromExternalID == "" || toExternalID == "" || fromExternalID == toExternalID {
+		return "", nil
+	}
+	var sessionID string
+	err := s.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		row := tx.QueryRowContext(ctx, `
+			SELECT id FROM sessions
+			WHERE connector_id = ? AND runtime = 'claude' AND external_session_id = ?`,
+			connectorID, fromExternalID)
+		if err := row.Scan(&sessionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		var duplicateID string
+		dupErr := tx.QueryRowContext(ctx, `
+			SELECT id FROM sessions
+			WHERE connector_id = ? AND runtime = 'claude' AND external_session_id = ? AND id <> ?`,
+			connectorID, toExternalID, sessionID).Scan(&duplicateID)
+		switch {
+		case dupErr == nil && duplicateID != "":
+			// Keep what the fresh row already imported, then remove it. Rows
+			// that collide on the item id stay with the surviving conversation.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE OR IGNORE timeline_items SET session_id = ? WHERE session_id = ?`,
+				sessionID, duplicateID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM timeline_items WHERE session_id = ?`, duplicateID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM submit_outbox WHERE session_id = ?`, duplicateID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, duplicateID); err != nil {
+				return err
+			}
+		case dupErr != nil && !errors.Is(dupErr, sql.ErrNoRows):
+			return dupErr
+		}
+		now := time.Now().UnixMilli()
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE sessions SET external_session_id = ?, updated_at = ? WHERE id = ?`,
+			toExternalID, now, sessionID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO session_rebinds (connector_id, from_external_id, to_external_id, session_id, created_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (connector_id, from_external_id) DO UPDATE SET
+				to_external_id = excluded.to_external_id,
+				session_id = excluded.session_id,
+				created_at = excluded.created_at`,
+			connectorID, fromExternalID, toExternalID, sessionID, now)
+		return err
+	})
+	return sessionID, err
+}
+
+// SupersededExternals lists runtime ids that were replaced by a /clear and must
+// not be discovered as their own conversation.
+func (s *Store) SupersededExternals(ctx context.Context, connectorID string) (map[string]bool, error) {
+	rows, err := s.read.QueryContext(ctx, `
+		SELECT from_external_id FROM session_rebinds WHERE connector_id = ?`, connectorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var externalID string
+		if err := rows.Scan(&externalID); err != nil {
+			return nil, err
+		}
+		out[externalID] = true
+	}
+	return out, rows.Err()
+}
+
 // UpsertDiscoveredSession records a session the connector found on disk.
 //
 // The identity is (connector, runtime, external id): the same Claude session
@@ -465,8 +555,8 @@ func (s *Store) UpsertDiscoveredSession(
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions (id, connector_id, project_id, runtime, runtime_id, origin,
 			                      external_session_id, title, cwd, status, source_state,
-			                      sort_at, created_at, updated_at)
-			VALUES (?, ?, ?, 'claude', 'claude', 'connector_import', ?, ?, ?, 'idle', 'visible', ?, ?, ?)`,
+			                      takeover, sort_at, created_at, updated_at)
+			VALUES (?, ?, ?, 'claude', 'claude', 'connector_import', ?, ?, ?, 'idle', 'visible', 1, ?, ?, ?)`,
 			id, connectorID, nullIfEmpty(projectID), nullIfEmpty(externalID),
 			title, cwd, now, now, now)
 		if err != nil {
