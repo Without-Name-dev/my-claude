@@ -160,3 +160,85 @@ jobs:
       - name: Build Server and Connector
         working-directory: go
         run: go build ./cmd/aa-server ./cmd/aa-connector
+
+  deploy-server:
+    name: Deploy server binary
+    needs: [changes, go]
+    # Push to main only, and only when Go sources changed. The server applies it
+    # from /opt/agents-anywhere/incoming within a minute (root-owned timer), so
+    # CI never needs a root key or sudo.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Build Linux server
+        working-directory: go
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o aa-server ./cmd/aa-server
+          sha256sum aa-server
+      - name: Stage it on the server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::notice::DEPLOY_SSH_KEY is not set; skipping the server deploy"
+            exit 0
+          fi
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            go/aa-server deploy@8.166.138.207:/opt/agents-anywhere/incoming/aa-server.part
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            deploy@8.166.138.207 'mv /opt/agents-anywhere/incoming/aa-server.part /opt/agents-anywhere/incoming/aa-server'
+
+  deploy-web:
+    name: Deploy Web client
+    needs: [changes, web]
+    # Push to main only, and only when web sources changed. The same root-owned
+    # applier swaps the extracted directory, keeping the previous build.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web-next
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Enable Corepack
+        run: corepack enable
+      - name: Install client dependencies
+        run: corepack yarn install
+      - name: Build the static export
+        env:
+          NEXT_OUTPUT: export
+        run: corepack yarn build
+      - name: Package the export
+        working-directory: .
+        run: tar -czf web.tar.gz -C web-next/out .
+      - name: Stage it on the server
+        working-directory: .
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "::notice::DEPLOY_SSH_KEY is not set; skipping the web deploy"
+            exit 0
+          fi
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            web.tar.gz deploy@8.166.138.207:/opt/agents-anywhere/incoming/web.tar.gz.part
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            deploy@8.166.138.207 'mv /opt/agents-anywhere/incoming/web.tar.gz.part /opt/agents-anywhere/incoming/web.tar.gz'
