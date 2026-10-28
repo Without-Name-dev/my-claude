@@ -81,6 +81,22 @@ struct CommandSuggestionPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(suggestions) { command in row(command) }
+                    // A failed refresh used to be invisible whenever older
+                    // commands were cached: the list still rendered, so the
+                    // error condition never matched.
+                    if chat.commandsError != nil {
+                        Button { Task { await chat.loadCommands(force: true) } } label: {
+                            HStack(spacing: 6) {
+                                AppSymbol("exclamationmark.circle", size: 13).foregroundStyle(.secondary)
+                                Text(String(localized: "指令列表刷新失败，点击重试"))
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .scrollBounceBehavior(.basedOnSize)

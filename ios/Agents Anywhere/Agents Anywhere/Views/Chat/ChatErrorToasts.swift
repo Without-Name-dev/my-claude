@@ -63,6 +63,7 @@ struct ChatErrorToasts: View {
                 if selected == nil || !ids.contains(selected ?? "") { selected = ids.first }
             }
             .accessibilityHint(store.items.count > 1 ? String(localized: "左右滑动查看其他提示") : "")
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 }

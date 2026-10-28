@@ -36,16 +36,25 @@ struct ChatComposerDock: View {
     @State private var isPreparingSend = false
     @State private var importCount = 0
     @State private var showsCommandMenu = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum AttachmentPicker { case photos, files }
+
+    /// Approximate panel visibility for the container's insertion animation:
+    /// the panel opens on a leading slash or the ⌘ button.
+    private var commandPanelRough: Bool {
+        showsCommandMenu || draft.text.hasPrefix("/")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let sessionChat {
                 CommandSuggestionPanel(chat: sessionChat, draft: draft, forced: $showsCommandMenu)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
-                canSend: canSend, canStop: canStop, isBusy: isBusy || isPreparingSend || importCount > 0,
+                canSend: canSend && importCount == 0, canStop: canStop, isBusy: isBusy || isPreparingSend,
+                isImporting: importCount > 0,
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
@@ -54,6 +63,7 @@ struct ChatComposerDock: View {
                 onCommands: { showsCommandMenu.toggle() },
                 onDraftChange: onDraftChange)
         }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: commandPanelRough)
         .onChange(of: sessionChat?.optionsRequest) { _, _ in showsOptions = true }
         .frame(maxWidth: ChatControlMetrics.maximumContentWidth)
         .frame(maxWidth: .infinity)
@@ -69,6 +79,9 @@ struct ChatComposerDock: View {
             ComposerOptionsSheet(settings: settings,
                 onPhotos: { queue(.photos) }, onFiles: { queue(.files) },
                 canAttach: canAttach && draft.attachments.count < 5 && importCount == 0,
+                attachDisabledReason: draft.attachments.count >= 5
+                    ? String(localized: "每条消息最多添加 5 个附件。")
+                    : (importCount > 0 ? String(localized: "附件正在导入，请稍候。") : nil),
                 canSelectModel: canSelectModel, canSelectPermission: canSelectPermission,
                 isLoading: isLoadingSettings, loadingError: settingsError,
                 onReload: onLoadSettings, onApply: onApplySettings, applyError: applyError, sessionChat: sessionChat)

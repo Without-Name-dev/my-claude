@@ -6,6 +6,9 @@ struct ComposerOptionsSheet: View {
     let onPhotos: () -> Void
     let onFiles: () -> Void
     var canAttach = true
+    /// Why the attachment tiles are disabled. The runtime's capability is only
+    /// one reason; reaching the per-message limit is not a capability problem.
+    var attachDisabledReason: String?
     var canSelectModel = true
     var canSelectPermission = true
     var isLoading = false
@@ -34,7 +37,8 @@ struct ComposerOptionsSheet: View {
                     .disabled(!canAttach)
                     .opacity(canAttach ? 1 : 0.5)
                     if !canAttach {
-                        Text(String(localized: "当前运行状态不支持添加附件")).font(.footnote).foregroundStyle(.secondary)
+                        Text(attachDisabledReason ?? String(localized: "当前运行状态不支持添加附件"))
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     if isLoading { ProgressView(String(localized: "加载对话选项…")) }
                     if let loadingError {
@@ -85,12 +89,10 @@ struct ComposerOptionsSheet: View {
                 }
             }
             .toolbar {
-                SheetCloseToolbar(disabled: isApplying) { dismiss() }
+                SheetCloseToolbar { dismiss() }
             }
         }
         .appSheetPresentation(.compact)
-        .disabled(isApplying)
-        .interactiveDismissDisabled(isApplying)
         .alert(String(localized: "无法更改设置"), isPresented: $showsApplyError) {
             Button(String(localized: "好"), role: .cancel) {}
         } message: { Text(applyError() ?? String(localized: "当前设置未保存，请稍后重试。")) }

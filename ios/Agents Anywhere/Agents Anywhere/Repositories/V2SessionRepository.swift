@@ -702,11 +702,23 @@ final class V2SessionRepository {
                 }
                 // Apply and advance per page, so a timeout on a later page
                 // resumes where it stopped instead of starting over.
+                var skippedUndecodable = false
                 for event in recovery.events {
-                    try entry.projection?.apply(event)
+                    do {
+                        try entry.projection?.apply(event)
+                    } catch is DecodingError {
+                        // One malformed event used to wedge recovery at the
+                        // same cursor for ever (the retry re-fetched it and
+                        // failed again). Skip it, keep the rest of the page,
+                        // and fall back to a snapshot so nothing stays
+                        // silently missing.
+                        skippedUndecodable = true
+                        TimelineTrace.shared.record("EVENT.decodeSkipped", "type=\(event.type)")
+                    }
                 }
                 entry.projection?.advanceCursor(recovery.nextCursor)
                 recoveryCursor = recovery.nextCursor
+                if skippedUndecodable { needsSnapshot = true }
                 if !recovery.snapshotRequired { break }
             }
             if needsSnapshot {

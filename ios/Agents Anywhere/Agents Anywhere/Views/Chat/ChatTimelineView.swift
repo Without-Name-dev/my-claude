@@ -24,8 +24,6 @@ struct ChatTimelineView: View {
     @State private var latestPromptVisible = false
     @State private var latestLoadRequest: Int?
     @State private var nativePhase = TimelineScrollState.Phase.idle
-    /// The return pill would sit on top of the keyboard while typing.
-    @State private var keyboardIsVisible = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.sidebarDrawerIsTransitioning) private var sidebarIsTransitioning
     @Environment(\.sidebarDrawerObscuresDetail) private var sidebarObscuresDetail
@@ -119,6 +117,11 @@ struct ChatTimelineView: View {
                 let current = TimelineViewport(geometry: context.geometry)
                 let wasUserScrolling = scrolling.userIsScrolling
                 let wasInteracting = scrolling.phase == .interacting
+                // Capture growth before publishing this sample: the coalesced
+                // geometry action below compares against scrolling.viewport,
+                // so growth observed here would otherwise be swallowed and the
+                // last tokens of a reply never followed.
+                let grew = abs(current.contentHeight - scrolling.viewport.contentHeight) > 0.5
                 viewportSample.value = current
                 scrolling.geometryChanged(current)
                 nativePhase = mapped
@@ -157,6 +160,9 @@ struct ChatTimelineView: View {
                     // leave the reader at a shifted point.
                     if let layout = historyLayout.value { applyHistoryLayout(layout) }
                 }
+                if grew, scrolling.mode == .following, !scrolling.userIsScrolling {
+                    scrolling.requestBottom()
+                }
             }
             .onScrollGeometryChange(for: TimelineViewport.self) { geometry in
                 TimelineViewport(geometry: geometry)
@@ -176,14 +182,13 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    // Follow on keyboard show OR streaming content growth (when already following)
-                    if scrolling.mayFollowNewContent {
-                        if keyboardIsVisible && visibleHeightChanged {
-                            scrolling.requestBottom()
-                        } else if contentHeightChanged && model.isRunning {
-                            // During streaming, follow content growth to show new tokens
-                            scrolling.requestBottom()
-                        }
+                    // Follow content growth and inset changes (keyboard, composer
+                    // tray, interaction dock) whenever the reader still owns the
+                    // tail. The old `model.isRunning` gate skipped the final
+                    // render of every reply: the status flips to idle in the
+                    // same snapshot that settles the row's last tokens.
+                    if scrolling.mayFollowNewContent, contentHeightChanged || visibleHeightChanged {
+                        scrolling.requestBottom()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -206,12 +211,17 @@ struct ChatTimelineView: View {
             }
             .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
                 // The presentation buffer, not the session's optimistic list,
-                // is what the LazyVStack renders. Waiting for this id means the
-                // return is measured with the new bubble already in the layout;
-                // requesting it on `session.pendingMessages` (or at send start)
-                // could scroll to the previous bottom and leave the bubble one
-                // row below the viewport.
-                if model.isOpeningReady, id != nil, scrolling.mayFollowNewContent { scrolling.requestBottom() }
+                // is what the plain stack renders. Waiting for this id means
+                // the return is measured with the new bubble already in the
+                // layout; requesting it on `session.pendingMessages` (or at
+                // send start) could scroll to the previous bottom and leave the
+                // bubble one row below the viewport.
+                //
+                // This one is not gated on following: sending is an explicit
+                // request to see what was just sent, even for a reader who had
+                // scrolled up. requestBottom still refuses mid-gesture.
+                guard model.isOpeningReady, id != nil else { return }
+                scrolling.requestBottom()
             }
             .onChange(of: model.timeline.rows.last?.id) { oldID, newID in
                 // Incoming terminal messages can append a row without changing
@@ -256,6 +266,11 @@ struct ChatTimelineView: View {
                 do { try await Task.sleep(for: .milliseconds(64)) } catch { return }
                 guard !Task.isCancelled else { return }
                 scrolling.settleUserScroll()
+                if scrolling.mode == .following, !scrolling.atContentBottom {
+                    // The settlement can land before the keyboard or the
+                    // composer inset finishes moving; pin once it is idle.
+                    scrolling.requestBottom()
+                }
             }
             .task(id: olderLoadRequest) {
                 guard let request = olderLoadRequest else { return }
@@ -325,7 +340,7 @@ struct ChatTimelineView: View {
                 }
                 latestLoadRequest = nil
             }
-            if !keyboardIsVisible, scrolling.showsBottomButton() {
+            if scrolling.showsBottomButton() {
                 Button {
                     latestPull.cancel(); olderPull.cancel()
                     scrolling.requestBottom()
@@ -342,7 +357,6 @@ struct ChatTimelineView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            keyboardIsVisible = true
             // Typing is a reason to bring the tail back only for a reader who
             // is still there. Someone reading history keeps their position.
             guard scrolling.mode == .following || scrolling.atContentBottom else { return }
@@ -351,8 +365,12 @@ struct ChatTimelineView: View {
             // animation keep the tail aligned after the available height settles.
             scrolling.requestBottom()
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardIsVisible = false
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+            // WillShow fires before the keyboard has finished animating, so its
+            // target predates the final viewport height. Re-pin once the final
+            // height is known, still only for a reader who owned the tail.
+            guard scrolling.mode == .following else { return }
+            scrolling.requestBottom()
         }
     }
     private func dismissKeyboard() {
@@ -383,9 +401,13 @@ struct ChatTimelineView: View {
         scrolling.browseHistory()
         position.isPositionedByUser = true
         let visibleRowIDs = Set(model.timeline.rows.map(\.id))
+        // The visible set can be empty for a frame (visibility callbacks have
+        // not arrived yet); every realized row is measured, so fall back to the
+        // topmost retained measurement instead of losing the correction.
         let layout = visibleHistoryRows.anchor(firstRowID: model.timeline.rows.first?.id, rowIDs: visibleRowIDs,
             visibleTop: viewport.isMeasured ? viewport.visibleBottom - viewport.visibleHeight : nil,
             visibleBottom: viewport.isMeasured ? viewport.visibleBottom : nil)
+            ?? visibleHistoryRows.measuredAnchor(firstRowID: model.timeline.rows.first?.id, rowIDs: visibleRowIDs)
         historyLayout.value = layout
         TimelineTrace.shared.record("LOAD.OLDER", "offset=\(Int(viewport.offsetY)) rows=\(model.timeline.rows.count)")
         historyPosition = TimelineHistoryPosition(id: scrolling.navigationGeneration, layout: layout,
@@ -432,6 +454,10 @@ struct ChatTimelineView: View {
         withTransaction(transaction) { position.isPositionedByUser = true }
     }
     private func historyDidLayOut(_ layout: TimelineHistoryLayout) {
+        // Record it synchronously as well: a touch in the same main-queue turn
+        // cancels the coalesced apply, and the idle replay would then restore
+        // the pre-page layout and let the inserted page shift the viewport.
+        historyLayout.value = layout
         historyUpdates.submit(layout) { layout in
             applyHistoryLayout(layout)
         }
@@ -447,10 +473,6 @@ struct ChatTimelineView: View {
                                          generation: scrolling.navigationGeneration)
         if historyPosition != restoration { historyPosition = restoration }
         guard let offset else { return }
-        // The correction moves the viewport but not the remembered tail. A
-        // stale absolute bottomOffset made the reader look parked at the bottom
-        // after a prepend, so the next streamed token pulled them off the page.
-        scrolling.shiftBottom(by: offset - viewport.offsetY)
         TimelineTrace.shared.record("RESTORE.anchor", "y=\(Int(offset))")
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -522,6 +544,7 @@ private struct ChatTimelineContent: View, Equatable {
     let onPromptVisibility: (Bool) -> Void
     let onOlderPromptVisibility: (Bool) -> Void
     let onTailVisibility: (TimelineTailVisibility.Region, Bool) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.latestPullReady == rhs.latestPullReady && lhs.isLoadingLatest == rhs.isLoadingLatest
@@ -611,7 +634,10 @@ private struct ChatTimelineContent: View, Equatable {
             }
             ForEach(visibleNotices.filter { notice in
                 notice.timelineTargetID.map { !rowIDs.contains($0) } ?? true
-            }) { item in SessionInteractionCard(item: item, chat: model).id(item.id) }
+            }) { item in
+                SessionInteractionCard(item: item, chat: model).id(item.id)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             ForEach(model.timeline.pendingMessages) { pending in
                 PendingMessageRow(pending: pending, chat: model, onAttachment: onAttachment,
                     onDismiss: { model.session.dismissPendingMessage(id: pending.id) })
@@ -653,6 +679,7 @@ private struct ChatTimelineContent: View, Equatable {
         // explicit point restore below runs in a transaction with animations
         // disabled; this also keeps the inserted rows from cross-fading.
         .animation(nil, value: model.timeline.historyInsertionRevision)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: visibleNotices.map(\.id))
         .modifier(ChatPageContentColumn(horizontalInset: nil))
         .coordinateSpace(name: "chat.timeline.content")
     }
@@ -753,6 +780,16 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
                     && (visibleTop.map { entry.frame.maxY > $0 } ?? true)
                     && (visibleBottom.map { entry.frame.minY < $0 } ?? true)
             }
+            .min { $0.frame.minY < $1.frame.minY }?.layout
+    }
+
+    /// The topmost retained measurement for the current page, used when no row
+    /// was reported visible yet. The plain stack measures every realized row,
+    /// so this is still an exact anchor instead of losing the correction.
+    func measuredAnchor(firstRowID: String?, rowIDs: Set<String>) -> TimelineHistoryLayout? {
+        guard let firstRowID else { return nil }
+        return entries.values
+            .filter { $0.layout.firstRowID == firstRowID && rowIDs.contains($0.layout.anchorRowID) }
             .min { $0.frame.minY < $1.frame.minY }?.layout
     }
 

@@ -46,8 +46,17 @@ struct V2SessionProjection {
     mutating func applyLive(_ live: V2SessionLiveState) {
         guard live.state.sessionId == data.session.id,
               (live.state.runtimeId ?? live.state.runtime) == data.session.effectiveRuntimeId else { return }
-        data.state = live.state
-        data.capabilities = live.capabilities
+        // The read can race a newer frame that was already in flight: never
+        // replace a newer state or capability set with an older one.
+        let sameRuntime = data.state.map {
+            ($0.runtimeId ?? $0.runtime) == (live.state.runtimeId ?? live.state.runtime)
+        } ?? false
+        if !sameRuntime || live.state.updatedSeq >= (data.state?.updatedSeq ?? 0) {
+            data.state = live.state
+        }
+        if live.capabilities.revision >= data.capabilities.revision {
+            data.capabilities = live.capabilities
+        }
         data.notices = live.notices
         data.liveStateIsFresh = data.session.connectorStatus == .online
     }
@@ -66,7 +75,20 @@ struct V2SessionProjection {
     mutating func applyState(_ state: V2RuntimeState) {
         guard state.sessionId == data.session.id,
               (state.runtimeId ?? state.runtime) == data.session.effectiveRuntimeId else { return }
+        // State is monotonic per runtime. An HTTP response that awaited while a
+        // newer socket frame landed used to flip the page back to "running"
+        // (or re-open a resolved approval); an older frame must not win.
+        if let current = data.state,
+           (current.runtimeId ?? current.runtime) == (state.runtimeId ?? state.runtime),
+           state.updatedSeq < current.updatedSeq {
+            return
+        }
         data.state = state
+    }
+
+    mutating func applyCapabilities(_ snapshot: V2RuntimeCapabilitySnapshot) {
+        guard snapshot.revision >= data.capabilities.revision else { return }
+        data.capabilities = snapshot
     }
 
     mutating func apply(_ event: V2SessionEvent) throws {
@@ -78,23 +100,30 @@ struct V2SessionProjection {
         // left an echoed message stuck on "accepted".
         if !event.isLiveProjection, eventIDs.contains(event.eventId) { return }
         if event.sequence < sequence {
+            // The cursor is ahead of this frame, so dropping it would lose it:
+            // recovery starts at the cursor. Every applicator below is
+            // idempotent and revision-guarded, so an older copy can only fill
+            // a gap. The cursor is deliberately not advanced.
             switch event.type {
             case "timeline.item_created", "timeline.item_updated":
-                // merge keeps the newest revision, so an older frame can only
-                // fill a gap. The cursor is deliberately not advanced.
                 merge([try item("item", in: event)], history: false)
+            case "session.meta.updated":
+                applyMeta(try payload("session", in: event))
+            case "runtime.state.updated":
+                // A late state frame used to be dropped for good, leaving the
+                // page on "running" or showing a resolved approval after the
+                // turn ended.
+                applyState(try payload("state", in: event))
+            case "runtime.capability.updated":
+                applyCapabilities(try payload("capabilitySet", in: event))
+            case "timeline.snapshot":
+                // merge keeps the newest revision of every item.
+                mergeSnapshot(try items("items", in: event), hasMore: event.payload["hasMore"]?.boolValue ?? false)
+            case "runtime.notice.snapshot":
+                mergeNotices(try payload("notices", in: event))
             case "runtime.notice.updated":
-                let notice: V2RuntimeNotice = try payload("notice", in: event)
-                guard notice.sessionId == data.session.id else { return }
-                if let index = data.notices.firstIndex(where: { $0.id == notice.id }),
-                   notice.revision >= data.notices[index].revision {
-                    data.notices[index] = notice
-                } else if !data.notices.contains(where: { $0.id == notice.id }) {
-                    data.notices.append(notice)
-                }
+                mergeNotices([try payload("notice", in: event)])
             default:
-                // State and snapshots have no revision guard of their own; an
-                // older copy would roll a newer one back.
                 break
             }
             return
@@ -105,7 +134,7 @@ struct V2SessionProjection {
         case "runtime.state.updated":
             applyState(try payload("state", in: event))
         case "runtime.capability.updated":
-            data.capabilities = try payload("capabilitySet", in: event)
+            applyCapabilities(try payload("capabilitySet", in: event))
         case "timeline.item_created", "timeline.item_updated":
             merge([try item("item", in: event)], history: false)
         case "timeline.snapshot":
@@ -113,13 +142,7 @@ struct V2SessionProjection {
         case "runtime.notice.snapshot":
             data.notices = try payload("notices", in: event)
         case "runtime.notice.updated":
-            let notice: V2RuntimeNotice = try payload("notice", in: event)
-            guard notice.sessionId == data.session.id else { return }
-            if let index = data.notices.firstIndex(where: { $0.id == notice.id }) {
-                if notice.revision >= data.notices[index].revision { data.notices[index] = notice }
-            } else {
-                data.notices.append(notice)
-            }
+            mergeNotices([try payload("notice", in: event)])
         case "runtime.catalog.updated":
             break // Catalog reads are independently cached and invalidated by the repository.
         case "session.subscribed", "session.refetch_required":
@@ -182,6 +205,19 @@ struct V2SessionProjection {
     private mutating func mergeSnapshot(_ items: [V2TimelineItem], hasMore: Bool) {
         merge(items, history: false, preservingCurrentWindow: true)
         data.hasOlderItems = data.hasOlderItems || hasMore
+    }
+
+    /// Merge notices by revision without removing any. Used when the frame may
+    /// be older than what is already applied; an authoritative snapshot still
+    /// replaces the list.
+    private mutating func mergeNotices(_ incoming: [V2RuntimeNotice]) {
+        for notice in incoming where notice.sessionId == data.session.id {
+            if let index = data.notices.firstIndex(where: { $0.id == notice.id }) {
+                if notice.revision >= data.notices[index].revision { data.notices[index] = notice }
+            } else {
+                data.notices.append(notice)
+            }
+        }
     }
 
     private mutating func merge(_ incoming: [V2TimelineItem], history: Bool, preservingCurrentWindow: Bool = false) {

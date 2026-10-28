@@ -25,6 +25,8 @@ struct SessionTurnActions: View, Equatable {
         .disabled(!action.hasReplyText)
         .buttonStyle(.plain).font(.system(size: 15)).foregroundStyle(.secondary).padding(.leading, -10)
         .accessibilityIdentifier("chat.turn.actions")
+        // Only the copy → true transition is a success; the 2 s reset is not.
+        .sensoryFeedback(trigger: copied) { _, copied in copied ? .success : nil }
     }
 }
 

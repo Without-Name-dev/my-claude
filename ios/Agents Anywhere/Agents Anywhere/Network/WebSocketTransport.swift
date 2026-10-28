@@ -62,7 +62,12 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
                         @unknown default:
                             continue
                         }
-                        if case .dropped = continuation.yield(data) { throw HTTPError.streamOverflow }
+                        // A full buffer used to tear the socket down. Dropping
+                        // this one frame is recoverable — durable events are
+                        // re-read from the cursor after the sequence gap, and
+                        // dashboard frames are whole snapshots — while a
+                        // reconnect costs seconds of silence.
+                        _ = continuation.yield(data)
                     }
                     continuation.finish()
                 } catch {

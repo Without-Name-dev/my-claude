@@ -31,41 +31,27 @@ nonisolated struct TimelineScrollState: Equatable {
     /// Whether the reader was following the tail when an interaction card
     /// appeared, so dismissing it restores that intent and nothing else.
     private var followedBeforeInteraction = false
-    /// The offset the page settled at while it owned the tail. Nil until the
-    /// first return completes.
-    private var bottomOffset: CGFloat?
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     var returningToBottom: Bool { mode == .returning }
     var needsUserScrollSettlement: Bool {
-        awaitsUserScrollSettlement && phase == .idle && tail.isMeasured && !navigationIsSuspended
+        awaitsUserScrollSettlement && phase == .idle && viewport.isMeasured && !navigationIsSuspended
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// Neither the end marker nor the content height can answer this on their
-    /// own. The marker's visibility callback does not fire reliably for a small
-    /// clear overlay, so it can keep claiming "visible" long after the reader
-    /// swiped up — which made every streamed chunk pull the page back to the
-    /// bottom. Content height is only an estimate for a lazy column, so using it
-    /// stopped the page from ever re-arming.
-    ///
-    /// The offset itself is exact: the tail offset is the largest one the page
-    /// settles at while it owns the tail, and the reader is at the tail when the
-    /// current offset is still that one.
+    /// The transcript is a plain stack, so its measured geometry is exact; the
+    /// live distance is the only reliable answer. A remembered "bottom offset"
+    /// went stale in both directions: streamed tokens pushed the true tail down
+    /// (a reader at the bottom was judged to be reading, so the final render of
+    /// a reply was never followed), and collapsing a fold pulled it up (a reader
+    /// at the bottom was judged to be reading for the rest of the session). The
+    /// end marker alone is not usable either — its callback does not fire
+    /// reliably for a small clear overlay.
     var atContentBottom: Bool {
-        guard let bottomOffset, viewport.isMeasured else { return tail.isAtBottom }
-        return viewport.offsetY >= bottomOffset - Self.bottomTolerance
+        guard viewport.isMeasured else { return tail.isAtBottom }
+        return viewport.distanceFromBottom <= Self.bottomTolerance
     }
-    /// Moves the remembered tail with the viewport when content is inserted or
-    /// removed above the reader. Without this, a history correction left
-    /// bottomOffset pointing at the old layout: the reader was then judged to
-    /// be at the bottom and the next streamed token scrolled them away from
-    /// the page they had just loaded.
-    mutating func shiftBottom(by delta: CGFloat) {
-        guard delta != 0, let bottomOffset else { return }
-        self.bottomOffset = bottomOffset + delta
-    }
-    /// How far above the remembered tail still counts as being at it.
+    /// How far above the live tail still counts as being at it.
     ///
     /// A real upward swipe must leave follow mode. Anything larger turns every
     /// deliberate small scroll into "still at the bottom", so the next streamed
@@ -102,9 +88,15 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func requestBottom() -> Bool {
         guard !userIsScrolling else { return false }
         // Keyboard animation and streamed layout changes can request the same
-        // return repeatedly. Keep its generation stable; the viewport value
-        // itself still changes and schedules a fresh target when needed.
-        guard mode != .returning else { return true }
+        // return repeatedly. Keep its generation stable while the target is
+        // unchanged, but retarget when the layout moved under the animation: a
+        // new row or the keyboard inset used to be dropped because the mode was
+        // .returning, which left the newest message below the fold.
+        if mode == .returning, let lastRequest,
+           abs(lastRequest.contentHeight - viewport.contentHeight.rounded()) <= 0.5,
+           abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5 {
+            return true
+        }
         armBottomReturn()
         return true
     }
@@ -135,11 +127,12 @@ nonisolated struct TimelineScrollState: Equatable {
             // scrolled up while an approval was open.
             followedBeforeInteraction = mode == .following || mode == .returning || atContentBottom
             browseHistory()
-        } else if followedBeforeInteraction {
+        } else if followedBeforeInteraction, atContentBottom {
             // The reply resumes as soon as the last card is dismissed. A
             // transient deceleration callback must not leave the timeline in
             // reading mode for the rest of the stream; arm the return directly
             // (the scroll itself still waits for idle in pendingBottomRequest).
+            // Someone who scrolled up while the card was open stays put.
             armBottomReturn()
         }
     }
@@ -166,8 +159,6 @@ nonisolated struct TimelineScrollState: Equatable {
     mutating func noteUpwardMovement(from previous: TimelineViewport, to next: TimelineViewport) {
         guard phase == .idle, mode != .reading, !returningToBottom, next.isMeasured else { return }
         guard next.offsetY < previous.offsetY - 2 else { return }
-        // The frame before the movement is the last one known to be the tail.
-        if mode == .following { bottomOffset = previous.offsetY }
         browseHistory()
     }
 
@@ -188,17 +179,6 @@ nonisolated struct TimelineScrollState: Equatable {
         // .tracking callback that will never arrive left the timeline following
         // the tail, so the next streamed token pulled the page back down.
         let userPhase = next == .tracking || next == .interacting || next == .decelerating
-        if beganGesture, mode == .following, !returningToBottom {
-            // The true tail moves down while content arrives, and the offset
-            // remembered when the last return completed is already stale, so a
-            // following page refreshes it when a gesture starts.
-            //
-            // Only a page that was actually following may do this. Refreshing
-            // from a return still in flight records an offset part-way through
-            // the animation as "the bottom", which then keeps the reader inside
-            // the tolerance while they are hundreds of points above the tail.
-            bottomOffset = viewport.offsetY
-        }
         if userPhase {
             if mode != .reading { browseHistory() }
             awaitsUserScrollSettlement = true
@@ -246,21 +226,26 @@ nonisolated struct TimelineScrollState: Equatable {
         activeCommand = nil
         if returningToBottom {
             mode = interactionIsPresented ? .reading : .following
-            // Only a return that finished against the layout it was issued for
-            // proves where the tail is. Content that grew during the animation
-            // leaves the viewport short of the target; recording that offset as
-            // the bottom would let a small upward swipe read as "still at the
-            // tail" and be pulled back by the next streamed token.
+            // Content that arrived during the animation leaves the viewport
+            // short of the tail. Nothing else schedules another scroll — the
+            // final render of a reply often lands exactly this way — so
+            // re-arm the return instead of stopping one line above the end.
             let landed = viewport.isMeasured
                 && abs(viewport.contentHeight - command.request.contentHeight) <= 0.5
-            if landed { bottomOffset = viewport.offsetY }
+                && abs(viewport.visibleHeight - command.request.visibleHeight) <= 0.5
+            if !landed, mode == .following, !atContentBottom {
+                armBottomReturn()
+            }
         }
         return true
     }
 
     func showsBottomButton() -> Bool {
-        hasOpened && !navigationIsSuspended && phase == .idle && tail.isMeasured
-            && !tail.isNearBottom && activeCommand == nil && pendingBottomRequest == nil
+        // Distance, not the probe: the marker's callbacks are unreliable for a
+        // small clear overlay, and a pill that never appears removes the only
+        // manual way back to the tail.
+        hasOpened && !navigationIsSuspended && phase == .idle
+            && !atContentBottom && activeCommand == nil && pendingBottomRequest == nil
     }
 
     private mutating func invalidateNavigation() {

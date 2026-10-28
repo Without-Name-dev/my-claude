@@ -70,6 +70,32 @@ struct ChatSidebarView: View {
                     }
                 }
 
+                if let repository, repository.network.availability == .offline {
+                    // Pull-to-refresh returns early when offline; without this
+                    // row the spinner ended and nothing on screen changed.
+                    Label(String(localized: "网络已断开，正在显示本地内容"), appSymbol: "wifi.slash")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                } else if let repository, let error = repository.error {
+                    // dashboardError was published but read by no view. Keep
+                    // the list usable and put the failure where it belongs:
+                    // next to the list, with an explicit retry.
+                    Button { Task { await repository.refresh() } } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            AppSymbol("exclamationmark.triangle", size: 13).foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(String(localized: "同步失败")).font(.footnote.weight(.medium))
+                                Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer(minLength: 0)
+                            Text(String(localized: "重试")).font(.caption).foregroundStyle(.tint)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 if !pinnedSessions.isEmpty {
                     ChatSidebarSessionSection(
                         title: "Pinned",
@@ -273,6 +299,7 @@ private struct ChatSidebarSessionSection: View {
     let onArchive: (V2SessionID) -> Void
     let onCopyId: (V2SessionID) -> Void
     let onCloseTerminal: (V2SessionID) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 4) {
@@ -299,6 +326,10 @@ private struct ChatSidebarSessionSection: View {
                 }
             }
         }
+        // Live dashboard pushes re-sort rows while the finger is aiming at
+        // one. Animating the move at least keeps the change legible instead
+        // of teleporting the row.
+        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: sessions.map(\.id))
     }
 }
 
@@ -357,6 +388,7 @@ private struct ChatSidebarDeviceRow: View {
 struct ChatSidebarSessionRow: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.chatSidebarRowBleed) private var bleed
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let session: ChatSidebarSession
     let isSelected: Bool
@@ -387,6 +419,11 @@ struct ChatSidebarSessionRow: View {
                         .font(.body).foregroundStyle(.primary)
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     ChatSidebarSessionIndicator(indicator: session.presentation.indicator)
+                        // A reserved slot keeps the truncated title from
+                        // reflowing every time a badge appears or disappears.
+                        .frame(width: 60, alignment: .trailing)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                                   value: session.presentation.indicator)
                 }
                 if let context {
                     Text(verbatim: context).font(.footnote).foregroundStyle(.secondary).lineLimit(1)

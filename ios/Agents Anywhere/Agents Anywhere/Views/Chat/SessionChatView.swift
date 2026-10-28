@@ -21,6 +21,10 @@ struct SessionChatView: View, Equatable {
     /// from, so an attachment without an extension opened to a blank page.
     @State private var previewImage: ImagePreviewItem?
     @State private var isDownloading = false
+    /// Which attachment the current download belongs to. Tapping the same
+    /// attachment again is ignored instead of restarting the transfer.
+    @State private var downloadingFileID: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The in-flight preview download. A new tap replaces it instead of being
     /// dropped, so quickly opening a second attachment from the same message
     /// does not need a second tap after the first finishes.
@@ -50,6 +54,11 @@ struct SessionChatView: View, Equatable {
     }
     private var controls: ChatControlMetrics { .init(bodyLineHeight: bodyLineHeight) }
     private var session: V2SessionModel { model.session }
+    /// Identities of the cards the interaction dock shows. Safe-area insets can
+    /// only be animated from the container that owns them.
+    private var interactionNoticeIDs: [String] {
+        session.notices.notices.filter { $0.blocks(session.id) }.map(\.id)
+    }
     // Sidebar motion changes the containing card, not the session. Observable
     // model changes and real size/environment changes still update this subtree.
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -66,13 +75,32 @@ struct SessionChatView: View, Equatable {
                 }
             }
                 .overlay {
-                    if model.isOpeningReady && model.timeline.rows.isEmpty && model.timeline.pendingMessages.isEmpty {
+                    if model.isOpeningReady, model.openingError == nil, session.failure == nil,
+                       model.timeline.rows.isEmpty, model.timeline.pendingMessages.isEmpty {
                         VStack(spacing: 12) {
                             Text(String(localized: "在这里继续你的任务")).foregroundStyle(.secondary)
                         }.allowsHitTesting(false)
                     }
                 }
                 .overlay { if !model.isOpeningReady { openingMask } }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.isOpeningReady)
+                .overlay(alignment: .bottom) {
+                    // A tap on an attachment used to look dead until the whole
+                    // file arrived. The last-tap-wins behaviour stays, but the
+                    // transfer itself is visible now.
+                    if isDownloading {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text(String(localized: "正在加载附件…")).font(.footnote)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                    }
+                }
+                .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isDownloading)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         SessionInteractionDock(chat: model,
@@ -91,6 +119,10 @@ struct SessionChatView: View, Equatable {
                             onDraftChange: { model.session.draftDidChange() })
                     }
                     .frame(maxWidth: ChatControlMetrics.maximumContentWidth).frame(maxWidth: .infinity)
+                    // An approval dock appears without warning; animating the
+                    // inset keeps the transcript from losing ~190 pt in one
+                    // frame while the person is reading it.
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.26), value: interactionNoticeIDs)
                     // Native safe-area layout owns both the visible scroll
                     // region and the dock's space; do not add a second margin.
                 }
@@ -114,7 +146,14 @@ struct SessionChatView: View, Equatable {
                             CommandSuccessToast(feedback: confirmation) { model.closeTerminalConfirmation = nil }
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
-                    }.padding(.top, 8)
+                    }
+                    .padding(.top, 8)
+                    // Banners are read while the person is acting; sliding them
+                    // in and out is easier to follow than a one-frame swap.
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: toasts.items.map(\.id))
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: model.commandSuccess?.id)
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: model.openOnComputerConfirmation?.id)
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: model.closeTerminalConfirmation?.id)
                 }
         }
         .modifier(ChatPageToolbar(title: session.metadata?.title ?? String(localized: "会话"),
@@ -256,7 +295,7 @@ struct SessionChatView: View, Equatable {
             }
             .padding(24).frame(maxWidth: 320)
         }
-        .transition(.identity)
+        .transition(.opacity)
     }
 
     private func openFile(_ path: String) {
@@ -278,17 +317,25 @@ struct SessionChatView: View, Equatable {
             model.error = String(localized: "这个附件暂时无法预览。")
             return
         }
+        // Repeating the tap on the attachment that is already downloading
+        // restarted the transfer; on a slow link that could keep it from ever
+        // finishing. A different attachment still wins over the old one.
+        if downloadingFileID == fileID { return }
         // Last tap wins: a preview that is still downloading must not swallow
         // the next tap.
         downloadTask?.cancel()
+        downloadingFileID = fileID
         isDownloading = true
         model.error = nil
-        // Show downloading indicator
         toasts.update(source: "download", failure: nil)
         downloadTask = Task { @MainActor in
             defer {
-                isDownloading = false
-                toasts.update(source: "download", failure: nil)
+                // A newer tap owns the state now; do not clear its indicator.
+                if downloadingFileID == fileID {
+                    isDownloading = false
+                    downloadingFileID = nil
+                    toasts.update(source: "download", failure: nil)
+                }
             }
             do {
                 let data = try await model.download(fileID)
@@ -326,6 +373,7 @@ struct SessionChatView: View, Equatable {
 private struct CommandSuccessToast: View {
     let feedback: CommandFeedback
     let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onDismiss) {
@@ -344,9 +392,12 @@ private struct CommandSuccessToast: View {
         .buttonStyle(.plain)
         .padding(.horizontal, ChatControlMetrics.collapsedHorizontalInset)
         .accessibilityHint(String(localized: "轻点关闭"))
+        .transition(.move(edge: .top).combined(with: .opacity))
         .task(id: feedback.id) {
             try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { onDismiss() }
+            if !Task.isCancelled {
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { onDismiss() }
+            }
         }
     }
 }

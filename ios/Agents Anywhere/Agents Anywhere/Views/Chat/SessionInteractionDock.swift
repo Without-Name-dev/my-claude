@@ -46,6 +46,7 @@ struct SessionInteractionDock: View {
                 selectedID = next.isEmpty ? nil : next[min(index, next.count - 1)]
             }
             .padding(.horizontal, 24)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
     private func step(_ delta: Int) {

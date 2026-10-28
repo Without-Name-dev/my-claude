@@ -22,6 +22,10 @@ struct ChatToast: Identifiable, Equatable {
         latest[source] = failure
         items.removeAll { $0.id == source }
         guard let failure, failure.kind != .cancelled else { return }
+        // A failed send is published as both `actionFailure` (send source) and
+        // `failure` (session source). Showing the same text twice produced a
+        // "1/2, 2/2" carousel of identical toasts.
+        if title == nil, items.contains(where: { $0.message == failure.message }) { return }
         let heading: String
         switch failure.kind {
         case .invalidResponse: heading = String(localized: "会话数据格式不兼容")

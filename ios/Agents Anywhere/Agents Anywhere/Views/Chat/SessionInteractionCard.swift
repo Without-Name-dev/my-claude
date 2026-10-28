@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// A fixed-size preview. Draft forms and verbose diagnostics live in sheets,
 /// so acknowledgement/network revisions cannot resize the timeline's inset.
@@ -41,8 +42,12 @@ struct SessionInteractionCard: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(summary).font(.system(.subheadline, design: item.notice.interactionType == "approval" ? .monospaced : .default))
                         .lineLimit(status.isEmpty ? 2 : 1)
-                    if !status.isEmpty { Text(status).font(.caption).lineLimit(1) }
+                    if !status.isEmpty {
+                        Text(status).font(.caption).lineLimit(1)
+                            .contentTransition(.opacity)
+                    }
                 }
+                .animation(.easeInOut(duration: 0.2), value: item.submission)
                 .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: metrics.lineHeight * 2, alignment: .topLeading).clipped()
 
@@ -89,7 +94,10 @@ struct SessionInteractionCard: View {
         case .idle: break
         }
         if item.isExpired(at: now) { return String(localized: "此交互已过期") }
-        if item.responseError != nil || item.notice.status == .failed { return String(localized: "回应失败 · 查看详情") }
+        // Say why the last attempt failed. "回应失败 · 查看详情" left the
+        // buttons enabled with no explanation and invited a duplicate approval.
+        if let error = item.responseError, !error.isEmpty { return error }
+        if item.notice.status == .failed { return String(localized: "回应失败 · 查看详情") }
         if chat.responseUnavailableReason != nil { return String(localized: "连接不可用 · 查看详情") }
         if [.responding, .responseAccepted, .resolving].contains(item.notice.status) { return String(localized: "\(chat.agentName) 正在处理…") }
         if let form = item.form { return String(localized: "\(form.questions.count) 个问题") }
@@ -155,8 +163,25 @@ struct SessionInteractionActions: View {
             || (!item.hasValidInput(for: action) && onEdit == nil)
     }
     private func respond(_ action: V2RuntimeNoticeAction) {
-        if !item.hasValidInput(for: action), let onEdit { onEdit() }
-        else { Task { await chat.respond(notice: item, action: action) } }
+        if !item.hasValidInput(for: action), let onEdit {
+            onEdit()
+        } else {
+            Task {
+                await chat.respond(notice: item, action: action)
+                // Approving or denying is the highest-stakes action in the
+                // app; confirm the outcome physically as well as visually.
+                switch item.submission {
+                case .accepted:
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                case .uncertain, .unavailable:
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                default:
+                    if item.responseError != nil {
+                        UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    }
+                }
+            }
+        }
     }
 }
 

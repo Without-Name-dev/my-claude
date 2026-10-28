@@ -10,6 +10,10 @@ struct DeviceAgentSection: View {
     @State private var renaming: V2DeviceRuntime?
     @State private var proposedName = ""
     @State private var schemaError: String?
+    /// The switch used to flip back to the old value while the write was in
+    /// flight and then forward again when the refresh landed. The override
+    /// keeps the person's choice on screen until the model reports a value.
+    @State private var pendingActive: [String: Bool] = [:]
 
     private struct Configuration: Identifiable {
         let runtime: V2DeviceRuntime
@@ -107,9 +111,17 @@ struct DeviceAgentSection: View {
             }
             .buttonStyle(.plain).disabled(!canManage(runtime))
             .accessibilityLabel(Text(runtime.sessionDisplayName))
-            Toggle(String(localized: "启用 \(runtime.sessionDisplayName)"), isOn: Binding(get: { runtime.active }, set: { active in
-                Task { try? await model.setActive(runtime, active) }
-            }))
+            Toggle(String(localized: "启用 \(runtime.sessionDisplayName)"), isOn: Binding(
+                get: { pendingActive[runtime.id] ?? runtime.active },
+                set: { active in
+                    pendingActive[runtime.id] = active
+                    Task {
+                        try? await model.setActive(runtime, active)
+                        // The server's answer (or the next refresh) owns the
+                        // value again, including when the write failed.
+                        pendingActive[runtime.id] = nil
+                    }
+                }))
             .labelsHidden().toggleStyle(.switch).tint(.green).fixedSize()
             .disabled(!canManage(runtime))
         }

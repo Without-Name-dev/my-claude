@@ -30,6 +30,7 @@ struct ChatMarkdownCodeBlock<Code: View>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("markdown.copyCode")
+                .sensoryFeedback(.success, trigger: copyCount)
                 .task(id: copyCount) {
                     guard copyCount > 0 else { return }
                     do { try await Task.sleep(for: .seconds(2)); copied = false } catch {}

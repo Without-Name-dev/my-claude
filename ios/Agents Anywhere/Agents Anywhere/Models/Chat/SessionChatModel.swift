@@ -233,25 +233,16 @@ final class SessionChatModel {
     }
 
     private func fail(_ message: String) {
-        // Provide specific, actionable error messages based on common failure scenarios
-        var title = String(localized: "无法执行指令")
-        var enhancedMessage = message
-
-        // Detect common error patterns and provide guidance
-        if message.contains("offline") || message.contains("network") || message.contains("连接") {
-            title = String(localized: "设备离线")
-            enhancedMessage = String(localized: "设备离线，消息会在恢复连接后发送。")
-        } else if message.contains("permission") || message.contains("权限") || message.contains("takeover") {
-            title = String(localized: "需要接管会话")
-            enhancedMessage = String(localized: "需要接管会话才能执行此操作。点击上方接管按钮。")
-        } else if message.contains("argument") || message.contains("parameter") || message.contains("参数") {
-            title = String(localized: "缺少参数")
-            enhancedMessage = String(localized: "此指令需要参数。示例：/command <参数>")
-        } else if !message.isEmpty {
-            enhancedMessage = message + "\n\n" + String(localized: "请检查网络连接或联系支持。")
-        }
-
-        commandFailure = CommandFeedback(title: title, message: enhancedMessage)
+        // The runtime's own words are the most accurate description available
+        // ("Agent 忙碌中，暂时不能执行", a parameter hint, a server code). The
+        // old keyword guessing replaced those real causes with a generic
+        // support hint, or flipped them to "device offline" whenever the text
+        // happened to contain 连接. Only a missing message needs copy.
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        commandFailure = CommandFeedback(
+            title: String(localized: "无法执行指令"),
+            message: text.isEmpty ? String(localized: "指令没有执行，请稍后重试。") : text
+        )
     }
 
     func prepareOpening() async {
@@ -276,16 +267,16 @@ final class SessionChatModel {
         }
         if let data = repository.cached(sessionId: session.id) {
             timeline.presentOpening(data.items, pendingMessages: session.pendingMessages)
-        } else {
-            // If no cached data, mark as presented to avoid infinite loading
-            // User can manually refresh if data doesn't arrive
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(3))
-                if !timeline.hasPresentedSnapshot {
-                    timeline.presentOpening([], pendingMessages: session.pendingMessages)
-                }
-            }
+        } else if openingError == nil {
+            // The server answered but has no cached transcript for this visit.
+            // There is genuinely nothing to show yet, so present the empty
+            // state instead of spinning forever.
+            timeline.presentOpening([], pendingMessages: session.pendingMessages)
         }
+        // A failed open deliberately keeps the loading mask (and its inline
+        // retry). Presenting an empty snapshot after a timeout made a slow or
+        // unreachable session look like an erased conversation, complete with
+        // the "continue here" placeholder.
         isOpeningPrepared = true
     }
 

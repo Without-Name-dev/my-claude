@@ -19,6 +19,7 @@ struct ChatSidebarProjects: View {
     @State private var busy: Set<String> = []
     @State private var error: String?
     @State private var expandedSessionLists: Set<String> = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Sessions shown per expanded project before "show more", matching Web.
     private static let sessionPreview = 8
 
@@ -41,11 +42,17 @@ struct ChatSidebarProjects: View {
                 projectList(projects.filter(\.pinned), busyProjects: busyProjects)
             }
             HStack {
-                Button { repository.sidebarPreferences.projectsExpanded.toggle() } label: {
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                        repository.sidebarPreferences.projectsExpanded.toggle()
+                    }
+                } label: {
                     HStack(spacing: 6) {
                         Text(String(localized: "项目"))
                         AppSymbol("chevron.right", size: 12)
                             .rotationEffect(.degrees(repository.sidebarPreferences.projectsExpanded ? 90 : 0))
+                            .animation(reduceMotion ? nil : .snappy(duration: 0.22),
+                                       value: repository.sidebarPreferences.projectsExpanded)
                     }.font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                         .frame(minHeight: 44).contentShape(.rect)
                 }.buttonStyle(.plain)
@@ -104,7 +111,9 @@ struct ChatSidebarProjects: View {
     private func projectList(_ values: [V2Project], busyProjects: Set<String>) -> some View {
         ForEach(values) { project in
             projectRow(project, isBusy: busyProjects.contains(project.id))
-            if expanded.contains(project.id) { projectSessions(project) }
+            if expanded.contains(project.id) {
+                projectSessions(project).transition(.opacity)
+            }
         }
     }
 
@@ -160,7 +169,9 @@ struct ChatSidebarProjects: View {
         sessionRows(visible, inset: true)
         if sessions.count > Self.sessionPreview {
             Button {
-                if showsAll { expandedSessionLists.remove(project.id) } else { expandedSessionLists.insert(project.id) }
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                    if showsAll { expandedSessionLists.remove(project.id) } else { expandedSessionLists.insert(project.id) }
+                }
             } label: {
                 Text(showsAll ? String(localized: "收起") : String(localized: "显示更多（\(sessions.count - visible.count)）"))
                     .font(.footnote).foregroundStyle(.secondary)
@@ -183,8 +194,12 @@ struct ChatSidebarProjects: View {
         }
     }
     private func toggleProject(_ id: String) {
-        if expanded.contains(id) { repository.sidebarPreferences.expandedProjects.remove(id) }
-        else { repository.sidebarPreferences.expandedProjects.insert(id) }
+        // A project expands into a whole subtree; without a transaction it
+        // appears in one frame and pushes everything below it down.
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+            if expanded.contains(id) { repository.sidebarPreferences.expandedProjects.remove(id) }
+            else { repository.sidebarPreferences.expandedProjects.insert(id) }
+        }
     }
     private func perform(_ id: String, operation: @escaping () async throws -> Void) {
         guard !busy.contains(id) else { return }
@@ -204,9 +219,10 @@ struct ArchivedSessionsSheet: View {
     @State private var busy: Set<String> = []
     @State private var restoreError = false
     var body: some View {
+        let archived = ProjectSidebarPresentation.sessions(repository.sessions, projectID: nil, filter: .archived)
         NavigationStack {
             List {
-                ForEach(ProjectSidebarPresentation.sessions(repository.sessions, projectID: nil, filter: .archived)) { session in
+                ForEach(archived) { session in
                     HStack {
                         Button { dismiss(); onOpen(session.id) } label: {
                             VStack(alignment: .leading, spacing: 5) {
@@ -225,6 +241,12 @@ struct ArchivedSessionsSheet: View {
                         }.buttonStyle(.borderless).disabled(busy.contains(session.id) || !repository.canWrite)
                             .accessibilityLabel(String(localized: "恢复会话"))
                     }
+                }
+            }
+            .overlay {
+                if archived.isEmpty {
+                    ContentUnavailableView(String(localized: "没有归档会话"), systemImage: "archivebox",
+                        description: Text(String(localized: "归档的会话会显示在这里。")))
                 }
             }
             .navigationTitle(String(localized: "归档会话")).navigationBarTitleDisplayMode(.inline)

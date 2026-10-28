@@ -10,7 +10,15 @@ struct RootView: View {
         Group {
             switch appState.route {
             case .loading:
-                Color(uiColor: .systemBackground)
+                // Restoring the account and the cached transcript can take a
+                // moment on a cold launch; a bare background looked like the
+                // app had failed to start.
+                VStack(spacing: 14) {
+                    ProgressView().controlSize(.large)
+                    Text(String(localized: "正在恢复…")).font(.footnote).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(AppTheme.appBackground(colorScheme))
             case .signedOut:
                 ServiceEntryView(
                     onManualLogin: { showingManualLogin = true },

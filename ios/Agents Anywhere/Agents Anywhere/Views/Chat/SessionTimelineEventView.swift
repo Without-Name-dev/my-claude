@@ -9,6 +9,7 @@ struct SessionTimelineGroupView: View, Equatable {
     /// Interaction cards targeting rows of this group. Passing the subset keeps
     /// unrelated groups equal when another row's notice changes.
     var inlineNotices: [SessionNoticeModel] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.group == rhs.group && lhs.chat === rhs.chat && lhs.turnAction == rhs.turnAction
@@ -48,9 +49,13 @@ struct SessionTimelineGroupView: View, Equatable {
                     .id(row.id)
                 ForEach(inlineNotices.filter { $0.timelineTargetID == row.id }) { notice in
                     SessionInteractionCard(item: notice, chat: chat)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
         }
+        // An approval card is ~166 pt tall. Inserted without a transaction it
+        // shifted every row below it in one frame.
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: inlineNotices.map(\.id))
     }
 }
 
@@ -198,7 +203,9 @@ private struct TimelineFold<Content: View>: View {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { disclosures.toggle(id) }
             } label: { TimelineMarkerRow(title: title, symbol: symbol, status: status, expanded: disclosures.isExpanded(id)) }
             .buttonStyle(.plain).accessibilityValue(disclosures.isExpanded(id) ? String(localized: "已展开") : String(localized: "已折叠"))
-            if disclosures.isExpanded(id) { content().transition(.identity) }
+            // Fade the revealed content in: with .identity it appeared at its
+            // final size while the rows below were still sliding around it.
+            if disclosures.isExpanded(id) { content().transition(.opacity) }
         }
     }
 }
