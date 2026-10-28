@@ -195,7 +195,7 @@ private struct WorkspaceDirectoryView: View {
                         canRead: canRead
                     )
                     .contextMenu {
-                        Button(String(localized: "复制路径"), systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.path }
+                        Button(String(localized: "复制路径"), systemImage: "doc.on.doc") { CopyAction.copy(entry.path) }
                         if entry.isFile {
                             Button(String(localized: "下载"), systemImage: "arrow.down.to.line") { onFileAction(entry, .download) }
                                 .disabled(!canTransfer)
@@ -243,7 +243,7 @@ private struct WorkspaceDirectoryView: View {
                     .accessibilityLabel(String(localized: "当前目录：\(currentDirectoryLabel)"))
                     .contextMenu {
                         Button(String(localized: "复制路径"), systemImage: "doc.on.doc") {
-                            UIPasteboard.general.string = currentDirectoryPath
+                            CopyAction.copy(currentDirectoryPath)
                         }
                     }
             }

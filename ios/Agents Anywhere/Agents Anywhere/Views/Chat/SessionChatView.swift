@@ -176,7 +176,7 @@ struct SessionChatView: View, Equatable {
                     Button(String(localized: "关闭终端"), systemImage: "xmark.rectangle") { confirmsCloseTerminal = true }
                         .disabled(!model.canCloseTerminal)
                     Button(String(localized: "会话详情与导出"), systemImage: "info.circle") { sheet = .details }
-                    Button(String(localized: "复制会话 ID"), systemImage: "number") { UIPasteboard.general.string = session.id }
+                    Button(String(localized: "复制会话 ID"), systemImage: "number") { CopyAction.copy(session.id) }
                 } label: { AppSymbol("ellipsis") }
                 .accessibilityLabel(String(localized: "会话菜单"))
             }
@@ -269,6 +269,12 @@ struct SessionChatView: View, Equatable {
         .onChange(of: model.error, initial: true) { _, message in
             toasts.update(source: "operation", failure: message.map { V2ClientFailure(kind: .rejected, message: $0) })
         }
+        .onChange(of: session.restoreNotice, initial: true) { _, notice in
+            // restoreNotice lives outside `failure` on purpose; emit() resets
+            // that field in the same turn the restore notice is written.
+            toasts.update(source: "restore", failure: notice.map { V2ClientFailure(kind: .unavailable, message: $0) })
+            if notice != nil { model.session.clearRestoreNotice() }
+        }
         .onChange(of: model.commandFailure) { _, feedback in
             // Each command failure is new, even when its text repeats a dismissed one.
             toasts.update(source: "command", failure: nil)
@@ -355,7 +361,12 @@ struct SessionChatView: View, Equatable {
                 let data = try await withThrowingTaskGroup(of: Data.self) { group in
                     group.addTask { try await self.model.download(fileID) }
                     group.addTask {
-                        try await Task.sleep(for: .seconds(30))
+                        // Scale the bound with the attachment size: a flat 30 s
+                        // wall was unwinnable for a large file on a moderate
+                        // link (the wire payload is ~1.3x the file in base64),
+                        // so every retry timed out the same way.
+                        let budget = 30.0 + Double(file.size ?? 0) / 200_000.0
+                        try await Task.sleep(for: .seconds(budget))
                         throw URLError(.timedOut)
                     }
                     guard let first = try await group.next() else { throw URLError(.timedOut) }

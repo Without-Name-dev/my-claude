@@ -88,6 +88,11 @@ final class V2SessionModel: Identifiable {
     private(set) var connection = V2SessionConnectionState.inactive
     private(set) var network = V2NetworkStatus()
     private(set) var failure: V2ClientFailure?
+    /// A restore-time notice (draft conflict, dropped attachments). Held
+    /// separately from `failure` because update() resets that field from the
+    /// observation error in the same main-actor turn, which erased the notice
+    /// before SwiftUI could render it.
+    private(set) var restoreNotice: String?
     /// The last failure of an action the person started (send, command).
     ///
     /// Kept apart from `failure`: the repository emits right after an action,
@@ -257,6 +262,8 @@ final class V2SessionModel: Identifiable {
     }
 
     /// An explicit UI action may dismiss a reviewed outcome; it never resends it.
+    func clearRestoreNotice() { restoreNotice = nil }
+
     func dismissPendingMessage(id: String) {
         pendingMessages.removeAll { $0.id == id && $0.delivery != .sending }
         repository?.localWorkDidChange(sessionID: self.id)
@@ -336,8 +343,7 @@ final class V2SessionModel: Identifiable {
             // win, but an older draft existed and silently dropping it would
             // look like the app lost their text.
             if !archive.draft.isEmpty, archive.draft != draft {
-                failure = V2ClientFailure(kind: .unavailable,
-                    message: String(localized: "上一次保存的草稿没有恢复，因为你已经开始输入。"))
+                restoreNotice = String(localized: "上一次保存的草稿没有恢复，因为你已经开始输入。")
             }
             return
         }
@@ -347,7 +353,7 @@ final class V2SessionModel: Identifiable {
         if let dropped = archive.droppedDraftAttachments, !dropped.isEmpty {
             // Saying so is the only honest option: those bytes were never
             // stored, and the tray must not pretend otherwise.
-            failure = V2ClientFailure(kind: .unavailable, message: String(localized: "部分附件太大，未能随草稿保存，请重新选择。"))
+            restoreNotice = String(localized: "部分附件太大，未能随草稿保存，请重新选择。")
         }
         draftAttachmentIDs = archive.draftAttachments.compactMap { $0.uploaded?.fileId }
         pendingMessages = archive.pending.map { value in

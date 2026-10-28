@@ -237,8 +237,9 @@ struct ArchivedSessionsSheet: View {
                             Task { let restored = await onRestore(session.id); busy.remove(session.id); restoreError = !restored }
                         } label: {
                             if busy.contains(session.id) { ProgressView() }
-                            else { AppSymbol("tray.and.arrow.up") }
-                        }.buttonStyle(.borderless).disabled(busy.contains(session.id) || !repository.canWrite)
+                            else { AppSymbol("tray.and.arrow.up").frame(width: 44, height: 44) }
+                        }.buttonStyle(.borderless).contentShape(Rectangle())
+                        .disabled(busy.contains(session.id) || !repository.canWrite)
                             .accessibilityLabel(String(localized: "恢复会话"))
                     }
                 }
@@ -247,6 +248,10 @@ struct ArchivedSessionsSheet: View {
                 if archived.isEmpty {
                     ContentUnavailableView(String(localized: "没有归档会话"), systemImage: "archivebox",
                         description: Text(String(localized: "归档的会话会显示在这里。")))
+                } else if !repository.canWrite {
+                    // Offline or stale, the restore buttons die silently.
+                    Label(String(localized: "网络已断开或数据过期，下拉刷新后可恢复会话。"), appSymbol: "wifi.slash")
+                        .font(.footnote).foregroundStyle(.secondary).padding(12)
                 }
             }
             .navigationTitle(String(localized: "归档会话")).navigationBarTitleDisplayMode(.inline)

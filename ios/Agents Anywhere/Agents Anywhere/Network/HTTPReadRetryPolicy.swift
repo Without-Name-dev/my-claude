@@ -26,6 +26,16 @@ nonisolated struct HTTPReadRetryPolicy {
 }
 
 enum V2MobileNetworking {
+    /// Uploads and file downloads move megabytes; the 90 s whole-transfer cap
+    /// of the read configuration killed a large attachment mid-transfer and
+    /// the retry restarted it from zero.
+    static func transferConfiguration() -> URLSessionConfiguration {
+        let config = configuration()
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 600
+        return config
+    }
+
     static func configuration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.waitsForConnectivity = true

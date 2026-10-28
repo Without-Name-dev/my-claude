@@ -224,7 +224,7 @@ private struct TimelineFileChangeView: View {
                 }.buttonStyle(.plain).disabled(change.path == nil).accessibilityHint(String(localized: "在 Web 预览中打开文件"))
                 AppSymbol("arrow.up.right", size: 12).foregroundStyle(.secondary)
             }.padding(.horizontal, 12).frame(minHeight: 44).background(.quaternary.opacity(0.4))
-            if let code = change.diff ?? change.code { TimelineCodePanel(label: change.diff == nil ? "code" : "diff", code: code, isDiff: change.diff != nil) }
+            if let code = change.diff ?? change.code { TimelineCodePanel(label: change.diff == nil ? String(localized: "代码") : String(localized: "差异"), code: code, isDiff: change.diff != nil) }
         }.background(Color(uiColor: .secondarySystemBackground))
     }
 }
@@ -234,6 +234,8 @@ struct TimelineCodePanel: View {
     let code: String
     var isDiff = false
     @State private var copied = false
+    /// A monotonic counter: the haptic fires on each copy, never on the 2 s reset.
+    @State private var copyCount = 0
     @State private var memo = PanelMemo()
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 19
     /// Diff parsing and line counting repeat only when the code changes, not
@@ -261,9 +263,10 @@ struct TimelineCodePanel: View {
                 Text(label).font(.system(.caption, design: .monospaced))
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = code; copied = true
+                    UIPasteboard.general.string = code; copied = true; copyCount += 1
                 } label: { AppSymbol(copied ? "checkmark" : "document.on.document").frame(width: 44, height: 44) }
                 .buttonStyle(.plain).accessibilityLabel(copied ? String(localized: "已复制") : String(localized: "复制 \(label)"))
+                .sensoryFeedback(.success, trigger: copyCount)
                 .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); copied = false } }
             }.padding(.leading, 12).foregroundStyle(.secondary).background(.quaternary.opacity(0.3))
             ScrollView([.horizontal, .vertical]) {

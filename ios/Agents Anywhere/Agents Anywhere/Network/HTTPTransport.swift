@@ -9,6 +9,7 @@ nonisolated protocol HTTPTransport {
 nonisolated struct URLSessionHTTPTransport: HTTPTransport {
     private let serverURL: URL
     private let urlSession: URLSession
+    private let transferSession: URLSession
     private let tokenProvider: AuthTokenProvider
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -18,6 +19,7 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
     init(
         serverURL: URL,
         urlSession: URLSession = .shared,
+        transferSession: URLSession? = nil,
         tokenProvider: AuthTokenProvider,
         encoder: JSONEncoder = JSONEncoder(),
         decoder: JSONDecoder = JSONDecoder(),
@@ -26,6 +28,9 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
     ) {
         self.serverURL = serverURL.normalizedV2ServerURL()
         self.urlSession = urlSession
+        // Large transfers run on their own session so the read session's
+        // 90 s whole-transfer cap cannot cut a multi-megabyte upload short.
+        self.transferSession = transferSession ?? URLSession(configuration: V2MobileNetworking.transferConfiguration())
         self.tokenProvider = tokenProvider
         self.encoder = encoder
         self.decoder = decoder
@@ -84,7 +89,7 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
     func upload<Response: Decodable>(_ request: HTTPUploadRequest<Response>) async throws -> Response {
         let boundary = "AgentsAnywhere-\(UUID().uuidString)"
         let urlRequest = try await makeUploadURLRequest(request, boundary: boundary)
-        let (data, response) = try await urlSession.data(for: urlRequest)
+        let (data, response) = try await transferSession.data(for: urlRequest)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw HTTPError.invalidResponse
         }
@@ -108,7 +113,7 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
         try Task.checkCancellation()
-        let (file, response) = try await urlSession.download(for: request, delegate: DownloadRedirectPolicy(origin: serverURL))
+        let (file, response) = try await transferSession.download(for: request, delegate: DownloadRedirectPolicy(origin: serverURL))
         do {
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else { throw HTTPError.invalidResponse }

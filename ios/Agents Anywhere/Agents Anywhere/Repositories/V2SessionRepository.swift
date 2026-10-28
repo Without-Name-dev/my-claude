@@ -161,7 +161,13 @@ final class V2SessionRepository {
             // disk failed so a later flush retries it.
             entry.isDirty = false
             let saved = await localStore.saveSession(V2SessionArchive(data: projection.data, model: entry.model))
-            if !saved, isCurrent(entry) { entry.isDirty = true }
+            if !saved, isCurrent(entry) {
+                entry.isDirty = true
+                // Without re-arming, a quiet session whose flush came from the
+                // scheduled task never persisted: nothing else scheduled a new
+                // one, so the cached state existed only in memory.
+                schedulePersistence()
+            }
         }
     }
 

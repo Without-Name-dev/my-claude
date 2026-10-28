@@ -98,7 +98,7 @@ struct DeviceManagementView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button(String(localized: "New session"), systemImage: "square.and.pencil") { onNewSession(nil) }
-                    Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = connector.id }
+                    Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { CopyAction.copy(connector.id) }
                     Divider()
                     Button(String(localized: "Rename device"), systemImage: "pencil") { proposedName = connector.name; isRenaming = true }.disabled(!canManage)
                     Button(String(localized: "Rotate credential"), systemImage: "key") { confirmsRotation = true }.disabled(!canManage)

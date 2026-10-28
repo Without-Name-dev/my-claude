@@ -35,7 +35,7 @@ struct DeviceProjectList: View {
                         Divider()
                         Button(String(localized: "Rename project"), systemImage: "pencil") { onEdit(project) }.disabled(!canManage)
                         Button(project.pinned ? String(localized: "Unpin") : String(localized: "Pin"), systemImage: "pin") { onPin(project) }.disabled(!canManage)
-                        Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { UIPasteboard.general.string = project.workspacePath }
+                        Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { CopyAction.copy(project.workspacePath) }
                         Divider()
                         Button(String(localized: "Archive project sessions"), systemImage: "archivebox") { onArchive(project) }.disabled(!canManage)
                         Button(String(localized: "Delete project"), systemImage: "trash", role: .destructive) { onDelete(project) }
@@ -69,7 +69,7 @@ struct DeviceWorkspaceList: View {
                     .contextMenu {
                         Button(String(localized: "New session"), systemImage: "square.and.pencil") { onNewSession(workspace) }
                         Button(String(localized: "Files"), systemImage: "folder") { onOpen(workspace) }.disabled(!canReadFiles)
-                        Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { UIPasteboard.general.string = workspace.path }
+                        Button(String(localized: "Copy path"), systemImage: "doc.on.doc") { CopyAction.copy(workspace.path) }
                     }
                 }
             }
@@ -255,7 +255,13 @@ struct DeviceSessionList: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let date = activityDate(session) {
-                    Text(date, format: .dateTime.month(.abbreviated).day())
+                    // Month-day only made a session from another year look
+                    // like a future date; show the year whenever it differs.
+                    var format = Date.FormatStyle.dateTime.month(.abbreviated).day()
+                    if !Calendar.current.isDate(date, equalTo: .now, toGranularity: .year) {
+                        format = .dateTime.year().month(.abbreviated).day()
+                    }
+                    Text(date, format: format)
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
@@ -269,7 +275,7 @@ struct DeviceSessionList: View {
             Button(session.archived ? String(localized: "Restore") : String(localized: "Archive"),
                 systemImage: session.archived ? "tray.and.arrow.up" : "archivebox") { onArchive(session) }
                 .disabled(!canManage || session.id.hasPrefix("local:"))
-            Button(String(localized: "Copy session ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = session.id }
+            Button(String(localized: "Copy session ID"), systemImage: "doc.on.doc") { CopyAction.copy(session.id) }
         }
     }
 

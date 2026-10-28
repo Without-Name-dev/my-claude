@@ -151,7 +151,7 @@ struct NewSessionView: View, Equatable {
             if let device = model.connector {
                 Divider()
                 Button(String(localized: "设备详情"), systemImage: "info.circle") { onOpenDevice(device.id) }
-                Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { UIPasteboard.general.string = device.id }
+                Button(String(localized: "Copy device ID"), systemImage: "doc.on.doc") { CopyAction.copy(device.id) }
             }
         } label: {
             if model.isPreparing { ProgressView().controlSize(.mini) } else { AppSymbol("ellipsis") }

@@ -281,11 +281,11 @@ struct ChatShellView: View {
     }
 
     private func copyDeviceId(_ id: V2ConnectorID) {
-        UIPasteboard.general.string = id
+        CopyAction.copy(id)
     }
 
     private func copySessionId(_ id: V2SessionID) {
-        UIPasteboard.general.string = id
+        CopyAction.copy(id)
     }
 
     private func closeSessionTerminal(_ id: V2SessionID) {

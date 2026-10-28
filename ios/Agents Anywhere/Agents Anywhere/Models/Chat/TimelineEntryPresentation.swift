@@ -21,6 +21,10 @@ struct TimelineEntryPresentation: Hashable {
         guard rawChanges.isEmpty else { return nil }
         return TimelineText.first(raw["output"], raw["outputPreview"], raw["outputText"], raw["error"])
             ?? raw["output"].flatMap { $0 == .null ? nil : $0.formattedJSON }
+            // An object-valued error ({"message": …}) never surfaced: first()
+            // only returns strings, so a failed tool opened an empty details
+            // body with no reason shown.
+            ?? raw["error"].flatMap { ($0 == .null || $0 == .string("")) ? nil : $0.formattedJSON }
     }
     var hasToolDetails: Bool {
         command != nil || !rawChanges.isEmpty || input.map { $0 != .null && $0 != .object([:]) } == true
@@ -159,8 +163,16 @@ nonisolated enum TimelineText {
         guard let cwd, !cwd.isEmpty else { return path }
         let normalized = path.replacingOccurrences(of: "\\", with: "/")
         let root = cwd.replacingOccurrences(of: "\\", with: "/").replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
-        if normalized == root { return "." }
-        return normalized.hasPrefix(root + "/") ? String(normalized.dropFirst(root.count + 1)) : path
+        // Windows paths are case-insensitive; a cwd/path casing mismatch used
+        // to defeat both tests and leave full absolute paths in tool titles.
+        let windowsRoot = root.range(of: "^([A-Za-z]:/|//)", options: .regularExpression) != nil
+        let equal: Bool = windowsRoot ? normalized.lowercased() == root.lowercased() : normalized == root
+        if equal { return "." }
+        let prefix = root + "/"
+        let hasPrefix: Bool = windowsRoot
+            ? normalized.lowercased().hasPrefix(prefix.lowercased())
+            : normalized.hasPrefix(prefix)
+        return hasPrefix ? String(normalized.dropFirst(root.count + 1)) : path
     }
     static func message(_ value: String) -> String {
         // Every streamed version of a reply passes through here; one scan for
@@ -176,8 +188,16 @@ nonisolated enum TimelineText {
     }
     static func inlineSummary(_ text: String) -> String? {
         guard !text.contains("\n"), !text.contains("\r") else { return nil }
+        // Only markdown that actually renders is removed. The old character
+        // class stripped every *, _, ~, # and > anywhere in the line, so a
+        // sentence like "3*5 的口算" became "35 的口算".
         let plain = text.replacingOccurrences(of: "!?\\[([^\\]]*)\\]\\([^)]+\\)", with: "$1", options: .regularExpression)
-            .replacingOccurrences(of: "[`*_~#>]", with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "^\\s*(?:#{1,6}|>)\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\*\\*(.+?)\\*\\*", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "__(.+?)__", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "`([^`]*)`", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "~~(.+?)~~", with: "$1", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
         return plain.count <= 80 ? plain.nonempty : nil
     }
 }

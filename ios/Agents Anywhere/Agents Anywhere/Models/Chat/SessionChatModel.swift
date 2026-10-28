@@ -325,7 +325,12 @@ final class SessionChatModel {
     }
 
     func applySettings() async -> Bool {
-        guard !isWorking, session.runtime.isFresh else { return false }
+        guard !isWorking, session.runtime.isFresh else {
+            // Returning false without reverting left the user's pick shown as
+            // selected after the failure alert, with no error text of its own.
+            settings.replace(settings.catalog, selections: currentSelections, defaults: false)
+            return false
+        }
         isWorking = true
         defer { isWorking = false }
         do {
@@ -350,8 +355,14 @@ final class SessionChatModel {
         dispatchingSend = true
         defer { dispatchingSend = false }
         let selectedAttachments = session.composer.attachments
-        guard session.canSend, !session.composer.isComposing,
-              selectedAttachments.isEmpty || canAttach else { return }
+        // A mute no-op on Send looked like a dead button. The composer already
+        // explains the IME case; the attachment-capability case must too.
+        // canSend races are left to sendDraft, which reports its own failure.
+        guard !session.composer.isComposing else { return }
+        guard selectedAttachments.isEmpty || canAttach else {
+            error = String(localized: "当前状态不能发送附件，请移除附件后重试。")
+            return
+        }
         if let command = await catalogCommand(for: text) {
             // Do not write the tap-time snapshot back: the catalog read can
             // await, and a keystroke that landed meanwhile must survive.

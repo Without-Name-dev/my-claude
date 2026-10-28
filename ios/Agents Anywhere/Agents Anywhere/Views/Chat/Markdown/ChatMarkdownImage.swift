@@ -21,7 +21,37 @@ nonisolated struct ChatMarkdownImageAttachment: Attachment {
 
     func sizeThatFits(_ proposal: ProposedViewSize, in environment: TextEnvironmentValues) -> CGSize {
         let width = min(420, proposal.width ?? 320)
-        return CGSize(width: width, height: SessionFileReference.path(from: url) == nil ? width * 0.75 : 68)
+        if SessionFileReference.path(from: url) != nil {
+            // A fixed 68 pt box clipped the two-line label at accessibility
+            // Dynamic Type sizes; scale it from the text environment instead,
+            // like ChatGitBadgeAttachment.
+            let line = FontScaled(1.35).resolve(in: environment)
+            return CGSize(width: width, height: max(68, 2 * line + 24))
+        }
+        // Remote images: use the decoded aspect once it is known, so a wide or
+        // tall picture is not letterboxed in a fixed 4:3 panel for good.
+        let ratio = ChatMarkdownImageAspect.shared.ratio(for: url) ?? 0.75
+        return CGSize(width: width, height: width * ratio)
+    }
+}
+
+/// Decoded aspect ratios (height / width) shared between the image view and
+/// the attachment layout pass. sizeThatFits cannot observe state; a small
+/// locked store lets a learned ratio apply from the next layout pass on.
+nonisolated final class ChatMarkdownImageAspect: @unchecked Sendable {
+    static let shared = ChatMarkdownImageAspect()
+    private let lock = NSLock()
+    private var ratios: [URL: CGFloat] = [:]
+
+    func ratio(for url: URL) -> CGFloat? {
+        lock.lock(); defer { lock.unlock() }
+        return ratios[url]
+    }
+
+    func remember(_ ratio: CGFloat, for url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        guard ratio.isFinite, ratio > 0, ratios.count < 64 else { return }
+        ratios[url] = ratio
     }
 }
 

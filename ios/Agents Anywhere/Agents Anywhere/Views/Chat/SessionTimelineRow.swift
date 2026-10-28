@@ -149,7 +149,15 @@ struct PendingMessageRow: View {
     }
     private var deliveryIssue: String? {
         switch pending.delivery {
-        case .uncertain: String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
+        case .uncertain:
+            // The draft is only restored when the composer was empty; the old
+            // fixed copy claimed it was kept even when it was not, then the
+            // 返回编辑 action refused with "the input already has content".
+            if pending.didRestoreDraft || (chat.session.draft.isEmpty && chat.session.composer.attachments.isEmpty) {
+                String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
+            } else {
+                String(localized: "发送结果尚未确认。这条内容没有恢复到输入框（输入框已有内容）；清空输入框后可用“返回编辑”取回。")
+            }
         case let .rejected(error): error.message
         default: nil
         }

@@ -135,7 +135,7 @@ struct RuntimeSecretInput: View {
             }.textContentType(nil).accessibilityLabel(title)
             Button(isVisible ? hideTitle : showTitle, appSymbol: isVisible ? "eye.slash" : "eye") {
                 isVisible.toggle()
-            }.labelStyle(.iconOnly).frame(width: 32, height: 32)
+            }.labelStyle(.iconOnly).frame(width: 44, height: 44).contentShape(Rectangle())
         }.runtimeConfigInput()
     }
 }

@@ -49,6 +49,11 @@ struct AccountIdentitySettingsView: View {
                         Button(cooldown > 0 ? String(localized: "Resend in \(cooldown) s") : String(localized: "Send verification code"), action: sendCode)
                             .disabled(!validEmail || cooldown > 0 || draft.isWorking)
                         if codeSent { Text(String(localized: "Code sent. Check your inbox.")).foregroundStyle(.secondary) }
+                        // A malformed address killed the button with no reason
+                        // anywhere in the section.
+                        if !draft.text.isEmpty, !validEmail {
+                            Text(String(localized: "Enter a valid email address.")).font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                 } footer: {
                     if let config, !config.emailVerificationRequired {
