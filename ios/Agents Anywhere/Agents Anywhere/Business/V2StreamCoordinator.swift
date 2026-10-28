@@ -282,6 +282,7 @@ final class V2StreamCoordinator {
         // its full window; only a failure older than the window counts.
         let since = lastFrameAt > connectionStartedAt ? lastFrameAt : connectionStartedAt
         guard ContinuousClock.now - since >= .seconds(60) else { return }
+        TimelineTrace.shared.record("STREAM.stall", "no frames for 60s; using legacy sockets")
         engageFallback()
         stallWatchdog?.cancel()
         stallWatchdog = nil
@@ -352,6 +353,7 @@ final class V2StreamCoordinator {
                             hasEverConnected = true
                             attempt = 0
                             state = .connected
+                            TimelineTrace.shared.record("STREAM.ready", "reconnect=\(isReconnect)")
                             // A reconnect gets a brand new socket and the server
                             // does not replay what the old one missed, so tell
                             // every open session to recover and mark it live.
@@ -384,9 +386,12 @@ final class V2StreamCoordinator {
                 // resumed after a suspend) fell back permanently on the first
                 // transient failure, and every later login inherited it.
                 guard Self.isRetryable(error) else {
+                    TimelineTrace.shared.record("STREAM.fallback", "error=\(V2ClientFailure(error).kind)")
                     engageFallback()
                     return
                 }
+                TimelineTrace.shared.record("STREAM.retry",
+                    "attempt=\(attempt) kind=\(V2ClientFailure(error).kind)")
                 state = .connecting
                 attempt += 1
                 do { try await Task.sleep(for: reconnectDelay(attempt: attempt)) }

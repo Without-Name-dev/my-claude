@@ -588,6 +588,7 @@ final class V2SessionRepository {
                             guard entry.connectionID == connectionID else { return }
                             entry.connection = .connected
                             attempt = 0
+                            TimelineTrace.shared.record("SESSION.connected", "attempt=\(attempt)")
                             self.emit(entry, persist: false)
                         } else {
                             do {
@@ -617,10 +618,13 @@ final class V2SessionRepository {
                     // the chat unable to sync or send until the app restarted.
                     // Retry it like a transport failure (with backoff).
                     guard failure.permitsAutomaticReconnect || failure.kind == .invalidResponse else {
+                        TimelineTrace.shared.record("SESSION.failed", "kind=\(failure.kind)")
                         entry.connection = .failed(failure.message)
                         self.emit(entry, persist: false)
                         return
                     }
+                    TimelineTrace.shared.record("SESSION.reconnecting",
+                        "kind=\(failure.kind) attempt=\(attempt)")
                     entry.connection = .reconnecting
                     self.emit(entry, persist: false)
                     attempt += 1
