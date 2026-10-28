@@ -106,14 +106,6 @@ struct ChatTimelineView: View {
             .scrollEdgeEffectStyle(.soft, for: .top)
             .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
-            // The keyboard and the composer resize this scroll view. SwiftUI
-            // anchors the resize natively: a reader following the tail keeps
-            // the bottom edge (the newest message tracks the keyboard frame
-            // by frame), while a reader up in history keeps the top edge
-            // (their position does not move). Our own per-frame scrolls used
-            // to fight the system's offset animation — on-device that
-            // oscillated ±100–330 pt right after the keyboard appeared.
-            .defaultScrollAnchor(scrolling.mode == .following || scrolling.returningToBottom ? .bottom : .top, for: .sizeChanges)
             // Short timelines still belong at the newest message if SwiftUI
             // resolves an unset position after the parent view is updated.
             .allowsHitTesting(model.isOpeningReady)
@@ -219,12 +211,18 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    // Follow content growth only. Keyboard and composer resizes
-                    // are handled natively by .defaultScrollAnchor(.bottom, for:
-                    // .sizeChanges): issuing our own scrolls during those
-                    // animations fought the system and oscillated.
-                    if scrolling.mayFollowNewContent, contentHeightChanged {
-                        scrolling.requestBottom()
+                    // Follow content growth with the animated return; an
+                    // inset-only change (keyboard, composer, panel) pins the
+                    // tail without animation, one instant write per frame —
+                    // nothing animates, so nothing can fight. A native
+                    // .sizeChanges anchor was tried here and fought the
+                    // scrollPosition binding in a ±313 pt loop on device.
+                    if scrolling.mayFollowNewContent {
+                        if contentHeightChanged {
+                            scrolling.requestBottom()
+                        } else {
+                            scrolling.requestBottom(animated: false)
+                        }
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -397,14 +395,15 @@ struct ChatTimelineView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            // Nothing to scroll: the bottom-anchored size change keeps the
-            // tail pinned while the keyboard animates. Issuing a scroll here
-            // fought the system's own offset animation.
+            // Typing is a reason to bring the tail back only for a reader who
+            // is still there. Someone reading history keeps their position.
+            // The pin itself is not animated: the keyboard already animates,
+            // and per-frame instant pins track it exactly.
+            guard scrolling.mode == .following || scrolling.atContentBottom else { return }
+            scrolling.requestBottom(animated: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-            // The resize may have exposed content that a following reader
-            // should still see. One settled, non-animated pin after the
-            // keyboard finishes; no pin while reading history.
+            // One settled, non-animated pin against the final height.
             if scrolling.mode == .following, !scrolling.atContentBottom {
                 scrolling.requestBottom(animated: false)
             }

@@ -105,10 +105,18 @@ struct NativeComposerEditor: UIViewRepresentable {
                 view.selectedRange = NSRange(location: end, length: 0)
             }
         }
-        if draft.isFocused, !view.isFirstResponder {
-            view.becomeFirstResponder()
-        } else if !draft.isFocused, view.isFirstResponder {
-            view.resignFirstResponder()
+        // Focus only on a rising edge of the desired state. Re-asserting
+        // becomeFirstResponder on every update resurrected the keyboard right
+        // after an interactive dismissal (scroll-dismiss or drag-to-close),
+        // which is why the composer would not collapse back to the pill.
+        let coordinator = context.coordinator
+        if draft.isFocused != coordinator.desiredFocus {
+            coordinator.desiredFocus = draft.isFocused
+            if draft.isFocused {
+                view.becomeFirstResponder()
+            } else if view.isFirstResponder {
+                view.resignFirstResponder()
+            }
         }
     }
 
@@ -131,6 +139,9 @@ struct NativeComposerEditor: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: NativeComposerEditor
+        /// The desired focus state this view last acted on. Nil until the
+        /// first update, so an initial draft.isFocused == true still focuses.
+        var desiredFocus: Bool?
         init(_ parent: NativeComposerEditor) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) {
             synchronize()
