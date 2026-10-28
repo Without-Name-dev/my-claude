@@ -17,7 +17,13 @@ nonisolated struct URLSessionWebSocketTransport: WebSocketTransport {
     }
 
     func connect(url: URL) -> any WebSocketConnection {
-        URLSessionWebSocketConnection(task: urlSession.webSocketTask(with: url))
+        let task = urlSession.webSocketTask(with: url)
+        // URLSessionWebSocketTask refuses messages over 1 MiB by default and
+        // fails the socket. A long streamed reply, a full timeline reset and a
+        // dashboard snapshot all legitimately exceed that, so a single large
+        // frame used to tear down the whole realtime stream.
+        task.maximumMessageSize = 32 * 1024 * 1024
+        return URLSessionWebSocketConnection(task: task)
     }
 }
 

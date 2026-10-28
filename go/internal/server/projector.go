@@ -20,8 +20,10 @@ const deltaFlushInterval = 300 * time.Millisecond
 
 // deltaPublishInterval is how often streamed text reaches open sockets. The
 // clients reveal text between frames, so a finer cadence is what keeps the
-// typing continuous rather than arriving in one visible step.
-const deltaPublishInterval = 120 * time.Millisecond
+// typing continuous rather than arriving in one visible step. Each frame
+// carries the whole answer so far, so the bytes per turn grow with the square
+// of its length: 200 ms keeps the cadence smooth at a third less traffic.
+const deltaPublishInterval = 200 * time.Millisecond
 
 // turnRegistry keeps the text accumulated per running turn.
 //
@@ -307,6 +309,12 @@ func (a *App) onTurnBegin(ctx context.Context, conn *connectorConn, msg protocol
 		a.log.Warn("turn.begin for an unknown session", "session", msg.SessionID)
 		return
 	}
+	if a.turns.get(msg.TurnID) != nil {
+		// A delta already began this turn (a replay after a reconnect, or the
+		// server restarted in between). Resetting the row here would wipe the
+		// text the person is already reading.
+		return
+	}
 	itemID := assistantItemID(msg.TurnID)
 	state := a.turns.begin(msg.TurnID, msg.SessionID, conn.id, itemID)
 
@@ -386,11 +394,51 @@ func (a *App) updateSubmittedMessageStatus(
 	return itemID, nil
 }
 
+// ensureTurnState returns the registry state for a turn, rebuilding it from the
+// stored row when this process never saw turn.begin (the server restarted
+// mid-turn). Without it every delta after a restart was dropped and the phone
+// showed nothing until the turn ended.
+func (a *App) ensureTurnState(ctx context.Context, conn *connectorConn, sessionID, turnID string) *turnState {
+	itemID := assistantItemID(turnID)
+	state := a.turns.begin(turnID, sessionID, conn.id, itemID)
+	orderSeq := store.NowMS()
+	text := ""
+	lastSeq := int64(0)
+	if item, err := a.db.TimelineItemByID(ctx, a.db.Read(), sessionID, itemID); err == nil {
+		if item.OrderSeq > 0 {
+			orderSeq = item.OrderSeq
+		}
+		text = messageTextPayload(item.Payload)
+		lastSeq = item.UpdatedSeq
+	}
+	state.mu.Lock()
+	state.orderSeq = orderSeq
+	state.createdAt = orderSeq
+	state.lastSeq = lastSeq
+	state.mu.Unlock()
+	if text != "" {
+		state.text.WriteString(text)
+	}
+	a.setSessionStatus(ctx, sessionID, "running")
+	return state
+}
+
+func messageTextPayload(payload json.RawMessage) string {
+	var body struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(payload, &body)
+	return body.Text
+}
+
 // onTurnDelta appends streamed text to the assistant message.
 func (a *App) onTurnDelta(ctx context.Context, conn *connectorConn, msg protocol.TurnDelta) {
 	state := a.turns.get(msg.TurnID)
 	if state == nil {
-		return
+		if _, err := a.ownedSessionForConnector(ctx, conn, msg.SessionID); err != nil {
+			return
+		}
+		state = a.ensureTurnState(ctx, conn, msg.SessionID, msg.TurnID)
 	}
 	now := time.Now()
 	state.mu.Lock()

@@ -612,7 +612,11 @@ final class V2SessionRepository {
                     self.invalidateCatalogs(entry)
                     let failure = V2ClientFailure(error)
                     entry.error = failure
-                    guard failure.permitsAutomaticReconnect else {
+                    // A decode failure is usually a frame the server has since
+                    // moved past; leaving the session permanently failed made
+                    // the chat unable to sync or send until the app restarted.
+                    // Retry it like a transport failure (with backoff).
+                    guard failure.permitsAutomaticReconnect || failure.kind == .invalidResponse else {
                         entry.connection = .failed(failure.message)
                         self.emit(entry, persist: false)
                         return
@@ -632,7 +636,19 @@ final class V2SessionRepository {
         if let pending = entry.loadTask { _ = try await pending.value }
         if let pending = entry.recoveryTask { try await pending.value }
         if event.type == "session.refetch_required" || event.sequence > (entry.projection?.sequence ?? 0) + 1 {
-            try await reconcile(entry)
+            do {
+                try await reconcile(entry)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as CacheError {
+                throw error
+            } catch {
+                // A recovery read that fails must not tear down a healthy
+                // socket, and a gap must not leave the conversation silently
+                // stale: flag it so the next snapshot or gap retries.
+                entry.projection?.markStale()
+                TimelineTrace.shared.record("EVENT.recoverFailed", "type=\(event.type)")
+            }
         }
         try requireCurrent(entry)
         let readTypes = ["runtime.state.updated", "runtime.capability.updated", "runtime.notice.snapshot", "runtime.notice.updated"]

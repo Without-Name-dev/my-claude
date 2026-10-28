@@ -57,8 +57,14 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 				continue
 			}
 			for _, session := range sessions {
-				if session.ExternalID == "" || session.Status == "running" {
-					// A turn this server is following writes its own rows.
+				if session.ExternalID == "" {
+					continue
+				}
+				if a.turns.activeForSession(session.ID) {
+					// A turn this server is following writes its own rows. A
+					// turn started in the terminal has no such watcher, so it
+					// still needs the poll — skipping every "running" session
+					// hid desktop work from the phone until it finished.
 					continue
 				}
 				if _, ok := live[session.ExternalID]; !ok {
@@ -422,14 +428,44 @@ func (a *App) publishHistoryReset(ctx context.Context, session store.Session, se
 	for _, item := range items {
 		views = append(views, toView(item, session.Runtime))
 	}
-	frame, err := newEnvelope(session.ID, seq, EventTimelineReset, map[string]any{
-		"items":   views,
-		"hasMore": hasMore,
-	})
-	if err != nil {
-		return false
+	// A 500-item reset is a megabyte or more of JSON; one frame of that size
+	// exceeds the clients' 1 MiB message limit and kills the whole stream.
+	// Clients merge reset frames, so publish it in bounded chunks.
+	const chunkBytes = 512 << 10
+	publish := func(chunk []ItemView) bool {
+		frame, err := newEnvelope(session.ID, seq, EventTimelineReset, map[string]any{
+			"items":   chunk,
+			"hasMore": hasMore,
+		})
+		if err != nil {
+			return false
+		}
+		a.broker.Publish(session.ID, frame)
+		return true
 	}
-	a.broker.Publish(session.ID, frame)
+	chunk := make([]ItemView, 0, 64)
+	size := 0
+	for _, view := range views {
+		encoded, err := json.Marshal(view)
+		if err == nil && size+len(encoded) > chunkBytes {
+			if !publish(chunk) {
+				return false
+			}
+			chunk = make([]ItemView, 0, 64)
+			size = 0
+		}
+		chunk = append(chunk, view)
+		size += len(encoded)
+	}
+	if len(chunk) > 0 {
+		if !publish(chunk) {
+			return false
+		}
+	} else if len(views) == 0 {
+		if !publish(nil) {
+			return false
+		}
+	}
 	// The import allocated a revision, and AllocateSeq also moves the session's
 	// seq, sort key and last-activity time. Opening a discovered conversation
 	// must therefore reorder the list and flip its unread flag, which only a

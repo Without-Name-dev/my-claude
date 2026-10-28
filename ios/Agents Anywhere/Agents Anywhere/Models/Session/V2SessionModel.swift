@@ -8,7 +8,12 @@ final class V2TimelineItemModel: Identifiable {
     private(set) var value: V2TimelineItem
 
     init(_ value: V2TimelineItem) { id = value.id; self.value = value }
-    func update(_ value: V2TimelineItem) { if self.value != value { self.value = value } }
+    func update(_ value: V2TimelineItem) {
+        // A streaming turn publishes the growing text several times per stored
+        // sequence, so equal revision/updatedSeq does NOT mean equal content:
+        // an identity-based shortcut here dropped two of every three frames.
+        if self.value != value { self.value = value }
+    }
 }
 
 @MainActor @Observable
