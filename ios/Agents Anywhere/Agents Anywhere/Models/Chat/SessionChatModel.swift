@@ -16,9 +16,10 @@ final class SessionChatModel {
         set { session.isPerformingAction = newValue }
     }
     private(set) var isLoadingSettings = false
-    /// One send at a time: the command-catalog lookup awaits, and a second tap
-    /// during that window dispatched the same draft again.
-    private var dispatchingSend = false
+    /// One send at a time: the command-catalog lookup and the delivery await,
+    /// and a second tap during either window was dropped with no feedback.
+    /// Exposed so the composer can disable the button instead of failing mute.
+    private(set) var dispatchingSend = false
     var error: String?
     var settingsError: String?
     private(set) var isOpeningPrepared = false

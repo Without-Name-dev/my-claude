@@ -107,7 +107,7 @@ struct SessionChatView: View, Equatable {
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
                         ChatComposerDock(draft: session.composer, settings: model.settings,
                             maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
-                            canSend: session.canSend, canAttach: model.canAttach,
+                            canSend: session.canSend && !model.dispatchingSend, canAttach: model.canAttach,
                             canSelectModel: session.runtime.allows("catalog.model"),
                             canSelectPermission: session.runtime.allows("catalog.permission"),
                             isStreaming: model.isRunning, canStop: session.runtime.allows("session.interrupt"),
@@ -246,7 +246,13 @@ struct SessionChatView: View, Equatable {
             ChatImagePreview(image: item.image)
         }
         .onChange(of: previewURL) { _, url in if url == nil { cleanPreview() } }
-        .onDisappear { if previewURL == nil { cleanPreview() } }
+        .onDisappear {
+            // A download that outlived the page wrote a temp directory that
+            // nothing would ever remove.
+            downloadTask?.cancel()
+            downloadTask = nil
+            if previewURL == nil { cleanPreview() }
+        }
         .onChange(of: session.failure, initial: true) { _, failure in
             toasts.update(source: "session", failure: failure, canRetry: failure?.kind != .authentication)
         }

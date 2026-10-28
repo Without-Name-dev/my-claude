@@ -48,14 +48,17 @@ enum ProjectSidebarPresentation {
             let time = [session.sortAt, session.lastActivityAt, session.createdAt].compactMap { $0 }.first { !$0.isEmpty }
             activity[id] = max(activity[id] ?? 0, timestamp(time))
         }
-        let order = Dictionary(uniqueKeysWithValues: values.map { project in
+        // A duplicated id from the wire used to trap in
+        // Dictionary(uniqueKeysWithValues:) and in the force unwraps below;
+        // both now degrade to a stable fallback order instead of crashing.
+        let order = Dictionary(values.map { project in
             let empty = project.manuallyCreated && (project.lastActivityAt?.isEmpty ?? true) && activity[project.id] == nil
                 && project.activeSessionCount == 0 && project.sidebarSessionCounts.active == 0 && project.sidebarSessionCounts.archived == 0
             return (project.id, (empty: empty, activity: max(timestamp(project.lastActivityAt), activity[project.id] ?? 0), created: timestamp(project.createdAt)))
-        })
+        }, uniquingKeysWith: { first, _ in first })
         return values.filter { $0.manuallyCreated || projectsWithMatches.contains($0.id) }.sorted {
             if $0.pinned != $1.pinned { return $0.pinned }
-            let left = order[$0.id]!, right = order[$1.id]!
+            guard let left = order[$0.id], let right = order[$1.id] else { return $0.id < $1.id }
             if left.empty != right.empty { return left.empty }
             if left.activity != right.activity { return left.activity > right.activity }
             if left.created != right.created { return left.created > right.created }

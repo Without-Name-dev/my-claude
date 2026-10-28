@@ -134,7 +134,8 @@ final class SessionNoticeStore {
     private(set) var notices: [SessionNoticeModel] = []
     var hasDraft: Bool { notices.contains { $0.hasDraft } }
     func update(_ values: [V2RuntimeNotice], sessionID: String) {
-        let existing = Dictionary(uniqueKeysWithValues: notices.map { ($0.id, $0) })
+        // A snapshot carrying the same notice id twice used to trap here.
+        let existing = Dictionary(notices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let updated = values.filter { $0.sessionId == sessionID }.map { value in
             let model = existing[value.id] ?? SessionNoticeModel(value)
             model.update(value)

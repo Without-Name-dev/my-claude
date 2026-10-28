@@ -196,8 +196,18 @@ enum RuntimeConfigValidation {
             let count = Double(text.unicodeScalars.count)
             if let min = schema["minLength"]?.configNumber, count < min { return String(localized: "This field is required.") }
             if let max = schema["maxLength"]?.configNumber, count > max { return String(localized: "The value is too long.") }
-            if let pattern = schema["pattern"]?.stringValue, text.range(of: pattern, options: .regularExpression) == nil {
-                return String(localized: "Enter a value in the required format.")
+            if let pattern = schema["pattern"]?.stringValue {
+                // `range(of:options:.regularExpression)` raises an Objective-C
+                // exception (an uncatchable crash in Swift) on a pattern the
+                // connector sent that ICU cannot compile. Compiling with try?
+                // reports failure instead; an unusable pattern is ignored, the
+                // same way NoticeActionForm handles server-supplied regexes.
+                if let expression = try? NSRegularExpression(pattern: pattern) {
+                    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                    if expression.firstMatch(in: text, range: range) == nil {
+                        return String(localized: "Enter a value in the required format.")
+                    }
+                }
             }
         case let .number(number):
             if !number.isFinite || schema["minimum"]?.configNumber.map({ number < $0 }) == true ||

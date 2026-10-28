@@ -157,7 +157,8 @@ private extension Dictionary where Key == String, Value == JSONValue {
 
     nonisolated func integer(for key: String) -> Int? {
         guard let value = number(for: key) else { return nil }
-        return Int(value)
+        // A schema bound such as 1e19 traps Int(_:); treat it as absent.
+        return Int(exactly: value)
     }
 
     nonisolated func object(for key: String) -> [String: JSONValue]? {

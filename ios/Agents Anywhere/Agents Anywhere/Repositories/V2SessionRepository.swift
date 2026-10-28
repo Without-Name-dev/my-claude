@@ -593,13 +593,16 @@ final class V2SessionRepository {
                         } else {
                             do {
                                 try await self.receive(event, entry: entry)
-                            } catch is DecodingError {
+                            } catch {
                                 // One frame this build cannot decode must not
                                 // end the live connection: that set the entry
                                 // to .failed for good, which disabled the
                                 // composer, and a refresh repeated the same
                                 // decode. Drop it, ask for a snapshot on the
-                                // next chance, and keep listening.
+                                // next chance, and keep listening. The check
+                                // must cover the wrapped HTTPError.decoding
+                                // too, not only Swift's DecodingError.
+                                guard isUndecodableEvent(error) else { throw error }
                                 entry.needsSnapshot = true
                                 entry.projection?.markStale()
                                 TimelineTrace.shared.record("EVENT.decode", "type=\(event.type)")
@@ -706,12 +709,15 @@ final class V2SessionRepository {
                 for event in recovery.events {
                     do {
                         try entry.projection?.apply(event)
-                    } catch is DecodingError {
+                    } catch {
+                        // Projection errors are wrapped as HTTPError.decoding,
+                        // so `catch is DecodingError` alone was dead code.
                         // One malformed event used to wedge recovery at the
                         // same cursor for ever (the retry re-fetched it and
                         // failed again). Skip it, keep the rest of the page,
                         // and fall back to a snapshot so nothing stays
                         // silently missing.
+                        guard isUndecodableEvent(error) else { throw error }
                         skippedUndecodable = true
                         TimelineTrace.shared.record("EVENT.decodeSkipped", "type=\(event.type)")
                     }
@@ -875,6 +881,14 @@ private final class Entry {
     var commands: [V2RuntimeCommand]?
 
     init(id: V2SessionID, model: V2SessionModel) { self.id = id; self.model = model }
+}
+
+/// True for the two shapes a malformed durable frame can take: Swift's own
+/// decoding error, and the projection's HTTPError.decoding wrapper.
+private func isUndecodableEvent(_ error: Error) -> Bool {
+    if error is DecodingError { return true }
+    if let http = error as? HTTPError, case .decoding = http { return true }
+    return false
 }
 
 private enum CacheError: LocalizedError {

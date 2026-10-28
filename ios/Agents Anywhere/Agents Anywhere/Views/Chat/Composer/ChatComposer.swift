@@ -152,7 +152,7 @@ struct ChatComposer: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .sensoryFeedback(.impact(weight: .medium), trigger: sendFeedback)
-        .sensoryFeedback(.impact(weight: .rigid), trigger: stopFeedback)
+        .sensoryFeedback(.impact(flexibility: .rigid), trigger: stopFeedback)
         .task(id: composingHintRevision) {
             guard composingHint else { return }
             do { try await Task.sleep(for: .seconds(1.6)) } catch { return }

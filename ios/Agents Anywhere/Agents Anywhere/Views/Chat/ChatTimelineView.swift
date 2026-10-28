@@ -55,6 +55,13 @@ struct ChatTimelineView: View {
                     keepsOlderPrompt: hasRequestedOlder, historyAnchor: historyPosition?.origin,
                     timelineRevision: model.timeline.presentationRevision,
                     notices: model.session.notices.notices,
+                    // Value snapshot of the notice state. The models are
+                    // mutated in place, so comparing the objects by identity
+                    // never noticed a resolution made on another device and
+                    // the inline card stayed in the transcript.
+                    noticeSignature: model.session.notices.notices.map {
+                        "\($0.id):\($0.notice.revision):\($0.isVisible)"
+                    },
                     isRunning: model.isRunning,
                     hasOlderItems: model.session.hasOlderItems,
                     hasNewerItems: model.session.hasNewerItems,
@@ -532,6 +539,8 @@ private struct ChatTimelineContent: View, Equatable {
     let historyAnchor: TimelineHistoryLayout?
     let timelineRevision: Int
     let notices: [SessionNoticeModel]
+    /// Snapshot of id/revision/visibility captured when this value was built.
+    let noticeSignature: [String]
     let isRunning: Bool
     let hasOlderItems: Bool
     let hasNewerItems: Bool
@@ -551,7 +560,7 @@ private struct ChatTimelineContent: View, Equatable {
             && lhs.olderPullReady == rhs.olderPullReady && lhs.isLoadingOlder == rhs.isLoadingOlder
             && lhs.keepsOlderPrompt == rhs.keepsOlderPrompt && lhs.historyAnchor == rhs.historyAnchor
             && lhs.timelineRevision == rhs.timelineRevision
-            && lhs.notices.map(\.id) == rhs.notices.map(\.id) && lhs.isRunning == rhs.isRunning
+            && lhs.noticeSignature == rhs.noticeSignature && lhs.isRunning == rhs.isRunning
             && lhs.hasOlderItems == rhs.hasOlderItems && lhs.hasNewerItems == rhs.hasNewerItems
             && lhs.hasPendingUserMessage == rhs.hasPendingUserMessage
             && lhs.subagentActivity == rhs.subagentActivity

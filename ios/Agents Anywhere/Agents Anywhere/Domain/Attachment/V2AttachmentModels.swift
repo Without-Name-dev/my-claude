@@ -55,7 +55,9 @@ private extension JSONValue {
     nonisolated var v2IntValue: Int? {
         switch self {
         case let .number(value):
-            return Int(value)
+            // Int(_:) traps on a finite Double outside Int's range (1e19 is
+            // valid JSON); a malformed size must fail decoding, not crash.
+            return Int(exactly: value)
         case let .string(value):
             return Int(value)
         default:
