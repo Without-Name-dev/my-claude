@@ -148,6 +148,7 @@ export type SessionView = {
   takeover: boolean;
   pinned: boolean;
   pinnedAt: string | null;
+  pinnedMessageIds?: string[];
   archived: boolean;
   archivedAt: string | null;
   userArchived?: boolean;
