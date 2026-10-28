@@ -69,8 +69,8 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
         // birth after the remaining queue instead of leaving it in the future.
         if births.isEmpty {
             nextBirth = min(nextBirth, now)
-        } else if let lastBorn = births.last?.born, nextBirth > lastBorn + ReplyPresentation.maximumRevealSpread {
-            nextBirth = lastBorn + ReplyPresentation.maximumRevealSpread
+        } else if let lastBorn = births.last?.born, nextBirth > lastBorn + ReplyPresentation.hardRevealLead {
+            nextBirth = lastBorn + ReplyPresentation.hardRevealLead
         }
         if revealingCount > birthCount {
             // A flush can append a whole paragraph. One shared birth time made
@@ -80,21 +80,18 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
             // Births must stay ordered across flushes: scheduling a new chunk
             // from "now" while the previous chunk still has groups queued made
             // later text visible before earlier text. Continue from the end of
-            // the existing queue and keep the lead bounded — when the network
-            // outruns the reveal, new glyphs join the end without extending it.
+            // the existing queue, at the natural typing rate, compressing only
+            // once the lead reaches the hard cap so the reveal can never trail
+            // the network by more than a few seconds.
             let added = revealingCount - birthCount
             let start = max(now, nextBirth)
             let lead = start - now
-            let spread: TimeInterval
-            if lead > ReplyPresentation.maximumRevealSpread {
-                spread = 0
-            } else {
-                spread = min(ReplyPresentation.maximumRevealSpread - lead,
+            let spread = min(max(0, ReplyPresentation.hardRevealLead - lead),
                              Double(added) / ReplyPresentation.revealRate)
-            }
-            // At most ~150 groups keeps the per-frame batch walk bounded even
-            // for a large recovery chunk.
-            let groups = max(1, min(150, Int((Double(added) / Double(ReplyPresentation.revealGroupSize)).rounded(.up))))
+            // At most ~300 groups keeps the per-frame batch walk bounded even
+            // for a large recovery chunk; two glyphs per group at typing rate
+            // reads as continuous writing.
+            let groups = max(1, min(300, Int((Double(added) / Double(ReplyPresentation.revealGroupSize)).rounded(.up))))
             let size = max(1, Int((Double(added) / Double(groups)).rounded(.up)))
             let interval = groups > 1 ? spread / Double(groups - 1) : 0
             var remaining = added

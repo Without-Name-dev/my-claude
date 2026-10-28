@@ -141,7 +141,11 @@ nonisolated struct GlyphRevealRenderer: TextRenderer {
         for (batch, batchSlices) in zip(batches, slices) where !batchSlices.isEmpty {
             var copy = context
             let effect = GlyphRevealEffect(progress: batch.progress, rises: rises)
-            copy.opacity *= effect.opacity
+            // Glyphs whose birth is scheduled later draw as a faint ghost
+            // instead of nothing: with the typing queue trailing the network,
+            // the not-yet-typed tail would otherwise be blank space. A ghost
+            // preview that sharpens as it is written reads as deliberate.
+            copy.opacity *= max(effect.opacity, 0.07)
             if rises {
                 copy.translateBy(x: 0, y: effect.offsetY)
                 copy.addFilter(.blur(radius: effect.blurRadius))
