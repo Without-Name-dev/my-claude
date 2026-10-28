@@ -257,11 +257,10 @@ struct DeviceSessionList: View {
                 if let date = activityDate(session) {
                     // Month-day only made a session from another year look
                     // like a future date; show the year whenever it differs.
-                    var format = Date.FormatStyle.dateTime.month(.abbreviated).day()
-                    if !Calendar.current.isDate(date, equalTo: .now, toGranularity: .year) {
-                        format = .dateTime.year().month(.abbreviated).day()
-                    }
-                    Text(date, format: format)
+                    let includesYear = !Calendar.current.isDate(date, equalTo: .now, toGranularity: .year)
+                    Text(date, format: includesYear
+                        ? .dateTime.year().month(.abbreviated).day()
+                        : .dateTime.month(.abbreviated).day())
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
