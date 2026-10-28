@@ -72,14 +72,14 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
     ) throws -> AsyncThrowingStream<Value, Error> {
         let connection = webSocketTransport.connect(url: try webSocketURL(path: path, ticket: ticket))
         return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(2048)) { continuation in
-            var lastFrame = ContinuousClock.now
+            let clock = WebSocketFrameClock()
             // Both session and dashboard endpoints send a frame/keepalive every 15s.
             // Path monitoring alone cannot detect a silent server or broken VPN route.
             let watchdog = Task {
                 do {
                     while !Task.isCancelled {
                         try await Task.sleep(for: heartbeatCheckInterval)
-                        if lastFrame.duration(to: .now) >= heartbeatTimeout {
+                        if clock.silence >= heartbeatTimeout {
                             continuation.finish(throwing: URLError(.timedOut))
                             connection.close()
                             return
@@ -90,12 +90,12 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
             let task = Task {
                 do {
                     for try await data in connection.messages() {
-                        lastFrame = .now
+                        clock.touch()
                         // Keepalive detection and value decoding share one parse.
                         guard let value = try decoder.decode(V2SocketFrame<Value>.self, from: data).value else { continue }
-                        if case .dropped = continuation.yield(value) {
-                            throw HTTPError.streamOverflow
-                        }
+                        // Drop a frame on buffer overflow; a reconnect costs
+                        // more than the recovery this frame would trigger.
+                        _ = continuation.yield(value)
                     }
                     continuation.finish()
                 } catch let error as DecodingError {

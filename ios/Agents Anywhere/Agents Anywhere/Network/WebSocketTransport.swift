@@ -103,6 +103,31 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
     }
 }
 
+/// Frame activity shared by a receive task and its watchdogs.
+///
+/// These used to be local `var`s captured by two Tasks. That is an
+/// unsynchronized data race: a torn read of the instant could declare a
+/// healthy socket dead, or keep a dead one alive.
+nonisolated final class WebSocketFrameClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = ContinuousClock.now
+    private var sawFirstFrame = false
+
+    func touch() {
+        lock.lock(); last = .now; sawFirstFrame = true; lock.unlock()
+    }
+
+    var silence: Duration {
+        lock.lock(); defer { lock.unlock() }
+        return last.duration(to: .now)
+    }
+
+    var receivedFirstFrame: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return sawFirstFrame
+    }
+}
+
 /// The moment the last frame arrived, shared by the receive loop and its
 /// watchdog.
 private nonisolated final class LastFrameClock: @unchecked Sendable {

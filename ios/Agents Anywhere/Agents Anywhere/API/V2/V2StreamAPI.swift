@@ -28,7 +28,7 @@ nonisolated struct V2StreamAPI {
         decoder: JSONDecoder = JSONDecoder(),
         heartbeatTimeout: Duration = .seconds(45),
         heartbeatCheckInterval: Duration = .seconds(15),
-        firstFrameTimeout: Duration = .seconds(5)
+        firstFrameTimeout: Duration = .seconds(10)
     ) {
         self.serverURL = serverURL.normalizedV2ServerURL()
         self.webSocketTransport = webSocketTransport
@@ -43,15 +43,14 @@ nonisolated struct V2StreamAPI {
     func stream(ticket: String) throws -> AsyncThrowingStream<V2StreamFrame, Error> {
         let connection = webSocketTransport.connect(url: try webSocketURL(path: "/api/v2/stream/ws", ticket: ticket))
         return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(2048)) { continuation in
-            var lastFrameAt = ContinuousClock.now
-            var receivedFirstFrame = false
+            let clock = WebSocketFrameClock()
 
             // The ready frame is what distinguishes "connected" from "connected
             // but silent", so its deadline is much shorter than a normal frame gap.
             let firstFrameWatchdog = Task {
                 do {
                     try await Task.sleep(for: firstFrameTimeout)
-                    guard !receivedFirstFrame else { return }
+                    guard !clock.receivedFirstFrame else { return }
                     continuation.finish(throwing: URLError(.timedOut))
                     connection.close()
                 } catch { /* Consumer cancellation stops the watchdog. */ }
@@ -61,7 +60,7 @@ nonisolated struct V2StreamAPI {
                 do {
                     while !Task.isCancelled {
                         try await Task.sleep(for: heartbeatCheckInterval)
-                        if lastFrameAt.duration(to: .now) >= heartbeatTimeout {
+                        if clock.silence >= heartbeatTimeout {
                             continuation.finish(throwing: URLError(.timedOut))
                             connection.close()
                             return
@@ -73,14 +72,14 @@ nonisolated struct V2StreamAPI {
             let task = Task {
                 do {
                     for try await data in connection.messages() {
-                        lastFrameAt = .now
-                        receivedFirstFrame = true
+                        clock.touch()
                         let frame = try Self.decodeFrame(data, decoder: decoder)
                         // Keepalives refresh the watchdog but are not values.
                         if case .keepalive = frame { continue }
-                        if case .dropped = continuation.yield(frame) {
-                            throw HTTPError.streamOverflow
-                        }
+                        // A full buffer drops one frame; the sequence-gap
+                        // recovery re-reads it. Failing the stream instead
+                        // cost a reconnect for one slow consumer.
+                        _ = continuation.yield(frame)
                     }
                     continuation.finish()
                 } catch let error as DecodingError {
