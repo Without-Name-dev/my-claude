@@ -51,16 +51,14 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// The transcript is a plain stack, so its measured geometry is exact; the
-    /// live distance is the only reliable answer. A remembered "bottom offset"
-    /// went stale in both directions: streamed tokens pushed the true tail down
-    /// (a reader at the bottom was judged to be reading, so the final render of
-    /// a reply was never followed), and collapsing a fold pulled it up (a reader
-    /// at the bottom was judged to be reading for the rest of the session). The
-    /// end marker alone is not usable either — its callback does not fire
-    /// reliably for a small clear overlay.
+    /// The end-marker probe is the authority: it reports what is actually
+    /// visible on screen, which the offset math cannot know while the keyboard
+    /// resizes the scroll view (the reported insets double-count the keyboard
+    /// for a few frames). The distance check only serves before the probe has
+    /// ever fired.
     var atContentBottom: Bool {
-        guard viewport.isMeasured else { return tail.isAtBottom }
+        if tail.isMeasured { return tail.isAtBottom }
+        guard viewport.isMeasured else { return false }
         return viewport.distanceFromBottom <= Self.bottomTolerance
     }
     /// How far above the live tail still counts as being at it.

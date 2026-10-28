@@ -106,6 +106,14 @@ struct ChatTimelineView: View {
             .scrollEdgeEffectStyle(.soft, for: .top)
             .defaultScrollAnchor(.top, for: .initialOffset)
             .defaultScrollAnchor(.bottom, for: .alignment)
+            // The keyboard and the composer resize this scroll view. SwiftUI
+            // anchors the resize natively: a reader following the tail keeps
+            // the bottom edge (the newest message tracks the keyboard frame
+            // by frame), while a reader up in history keeps the top edge
+            // (their position does not move). Our own per-frame scrolls used
+            // to fight the system's offset animation — on-device that
+            // oscillated ±100–330 pt right after the keyboard appeared.
+            .defaultScrollAnchor(scrolling.mode == .following || scrolling.returningToBottom ? .bottom : .top, for: .sizeChanges)
             // Short timelines still belong at the newest message if SwiftUI
             // resolves an unset position after the parent view is updated.
             .allowsHitTesting(model.isOpeningReady)
@@ -211,21 +219,12 @@ struct ChatTimelineView: View {
                         || previous.topInset != value.topInset {
                         scrolling.geometryChanged(value)
                     }
-                    // Follow content growth and inset changes (keyboard, composer
-                    // tray, interaction dock) whenever the reader still owns the
-                    // tail. The old `model.isRunning` gate skipped the final
-                    // render of every reply: the status flips to idle in the
-                    // same snapshot that settles the row's last tokens.
-                    //
-                    // Content growth animates; an inset change pins without
-                    // animation so the transcript tracks the keyboard/composer
-                    // frame by frame instead of running a spring after it.
-                    if scrolling.mayFollowNewContent {
-                        if contentHeightChanged {
-                            scrolling.requestBottom()
-                        } else {
-                            scrolling.requestBottom(animated: false)
-                        }
+                    // Follow content growth only. Keyboard and composer resizes
+                    // are handled natively by .defaultScrollAnchor(.bottom, for:
+                    // .sizeChanges): issuing our own scrolls during those
+                    // animations fought the system and oscillated.
+                    if scrolling.mayFollowNewContent, contentHeightChanged {
+                        scrolling.requestBottom()
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -398,19 +397,15 @@ struct ChatTimelineView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            // Typing is a reason to bring the tail back only for a reader who
-            // is still there. Someone reading history keeps their position.
-            guard scrolling.mode == .following || scrolling.atContentBottom else { return }
-            // The keyboard animates on the system curve; the follow must not
-            // add a spring of its own on top of it. The geometry callback
-            // re-pins on every frame as the inset settles.
-            scrolling.requestBottom(animated: false)
+            // Nothing to scroll: the bottom-anchored size change keeps the
+            // tail pinned while the keyboard animates. Issuing a scroll here
+            // fought the system's own offset animation.
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-            // One final pin against the settled height. .returning is the
-            // normal state here (the show is still being tracked); waiting for
-            // .following skipped this exactly when it mattered.
-            if scrolling.returningToBottom || scrolling.mode == .following {
+            // The resize may have exposed content that a following reader
+            // should still see. One settled, non-animated pin after the
+            // keyboard finishes; no pin while reading history.
+            if scrolling.mode == .following, !scrolling.atContentBottom {
                 scrolling.requestBottom(animated: false)
             }
         }
@@ -758,16 +753,17 @@ private struct ChatTimelineContent: View, Equatable {
 
 private extension TimelineViewport {
     init(geometry: ScrollGeometry) {
-        // visibleRect already accounts for the top and bottom insets (the
-        // composer safe area and the keyboard). Deriving the viewport by
-        // subtracting both insets from the container double-counted them and
-        // reported vh=0 while the keyboard was up.
-        let visible = geometry.visibleRect
+        // The inset formula, not visibleRect: during a keyboard transition the
+        // reported visibleRect keeps its pre-keyboard height (con+top+bot,
+        // larger than the container), which broke every at-bottom decision.
+        // The clamped value is only used for following decisions and traces;
+        // keyboard resizes are anchored natively by .sizeChanges, and the
+        // tail probe is the authority on what is actually visible.
         self.init(contentHeight: geometry.contentSize.height,
-            visibleHeight: visible.height,
-            visibleBottom: visible.maxY,
-            offsetY: geometry.contentOffset.y,
-            topInset: geometry.contentInsets.top)
+            containerHeight: geometry.containerSize.height,
+            topInset: geometry.contentInsets.top,
+            bottomInset: geometry.contentInsets.bottom,
+            offsetY: geometry.contentOffset.y)
     }
 }
 

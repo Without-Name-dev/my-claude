@@ -16,24 +16,26 @@ nonisolated struct TimelineViewport: Equatable {
         visibleBottom = offsetY + containerHeight - bottomInset
         self.offsetY = offsetY
         self.topInset = topInset
+        // The container, not the clamped difference: during a keyboard
+        // transition the insets can exceed the container for a few frames,
+        // and treating the page as unmeasured then disabled every follow
+        // decision exactly while typing.
+        measured = containerHeight > 0
     }
 
-    /// Builds from the scroll view's visible region.
-    ///
-    /// Subtracting insets from the container height breaks with the keyboard
-    /// up: SwiftUI both shrinks the container and adds the keyboard to the
-    /// content insets, so the difference collapsed to zero (`vh=0` on device).
-    /// `isMeasured` then became false, which disabled every follow and return
-    /// path exactly when the person was typing and needed them.
+    private var measured: Bool = false
+
+    /// Builds from explicit parts.
     init(contentHeight: CGFloat, visibleHeight: CGFloat, visibleBottom: CGFloat,
-         offsetY: CGFloat, topInset: CGFloat) {
+         offsetY: CGFloat, topInset: CGFloat, measured: Bool = true) {
         self.contentHeight = max(0, contentHeight)
         self.visibleHeight = max(0, visibleHeight)
         self.visibleBottom = visibleBottom
         self.offsetY = offsetY
         self.topInset = topInset
+        self.measured = measured
     }
-    var isMeasured: Bool { visibleHeight > 0 }
+    var isMeasured: Bool { measured }
     /// How far the bottom edge of the viewport sits above the end of the
     /// content. Zero when the reader is at the tail or when the content is
     /// shorter than the viewport.
