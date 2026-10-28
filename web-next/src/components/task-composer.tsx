@@ -168,6 +168,10 @@ function bytesToHex(bytes: Uint8Array): string {
 type NewSessionTitleKey = (typeof NEW_SESSION_TITLE_KEYS)[number]
 type MobileNewSessionTitleKey = (typeof MOBILE_NEW_SESSION_TITLE_KEYS)[number]
 
+// Survives the navigation a failed create performs, so the prompt is not lost
+// with the unmounted composer.
+const NEW_SESSION_DRAFT_KEY = "aa.new-session-draft"
+
 export function TaskComposer() {
   const toolSidebarStore = useSessionToolSidebarStore()
   const { session: authSession } = useAuth()
@@ -305,6 +309,23 @@ export function TaskComposer() {
   const composerWidth = useElementWidth(composerRef)
 
   const typedTitle = useTypewriterTitle(typewriterTitles, creating)
+
+  // A failed create navigates home, which unmounts this composer. The request
+  // text is stashed first so returning here does not mean typing it again.
+  React.useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem(NEW_SESSION_DRAFT_KEY)
+      if (!raw) return
+      window.sessionStorage.removeItem(NEW_SESSION_DRAFT_KEY)
+      const saved = JSON.parse(raw) as { text?: unknown; at?: unknown }
+      if (typeof saved?.text === "string" && saved.text.trim() &&
+          typeof saved.at === "number" && Date.now() - saved.at < 10 * 60 * 1000) {
+        setPrompt(saved.text)
+      }
+    } catch {
+      // Storage can be unavailable; the composer still works.
+    }
+  }, [])
 
   React.useEffect(() => {
     if (!creating) {
@@ -728,6 +749,7 @@ export function TaskComposer() {
       takeover: true,
       pinned: false,
       pinnedAt: null,
+      pinnedMessageIds: [],
       archived: false,
       archivedAt: null,
       unread: false,
@@ -775,8 +797,9 @@ export function TaskComposer() {
         nextSeq: 0,
       }),
     })
-    clear()
-    setPrompt("")
+    // The composer keeps its text and files until the server has created the
+    // session. Clearing here wiped the request on failure, so the person was
+    // returned home with an empty box and had to type everything again.
     openSession(localSessionId)
     try {
       const selections = {
@@ -814,13 +837,22 @@ export function TaskComposer() {
       })
       toolSidebarStore.migrateSession(localSessionId, created.session.id)
       bindOptimisticSession(localSessionId, created.session, created.attachments)
+      clear()
+      setPrompt("")
     } catch (err) {
       const message = err instanceof Error ? err.message : t("createFailed")
       markOptimisticMessageFailed(clientMessageId, message)
       toast.error(message)
       // The optimistic session has no server row and can never finish loading.
       // Leave it rather than stranding the user in it, and return to the
-      // composer so the request can be retried.
+      // composer so the request can be retried. The composer unmounts on that
+      // navigation, so the request text is stashed for it to pick up again.
+      try {
+        window.sessionStorage.setItem(NEW_SESSION_DRAFT_KEY,
+          JSON.stringify({ text: messageText, at: Date.now() }))
+      } catch {
+        // Without storage the toast still explains what happened.
+      }
       goHome()
     } finally {
       creatingRef.current = false

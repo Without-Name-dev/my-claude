@@ -56,6 +56,14 @@ func (s *sessionOpenState) allow(id string, now time.Time) (time.Duration, bool)
 	return 0, true
 }
 
+// reset releases a reserved slot whose spawn failed, so the person's retry is
+// not refused for a minute because of an attempt that started nothing.
+func (s *sessionOpenState) reset(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.last, id)
+}
+
 // sessionOpenStates keeps one throttle per Client without adding mutable state
 // to the shared Client struct.
 var sessionOpenStates sync.Map
@@ -257,12 +265,16 @@ func (c *Client) openSession(msg protocol.SessionOpen) {
 
 	command, err := startSessionTerminalProcess(cwd, externalID, msg.Title, resume)
 	if err != nil {
+		// The attempt started nothing: release the slot so a retry is not
+		// throttled for a minute, and say so instead of failing silently.
+		c.sessionOpenState().reset(externalID)
 		c.Log.Warn("could not open session",
 			"session", msg.SessionID,
 			"external", externalID,
 			"cwd", cwd,
 			"resume", resume,
 			"error", err)
+		c.refuseSessionOpen(msg, "could not start the terminal: "+err.Error())
 		return
 	}
 	c.Log.Info("opened session",

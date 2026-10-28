@@ -1199,7 +1199,7 @@ function SessionDetailView({
                 liveCapabilities?.capabilitySet ?? null,
               )
               const nextNotices = liveNotices
-                ? mergeNotices(current.notices, liveNotices.notices)
+                ? replaceNotices(current.notices, liveNotices.notices, resolvingNoticeId)
                 : current.notices
               const nextAgents = liveAgents !== null && !agentRunsEqual(current.agents, liveAgents)
                 ? liveAgents
@@ -2851,6 +2851,32 @@ function toolRunSummary(
   return parts.length > 0 ? parts.join(", ") : tSession("toolSummaryItems", { count: items.length })
 }
 
+/**
+ * A timeline snapshot is authoritative for the window it covers: the server
+ * publishes it after an edit deleted every later item. Merging it as a union
+ * kept the deleted rows on screen forever.
+ */
+function applyTimelineSnapshot(current: TimelineItem[], snapshot: TimelineItem[]): TimelineItem[] {
+  if (snapshot.length === 0) {
+    return current.filter(isOptimisticTimelineItem)
+  }
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  const present = new Set<string>()
+  for (const item of snapshot) {
+    present.add(item.id)
+    if (item.orderSeq < min) min = item.orderSeq
+    if (item.orderSeq > max) max = item.orderSeq
+  }
+  const kept = current.filter((item) => {
+    if (isOptimisticTimelineItem(item) || present.has(item.id)) return true
+    // Absent from the authoritative window means the server deleted it; rows
+    // outside the window were never covered by this snapshot.
+    return item.orderSeq < min || item.orderSeq > max
+  })
+  return mergeTimelineItems(kept, snapshot)
+}
+
 function mergeSessionEvent(
   current: SessionRemoteState | null,
   event: ProtocolEventEnvelope,
@@ -2891,7 +2917,7 @@ function mergeSessionEvent(
       ? mergeNotices(current.notices, [notice])
       : current.notices
   const nextItems = timelineSnapshot
-    ? mergeTimelineItems(current.items, timelineSnapshot)
+    ? applyTimelineSnapshot(current.items, timelineSnapshot)
     : item
       ? mergeTimelineItems(current.items, [item])
       : current.items
@@ -3090,6 +3116,20 @@ function runtimeStatesSemanticallyEqual(
   })
 }
 
+
+/**
+ * The live notice read returns exactly the still-pending questions: a resolved
+ * one is simply absent. Merging that read into the current list kept answered
+ * approvals pinned above the composer. Only a notice this client is actively
+ * answering survives from the old list.
+ */
+function replaceNotices(current: Notice[], pending: Notice[], resolving: string | null): Notice[] {
+  const inFlight = resolving ? current.filter((notice) => notice.noticeId === resolving) : []
+  const next = mergeNotices(inFlight, pending)
+  const unchanged = next.length === current.length &&
+    next.every((notice, index) => notice === current[index])
+  return unchanged ? current : next
+}
 
 function mergeNotices(current: Notice[], incoming: Notice[]): Notice[] {
   if (incoming.length === 0) return current

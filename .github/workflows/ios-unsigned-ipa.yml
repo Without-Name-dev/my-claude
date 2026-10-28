@@ -142,6 +142,12 @@ jobs:
       - name: Publish IPA to the self-hosted server
         # The phone downloads the package from the server's own /dl/ URL, so the
         # build hands it over directly instead of leaving it behind a login.
+        #
+        # A failure here must not block the release below: the server's sync
+        # timer downloads the same asset as a fallback. The upload goes to a
+        # temporary name and is renamed on the server, so a download can never
+        # observe a half-written file.
+        continue-on-error: true
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
@@ -155,7 +161,9 @@ jobs:
             deploy@8.166.138.207 'mkdir -p /opt/agents-anywhere/web/dl'
           scp -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
             out/AgentsAnywhere-unsigned.ipa \
-            deploy@8.166.138.207:/opt/agents-anywhere/web/dl/MyClaude.ipa
+            deploy@8.166.138.207:/opt/agents-anywhere/web/dl/MyClaude.ipa.tmp
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key \
+            deploy@8.166.138.207 'mv /opt/agents-anywhere/web/dl/MyClaude.ipa.tmp /opt/agents-anywhere/web/dl/MyClaude.ipa'
           echo "uploaded $(stat -c%s out/AgentsAnywhere-unsigned.ipa) bytes"
 
       - name: Publish IPA as a public release asset

@@ -52,7 +52,11 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
                 return try decodeResponse(Response.self, from: data)
             } catch {
                 try Task.checkCancellation()
-                guard request.method == .get, attempt < retryPolicy.maximumRetries,
+                // A write may only be replayed when the error proves the
+                // request never reached the server. Retrying a timeout or a
+                // 5xx can execute a send, an approval or a create twice.
+                guard request.method == .get || Self.neverReachedServer(error),
+                      attempt < retryPolicy.maximumRetries,
                       retryPolicy.permitsRetry(error) else { throw error }
                 // Long rate-limit waits are surfaced to the caller; never retry earlier
                 // than the server asks, or hold a foreground request indefinitely.
@@ -61,6 +65,18 @@ nonisolated struct URLSessionHTTPTransport: HTTPTransport {
                 attempt += 1
                 try await sleep(.seconds(delay))
             }
+        }
+    }
+
+    /// Errors that can only happen before a request was handed to the server.
+    private static func neverReachedServer(_ error: Error) -> Bool {
+        guard let failure = error as? URLError else { return false }
+        switch failure.code {
+        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
+             .dnsLookupFailed, .secureConnectionFailed:
+            return true
+        default:
+            return false
         }
     }
 
