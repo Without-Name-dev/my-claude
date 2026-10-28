@@ -51,13 +51,18 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// The end-marker probe is the authority: it reports what is actually
-    /// visible on screen, which the offset math cannot know while the keyboard
-    /// resizes the scroll view (the reported insets double-count the keyboard
-    /// for a few frames). The distance check only serves before the probe has
-    /// ever fired.
+    /// Both signals must agree. The end-marker probe reports what is actually
+    /// visible on screen (the offset math cannot know while the keyboard
+    /// resizes the scroll view, because the reported insets double-count the
+    /// keyboard for a few frames) — but the probe's callback does not refresh
+    /// while a scroll animation owns the offset, so on its own it stayed
+    /// stale-true through a streaming reply and suppressed every follow for
+    /// seconds. The live distance catches that: content growth pushes it past
+    /// the tolerance within one frame.
     var atContentBottom: Bool {
-        if tail.isMeasured { return tail.isAtBottom }
+        if tail.isMeasured {
+            return tail.isAtBottom && viewport.distanceFromBottom <= Self.bottomTolerance * 4
+        }
         guard viewport.isMeasured else { return false }
         return viewport.distanceFromBottom <= Self.bottomTolerance
     }
