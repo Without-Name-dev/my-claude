@@ -182,6 +182,11 @@ nonisolated struct TimelineScrollState: Equatable {
         // treating it as a gesture flipped the page to reading and stopped
         // following while the person was typing at the live tail.
         guard abs(next.visibleHeight - previous.visibleHeight) <= 0.5 else { return }
+        // Collapsing a tool fold (or any content removal) shrinks the content
+        // and SwiftUI adjusts the offset upward to keep the visible rows put.
+        // That adjustment used to read as an upward swipe and left the page in
+        // reading mode, so later messages never followed again.
+        guard abs(next.contentHeight - previous.contentHeight) <= 0.5 else { return }
         guard next.offsetY < previous.offsetY - 2 else { return }
         browseHistory()
     }
