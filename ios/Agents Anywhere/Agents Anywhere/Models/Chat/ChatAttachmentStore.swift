@@ -42,7 +42,14 @@ struct ChatMessageAttachment: Identifiable, Equatable {
                 ?? entries[content.cacheKey]?.content ?? fallback.first { $0.fileId == content.fileId && content.fileId != nil }
             let merged = saved.map { content.fillingMissingMetadata(from: $0) } ?? content
             let value = entry(merged.cacheKey)
-            return ChatMessageAttachment(id: content.fileId ?? "attachment:\(index):\(content.cacheKey)", content: merged, previewData: value.previewData)
+            // The identity must stay stable across the send lifecycle: the
+            // file id changes from the optimistic "local:…" to the server's
+            // "file_…" once the upload binds, and an id built from it made
+            // SwiftUI recreate the image view mid-message — the decoded state
+            // reset, the tile re-decoded and its frame bounced 180↔320,
+            // which read as the picture flickering back and forth.
+            let identity = "att:\(index):\(merged.name ?? ""):\(merged.size ?? 0)"
+            return ChatMessageAttachment(id: identity, content: merged, previewData: value.previewData)
         }
     }
 

@@ -92,8 +92,6 @@ private struct ChatMessageImage: View {
             .frame(width: displaySize.width, height: displaySize.height)
             .clipShape(.rect(cornerRadius: 16))
             .contentShape(.rect(cornerRadius: 16))
-            // The spinner → decoded image swap used to be a hard cut.
-            .animation(.easeOut(duration: 0.2), value: image != nil)
         }
         .buttonStyle(.plain).accessibilityLabel(file.content.name ?? String(localized: "图片附件"))
         .onAppear { if image == nil, let data = file.previewData { image = UIImage(data: data) } }
