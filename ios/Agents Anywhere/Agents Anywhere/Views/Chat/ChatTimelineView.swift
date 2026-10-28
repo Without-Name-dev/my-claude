@@ -216,8 +216,16 @@ struct ChatTimelineView: View {
                     // tail. The old `model.isRunning` gate skipped the final
                     // render of every reply: the status flips to idle in the
                     // same snapshot that settles the row's last tokens.
-                    if scrolling.mayFollowNewContent, contentHeightChanged || visibleHeightChanged {
-                        scrolling.requestBottom()
+                    //
+                    // Content growth animates; an inset change pins without
+                    // animation so the transcript tracks the keyboard/composer
+                    // frame by frame instead of running a spring after it.
+                    if scrolling.mayFollowNewContent {
+                        if contentHeightChanged {
+                            scrolling.requestBottom()
+                        } else {
+                            scrolling.requestBottom(animated: false)
+                        }
                     }
                     if !navigationIsSuspended && scrolling.phase == .interacting {
                         var latest = latestPull, older = olderPull
@@ -281,9 +289,13 @@ struct ChatTimelineView: View {
             }
             .task(id: scrolling.pendingBottomRequest) {
                 guard let request = scrolling.pendingBottomRequest, !navigationIsSuspended else { return }
-                // Coalesce actual layout changes. Scrolling through the same
-                // layout cannot restart this animation on every offset callback.
-                do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
+                // Coalesce animated returns so scrolling through the same
+                // layout cannot restart the animation on every offset sample.
+                // A non-animated inset pin runs immediately: it must land in
+                // the same frame as the inset change it tracks.
+                if request.animated {
+                    do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
+                }
                 guard !Task.isCancelled, !navigationIsSuspended, let command = scrolling.begin(request) else { return }
                 scrollToBottom(command, using: scrollProxy)
             }
@@ -298,7 +310,7 @@ struct ChatTimelineView: View {
                 if scrolling.mode == .following, !scrolling.atContentBottom {
                     // The settlement can land before the keyboard or the
                     // composer inset finishes moving; pin once it is idle.
-                    scrolling.requestBottom()
+                    scrolling.requestBottom(animated: false)
                 }
             }
             .task(id: olderLoadRequest) {
@@ -389,17 +401,18 @@ struct ChatTimelineView: View {
             // Typing is a reason to bring the tail back only for a reader who
             // is still there. Someone reading history keeps their position.
             guard scrolling.mode == .following || scrolling.atContentBottom else { return }
-            // Editing is an explicit request to bring the latest conversation
-            // into the unobscured viewport. Geometry updates during the keyboard
-            // animation keep the tail aligned after the available height settles.
-            scrolling.requestBottom()
+            // The keyboard animates on the system curve; the follow must not
+            // add a spring of its own on top of it. The geometry callback
+            // re-pins on every frame as the inset settles.
+            scrolling.requestBottom(animated: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-            // WillShow fires before the keyboard has finished animating, so its
-            // target predates the final viewport height. Re-pin once the final
-            // height is known, still only for a reader who owned the tail.
-            guard scrolling.mode == .following else { return }
-            scrolling.requestBottom()
+            // One final pin against the settled height. .returning is the
+            // normal state here (the show is still being tracked); waiting for
+            // .following skipped this exactly when it mattered.
+            if scrolling.returningToBottom || scrolling.mode == .following {
+                scrolling.requestBottom(animated: false)
+            }
         }
     }
     private func dismissKeyboard() {
@@ -462,8 +475,10 @@ struct ChatTimelineView: View {
         // Use smooth animation even during streaming to avoid jarring jumps
         // Reduce animation duration during streaming for more responsive feel
         let streaming = model.isRunning
-        let animation: Animation? = reduceMotion ? nil :
-            (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12))
+        let animation: Animation? = command.request.animated
+            ? (reduceMotion ? nil :
+                (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12)))
+            : nil
 
         TimelineTrace.shared.record("RETURN", "h=\(Int(command.request.contentHeight)) g=\(command.request.generation)")
         withAnimation(animation, completionCriteria: .removed) {

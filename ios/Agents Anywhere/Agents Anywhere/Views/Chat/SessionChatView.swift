@@ -40,7 +40,7 @@ struct SessionChatView: View, Equatable {
          onMenu: @escaping () -> Void) {
         _storage = StateObject(wrappedValue: StableViewModel {
             let chat = SessionChatModel(session: session, repository: services.sessionRepository, attachments: services.attachments,
-                files: services.workspaceFiles)
+                inflight: services.attachmentInflight, files: services.workspaceFiles)
             chat.onEditCreation = { [weak services, weak session] pending in
                 if let session { services?.editCreation(session, pending: pending) }
             }
@@ -106,7 +106,11 @@ struct SessionChatView: View, Equatable {
                         SessionInteractionDock(chat: model,
                             onShowAll: { expandedNoticeID = $0; sheet = .notices })
                         ChatComposerDock(draft: session.composer, settings: model.settings,
-                            maximumEditorHeight: min(160, max(72, geometry.size.height * 0.30)), controls: controls,
+                            // A constant, not a fraction of the live geometry:
+                            // the keyboard shrinks that geometry, which used to
+                            // re-measure the editor cap mid-keyboard and resize
+                            // the composer a second time during the animation.
+                            maximumEditorHeight: 160, controls: controls,
                             canSend: session.canSend && !model.dispatchingSend, canAttach: model.canAttach,
                             canSelectModel: session.runtime.allows("catalog.model"),
                             canSelectPermission: session.runtime.allows("catalog.permission"),
@@ -344,7 +348,20 @@ struct SessionChatView: View, Equatable {
                 }
             }
             do {
-                let data = try await model.download(fileID)
+                // Bound the read: the transport's own resource timeout allows
+                // retries totalling minutes, during which the overlay was the
+                // only feedback. A tap that cannot finish in half a minute
+                // says so instead of spinning forever.
+                let data = try await withThrowingTaskGroup(of: Data.self) { group in
+                    group.addTask { try await self.model.download(fileID) }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(30))
+                        throw URLError(.timedOut)
+                    }
+                    guard let first = try await group.next() else { throw URLError(.timedOut) }
+                    group.cancelAll()
+                    return first
+                }
                 guard session.isValid, sheet == nil else { return }
                 if file.isImage, let image = UIImage(data: data) {
                     previewImage = ImagePreviewItem(image: image)
@@ -362,6 +379,8 @@ struct SessionChatView: View, Equatable {
                 // Replaced by a newer tap; its own task owns the state now.
             } catch let error as URLError where error.code == .cancelled {
                 // URLSession reports task cancellation this way.
+            } catch is URLError {
+                model.error = String(localized: "附件加载超时，请稍后重试。")
             } catch {
                 toasts.update(source: "download", failure: nil)
                 model.error = error.localizedDescription

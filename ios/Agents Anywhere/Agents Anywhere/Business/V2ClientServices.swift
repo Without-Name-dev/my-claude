@@ -19,6 +19,7 @@ final class V2ClientServices {
     let sessionDetail: V2SessionDetailService
     let sessionCreation: V2SessionCreationService
     let attachments: V2AttachmentService
+    let attachmentInflight: V2AttachmentInflight
     let interactions: V2RuntimeInteractionService
     let devicePairing: V2DevicePairingService
     let agentSetup: AgentSetupCoordinator
@@ -61,6 +62,7 @@ final class V2ClientServices {
         )
         sessionCreation = V2SessionCreationService(sessionAPI: api.sessions)
         attachments = V2AttachmentService(attachmentAPI: api.attachments)
+        attachmentInflight = V2AttachmentInflight()
         interactions = V2RuntimeInteractionService(runtimeAPI: api.runtime)
         let repository = V2SessionRepository(scope: scope, detail: sessionDetail, interactions: interactions, localStore: localStore)
         sessionRepository = repository

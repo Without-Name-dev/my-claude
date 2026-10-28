@@ -28,6 +28,11 @@ final class ComposerDraft {
     var attachments: [ChatAttachment] = []
     var isFocused = false
     var isComposing = false
+    /// The editor's last measured height. A new line changed the composer's
+    /// footprint in one frame because no animation value covered it; the
+    /// composer animates on this instead, and the transcript's inset follow
+    /// tracks each animated frame.
+    var measuredEditorHeight: CGFloat = 0
 
     var isExpanded: Bool { isFocused || !text.isEmpty || !attachments.isEmpty }
     var hasSendableContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty }

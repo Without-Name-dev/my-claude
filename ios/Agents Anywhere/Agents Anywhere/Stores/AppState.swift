@@ -46,6 +46,9 @@ final class AppState {
     @ObservationIgnored private let keychain = KeychainStore()
     @ObservationIgnored private let restoration = V2RestorationStore()
     @ObservationIgnored private var accountSyncTask: Task<Void, Never>?
+    /// When the last connectivity-recovery account sync ran. Cellular paths
+    /// flap around radio transitions; each flap must not re-run a full sync.
+    @ObservationIgnored private var lastConnectivityRecovery: Date?
     @ObservationIgnored private var accountSyncID = UUID()
     @ObservationIgnored private var authenticationEpoch = UUID()
     @ObservationIgnored private let serverDefaultsKey = "agentsAnywhere.serverURL"
@@ -881,8 +884,17 @@ final class AppState {
             if status.availability == .offline {
                 self.dashboardUpdatesTask?.cancel()
                 self.dashboardUpdatesTask = nil
+                self.lastConnectivityRecovery = nil
             } else {
                 self.startDashboardUpdates()
+                // A cellular path flaps between unsatisfied and satisfied for a
+                // second or two around radio transitions. Each "recovery" used
+                // to re-run the whole account sync (auth/me, announcement, a
+                // full dashboard refresh) while an error was pending, which is
+                // what made the app feel like it was synchronizing forever.
+                let now = Date()
+                if let last = self.lastConnectivityRecovery, now.timeIntervalSince(last) < 30 { return }
+                self.lastConnectivityRecovery = now
                 if self.restoreConnectionError != nil { self.beginAccountSynchronization(force: true) }
             }
         }

@@ -46,10 +46,13 @@ final class SessionChatModel {
     @ObservationIgnored var onDiscardCreation: (() -> Void)?
     @ObservationIgnored let repository: V2SessionRepository
     @ObservationIgnored private let attachments: V2AttachmentService
+    @ObservationIgnored private let inflight: V2AttachmentInflight?
     @ObservationIgnored private let files: V2WorkspaceFilesService?
 
-    init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService, files: V2WorkspaceFilesService? = nil) {
+    init(session: V2SessionModel, repository: V2SessionRepository, attachments: V2AttachmentService,
+         inflight: V2AttachmentInflight? = nil, files: V2WorkspaceFilesService? = nil) {
         self.session = session; self.repository = repository; self.attachments = attachments
+        self.inflight = inflight
         self.files = files
         // Cached history can still be expensive to project. prepareOpening()
         // performs that work after the page's navigation transition settles.
@@ -460,7 +463,13 @@ final class SessionChatModel {
     }
 
     func download(_ fileID: String) async throws -> Data {
-        try await attachments.download(sessionId: session.id, fileId: fileID)
+        // The visible thumbnail task can already be reading the same file;
+        // a second full-size read of the same blob doubled the transfer and
+        // made the tap look stuck, so both callers share one request.
+        if let inflight {
+            return try await inflight.download(using: attachments, sessionId: session.id, fileId: fileID)
+        }
+        return try await attachments.download(sessionId: session.id, fileId: fileID)
     }
 
     func thumbnail(for file: V2AttachmentContent) async throws -> Data? {

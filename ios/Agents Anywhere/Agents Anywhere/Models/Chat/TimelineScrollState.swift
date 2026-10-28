@@ -10,6 +10,11 @@ nonisolated struct TimelineScrollState: Equatable {
         let generation: Int
         let contentHeight: CGFloat
         let visibleHeight: CGFloat
+        /// Animated returns are for content growth and explicit returns. An
+        /// inset change (keyboard, composer, panel) pins without animation so
+        /// the transcript tracks the already-animated inset frame by frame
+        /// instead of running a competing spring after it.
+        let animated: Bool
     }
     struct BottomCommand: Equatable {
         let id: Int
@@ -26,6 +31,9 @@ nonisolated struct TimelineScrollState: Equatable {
     private(set) var hasOpened = false
     private(set) var activeCommand: BottomCommand?
     private var lastRequest: BottomRequest?
+    /// Whether the next armed return animates. Inset-driven pins are not
+    /// animated; content growth and explicit returns are.
+    private var pendingAnimated = true
     private var commandID = 0
     private var awaitsUserScrollSettlement = false
     /// Whether the reader was following the tail when an interaction card
@@ -89,18 +97,27 @@ nonisolated struct TimelineScrollState: Equatable {
     /// not only at the command site, also prevents a request queued mid-gesture
     /// from firing as soon as the gesture ends.
     @discardableResult
-    mutating func requestBottom() -> Bool {
+    mutating func requestBottom(animated: Bool = true) -> Bool {
         guard !userIsScrolling else { return false }
+        // Already parked at the tail: the insets changed around us and the
+        // native offset tracks the bottom edge on its own. Arming a return
+        // here made every frame of a keyboard HIDE issue a spring against it.
+        if mode == .following, atContentBottom {
+            pendingAnimated = animated
+            return true
+        }
         // Keyboard animation and streamed layout changes can request the same
         // return repeatedly. Keep its generation stable while the target is
         // unchanged, but retarget when the layout moved under the animation: a
         // new row or the keyboard inset used to be dropped because the mode was
         // .returning, which left the newest message below the fold.
         if mode == .returning, let lastRequest,
+           lastRequest.animated == animated,
            abs(lastRequest.contentHeight - viewport.contentHeight.rounded()) <= 0.5,
            abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5 {
             return true
         }
+        pendingAnimated = animated
         armBottomReturn()
         return true
     }
@@ -215,7 +232,8 @@ nonisolated struct TimelineScrollState: Equatable {
         // changes only need correction when they actually move away from bottom.
         if atContentBottom && (mode == .following || lastRequest != nil) { return nil }
         let request = BottomRequest(generation: navigationGeneration,
-            contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded())
+            contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded(),
+            animated: pendingAnimated)
         return request == lastRequest ? nil : request
     }
 

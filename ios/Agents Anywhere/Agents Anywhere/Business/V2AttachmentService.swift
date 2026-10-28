@@ -35,3 +35,28 @@ struct V2AttachmentService {
         return data
     }
 }
+
+/// Shares one in-flight download between callers (the visible thumbnail task
+/// and a tap that opens the same attachment). Two concurrent 3 MB reads of the
+/// same file doubled the transfer time on cellular and made the tap look
+/// stuck; the second caller now awaits the first task's result.
+@MainActor
+final class V2AttachmentInflight {
+    private var tasks: [String: Task<Data, Error>] = [:]
+
+    func download(using service: V2AttachmentService, sessionId: V2SessionID, fileId: V2AttachmentID) async throws -> Data {
+        let key = "\(sessionId)/\(fileId)"
+        if let existing = tasks[key] {
+            return try await existing.value
+        }
+        let task = Task { try await service.download(sessionId: sessionId, fileId: fileId) }
+        tasks[key] = task
+        defer { tasks[key] = nil }
+        do {
+            return try await task.value
+        } catch {
+            // A failed read must not poison the next attempt.
+            throw error
+        }
+    }
+}

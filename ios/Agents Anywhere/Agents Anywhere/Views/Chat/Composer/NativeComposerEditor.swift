@@ -117,6 +117,11 @@ struct NativeComposerEditor: UIViewRepresentable {
         let measured = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         let minimum = ceil(uiView.font?.lineHeight ?? 24)
         let height = min(maximumHeight, max(minimum, ceil(measured)))
+        // Publish the measured height so the composer can animate line growth
+        // (no animation value covered it; the inset stepped in one frame).
+        if draft.measuredEditorHeight != height {
+            draft.measuredEditorHeight = height
+        }
         let shouldScroll = measured > maximumHeight + 1
         if uiView.isScrollEnabled != shouldScroll { uiView.isScrollEnabled = shouldScroll }
         return CGSize(width: width, height: height)

@@ -163,6 +163,10 @@ struct ChatComposer: View {
         // A second or third attachment changes the tray's height even when it is
         // already expanded; the fold animation above does not cover that.
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: draft.attachments.map(\.id))
+        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isImporting)
+        // A new line while already expanded changed the composer's footprint in
+        // one frame; the transcript's inset follow then jumped after it.
+        .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: draft.measuredEditorHeight)
         // The composer is the only subtree that already re-evaluates on every
         // keystroke, including each Chinese IME marked-text update. Observing
         // the draft from the page root re-evaluated the whole conversation.

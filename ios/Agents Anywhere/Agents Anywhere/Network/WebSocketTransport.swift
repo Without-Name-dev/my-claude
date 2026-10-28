@@ -74,6 +74,24 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
                     continuation.finish(throwing: error)
                 }
             }
+            // A cellular NAT can drop an otherwise idle mapping well before the
+            // server's 15 s keepalive frames matter, and a half-open socket
+            // surfaces only as silence. A control ping every 20 s keeps the
+            // mapping alive and fails fast when the path is gone.
+            let keepalivePing = Task { [weak task] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                    guard let task, !Task.isCancelled else { return }
+                    task.sendPing { error in
+                        if error != nil {
+                            // The socket is unwritable; end the stream so the
+                            // owner reconnects instead of waiting for silence.
+                            continuation.finish(throwing: URLError(.timedOut))
+                            task.cancel(with: .goingAway, reason: nil)
+                        }
+                    }
+                }
+            }
             let watchdog = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(5))
@@ -93,6 +111,7 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
             continuation.onTermination = { [task] _ in
                 receiveTask.cancel()
                 watchdog.cancel()
+                keepalivePing?.cancel()
                 task.cancel(with: .goingAway, reason: nil)
             }
         }
