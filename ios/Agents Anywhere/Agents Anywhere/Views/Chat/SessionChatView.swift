@@ -21,6 +21,10 @@ struct SessionChatView: View, Equatable {
     /// from, so an attachment without an extension opened to a blank page.
     @State private var previewImage: ImagePreviewItem?
     @State private var isDownloading = false
+    /// The in-flight preview download. A new tap replaces it instead of being
+    /// dropped, so quickly opening a second attachment from the same message
+    /// does not need a second tap after the first finishes.
+    @State private var downloadTask: Task<Void, Never>?
     @State private var toasts = ChatToastStore()
     @State private var pendingTakeover: Bool?
     @State private var confirmsOpenOnComputer = false
@@ -300,18 +304,20 @@ struct SessionChatView: View, Equatable {
             model.error = String(localized: "附件还没有上传完成，暂时无法预览。")
             return
         }
-        guard !isDownloading else { return }
         guard let fileID = file.fileId else {
             // Without an id there is nothing to fetch; say so instead of
             // swallowing the tap.
             model.error = String(localized: "这个附件暂时无法预览。")
             return
         }
+        // Last tap wins: a preview that is still downloading must not swallow
+        // the next tap.
+        downloadTask?.cancel()
         isDownloading = true
         model.error = nil
         // Show downloading indicator
         toasts.update(source: "download", failure: nil)
-        Task { @MainActor in
+        downloadTask = Task { @MainActor in
             defer {
                 isDownloading = false
                 toasts.update(source: "download", failure: nil)
@@ -331,6 +337,10 @@ struct SessionChatView: View, Equatable {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: url, options: [.atomic, .completeFileProtection])
                 previewDirectory = directory; previewURL = url
+            } catch is CancellationError {
+                // Replaced by a newer tap; its own task owns the state now.
+            } catch let error as URLError where error.code == .cancelled {
+                // URLSession reports task cancellation this way.
             } catch {
                 toasts.update(source: "download", failure: nil)
                 model.error = error.localizedDescription
