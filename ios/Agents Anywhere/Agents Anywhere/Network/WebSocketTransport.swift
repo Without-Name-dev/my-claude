@@ -111,7 +111,7 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
             continuation.onTermination = { [task] _ in
                 receiveTask.cancel()
                 watchdog.cancel()
-                keepalivePing?.cancel()
+                keepalivePing.cancel()
                 task.cancel(with: .goingAway, reason: nil)
             }
         }
