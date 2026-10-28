@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/agents-anywhere/agents-anywhere/internal/httpx"
+	"github.com/agents-anywhere/agents-anywhere/internal/protocol"
 	"github.com/agents-anywhere/agents-anywhere/internal/store"
 )
 
@@ -112,13 +113,33 @@ func (a *App) handleEditTimelineItem(w http.ResponseWriter, r *http.Request, use
 		if err := a.db.DeleteTimelineItemsAfter(ctx, tx, session.ID, item.OrderSeq); err != nil {
 			return err
 		}
-
+		// Everything queued after the edited point belongs to the exchange that
+		// was just deleted. Leaving durable rows pending let the connector run a
+		// message whose prompt no longer exists, so its answer arrived with no
+		// visible question.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE submit_outbox
+			SET state = 'failed', error = ?, payload_json = NULL, updated_at = ?
+			WHERE session_id = ? AND state = 'pending'`,
+			"the message it belongs to was edited", now, session.ID); err != nil {
+			return err
+		}
 		return nil
 	})
 
 	if err != nil {
 		httpx.Fail(w, err)
 		return
+	}
+
+	// A turn already running for the deleted exchange must stop: its answer is
+	// for a prompt the person replaced.
+	if a.connectors.Online(session.ConnectorID) {
+		a.connectors.Send(session.ConnectorID, protocol.TypeAbort, protocol.Abort{
+			RequestID:         store.NewID("abort"),
+			SessionID:         session.ID,
+			ExternalSessionID: session.ExternalID,
+		})
 	}
 
 	// Publish timeline reset event via broker
@@ -129,11 +150,16 @@ func (a *App) handleEditTimelineItem(w http.ResponseWriter, r *http.Request, use
 	
 	// Trigger regeneration by sending the edited message
 	if messageID != "" && a.connectors.Online(session.ConnectorID) {
-		files := []messageAttachment{} // No attachments on retry
+		// Keep the files the message carried: dropping them silently made the
+		// regenerated prompt describe an image the desktop never received.
+		files := attachmentsFromPayload(item.Payload)
 		// A unique id per attempt: the deterministic "_retry" suffix made a
 		// second edit collide with the first one's request (silent no-op or
 		// 409) while the reply it was meant to regenerate stayed deleted.
-		if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID+"_"+store.NewID("retry"), "prompt", files); err != nil {
+		// Reuse the edited row: a fresh user item duplicated the prompt, so the
+		// conversation showed the same message twice. The request id stays
+		// unique for the outbox.
+		if _, err := a.deliverMessage(r.Context(), session, body.Content, messageID+"_"+store.NewID("retry"), "prompt", files, itemID); err != nil {
 			a.log.Warn("failed to regenerate after edit", "session", session.ID, "error", err)
 		}
 	}
@@ -179,8 +205,9 @@ func (a *App) handleRetryMessage(w http.ResponseWriter, r *http.Request, user st
 	}
 
 	text, _ := content["text"].(string)
-	if text == "" {
-		httpx.Fail(w, httpx.BadRequest("message has no text content"))
+	files := attachmentsFromPayload(item.Payload)
+	if text == "" && len(files) == 0 {
+		httpx.Fail(w, httpx.BadRequest("message has no content"))
 		return
 	}
 
@@ -194,7 +221,6 @@ func (a *App) handleRetryMessage(w http.ResponseWriter, r *http.Request, user st
 		messageID = messageID + "_" + store.NewID("retry")
 	}
 
-	files := []messageAttachment{} // TODO: Extract attachments from content if needed
 	if _, err := a.deliverMessage(r.Context(), session, text, messageID, "prompt", files); err != nil {
 		if errors.Is(err, errSessionNotLive) {
 			failSessionNotLive(w, "the conversation is not live on the desktop; open it there to continue")

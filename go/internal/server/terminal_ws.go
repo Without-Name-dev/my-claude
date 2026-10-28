@@ -257,12 +257,19 @@ func (a *App) terminalStreamUser(
 	if token == "" {
 		return store.User{}, false
 	}
-	userID, err := auth.VerifyUserAccessToken(token)
+	info, err := auth.VerifyUserAccessTokenInfo(token)
 	if err != nil {
 		return store.User{}, false
 	}
-	user, err := a.db.UserByID(r.Context(), userID)
+	user, err := a.db.UserByID(r.Context(), info.Subject)
 	if err != nil || user.Disabled {
+		return store.User{}, false
+	}
+	// A password change must revoke every older token, including one carried in
+	// a query string for a WebSocket. Skipping the fingerprint let a lost
+	// device keep typing into the desktop terminal after the password changed.
+	if info.CredentialVersion != "" &&
+		info.CredentialVersion != auth.CredentialVersion(user.PasswordHash) {
 		return store.User{}, false
 	}
 	return user, true

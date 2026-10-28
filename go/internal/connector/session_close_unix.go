@@ -22,7 +22,7 @@ import (
 // was started with. A terminal window left showing the exit stays open; on
 // macOS the tab belongs to Terminal and closing it would mean driving another
 // application's UI.
-func closeSessionProcess(externalSessionID string) (int, error) {
+func closeSessionProcess(externalSessionID string, _ time.Time) (int, error) {
 	killed := 0
 	self := os.Getpid()
 	for _, flag := range []string{"--resume", "--session-id"} {

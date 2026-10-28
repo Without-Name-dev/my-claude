@@ -80,6 +80,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		write.Close()
 		return nil, err
 	}
+	// The database holds every message and the pairing material. With the
+	// default umask it was world-readable; only the service account needs it.
+	// Best effort: a filesystem that cannot chmod must not stop the server.
+	_ = os.Chmod(path, 0o600)
 
 	read, err := sql.Open("sqlite", base)
 	if err != nil {

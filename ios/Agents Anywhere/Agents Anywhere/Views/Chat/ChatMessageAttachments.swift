@@ -47,8 +47,11 @@ private struct ChatMessageImage: View {
 
     var body: some View {
         Button {
-            if failed && image == nil { failed = false; retry += 1 }
-            else { onOpen(file.content) }
+            // A failed thumbnail must not lock the attachment: the preview
+            // loads the full image and can succeed where the thumbnail did not.
+            // Retrying in place was the only action, so the file could never
+            // be opened from the message.
+            onOpen(file.content)
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(.quaternary.opacity(0.6))
@@ -58,7 +61,7 @@ private struct ChatMessageImage: View {
                     // size, so no proposal from the row can stretch it.
                     Image(uiImage: image).resizable().scaledToFill()
                 } else if failed {
-                    Label(String(localized: "轻点重试预览"), appSymbol: "arrow.clockwise").font(.caption).foregroundStyle(.secondary)
+                    Label(String(localized: "轻点查看图片"), appSymbol: "photo").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ProgressView().progressViewStyle(.circular)
                 }

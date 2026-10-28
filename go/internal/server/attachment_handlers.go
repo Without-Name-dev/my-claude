@@ -90,8 +90,10 @@ func (a *App) requireAttachmentViewer(
 		user, ok := a.userFromRequest(r)
 		if !ok {
 			if raw := r.URL.Query().Get("token"); raw != "" {
-				if userID, err := auth.VerifyUserAccessToken(raw); err == nil {
-					if candidate, err := a.db.UserByID(r.Context(), userID); err == nil && !candidate.Disabled {
+				if info, err := auth.VerifyUserAccessTokenInfo(raw); err == nil {
+					if candidate, err := a.db.UserByID(r.Context(), info.Subject); err == nil && !candidate.Disabled &&
+						(info.CredentialVersion == "" ||
+							info.CredentialVersion == auth.CredentialVersion(candidate.PasswordHash)) {
 						user, ok = candidate, true
 					}
 				}
@@ -386,6 +388,34 @@ func submitAttachments(sessionID string, attachments []messageAttachment) []prot
 			Size:        file.Size,
 			SHA256:      file.SHA256,
 			DownloadURL: connectorAttachmentContentPath(sessionID, file.FileID),
+		})
+	}
+	return out
+}
+
+// attachmentsFromPayload rebuilds the files a stored message carried, so a
+// retry or an edit resends the same content instead of dropping it.
+func attachmentsFromPayload(payload json.RawMessage) []messageAttachment {
+	var body struct {
+		Attachments []struct {
+			FileID    string `json:"fileId"`
+			Name      string `json:"name"`
+			MediaType string `json:"mediaType"`
+			Size      int64  `json:"size"`
+			SHA256    string `json:"sha256"`
+		} `json:"attachments"`
+	}
+	if json.Unmarshal(payload, &body) != nil {
+		return nil
+	}
+	out := make([]messageAttachment, 0, len(body.Attachments))
+	for _, file := range body.Attachments {
+		if file.FileID == "" {
+			continue
+		}
+		out = append(out, messageAttachment{
+			FileID: file.FileID, Name: file.Name, MediaType: file.MediaType,
+			Size: file.Size, SHA256: file.SHA256,
 		})
 	}
 	return out

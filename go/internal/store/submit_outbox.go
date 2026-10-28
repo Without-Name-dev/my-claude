@@ -92,6 +92,37 @@ func (s *Store) PendingSubmitOutbox(ctx context.Context, connectorID string, bef
 	return items, rows.Err()
 }
 
+// StalePendingSubmits returns pending rows older than the given creation time,
+// regardless of how recently they were retried. A row that is retried every
+// fifteen seconds never looks idle, so the due-at filter in PendingSubmitOutbox
+// cannot find one that is stuck.
+func (s *Store) StalePendingSubmits(ctx context.Context, connectorID string, createdBefore int64, limit int) ([]SubmitOutboxItem, error) {
+	if limit <= 0 {
+		limit = 64
+	}
+	rows, err := s.read.QueryContext(ctx, `
+		SELECT session_id, request_id, connector_id, external_session_id,
+		       coalesce(payload_json, ''), payload_hash, state, coalesce(error, ''),
+		       previous_status, enqueue_seq, attempts, last_attempt_at, created_at, updated_at
+		FROM submit_outbox
+		WHERE connector_id = ? AND state = 'pending' AND created_at <= ?
+		ORDER BY session_id, enqueue_seq, request_id LIMIT ?`, connectorID, createdBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]SubmitOutboxItem, 0)
+	for rows.Next() {
+		item, err := scanSubmitOutbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // MarkSubmitAttempt records a delivery attempt before it enters the socket queue.
 func (s *Store) MarkSubmitAttempt(ctx context.Context, sessionID, requestID string, now int64) (bool, error) {
 	result, err := s.write.ExecContext(ctx, `

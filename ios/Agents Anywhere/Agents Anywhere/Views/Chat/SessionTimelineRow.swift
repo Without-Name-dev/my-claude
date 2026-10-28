@@ -132,7 +132,10 @@ struct PendingMessageRow: View {
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             Button(String(localized: "返回编辑")) {
                 if chat.session.isLocalCreation { chat.onEditCreation?(pending) }
-                else if !chat.session.restoreDraft(from: pending) {
+                // A failed send that already put its text back in the composer
+                // needs no second restore; doing it again reported "the input
+                // already has content" for the person's own restored message.
+                else if !pending.didRestoreDraft && !chat.session.restoreDraft(from: pending) {
                     // Refused because the composer already holds a draft;
                     // saying so beats a dialog that closes and does nothing.
                     chat.error = String(localized: "输入框里已有内容。请先发送或清空，再返回这条记录。")

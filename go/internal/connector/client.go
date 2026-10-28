@@ -121,9 +121,11 @@ type Client struct {
 
 	// closedMu guards closed: server sessions whose terminal the person closed
 	// from the phone. A turn watcher stops on its next poll instead of waiting
-	// for the heartbeat to expire.
+	// for the heartbeat to expire. closeGen versions each close request so a
+	// message queued while the process scan runs can supersede it.
 	closedMu sync.Mutex
 	closed   map[string]time.Time
+	closeGen map[string]int
 }
 
 type historyJob struct {
@@ -175,6 +177,7 @@ func NewClient(url, token, name string, b *bridge.Bridge, log *slog.Logger) *Cli
 		turnWatches:         make(chan turnWatchJob, turnWatchQueueSize),
 		spawnRequests:       map[string]time.Time{},
 		closed:              map[string]time.Time{},
+		closeGen:            map[string]int{},
 		historyStamps:       map[string]string{},
 		historyFullStamps:   map[string]string{},
 		historyRetryTimers:  map[string]*time.Timer{},
@@ -651,6 +654,9 @@ func (c *Client) queueTurn(ctx context.Context, msg protocol.Submit) {
 	c.ackSubmit(msg, true, "")
 	c.setActive(msg.SessionID, msg.ExternalSessionID)
 	c.clearSessionClosed(msg.SessionID)
+	// A close that is still scanning for its process must not kill the
+	// terminal this message is about to start, nor mark the new turn closed.
+	c.supersedeClose(msg.SessionID)
 	if c.consumeAbort(msg.SessionID) {
 		if err := c.Bridge.RequestAbort(msg.ExternalSessionID); err != nil {
 			c.Log.Warn("could not write the abort request", "error", err)

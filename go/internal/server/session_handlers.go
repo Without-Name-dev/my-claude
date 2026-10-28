@@ -541,6 +541,7 @@ func (a *App) handleSteer(w http.ResponseWriter, r *http.Request, user store.Use
 // delivered prompt.
 func (a *App) deliverMessage(
 	ctx context.Context, session store.Session, content, messageID, action string, files []messageAttachment,
+	itemIDOverride ...string,
 ) (store.Session, error) {
 	if action == "" {
 		action = "prompt"
@@ -551,6 +552,11 @@ func (a *App) deliverMessage(
 	}
 
 	userItemID := "msg_" + messageID + "_user"
+	// An edit regenerates an existing prompt in place: reusing its row keeps
+	// one user message instead of inserting a second copy of the same text.
+	if len(itemIDOverride) > 0 && itemIDOverride[0] != "" {
+		userItemID = itemIDOverride[0]
+	}
 	orderSeq := store.NowMS()
 	payload := messageContentWithAttachments(content, timelineAttachments(files))
 	wireAttachments := submitAttachments(session.ID, files)

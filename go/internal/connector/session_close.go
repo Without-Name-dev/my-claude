@@ -14,8 +14,13 @@ import (
 const closedSessionTTL = 2 * time.Minute
 
 // closeSessionProcessFunc is the platform process killer. It is a variable so
-// a test can observe a close without ending a real terminal.
-var closeSessionProcessFunc = closeSessionProcess
+// a test can observe a close without ending a real terminal. startedBefore
+// bounds the search to processes that already existed when the person asked:
+// a replacement terminal opened by the next message must not be killed by a
+// scan that was still running.
+var closeSessionProcessFunc = func(externalSessionID string, startedBefore time.Time) (int, error) {
+	return closeSessionProcess(externalSessionID, startedBefore)
+}
 
 // handleSessionClose runs one session.close frame off the read loop, because
 // finding and ending a process can take a moment.
@@ -40,7 +45,11 @@ func (c *Client) closeSession(msg protocol.SessionClose) {
 			"reason", "no usable runtime session id", "session", msg.SessionID)
 		return
 	}
-	killed, err := closeSessionProcessFunc(externalID)
+	// The request is the point in time the person meant; a terminal opened
+	// after it belongs to a newer message and must survive this scan.
+	startedBefore := time.Now()
+	generation := c.beginClose(msg.SessionID)
+	killed, err := closeSessionProcessFunc(externalID, startedBefore)
 	if err != nil {
 		// Nothing was stopped. Marking it closed here told the watcher the
 		// turn was aborted while the process kept working, and the phone
@@ -57,6 +66,14 @@ func (c *Client) closeSession(msg protocol.SessionClose) {
 			"session", msg.SessionID, "external", externalID)
 		return
 	}
+	// A message queued while this scan was running superseded the close: the
+	// person changed their mind, and marking the session closed now would abort
+	// the turn that message is about to start.
+	if !c.finishClose(msg.SessionID, generation) {
+		c.Log.Info("close superseded by a newer message",
+			"session", msg.SessionID, "external", externalID, "processes", killed)
+		return
+	}
 	// Only a confirmed close ends the watcher early. Left until after the kill,
 	// this is the difference between "the person stopped it" and "we hoped so".
 	c.markSessionClosed(msg.SessionID)
@@ -70,6 +87,44 @@ func (c *Client) closeSession(msg protocol.SessionClose) {
 	}
 	c.Log.Info("closed the terminal for a session",
 		"session", msg.SessionID, "external", externalID, "processes", killed)
+}
+
+// beginClose records a new close request and returns its generation.
+func (c *Client) beginClose(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	if c.closeGen == nil {
+		c.closeGen = map[string]int{}
+	}
+	c.closeGen[sessionID]++
+	return c.closeGen[sessionID]
+}
+
+// finishClose reports whether this close is still the latest action on the
+// session.
+func (c *Client) finishClose(sessionID string, generation int) bool {
+	if sessionID == "" {
+		return false
+	}
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	return c.closeGen[sessionID] == generation
+}
+
+// supersedeClose invalidates a close that is still scanning the process table.
+func (c *Client) supersedeClose(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	if c.closeGen == nil {
+		c.closeGen = map[string]int{}
+	}
+	c.closeGen[sessionID]++
 }
 
 // markSessionClosed records a deliberate close for the turn watcher.

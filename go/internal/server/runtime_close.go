@@ -44,6 +44,9 @@ func (a *App) handleCloseRuntime(w http.ResponseWriter, r *http.Request, user st
 	// reservation meant a message sent within the next minute was accepted but
 	// never reached a terminal, then timed out two minutes later.
 	a.releaseAutoOpen(session.ID)
+	// A question the closing process was blocked on can never be answered now.
+	// Leaving it in the registry kept a blocking card on the phone forever.
+	a.expireSessionApprovals(r.Context(), session.ID, 0)
 	// The person ended this run deliberately; the phone must stop showing the
 	// conversation as working while the desktop tears the process down.
 	a.setSessionStatus(r.Context(), session.ID, "idle")

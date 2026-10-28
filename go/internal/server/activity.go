@@ -166,6 +166,12 @@ func (a *App) onRuntimeState(ctx context.Context, conn *connectorConn, msg proto
 	if msg.Status != "running" && msg.Status != "idle" {
 		return
 	}
+	if msg.Status == "idle" {
+		// Nothing is running, so any question this runtime was blocked on can
+		// no longer be answered (it was answered in the terminal, or the turn
+		// ended). Retract it instead of leaving a blocking card on the phone.
+		a.expireSessionApprovals(ctx, session.ID, 0)
+	}
 	if session.Status == msg.Status {
 		return
 	}

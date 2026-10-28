@@ -61,7 +61,16 @@ func newTurnRegistry() *turnRegistry {
 func (r *turnRegistry) begin(turnID, sessionID, connID, itemID string) *turnState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := &turnState{session: sessionID, connID: connID, itemID: itemID}
+	// A connector that died mid-turn never sends the end that would remove its
+	// state. Age old entries out instead of letting the registry grow forever.
+	cutoff := time.Now().Add(-12 * time.Hour).UnixMilli()
+	for id, state := range r.turns {
+		if state.createdAt > 0 && state.createdAt < cutoff {
+			delete(r.turns, id)
+		}
+	}
+	state := &turnState{session: sessionID, connID: connID, itemID: itemID,
+		createdAt: time.Now().UnixMilli()}
 	r.turns[turnID] = state
 	return state
 }

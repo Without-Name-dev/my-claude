@@ -61,6 +61,35 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 		WHERE excluded.updated_seq >= timeline_items.updated_seq`,
 		item.SessionID, item.ID, item.Type, item.Status, role, orderSeq,
 		item.UpdatedSeq, itemTime, string(item.Payload))
+	if err != nil {
+		return err
+	}
+	return syncTimelineSearch(ctx, tx, item)
+}
+
+// syncTimelineSearch keeps the FTS index in step with the message text.
+//
+// The table existed but nothing ever wrote to it, so global search returned no
+// results at all. The row is keyed by the timeline row's rowid so the search
+// join stays an index lookup; updating a streamed message replaces its row.
+func syncTimelineSearch(ctx context.Context, tx *sql.Tx, item TimelineItem) error {
+	var body struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(item.Payload, &body)
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM timeline_search_fts
+		WHERE rowid = (SELECT rowid FROM timeline_items WHERE session_id = ? AND id = ?)`,
+		item.SessionID, item.ID); err != nil {
+		return err
+	}
+	if body.Text == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO timeline_search_fts(rowid, session_id, item_id, content)
+		SELECT rowid, session_id, id, ? FROM timeline_items WHERE session_id = ? AND id = ?`,
+		body.Text, item.SessionID, item.ID)
 	return err
 }
 
@@ -68,17 +97,32 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 // for the session, while preserving the millisecond timestamp scale used by
 // imported transcript rows.
 func NextTimelineOrderSeq(ctx context.Context, tx *sql.Tx, sessionID string, now int64) (int64, error) {
-	var latest sql.NullInt64
-	err := tx.QueryRowContext(ctx, `
-		SELECT max(max(order_seq, coalesce(item_time, order_seq)))
-		FROM timeline_items WHERE session_id = ?`, sessionID).Scan(&latest)
-	if err != nil {
+	// Two plain maxima instead of max over an expression: each one uses its
+	// own index, while the expression form read every row of the session for
+	// every inserted item (inside the single write transaction).
+	var latestOrder sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT max(order_seq) FROM timeline_items WHERE session_id = ?`,
+		sessionID).Scan(&latestOrder); err != nil {
 		return 0, err
 	}
-	if !latest.Valid || now > latest.Int64 {
+	var latestTime sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT max(item_time) FROM timeline_items WHERE session_id = ?`,
+		sessionID).Scan(&latestTime); err != nil {
+		return 0, err
+	}
+	latest := int64(-1)
+	if latestOrder.Valid {
+		latest = latestOrder.Int64
+	}
+	if latestTime.Valid && latestTime.Int64 > latest {
+		latest = latestTime.Int64
+	}
+	if latest < 0 || now > latest {
 		return now, nil
 	}
-	return latest.Int64 + 1, nil
+	return latest + 1, nil
 }
 
 const timelineColumns = `session_id, id, type, status, coalesce(role, ''), order_seq,

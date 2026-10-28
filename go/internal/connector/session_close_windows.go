@@ -25,14 +25,20 @@ const closeProcessTimeout = 2 * time.Minute
 //
 // Only lines that pass safeRuntimeSessionID reach this function, so the id
 // cannot escape the quoted PowerShell string.
-func closeSessionProcess(externalSessionID string) (int, error) {
+func closeSessionProcess(externalSessionID string, startedBefore time.Time) (int, error) {
+	// A terminal opened after the person asked to close must survive: the next
+	// message reopens the conversation with the same --resume id, and a slow
+	// CIM scan used to kill that replacement.
+	cutoff := startedBefore.UTC().Format("2006-01-02T15:04:05Z")
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'SilentlyContinue'
 $id = '%s'
+$cutoff = [datetime]'%s'
 $pattern = '--(resume|session-id)\s+' + [regex]::Escape($id) + '(\s|$)'
 $killed = 0
 $targets = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -and $_.CommandLine -match $pattern
+    $_.CommandLine -and $_.CommandLine -match $pattern -and
+    (-not $_.CreationDate -or $_.CreationDate -le $cutoff)
 }
 foreach ($target in $targets) {
     $console = Get-CimInstance Win32_Process -Filter "ProcessId=$($target.ParentProcessId)"
@@ -45,7 +51,7 @@ foreach ($target in $targets) {
     $killed++
 }
 Write-Output $killed
-`, externalSessionID)
+`, externalSessionID, cutoff)
 
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	done := make(chan struct{})

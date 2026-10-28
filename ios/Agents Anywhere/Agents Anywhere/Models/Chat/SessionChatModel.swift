@@ -16,6 +16,9 @@ final class SessionChatModel {
         set { session.isPerformingAction = newValue }
     }
     private(set) var isLoadingSettings = false
+    /// One send at a time: the command-catalog lookup awaits, and a second tap
+    /// during that window dispatched the same draft again.
+    private var dispatchingSend = false
     var error: String?
     var settingsError: String?
     private(set) var isOpeningPrepared = false
@@ -344,6 +347,11 @@ final class SessionChatModel {
     }
 
     func send(_ text: String) async {
+        // The catalog read below can await, leaving a window in which a second
+        // tap dispatched the same draft again.
+        guard !dispatchingSend else { return }
+        dispatchingSend = true
+        defer { dispatchingSend = false }
         let selectedAttachments = session.composer.attachments
         guard session.canSend, !session.composer.isComposing,
               selectedAttachments.isEmpty || canAttach else { return }
@@ -359,6 +367,13 @@ final class SessionChatModel {
         if commandsError != nil, let intent = SlashIntent(text),
            intent.isCommandLike, intent.suffix.isEmpty, !intent.multiline {
             fail(String(localized: "暂时读不到指令列表，请稍后重试。"))
+            return
+        }
+        // The same holds while the catalog has not arrived at all: without it a
+        // command cannot be told apart from prose.
+        if commands.isEmpty, canUseCommands, let intent = SlashIntent(text),
+           intent.isCommandLike, intent.suffix.isEmpty, !intent.multiline {
+            fail(String(localized: "指令列表还没加载完成，请稍后重试。"))
             return
         }
         error = nil

@@ -109,11 +109,23 @@ func (a *App) persistSubmit(
 	return seq, inserted, existing, err
 }
 
+// submitPendingMaxAge is how long a durable submit may stay pending before it
+// is reported as failed. The connector acknowledges a submit as soon as it has
+// written the plugin queue file, so a row this old means no connector will ever
+// accept it (unwritable bridge, replaced connector, disabled plugin bridge).
+// Without this the phone bubble stayed "pending" forever and blocked every
+// later message in the session.
+const submitPendingMaxAge = 10 * time.Minute
+
 // replayPendingSubmits sends durable rows to a connector that advertised
 // submit acknowledgements. A recent attempt is retried on reconnect or after
 // the bounded retry interval while the connector remains online.
 func (a *App) replayPendingSubmits(ctx context.Context, connectorID string, force bool) {
-	if connectorID == "" || !a.connectors.SupportsSubmitAck(connectorID) {
+	if connectorID == "" {
+		return
+	}
+	a.sweepStaleSubmits(ctx, connectorID)
+	if !a.connectors.SupportsSubmitAck(connectorID) {
 		return
 	}
 	a.submitReplayMu.Lock()
@@ -146,6 +158,59 @@ func (a *App) replayPendingSubmits(ctx context.Context, connectorID string, forc
 			return
 		}
 	}
+}
+
+// sweepStaleSubmits fails durable rows no connector will ever acknowledge.
+func (a *App) sweepStaleSubmits(ctx context.Context, connectorID string) {
+	cutoff := time.Now().Add(-submitPendingMaxAge).UnixMilli()
+	items, err := a.db.StalePendingSubmits(ctx, connectorID, cutoff, 64)
+	if err != nil {
+		a.log.Debug("could not read stale submits", "connector", connectorID, "error", err)
+		return
+	}
+	for _, item := range items {
+		a.failStaleSubmit(ctx, item)
+	}
+}
+
+// failStaleSubmit marks one pending row failed and publishes the user item, so
+// the phone stops showing an undeliverable message as pending and later
+// messages in the session can proceed.
+func (a *App) failStaleSubmit(ctx context.Context, item store.SubmitOutboxItem) {
+	var seq int64
+	var itemID string
+	err := a.db.WithSession(item.SessionID, func() error {
+		return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			_, applied, err := store.ResolveSubmitAck(ctx, tx, item.ConnectorID, item.SessionID,
+				item.ExternalSessionID, item.RequestID, false,
+				"the desktop never accepted this message", store.NowMS())
+			if err != nil || !applied {
+				return err
+			}
+			seq, err = store.AllocateSeq(ctx, tx, item.SessionID, store.NowMS())
+			if err != nil {
+				return err
+			}
+			itemID, err = a.updateSubmittedMessageStatus(ctx, tx, item.SessionID, item.RequestID, "failed", seq)
+			return err
+		})
+	})
+	if err != nil {
+		a.log.Warn("could not fail a stale submit", "session", item.SessionID, "request", item.RequestID, "error", err)
+		return
+	}
+	if itemID != "" {
+		a.publishItem(ctx, item.SessionID, itemID, seq, false)
+	}
+	nextStatus := "idle"
+	if a.hasPendingUserMessages(ctx, item.SessionID) {
+		nextStatus = "waiting"
+	} else if a.turns.activeForSession(item.SessionID) {
+		nextStatus = "running"
+	}
+	a.setSessionStatus(ctx, item.SessionID, nextStatus)
+	a.log.Warn("failed a submit no connector accepted",
+		"session", item.SessionID, "request", item.RequestID, "age_ms", store.NowMS()-item.CreatedAt)
 }
 
 // scheduleSubmitReplay wakes one bounded worker so the connector can receive
