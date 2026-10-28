@@ -226,7 +226,12 @@ final class V2StreamCoordinator {
         // Sign-out can cancel the connection while this poll is waiting. Do not
         // turn that teardown into a process-wide fallback.
         if isInvalidated { throw V2StreamError.unavailable }
-        engageFallback()
+        // A slow first connect is not evidence that the endpoint is missing.
+        // Settling the whole process on the legacy sockets here meant one slow
+        // network moment (cold radio, a captive portal) disabled the unified
+        // stream until the app restarted. Only a rejected handshake engages
+        // the fallback (the connection loop decides that); this consumer gets
+        // a retryable error instead.
         throw V2StreamError.readyTimeout
     }
 
@@ -358,7 +363,12 @@ final class V2StreamCoordinator {
         if let error = error as? V2StreamError {
             return error == .disconnected || error == .readyTimeout
         }
-        return V2ClientFailure(error).permitsAutomaticReconnect
+        let failure = V2ClientFailure(error)
+        // A cancellation is not evidence that the endpoint is broken: the app
+        // backgrounding or a system-initiated socket teardown used to settle
+        // the process on the legacy sockets for the rest of the session.
+        if failure.kind == .cancelled { return true }
+        return failure.permitsAutomaticReconnect
     }
 
     private func reconnectDelay(attempt: Int) -> Duration {

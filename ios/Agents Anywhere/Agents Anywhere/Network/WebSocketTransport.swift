@@ -74,8 +74,12 @@ nonisolated final class URLSessionWebSocketConnection: WebSocketConnection, @unc
                     try? await Task.sleep(for: .seconds(5))
                     if Task.isCancelled { return }
                     if lastFrame.silence > Self.silenceLimit {
-                        // Cancelling makes the pending receive throw, which
-                        // finishes the stream with a real error for the caller.
+                        // Finish with a timeout before cancelling: letting the
+                        // pending receive surface URLError.cancelled made a
+                        // single dead-silent socket look like a client
+                        // cancellation, which is not retryable and downgraded
+                        // the whole app to the legacy sockets for good.
+                        continuation.finish(throwing: URLError(.timedOut))
                         task.cancel(with: .goingAway, reason: nil)
                         return
                     }

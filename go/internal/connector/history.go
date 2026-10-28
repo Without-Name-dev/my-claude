@@ -103,7 +103,12 @@ func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
 	return builder.items, nil
 }
 
-// ReadHistoryPages converts a transcript in one pass and emits bounded pages.
+// ReadHistoryPages converts a transcript and emits bounded pages.
+//
+// Only the newest maxHistoryItems entries are kept and sent. Streaming every
+// page while reading uploaded the whole conversation — thousands of items for
+// a long transcript — on every full sync, which made opening a session crawl.
+// Older items are already in the server's timeline; the tail is what changed.
 // The final page is always marked complete, including an empty transcript.
 func ReadHistoryPages(
 	path string, pageSize int, write func([]protocol.HistoryItem, bool) error,
@@ -115,10 +120,10 @@ func ReadHistoryPages(
 		pageSize = historyPageItems
 	}
 	builder := &historyBuilder{
-		toolIndex:        map[string]int{},
-		pendingToolItems: map[string]protocol.HistoryItem{},
-		pageSize:         pageSize,
-		writePage:        write,
+		toolIndex: map[string]int{},
+		// No writePage: the builder keeps only the newest limit items, so a
+		// huge transcript cannot be buffered or uploaded whole.
+		limit: maxHistoryItems,
 	}
 	if err := readHistoryFile(path, builder); err != nil {
 		return err
@@ -127,15 +132,24 @@ func ReadHistoryPages(
 	if builder.err != nil {
 		return builder.err
 	}
-	builder.flushFullPages()
-	if builder.err != nil {
-		return builder.err
-	}
 	if len(builder.items) == 0 {
 		return write([]protocol.HistoryItem{}, true)
 	}
-	return builder.flushPage(len(builder.items), true)
+	items := builder.items
+	for len(items) > pageSize {
+		if err := write(items[:pageSize], false); err != nil {
+			return err
+		}
+		items = items[pageSize:]
+	}
+	return write(items, true)
 }
+
+// maxHistoryTailBytes bounds how much of a transcript is parsed for a tail
+// import. One of this user's transcripts is over a hundred megabytes; parsing
+// all of it for the newest few hundred items took seconds on every request.
+// Records are independent lines, so starting at a line boundary is safe.
+const maxHistoryTailBytes = 16 << 20
 
 func readHistoryFile(path string, builder *historyBuilder) error {
 	file, err := os.Open(path)
@@ -145,6 +159,14 @@ func readHistoryFile(path string, builder *historyBuilder) error {
 	defer file.Close()
 
 	reader := bufio.NewReaderSize(file, 1<<16)
+	if info, err := file.Stat(); err == nil && info.Size() > maxHistoryTailBytes {
+		if _, err := file.Seek(info.Size()-maxHistoryTailBytes, io.SeekStart); err == nil {
+			// Drop the partial record at the window edge.
+			if _, err := reader.ReadBytes('\n'); err != nil && err != io.EOF {
+				return err
+			}
+		}
+	}
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
