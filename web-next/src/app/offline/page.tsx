@@ -1,4 +1,5 @@
 import { Metadata } from "next";
+import { OfflineRetryButton } from "./retry-button";
 
 export const metadata: Metadata = {
   title: "Offline",
@@ -27,12 +28,7 @@ export default function OfflinePage() {
         <p className="mb-6 text-muted-foreground">
           Please check your network connection and try again.
         </p>
-        <button
-          onClick={() => window.location.reload()}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          Retry
-        </button>
+        <OfflineRetryButton />
       </div>
     </div>
   );
