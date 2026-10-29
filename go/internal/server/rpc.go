@@ -337,6 +337,26 @@ func (a *App) modelCatalogForProviders(ctx context.Context, connectorID, session
 			lastRequestStatus = last.Status
 		}
 	}
+	if len(providers) == 0 {
+		// An empty picker with no explanation reads as "broken". Publish one
+		// disabled guidance row so every client shows where providers come
+		// from, while still offering nothing selectable.
+		return map[string]any{
+			"runtime":  "claude",
+			"revision": 1,
+			"models": []any{map[string]any{
+				"id":             "guidance:no-providers",
+				"displayName":    "还没有模型供应商",
+				"selectionId":    "guidance:no-providers",
+				"description":    "在 设置 → 模型供应商 里添加一个供应商，这里就会出现可选的模型",
+				"default":        false,
+				"enabled":        false,
+				"disabledReason": "还没有添加模型供应商",
+				"reasoningItems": []any{},
+				"metadata":       map[string]any{"guidance": true},
+			}},
+		}
+	}
 	models := make([]map[string]any, 0, len(providers))
 	var revision int64 = 1
 	if def, err := a.db.ConnectorModelDefaultFor(ctx, connectorID); err == nil {
