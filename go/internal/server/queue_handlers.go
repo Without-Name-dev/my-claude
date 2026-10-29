@@ -51,12 +51,6 @@ func (a *App) handleEnqueueMessage(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
-	// Push to Redis if available (best effort, failure is non-fatal)
-	if a.redisQueue != nil && a.redisQueue.IsAvailable() {
-		if err := a.redisQueue.Enqueue(ctx, msg); err != nil {
-			a.log.Warn("failed to push to Redis, will use SQLite fallback", "error", err)
-		}
-	}
 
 	// Publish queue event
 	frame, err := newEnvelope(sessionID, 0, "queue.message_added", map[string]any{
@@ -143,12 +137,6 @@ func (a *App) handleUpdateQueueMessage(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
-	// Publish to Redis if available
-	if a.redisQueue != nil && a.redisQueue.IsAvailable() {
-		if err := a.redisQueue.PublishStatusChange(ctx, sessionID, msgID, req.Status, req.ErrorMessage); err != nil {
-			a.log.Warn("failed to publish to Redis", "error", err)
-		}
-	}
 
 	// Publish queue event
 	eventType := "queue.message_status_changed"

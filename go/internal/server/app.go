@@ -35,7 +35,6 @@ type App struct {
 	history    *historyLimiter
 	rpc        *rpcClient
 	activity   *activityRegistry
-	redisQueue *RedisQueue
 
 	// openMu guards lastAutoOpen: when the send path last asked each session's
 	// connector to open a terminal, so a retried message does not ask again
@@ -51,9 +50,6 @@ type App struct {
 
 // New wires the application.
 func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
-	// Initialize Redis queue if configured
-	redisQueue := NewRedisQueue(cfg.RedisURL, log)
-
 	app := &App{
 		cfg:        cfg,
 		db:         db,
@@ -67,7 +63,6 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		history:    newHistoryLimiter(),
 		rpc:        newRPCClient(),
 		activity:   newActivityRegistry(),
-		redisQueue: redisQueue,
 
 		lastAutoOpen:  map[string]time.Time{},
 		commandAcks:   map[string]pendingCommandAck{},

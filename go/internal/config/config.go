@@ -28,8 +28,6 @@ type Server struct {
 	// WebDir, when set, is a directory of pre-built client files served from
 	// the same origin as the API. Empty means API only.
 	WebDir string
-	// RedisURL is optional. When set, enables Redis-backed queue for better real-time performance.
-	RedisURL string
 }
 
 // LoadServer builds the server configuration from the environment.
@@ -46,7 +44,6 @@ func LoadServer() Server {
 		WSOriginPattern: splitList(env("AA_WS_ORIGINS", "*")),
 		MaxUploadBytes:  int64Env("AA_MAX_UPLOAD_BYTES", 256<<20),
 		WebDir:          env("AA_WEB_DIR", ""),
-		RedisURL:        env("REDIS_URL", ""),
 	}
 }
 
