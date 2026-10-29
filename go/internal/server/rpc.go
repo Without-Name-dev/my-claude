@@ -458,7 +458,7 @@ func permissionCatalogItems() []map[string]any {
 			"description":    m.Description,
 			"default":        i == 0,
 			"enabled":        false,
-			"disabledReason": "remote permission switching is not verified for this runtime yet; change it in the terminal",
+			"disabledReason": "暂不支持在手机端远程切换，请在终端里修改（Shift+Tab）",
 			"metadata": map[string]any{
 				"i18n": map[string]any{
 					"labelKey":       "dashboard.new.permissionModes.claude." + m.ID + ".label",
