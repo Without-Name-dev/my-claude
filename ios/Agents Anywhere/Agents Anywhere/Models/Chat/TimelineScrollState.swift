@@ -112,6 +112,14 @@ nonisolated struct TimelineScrollState: Equatable {
            abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5 {
             return true
         }
+        // An animated return already in flight must not restart for inset-only
+        // changes: the opening sequence restarts the top inset over several
+        // frames, and each frame re-armed the spring — the page marched to the
+        // bottom in a dozen visible steps instead of one move.
+        if animated, let command = activeCommand, command.request.animated,
+           abs(command.request.contentHeight - viewport.contentHeight.rounded()) <= 0.5 {
+            return true
+        }
         pendingAnimated = animated
         armBottomReturn()
         return true

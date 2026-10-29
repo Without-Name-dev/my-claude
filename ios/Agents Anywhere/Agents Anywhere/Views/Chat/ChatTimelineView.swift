@@ -467,13 +467,33 @@ struct ChatTimelineView: View {
         latestLoadRequest = scrolling.navigationGeneration
     }
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand, using proxy: ScrollViewProxy) {
+        // A non-animated pin (keyboard/composer inset tracking) writes the
+        // offset directly. proxy.scrollTo("tail") made SwiftUI resolve the
+        // anchor against a viewport whose insets double-count the keyboard
+        // mid-transition; the alternating targets fought another writer in a
+        // ±367 pt loop on device. Clearing the live distance is inset-agnostic.
+        if !command.request.animated {
+            let target = scrolling.viewport
+            // Clearing the live distance lands on the system's own bottom:
+            // off + (h − visibleBottom) equals contentHeight − container +
+            // bottomInset in every inset convention, and the scroll view
+            // clamps it to the true maximum offset regardless.
+            let y = target.offsetY + target.distanceFromBottom
+            guard y.isFinite, y >= 0 else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { position.scrollTo(y: y) }
+            _ = scrolling.complete(command)
+            TimelineTrace.shared.record("PIN", "y=\(Int(y)) h=\(Int(target.contentHeight)) vh=\(Int(target.visibleHeight))")
+            // The point stays until a gesture or navigation releases it; the
+            // next keyboard frame overwrites it with a fresh target.
+            return
+        }
         // Use smooth animation even during streaming to avoid jarring jumps
         // Reduce animation duration during streaming for more responsive feel
         let streaming = model.isRunning
-        let animation: Animation? = command.request.animated
-            ? (reduceMotion ? nil :
-                (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12)))
-            : nil
+        let animation: Animation? = reduceMotion ? nil :
+            (streaming ? .easeOut(duration: 0.15) : .interactiveSpring(response: 0.28, dampingFraction: 1, blendDuration: 0.12))
 
         TimelineTrace.shared.record("RETURN", "h=\(Int(command.request.contentHeight)) g=\(command.request.generation)")
         withAnimation(animation, completionCriteria: .removed) {
