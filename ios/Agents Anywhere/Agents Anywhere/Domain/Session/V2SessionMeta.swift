@@ -28,6 +28,9 @@ nonisolated struct V2SessionMeta: Codable, Identifiable, Hashable {
     let connectorStatus: V2ConnectorPresence
     let pinned: Bool
     let pinnedAt: String?
+    /// Pinned timeline items. Optional so archives written before this field
+    /// existed still decode — a required key silently wiped the local cache.
+    var pinnedMessageIds: [String]? = nil
     let archived: Bool
     let archivedAt: String?
     let userArchived: Bool

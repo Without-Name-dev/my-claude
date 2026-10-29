@@ -163,7 +163,7 @@ final class SessionChatModel {
         switch block {
         case .busy: return String(localized: "Agent 忙碌中，暂时不能执行")
         case .readOnly: return String(localized: "需要接管会话才能执行此操作。点击上方接管按钮。")
-        case .offline: return String(localized: "设备离线，消息会在恢复连接后发送")
+        case .offline: return String(localized: "设备离线，请连接后再执行指令。")
         case .unavailable: return String(localized: "此会话暂时无法使用指令")
         case .disabled:
             switch command.disabledReason {
@@ -481,6 +481,10 @@ final class SessionChatModel {
             return try await inflight.download(using: attachments, sessionId: session.id, fileId: fileID)
         }
         return try await attachments.download(sessionId: session.id, fileId: fileID)
+    }
+
+    func cancelDownload(_ fileID: String) {
+        inflight?.cancel(sessionId: session.id, fileId: fileID)
     }
 
     func thumbnail(for file: V2AttachmentContent) async throws -> Data? {

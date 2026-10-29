@@ -45,11 +45,35 @@ private struct ChatMessageImage: View {
     @State private var failed = false
     @State private var retry = 0
 
+    init(file: ChatMessageAttachment, onOpen: @escaping (V2AttachmentContent) -> Void,
+         loadThumbnail: @escaping (V2AttachmentContent) async throws -> Data?) {
+        self.file = file
+        self.onOpen = onOpen
+        self.loadThumbnail = loadThumbnail
+        _image = State(initialValue: Self.cachedPreview(for: file))
+    }
+
     /// Bounds for the rendered image; the ratio comes from the decoded image so
     /// screenshots keep their original shape instead of being cropped into a
     /// fixed 4:3 tile.
     private static let maximumWidth: CGFloat = 240
     private static let maximumHeight: CGFloat = 320
+    private static let decodedPreviews: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
+
+    private static func cachedPreview(for file: ChatMessageAttachment) -> UIImage? {
+        guard let data = file.previewData else { return nil }
+        let key = file.id as NSString
+        if let image = decodedPreviews.object(forKey: key) { return image }
+        guard let image = UIImage(data: data) else { return nil }
+        let pixels = image.size.width * image.scale * image.size.height * image.scale
+        decodedPreviews.setObject(image, forKey: key, cost: Int(pixels * 4))
+        return image
+    }
 
     private var displaySize: CGSize {
         guard let image, image.size.width > 0, image.size.height > 0 else {
@@ -63,7 +87,7 @@ private struct ChatMessageImage: View {
             width = height * ratio
         }
         // Never upscale a small image past its native size.
-        let nativeWidth = image.size.width / max(image.scale, 1)
+        let nativeWidth = image.size.width
         if width > nativeWidth {
             width = nativeWidth
             height = width / ratio
@@ -91,10 +115,15 @@ private struct ChatMessageImage: View {
             }
             .frame(width: displaySize.width, height: displaySize.height)
             .clipShape(.rect(cornerRadius: 16))
+            .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.primary.opacity(0.08), lineWidth: 1) }
             .contentShape(.rect(cornerRadius: 16))
         }
         .buttonStyle(.plain).accessibilityLabel(file.content.name ?? String(localized: "图片附件"))
-        .onAppear { if image == nil, let data = file.previewData { image = UIImage(data: data) } }
+        .transaction { $0.animation = nil }
+        .onAppear { if image == nil { image = Self.cachedPreview(for: file) } }
+        .onChange(of: file.previewData) { _, data in
+            if image == nil, data != nil, let preview = Self.cachedPreview(for: file) { image = preview; failed = false }
+        }
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: Request(visible: visible, key: file.content.cacheKey, retry: retry)) {
             guard visible, image == nil else { return }

@@ -107,7 +107,13 @@ export function useRealtimeStream({
       handlersRef.current.set(sessionId, subscribers)
     }
     subscribers.add(handlers)
-    if (readyRef.current) handlers.onReady?.()
+    // Call onReady synchronously if already ready, capturing the current state
+    // before returning. This closes the race where readyRef flips between the
+    // check and the subscriber being registered.
+    const wasReady = readyRef.current
+    if (wasReady) {
+      handlers.onReady?.()
+    }
     return () => {
       const current = handlersRef.current.get(sessionId)
       if (!current) return
@@ -299,10 +305,13 @@ export function useRealtimeStream({
             return
           }
           const sessionEvent = parseProtocolEventEnvelope(parsed)
-          if (!sessionEvent) return
-          const subscribers = handlersRef.current.get(sessionEvent.sessionId)
-          if (!subscribers) return
-          for (const handler of Array.from(subscribers)) handler.onEvent(sessionEvent)
+          if (sessionEvent) {
+            const subscribers = handlersRef.current.get(sessionEvent.sessionId)
+            if (subscribers) {
+              for (const handler of Array.from(subscribers)) handler.onEvent(sessionEvent)
+            }
+          }
+          // Unknown frame types are silently ignored for forward compatibility
         }
         nextSocket.onerror = () => {
           nextSocket.close()

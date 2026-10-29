@@ -93,9 +93,11 @@ nonisolated struct V2RealtimeAPI: V2RealtimeAPIProtocol {
                         clock.touch()
                         // Keepalive detection and value decoding share one parse.
                         guard let value = try decoder.decode(V2SocketFrame<Value>.self, from: data).value else { continue }
-                        // Drop a frame on buffer overflow; a reconnect costs
-                        // more than the recovery this frame would trigger.
-                        _ = continuation.yield(value)
+                        if case .dropped = continuation.yield(value) {
+                            continuation.finish(throwing: HTTPError.streamOverflow)
+                            connection.close()
+                            return
+                        }
                     }
                     continuation.finish()
                 } catch let error as DecodingError {

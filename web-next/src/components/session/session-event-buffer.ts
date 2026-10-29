@@ -29,6 +29,8 @@ export function coalesceSessionEvents(events: ProtocolEventEnvelope[]): Protocol
   return result
 }
 
+const MAX_PENDING_EVENTS = 2048
+
 export function createSessionEventBuffer(commit: (events: ProtocolEventEnvelope[]) => void) {
   let pending: ProtocolEventEnvelope[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -48,6 +50,11 @@ export function createSessionEventBuffer(commit: (events: ProtocolEventEnvelope[
     push(event: ProtocolEventEnvelope) {
       if (disposed) return
       pending.push(event)
+      // Flush immediately if buffer is full to prevent unbounded growth
+      if (pending.length >= MAX_PENDING_EVENTS) {
+        flush()
+        return
+      }
       // A fixed window, not debounce: continuous output cannot postpone a flush.
       timer ??= setTimeout(flush, SESSION_EVENT_FLUSH_MS)
     },

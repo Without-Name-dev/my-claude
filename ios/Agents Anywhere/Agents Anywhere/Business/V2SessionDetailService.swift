@@ -117,8 +117,7 @@ struct V2SessionDetailService {
     ) async throws -> AsyncThrowingStream<V2SessionEvent, Error> {
         if let streamCoordinator, !streamCoordinator.isUsingFallback {
             do {
-                let events = try await streamCoordinator.sessionUpdates(id: sessionId)
-                return Self.withSubscriptionMarker(events, sessionId: sessionId)
+                return try await streamCoordinator.sessionUpdates(id: sessionId)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -128,35 +127,6 @@ struct V2SessionDetailService {
         }
         let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .session(sessionId))
         return try realtimeAPI.sessionEvents(sessionId: sessionId, ticket: ticket.ticket)
-    }
-
-    /// Broker envelopes carry no `session.subscribed` frame, but the repository
-    /// uses that signal to start recovery and mark the connection live. Re-emit
-    /// it ahead of the shared stream without inventing any server payload.
-    private static func withSubscriptionMarker(
-        _ events: AsyncThrowingStream<V2SessionEvent, Error>,
-        sessionId: V2SessionID
-    ) -> AsyncThrowingStream<V2SessionEvent, Error> {
-        let (stream, continuation) = AsyncThrowingStream<V2SessionEvent, Error>.makeStream(
-            bufferingPolicy: .bufferingNewest(2048)
-        )
-        let task = Task {
-            // Always emitted: the marker is what tells the page a subscription
-            // exists and starts its recovery. Suppressing it while the shared
-            // socket reconnected left the page stuck at "connecting" with a
-            // disabled composer, which is worse than reporting a little early.
-            continuation.yield(V2SessionEvent.subscribedMarker(sessionId: sessionId))
-            do {
-                for try await event in events {
-                    continuation.yield(event)
-                }
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
-            }
-        }
-        continuation.onTermination = { _ in task.cancel() }
-        return stream
     }
 
     func recover(

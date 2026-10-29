@@ -135,6 +135,7 @@ function publicSessionView(share: PublicSessionShareResponse): SessionView {
     takeover: false,
     pinned: false,
     pinnedAt: null,
+    pinnedMessageIds: [],
     archived: false,
     archivedAt: null,
     unread: false,

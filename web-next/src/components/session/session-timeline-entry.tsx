@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Braces, ChevronDown, CircleAlert, Clock, Copy, FilePenLine, Sparkles } from "lucide-react"
+import { Braces, ChevronDown, CircleAlert, Clock, Copy, FilePenLine, RefreshCw, Sparkles } from "lucide-react"
 import dynamic from "next/dynamic"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -27,6 +27,8 @@ import { MessageAttachments } from "@/components/session/message-attachments"
 import { CollapsibleUserMessage } from "@/components/session/collapsible-user-message"
 import { splitGraphemes, useTypewriter } from "@/hooks/use-typewriter"
 import { useThrottledText } from "@/hooks/use-throttled-text"
+import { MessageEditDialog } from "@/components/session/message-edit-dialog"
+import { retryMessage } from "@/features/dashboard/api"
 
 const MarkdownText = dynamic(() => import("../markdown-text").then((mod) => ({ default: mod.MarkdownText })), { ssr: false })
 const INLINE_REASONING_SUMMARY_MAX_CHARS = 80
@@ -58,10 +60,56 @@ export function TimelineEntry({
   onToolOpenChange?: (open: boolean) => void
   onRespondInteraction: (noticeId: string, actionId: string, input?: Record<string, unknown>) => void
 }) {
+  const [editDialogOpen, setEditDialogOpen] = React.useState(false)
+  const [isRetrying, setIsRetrying] = React.useState(false)
+  const tSession = useTranslations("dashboard.session")
+
+  const handleEdit = () => {
+    setEditDialogOpen(true)
+  }
+
+  const handleRetry = async () => {
+    if (isRetrying || readOnly) return
+    setIsRetrying(true)
+    try {
+      await retryMessage(token, session.id, item.id)
+      toast.success(tSession("retryMessageSuccess"))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : tSession("retryMessageFailed"))
+    } finally {
+      setIsRetrying(false)
+    }
+  }
+
   let entry: React.ReactNode
   if (item.type === "message") {
-    entry = <MessageCard token={token} session={session} item={item} readOnly={readOnly} attachmentUrl={attachmentUrl} />
-    return <TimelineEntryContextMenu item={item}>{entry}</TimelineEntryContextMenu>
+    const text = stripInjectedAttachmentMentions(messageText(item))
+    entry = (
+      <>
+        <MessageCard token={token} session={session} item={item} readOnly={readOnly} attachmentUrl={attachmentUrl} />
+        {!readOnly && item.role === "user" && (
+          <MessageEditDialog
+            token={token}
+            sessionId={session.id}
+            itemId={item.id}
+            initialContent={text}
+            open={editDialogOpen}
+            onOpenChange={setEditDialogOpen}
+          />
+        )}
+      </>
+    )
+    return (
+      <TimelineEntryContextMenu
+        item={item}
+        token={readOnly ? undefined : token}
+        sessionId={readOnly ? undefined : session.id}
+        onEdit={!readOnly && item.role === "user" ? handleEdit : undefined}
+        onRetry={!readOnly && item.role === "user" ? handleRetry : undefined}
+      >
+        {entry}
+      </TimelineEntryContextMenu>
+    )
   }
   if (item.type === "tool" || isFileChangeArtifact(item)) {
     entry = (
@@ -97,10 +145,28 @@ function isNestedAgentCall(item: TimelineItem): boolean {
   return textOf(item.content.kind) === "agent_call" && Boolean(textOf(item.content.parentItemId))
 }
 
-function TimelineEntryContextMenu({ item, children }: { item: TimelineItem; children: React.ReactNode }) {
+function TimelineEntryContextMenu({
+  item,
+  children,
+  token,
+  sessionId,
+  onEdit,
+  onRetry,
+}: {
+  item: TimelineItem
+  children: React.ReactNode
+  token?: string
+  sessionId?: string
+  onEdit?: () => void
+  onRetry?: () => void
+}) {
   const tSession = useTranslations("dashboard.session")
   const tCommon = useTranslations("common")
   const text = timelineItemCopyText(item)
+  const isUserMessage = item.type === "message" && item.role === "user"
+  const canEdit = isUserMessage && token && sessionId && onEdit
+  const canRetry = isUserMessage && token && sessionId && onRetry
+
   const copyTimelineValue = async (value: string) => {
     if (!value) return
     try {
@@ -109,12 +175,31 @@ function TimelineEntryContextMenu({ item, children }: { item: TimelineItem; chil
       toast.error(tCommon("copyFailed"))
     }
   }
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div className="min-w-0 max-w-full select-text">{children}</div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-48">
+        {canEdit && (
+          <>
+            <ContextMenuItem onSelect={onEdit}>
+              <FilePenLine data-icon="inline-start" />
+              {tSession("editMessage")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
+        {canRetry && (
+          <>
+            <ContextMenuItem onSelect={onRetry}>
+              <RefreshCw data-icon="inline-start" />
+              {tSession("retryMessage")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem disabled={!text} onSelect={() => copyTimelineValue(text)}>
           <Copy data-icon="inline-start" />
           {tSession("copyItemText")}

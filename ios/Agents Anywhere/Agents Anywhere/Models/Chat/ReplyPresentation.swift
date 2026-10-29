@@ -4,7 +4,7 @@ nonisolated enum ReplyPresentation {
     /// UserDefaults key: true draws new glyphs with a plain opacity fade instead
     /// of the blur-and-rise reveal.
     static let plainFadeKey = "aa.native.chat.reveal.plain-fade"
-    static let revealSeconds: TimeInterval = 0.4
+    static let revealSeconds: TimeInterval = 0.2
     /// Streamed text is revealed in small groups instead of all at once. A
     /// network frame carries a whole sentence or paragraph; fading one batch
     /// as a unit looked like blocks popping in every few hundred milliseconds.
@@ -13,11 +13,11 @@ nonisolated enum ReplyPresentation {
     /// burst (70–140 characters every ~0.5 s) is absorbed as queue lead, so
     /// the visible output is a continuous stream rather than one fade per
     /// frame. The lead is bounded: past `hardRevealLead` the spacing
-    /// compresses, so the reveal trails the network by at most a few seconds
+    /// compresses, so the reveal trails the network by less than a second
     /// no matter how long the reply runs.
-    static let revealRate: Double = 75
+    static let revealRate: Double = 120
     static let revealGroupSize = 2
-    static let hardRevealLead: TimeInterval = 3.0
+    static let hardRevealLead: TimeInterval = 0.65
     /// A block's drawing clock must outlive the last scheduled group.
     static var revealClock: TimeInterval { hardRevealLead + revealSeconds + drawSlack }
     /// A published batch starts drawing after its Markdown parse and the next

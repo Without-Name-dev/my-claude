@@ -19,6 +19,10 @@ Semantic error and availability colors remain separate from the primary color.
 - Return always enters a newline or participates in IME candidate selection.
   The send button and Command-Return share the same send path. Marked text blocks
   sending; the client does not force the Chinese input method to commit a guess.
+  New-session target readiness is evaluated separately, so a tap during marked
+  text explains that the candidate must be confirmed without dismissing the keyboard.
+  Leaving the composer clears its pending foreground refocus so a previous
+  chat cannot reopen the keyboard after the person has navigated elsewhere.
 - The editor grows to `min(160, max(72, availableHeight * 0.30))` points, then
   scrolls internally. Controls preserve at least a 44-point touch target.
 - A tap anywhere in the transcript dismisses the keyboard. The tap is
@@ -32,6 +36,19 @@ Semantic error and availability colors remain separate from the primary color.
 - Photo/file imports allow at most five attachments of 25 MiB each. Existing
   sessions upload attachments through the session resource; creation uses the
   backend's inline first-message attachment contract. Downloads are explicit.
+  Image previews support pinch, double-tap and panning. Selecting a different
+  attachment or file invalidates an older preview request, including when the
+  same attachment is selected again before that request finishes.
+  When an import only partially succeeds, the composer reports skipped or
+  unreadable files and keeps the attachments that were added. A draft that
+  cannot be sent shows a reason instead of leaving a disabled button unexplained.
+  Local image previews are available while uploading; the pending bubble shows
+  which attachment is being uploaded. Cached thumbnails appear on the first
+  frame and retain their identity through the optimistic-to-server handoff.
+  Recently selected or opened originals are reused from a bounded in-memory
+  cache; this cache is not written to the archive or saved to the photo library.
+  Decoding downloaded attachment bytes runs off the main actor, and the loading
+  indicator lets the person cancel a slow preview.
 - Textual is pinned to 0.5.0 and renders Markdown headings, lists, code, tables,
   quotes, links, images and math. Code copying and native selection remain
   available: a message body enables selection across its text, while
@@ -46,11 +63,10 @@ Semantic error and availability colors remain separate from the primary color.
   The app opts into iPhone ProMotion refresh rates; the system still chooses the
   actual cadence. This is not a measured 120 FPS guarantee.
 - `SessionTimelinePresentation` stages received projections separately from
-  observable rows. Streamed text waits in that buffer while the previous batch
-  reveals; when the reveal ends (240 ms plus one frame) everything received
-  since goes on screen as the next batch. Text after a pause shows at once, at
-  most one batch animates, and layout lands between animations. Static history
-  does not keep a clock awake. New glyphs use a 240 ms opacity, blur and
+  observable rows, coalescing transport bursts for approximately 80 ms. New
+  glyphs reveal in order, with their scheduled start bounded to 650 ms behind
+  the latest update and a 200 ms fade. Static history does not keep a clock
+  awake. New glyphs use opacity, blur and
   vertical reveal; the Settings toggle “Reveal animation” turns that into a
   plain opacity fade with no blur layer. Each batch's glyphs draw as one layer with one blur. A block's
   drawing clock runs at up to 60 fps and only until its newest glyphs finish;
@@ -67,6 +83,12 @@ Semantic error and availability colors remain separate from the primary color.
   Streamed Markdown re-parses only the text after the last safe boundary (a
   blank line outside fences that cannot continue a list); earlier blocks keep
   their parsed content and identity across batches.
+  Multi-item history and snapshot merges resolve revisions by ID and sort once,
+  avoiding repeated array shifts and index rebuilds during large recoveries.
+  A full realtime event buffer ends the affected stream and triggers cursor
+  recovery instead of silently losing the last event. A failed gap recovery
+  does not advance the cursor past unseen messages. A recovered batch of rows
+  is inserted without playing an entrance animation on each item.
 - Pending user-message removal and authoritative echo insertion happen in the
   same presentation tick. `MarkdownBlockLayout` measures and places each stable
   block with the parent's proposed column width. Its layout-local height cache
@@ -122,16 +144,23 @@ Semantic error and availability colors remain separate from the primary color.
   interaction instead re-arm following directly, so a transient phase callback
   cannot strand a stream in reading mode; the actual scroll still waits for
   idle. Active interactions cancel queued following; a requested return with
-  remaining cards finishes in reading mode. Removing the last interaction requests
-  the new bottom. Loading older history retains its existing measured anchor.
+  remaining cards finishes in reading mode. Layout changes and new stream rows
+  cannot re-arm automatic following while an interaction is visible. When the
+  last card closes, a reader who had been following resumes at the tail unless
+  they scrolled away; older-history loading retains its measured anchor.
 - The composer and approval dock use one native bottom `safeAreaInset`, which
   owns both the dock's space and the scroll view's visible region. There is no
   measured-height feedback into a second content margin. A constant 32-point
   spacer provides breathing room.
+  Keyboard show and hide both request a non-animated final pin when the reader
+  was following. Inset pins use the latest offset sample, distinguish bottom
+  edge changes even if visible height is clamped to zero, and do not reissue
+  navigation for offset-only callbacks. Gestures and history reading retain
+  ownership of the scroll position.
   The phone drawer applies the untransformed host's safe area (including keyboard)
   once, and suspends navigation throughout motion and while obscuring the detail.
-  Resuming preserves reading intent and follows new content only when
-  appropriate. The phone card uses `SidebarDrawerTranslation.ignoredByLayout()`:
+  Resuming preserves reading intent and catches up with a reply that finished
+  behind the drawer only when the reader had been following. The phone card uses `SidebarDrawerTranslation.ignoredByLayout()`:
   horizontal movement only changes rendering, including every interpolated
   spring frame. It cannot move the layout origin and vary the column width by a
   physical pixel (observed as 402/402.33 points with two paragraphs changing lines).

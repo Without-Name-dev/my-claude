@@ -82,7 +82,7 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
             // later text visible before earlier text. Continue from the end of
             // the existing queue, at the natural typing rate, compressing only
             // once the lead reaches the hard cap so the reveal can never trail
-            // the network by more than a few seconds.
+            // the network by more than the bounded reveal lead.
             let added = revealingCount - birthCount
             let start = max(now, nextBirth)
             let lead = start - now

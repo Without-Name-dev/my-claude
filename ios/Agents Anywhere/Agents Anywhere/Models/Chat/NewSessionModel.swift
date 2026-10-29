@@ -177,11 +177,33 @@ final class NewSessionModel {
     /// The server rejects create-and-start requests that carry attachments and
     /// does not persist uploaded files yet, so never offer the picker.
     var canAttach: Bool { false }
-    var canCreate: Bool {
+    /// Target readiness is separate from the editor's marked-text state: the
+    /// send button needs to remain tappable to explain an unfinished IME input.
+    var canPrepareCreation: Bool {
         isValid && !isCreating && !isPreparing && !creationUncertain && network.availability != .offline
             && ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) != nil
             && connector?.status == .online && runtime?.isReadyForSession == true && prepared != nil
-            && settings.hasValidSelections && draft.canAttemptSend && (draft.attachments.isEmpty || canAttach)
+            && settings.hasValidSelections && (draft.attachments.isEmpty || canAttach)
+    }
+    var canCreate: Bool { canPrepareCreation && draft.canAttemptSend }
+
+    var creationUnavailableReason: String {
+        if creationUncertain { return String(localized: "上次创建结果尚未确认，请先检查会话列表。草稿会保留。") }
+        if network.availability == .offline { return String(localized: "手机网络已断开，草稿会保留。") }
+        if connector == nil { return String(localized: "请先选择设备，草稿会保留。") }
+        if connector?.status != .online { return String(localized: "目标设备离线，草稿会保留。") }
+        if ProjectWorkspacePath.key(workspace, deviceOS: connector?.deviceOs) == nil {
+            return String(localized: "请选择工作目录，草稿会保留。")
+        }
+        if runtime?.isReadyForSession != true { return String(localized: "请选择已就绪的 Agent，草稿会保留。") }
+        if isPreparing { return String(localized: "正在确认运行目标，草稿会保留。") }
+        if prepared == nil {
+            return error == nil ? String(localized: "运行目标尚未准备好，草稿会保留。")
+                : String(localized: "运行目标检查失败，请重新连接。草稿会保留。")
+        }
+        if !settings.hasValidSelections { return String(localized: "请检查模型和权限设置，草稿会保留。") }
+        if !draft.attachments.isEmpty && !canAttach { return String(localized: "新会话暂不支持附件，请移除附件后发送。") }
+        return String(localized: "当前无法创建会话，草稿会保留。")
     }
 
     func updateNetwork(_ status: V2NetworkStatus) {

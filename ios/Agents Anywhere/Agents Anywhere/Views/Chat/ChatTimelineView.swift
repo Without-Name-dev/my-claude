@@ -207,8 +207,10 @@ struct ChatTimelineView: View {
                     let previous = scrolling.viewport
                     let contentHeightChanged = abs(previous.contentHeight - value.contentHeight) > 0.5
                     let visibleHeightChanged = abs(previous.visibleHeight - value.visibleHeight) > 0.5
-                    if contentHeightChanged || previous.visibleHeight != value.visibleHeight
-                        || previous.topInset != value.topInset {
+                    let bottomEdgeChanged = abs(previous.bottomEdge - value.bottomEdge) > 0.5
+                    let topInsetChanged = abs(previous.topInset - value.topInset) > 0.5
+                    let layoutChanged = contentHeightChanged || visibleHeightChanged || bottomEdgeChanged || topInsetChanged
+                    if layoutChanged {
                         scrolling.geometryChanged(value)
                     }
                     // Follow content growth with the animated return; an
@@ -217,7 +219,7 @@ struct ChatTimelineView: View {
                     // nothing animates, so nothing can fight. A native
                     // .sizeChanges anchor was tried here and fought the
                     // scrollPosition binding in a ±313 pt loop on device.
-                    if scrolling.mayFollowNewContent {
+                    if layoutChanged && scrolling.mayFollowNewContent {
                         if contentHeightChanged {
                             scrolling.requestBottom()
                         } else {
@@ -241,6 +243,12 @@ struct ChatTimelineView: View {
                 } else {
                     scrolling.phaseChanged(nativePhase, viewport: viewport)
                     if let layout = historyLayout.value { historyDidLayOut(layout) }
+                    // A reply can finish while the sidebar obscures the page.
+                    // If the reader was following, catch up once the drawer
+                    // settles even when no further stream event will arrive.
+                    if scrolling.mayFollowNewContent, !scrolling.atContentBottom {
+                        scrolling.requestBottom()
+                    }
                 }
             }
             .onChange(of: model.timeline.pendingMessages.last?.id) { _, id in
@@ -393,6 +401,25 @@ struct ChatTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .top) {
+            if let notice = model.timeline.syncNotice {
+                Button {
+                    model.timeline.dismissSyncNotice(id: notice.id)
+                } label: {
+                    Text(String(localized: "已同步 \(notice.messageCount) 条消息"))
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .glassEffect(.regular, in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(String(localized: "轻点关闭提示"))
+                .padding(.top, 8)
+                .task(id: notice.id) {
+                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                    model.timeline.dismissSyncNotice(id: notice.id)
+                }
+            }
+        }
         .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             // Typing is a reason to bring the tail back only for a reader who
@@ -405,9 +432,14 @@ struct ChatTimelineView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
             // One settled, non-animated pin against the final height.
-            if scrolling.mode == .following, !scrolling.atContentBottom {
-                scrolling.requestBottom(animated: false)
-            }
+            scrolling.armKeyboardFollow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            // The keyboard's fall changes the same viewport as its rise.
+            scrolling.armKeyboardFollow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            scrolling.armKeyboardFollow()
         }
     }
     private func dismissKeyboard() {
@@ -473,16 +505,20 @@ struct ChatTimelineView: View {
         // mid-transition; the alternating targets fought another writer in a
         // ±367 pt loop on device. Clearing the live distance is inset-agnostic.
         if !command.request.animated {
-            let target = scrolling.viewport
+            let target = viewport
             // Clearing the live distance lands on the system's own bottom:
             // off + (h − visibleBottom) equals contentHeight − container +
             // bottomInset in every inset convention, and the scroll view
             // clamps it to the true maximum offset regardless.
             let y = target.offsetY + target.distanceFromBottom
-            guard y.isFinite, y >= 0 else { return }
+            guard y.isFinite else {
+                _ = scrolling.complete(command)
+                releaseScrollPosition()
+                return
+            }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            withTransaction(transaction) { position.scrollTo(y: y) }
+            withTransaction(transaction) { position.scrollTo(y: max(0, y)) }
             _ = scrolling.complete(command)
             TimelineTrace.shared.record("PIN", "y=\(Int(y)) h=\(Int(target.contentHeight)) vh=\(Int(target.visibleHeight))")
             // The point stays until a gesture or navigation releases it; the
@@ -776,9 +812,8 @@ private extension TimelineViewport {
         // The inset formula, not visibleRect: during a keyboard transition the
         // reported visibleRect keeps its pre-keyboard height (con+top+bot,
         // larger than the container), which broke every at-bottom decision.
-        // The clamped value is only used for following decisions and traces;
-        // keyboard resizes are anchored natively by .sizeChanges, and the
-        // tail probe is the authority on what is actually visible.
+        // The clamped value is used for following decisions and traces;
+        // non-animated pins track keyboard and composer inset changes.
         self.init(contentHeight: geometry.contentSize.height,
             containerHeight: geometry.containerSize.height,
             topInset: geometry.contentInsets.top,

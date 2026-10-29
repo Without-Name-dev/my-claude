@@ -7,8 +7,10 @@ import UIKit
 final class ComposerEditorController {
     @ObservationIgnored weak var textView: ComposerTextView?
     @ObservationIgnored weak var draft: ComposerDraft?
+    @ObservationIgnored var onFinishEditing: (() -> Void)?
 
     func finishEditing() {
+        onFinishEditing?()
         guard let textView else { return }
         textView.resignFirstResponder()
         synchronize()
@@ -81,6 +83,9 @@ struct NativeComposerEditor: UIViewRepresentable {
         view.accessibilityHint = String(localized: "回车换行，Command 加回车发送。")
         view.accessibilityIdentifier = "chat.composer.editor"
         controller.textView = view; controller.draft = draft
+        controller.onFinishEditing = { [weak coordinator = context.coordinator] in
+            coordinator?.cancelPendingRefocus()
+        }
         return view
     }
 
@@ -164,12 +169,15 @@ struct NativeComposerEditor: UIViewRepresentable {
                 self.refocusOnActivation = false
                 // The user may have tapped elsewhere meanwhile; only the
                 // editor that still owns the draft's focus state returns.
-                if self.parent.draft.isFocused || self.parent.draft.isExpanded {
-                    self.parent.controller.textView?.becomeFirstResponder()
+                if self.parent.draft.isValid,
+                   let textView = self.parent.controller.textView, textView.window != nil,
+                   self.parent.draft.isFocused || self.parent.draft.isExpanded {
+                    textView.becomeFirstResponder()
                 }
             })
         }
         deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+        func cancelPendingRefocus() { refocusOnActivation = false }
         func textViewDidChange(_ textView: UITextView) {
             synchronize()
             textView.invalidateIntrinsicContentSize()

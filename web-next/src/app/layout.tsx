@@ -5,6 +5,8 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToasterProvider } from "@/components/toaster-provider";
 import { I18nProvider } from "@/i18n/client-provider";
+import { ServiceWorkerInit } from "@/components/service-worker-init";
+import { OfflineIndicator } from "@/components/offline-indicator";
 
 const sans = Geist({
   subsets: ["latin"],
@@ -93,8 +95,10 @@ export default function RootLayout({
       <body className={`${sans.variable} ${mono.variable} ${serif.variable} ${brand.variable} antialiased`}>
         <I18nProvider>
           <ThemeProvider defaultTheme="dark">
+            <ServiceWorkerInit />
             {children}
             <ToasterProvider />
+            <OfflineIndicator />
           </ThemeProvider>
         </I18nProvider>
       </body>

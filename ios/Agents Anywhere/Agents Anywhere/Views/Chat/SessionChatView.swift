@@ -24,11 +24,13 @@ struct SessionChatView: View, Equatable {
     /// Which attachment the current download belongs to. Tapping the same
     /// attachment again is ignored instead of restarting the transfer.
     @State private var downloadingFileID: String?
+    @State private var downloadID: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The in-flight preview download. A new tap replaces it instead of being
     /// dropped, so quickly opening a second attachment from the same message
     /// does not need a second tap after the first finishes.
     @State private var downloadTask: Task<Void, Never>?
+    @State private var downloadTimeoutTask: Task<Void, Never>?
     @State private var toasts = ChatToastStore()
     @State private var confirmsOpenOnComputer = false
     @State private var confirmsCloseTerminal = false
@@ -92,12 +94,19 @@ struct SessionChatView: View, Equatable {
                         HStack(spacing: 10) {
                             ProgressView().controlSize(.small)
                             Text(String(localized: "正在加载附件…")).font(.footnote)
+                            Button {
+                                if let fileID = downloadingFileID { model.cancelDownload(fileID) }
+                                cancelPreviewDownload()
+                            } label: {
+                                AppSymbol("xmark", size: 12).frame(width: 36, height: 36).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(String(localized: "取消加载附件"))
                         }
                         .padding(.horizontal, 16).padding(.vertical, 10)
                         .glassEffect(.regular, in: .capsule)
                         .padding(.bottom, 12)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .allowsHitTesting(false)
                     }
                 }
                 .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: isDownloading)
@@ -115,7 +124,11 @@ struct SessionChatView: View, Equatable {
                             canSelectModel: session.runtime.allows("catalog.model"),
                             canSelectPermission: session.runtime.allows("catalog.permission"),
                             isStreaming: model.isRunning, canStop: session.runtime.allows("session.interrupt"),
-                            isBusy: model.isWorking || !model.isOpeningReady, placeholder: String(localized: "询问 Agents"),
+                            isBusy: model.isWorking || !model.isOpeningReady,
+                            sendUnavailableReason: session.notices.notices.contains { $0.blocks(session.id) && !$0.isStale() }
+                                ? String(localized: "请先处理待确认事项，草稿会保留。")
+                                : String(localized: "会话暂时无法发送，草稿会保留。"),
+                            placeholder: String(localized: "询问 Agents"),
                             isLoadingSettings: model.isLoadingSettings,
                             settingsError: model.settingsError, sessionChat: model,
                             onSend: model.send, onStop: model.interrupt, onLoadSettings: model.loadSettings,
@@ -253,8 +266,7 @@ struct SessionChatView: View, Equatable {
         .onDisappear {
             // A download that outlived the page wrote a temp directory that
             // nothing would ever remove.
-            downloadTask?.cancel()
-            downloadTask = nil
+            cancelPreviewDownload()
             if previewURL == nil { cleanPreview() }
         }
         .onChange(of: session.failure, initial: true) { _, failure in
@@ -263,7 +275,7 @@ struct SessionChatView: View, Equatable {
         // Send failures are held separately: the repository emit that follows
         // a send publishes no error, which erased the session failure before
         // the toast rendered. A failed send must not look like nothing happened.
-        .onChange(of: session.actionFailure) { _, failure in
+        .onChange(of: session.actionFailure, initial: true) { _, failure in
             toasts.update(source: "send", failure: failure, canRetry: true)
         }
         .onChange(of: model.error, initial: true) { _, message in
@@ -316,21 +328,39 @@ struct SessionChatView: View, Equatable {
 
     private func openFile(_ path: String) {
         guard session.isValid, !path.isEmpty else { return }
+        cancelPreviewDownload()
         sheet = .preview(SessionFileReference.parse(path))
     }
 
     private func openAttachment(_ file: V2AttachmentContent) {
-        if file.readsFromDevice, let path = file.devicePath { sheet = .preview(SessionFileReference(path: path), root: file.root); return }
-        // An optimistic attachment that has not finished uploading has only a
-        // local id; asking the server for it can only 404.
-        if file.fileId?.hasPrefix("local:") == true {
+        if file.readsFromDevice, let path = file.devicePath {
+            cancelPreviewDownload()
+            sheet = .preview(SessionFileReference(path: path), root: file.root)
+            return
+        }
+        // An image can be inspected while its upload is still in flight.
+        if let localID = file.fileId, localID.hasPrefix("local:") {
+            cancelPreviewDownload()
+            if file.isImage,
+               let attachment = session.pendingMessages.lazy.flatMap(\.attachments)
+                    .first(where: { "local:\($0.id)" == localID }),
+               let image = UIImage(data: attachment.data) {
+                previewImage = ImagePreviewItem(image: image)
+                return
+            }
             model.error = String(localized: "附件还没有上传完成，暂时无法预览。")
             return
         }
         guard let fileID = file.fileId else {
+            cancelPreviewDownload()
             // Without an id there is nothing to fetch; say so instead of
             // swallowing the tap.
             model.error = String(localized: "这个附件暂时无法预览。")
+            return
+        }
+        if file.isImage, let data = session.attachmentPreviews.original(for: file), let image = UIImage(data: data) {
+            cancelPreviewDownload()
+            previewImage = ImagePreviewItem(image: image)
             return
         }
         // Repeating the tap on the attachment that is already downloading
@@ -339,42 +369,40 @@ struct SessionChatView: View, Equatable {
         if downloadingFileID == fileID { return }
         // Last tap wins: a preview that is still downloading must not swallow
         // the next tap.
-        downloadTask?.cancel()
+        cancelPreviewDownload()
+        let requestID = UUID()
+        downloadID = requestID
         downloadingFileID = fileID
         isDownloading = true
         model.error = nil
         toasts.update(source: "download", failure: nil)
+        let budget = 30.0 + Double(file.size ?? 0) / 200_000.0
+        downloadTimeoutTask = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(budget)) } catch { return }
+            guard downloadID == requestID else { return }
+            model.cancelDownload(fileID)
+            cancelPreviewDownload()
+            model.error = String(localized: "附件加载超时，请稍后重试。")
+        }
         downloadTask = Task { @MainActor in
             defer {
                 // A newer tap owns the state now; do not clear its indicator.
-                if downloadingFileID == fileID {
+                if downloadID == requestID {
+                    downloadTimeoutTask?.cancel()
+                    downloadTimeoutTask = nil
                     isDownloading = false
                     downloadingFileID = nil
+                    downloadID = nil
                     toasts.update(source: "download", failure: nil)
                 }
             }
             do {
-                // Bound the read: the transport's own resource timeout allows
-                // retries totalling minutes, during which the overlay was the
-                // only feedback. A tap that cannot finish in half a minute
-                // says so instead of spinning forever.
-                let data = try await withThrowingTaskGroup(of: Data.self) { group in
-                    group.addTask { try await self.model.download(fileID) }
-                    group.addTask {
-                        // Scale the bound with the attachment size: a flat 30 s
-                        // wall was unwinnable for a large file on a moderate
-                        // link (the wire payload is ~1.3x the file in base64),
-                        // so every retry timed out the same way.
-                        let budget = 30.0 + Double(file.size ?? 0) / 200_000.0
-                        try await Task.sleep(for: .seconds(budget))
-                        throw URLError(.timedOut)
-                    }
-                    guard let first = try await group.next() else { throw URLError(.timedOut) }
-                    group.cancelAll()
-                    return first
-                }
-                guard session.isValid, sheet == nil else { return }
+                // The separate timeout can end the visible wait even when a
+                // shared thumbnail download is slow to respond to cancellation.
+                let data = try await model.download(fileID)
+                guard !Task.isCancelled, downloadID == requestID, session.isValid, sheet == nil else { return }
                 if file.isImage, let image = UIImage(data: data) {
+                    session.attachmentPreviews.cacheOriginal(data, for: file)
                     previewImage = ImagePreviewItem(image: image)
                     return
                 }
@@ -390,9 +418,11 @@ struct SessionChatView: View, Equatable {
                 // Replaced by a newer tap; its own task owns the state now.
             } catch let error as URLError where error.code == .cancelled {
                 // URLSession reports task cancellation this way.
-            } catch is URLError {
+            } catch let error as URLError where error.code == .timedOut {
+                guard !Task.isCancelled, downloadID == requestID else { return }
                 model.error = String(localized: "附件加载超时，请稍后重试。")
             } catch {
+                guard !Task.isCancelled, downloadID == requestID else { return }
                 toasts.update(source: "download", failure: nil)
                 model.error = error.localizedDescription
             }
@@ -401,6 +431,16 @@ struct SessionChatView: View, Equatable {
     private func cleanPreview() {
         if let directory = previewDirectory { try? FileManager.default.removeItem(at: directory) }
         previewDirectory = nil
+    }
+
+    private func cancelPreviewDownload() {
+        downloadTimeoutTask?.cancel()
+        downloadTimeoutTask = nil
+        downloadTask?.cancel()
+        downloadTask = nil
+        downloadID = nil
+        downloadingFileID = nil
+        isDownloading = false
     }
 }
 
@@ -453,29 +493,11 @@ private struct ImagePreviewItem: Identifiable {
 private struct ChatImagePreview: View {
     let image: UIImage
     @Environment(\.dismiss) private var dismiss
-    @State private var scale: CGFloat = 1
-    @State private var settledScale: CGFloat = 1
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale)
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { value in
-                            scale = min(max(settledScale * value.magnification, 1), 6)
-                        }
-                        .onEnded { _ in settledScale = scale }
-                )
-                .onTapGesture(count: 2) {
-                    withAnimation(.snappy) {
-                        scale = scale > 1 ? 1 : 2.5
-                        settledScale = scale
-                    }
-                }
+            ZoomableMarkdownImage(image: image)
             VStack {
                 HStack {
                     Spacer()

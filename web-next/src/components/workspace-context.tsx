@@ -171,6 +171,7 @@ function mapSession(session: RealSessionView): SessionView {
     takeover: session.takeover,
     pinned: session.pinned,
     pinnedAt: session.pinnedAt,
+    pinnedMessageIds: session.pinnedMessageIds || [],
     archived: session.archived,
     archivedAt: session.archivedAt,
     userArchived: session.userArchived,
@@ -1330,11 +1331,19 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         .filter((id): id is string => Boolean(id)),
     )
     if (resolvedClientMessageIds.size === 0) return
+    // Decide from the current render's array, not from the ref the updater
+    // writes: React may defer the updater, and reading the ref right after
+    // setState then saw the pre-removal list, so the timer was never cleared.
+    const hadResolvedNow = optimisticMessages.some(
+      (message) => message.sessionId === sessionId && resolvedClientMessageIds.has(message.clientMessageId),
+    )
+    const willRemain = optimisticMessages.some(
+      (message) => message.sessionId === sessionId && !resolvedClientMessageIds.has(message.clientMessageId),
+    )
     setOptimisticMessages((prev) => {
       const next: OptimisticSessionMessage[] = []
       for (const message of prev) {
-        const resolved = message.sessionId === sessionId && resolvedClientMessageIds.has(message.clientMessageId)
-        if (resolved) {
+        if (message.sessionId === sessionId && resolvedClientMessageIds.has(message.clientMessageId)) {
           // The reconciled server item owns the preview URL after replacing this optimistic item.
           continue
         }
@@ -1343,7 +1352,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       optimisticMessagesRef.current = next
       return next
     })
-  }, [])
+    // Clear the optimistic top timer when the last optimistic message resolves,
+    // preventing a leaked timer from keeping the session pinned at the top.
+    if (hadResolvedNow && !willRemain) clearOptimisticTop(sessionId)
+  }, [clearOptimisticTop, optimisticMessages])
 
   const getOptimisticItems = React.useCallback((sessionId: string) => {
     return optimisticMessages

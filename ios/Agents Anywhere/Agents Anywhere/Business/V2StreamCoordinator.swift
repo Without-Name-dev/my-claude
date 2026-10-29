@@ -153,8 +153,16 @@ final class V2StreamCoordinator {
             }
         }
         sessionObservers[id, default: [:]][observerID] = continuation
+        // Register and signal under the same actor turn. During a reconnect,
+        // the next ready frame signals this observer instead.
+        if isReady { continuation.yield(V2SessionEvent.subscribedMarker(sessionId: id)) }
         if let buffered = sessionBuffers[id] {
-            for event in buffered { continuation.yield(event) }
+            for event in buffered {
+                if case .dropped = continuation.yield(event) {
+                    continuation.finish(throwing: HTTPError.streamOverflow)
+                    break
+                }
+            }
         }
         start()
         return stream
@@ -300,6 +308,10 @@ final class V2StreamCoordinator {
         // superseded: status frames carry the session's current seq, so an old
         // "stopping" copy still passed the sequence check and overwrote a fresh
         // "idle". A stale dashboard snapshot did the same to the session list.
+        clearConnectionBuffers()
+    }
+
+    private func clearConnectionBuffers() {
         sessionBuffers.removeAll()
         sessionBufferBytes.removeAll()
         bufferOrder.removeAll()
@@ -337,10 +349,12 @@ final class V2StreamCoordinator {
             }
             do {
                 let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .dashboard)
+                guard connectionGeneration == generation, !Task.isCancelled else { return }
                 let frames = try streamAPI.stream(ticket: ticket.ticket)
                 var sawReady = false
                 state = .connecting
                 for try await frame in frames {
+                    guard connectionGeneration == generation, !Task.isCancelled else { return }
                     lastFrameAt = .now
                     switch frame {
                     case .keepalive:
@@ -357,7 +371,7 @@ final class V2StreamCoordinator {
                             // A reconnect gets a brand new socket and the server
                             // does not replay what the old one missed, so tell
                             // every open session to recover and mark it live.
-                            if isReconnect { signalSessionObservers() }
+                            signalSessionObservers()
                         }
                     case let .dashboard(snapshot):
                         // Ordering is the contract: anything before ready means
@@ -371,6 +385,7 @@ final class V2StreamCoordinator {
                 }
                 throw V2StreamError.disconnected
             } catch {
+                guard connectionGeneration == generation else { return }
                 if Task.isCancelled {
                     if state != .fallback { state = .idle }
                     return
@@ -392,6 +407,7 @@ final class V2StreamCoordinator {
                 }
                 TimelineTrace.shared.record("STREAM.retry",
                     "attempt=\(attempt) kind=\(V2ClientFailure(error).kind)")
+                clearConnectionBuffers()
                 state = .connecting
                 attempt += 1
                 do { try await Task.sleep(for: reconnectDelay(attempt: attempt)) }
@@ -456,7 +472,9 @@ final class V2StreamCoordinator {
         buffer(event)
         guard let observers = sessionObservers[event.sessionId] else { return }
         for continuation in observers.values {
-            continuation.yield(event)
+            if case .dropped = continuation.yield(event) {
+                continuation.finish(throwing: HTTPError.streamOverflow)
+            }
         }
     }
 
@@ -467,7 +485,9 @@ final class V2StreamCoordinator {
         for (id, observers) in sessionObservers {
             let marker = V2SessionEvent.subscribedMarker(sessionId: id)
             for continuation in observers.values {
-                continuation.yield(marker)
+                if case .dropped = continuation.yield(marker) {
+                    continuation.finish(throwing: HTTPError.streamOverflow)
+                }
             }
         }
     }

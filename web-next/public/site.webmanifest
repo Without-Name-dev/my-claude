@@ -29,5 +29,11 @@
   ],
   "theme_color": "#0a0a0b",
   "background_color": "#0a0a0b",
-  "display": "standalone"
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "any",
+  "description": "Cross-device Agent workspace",
+  "categories": ["productivity", "utilities"],
+  "prefer_related_applications": false
 }

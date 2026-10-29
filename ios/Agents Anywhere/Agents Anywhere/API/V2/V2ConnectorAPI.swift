@@ -46,6 +46,7 @@ protocol V2ConnectorAPIProtocol {
         request: V2WorkspaceFileReadRequest
     ) async throws -> V2WorkspaceFilePreviewToken
     func downloadWorkspaceFile(connectorId: V2ConnectorID, root: String, path: String) async throws -> WorkspaceDownloadedFile
+    func writeWorkspaceFile(connectorId: V2ConnectorID, root: String, request: V2WorkspaceFileWriteRequest) async throws -> V2WorkspaceFileWriteResponse
 }
 
 struct V2ConnectorAPI: V2ConnectorAPIProtocol {
@@ -256,6 +257,15 @@ struct V2ConnectorAPI: V2ConnectorAPIProtocol {
         try await transport.send(HTTPRequest<V2WorkspaceTextRequest, V2WorkspaceTextResponse>(
             method: .post,
             path: "\(connectorPath(connectorId))/fs/readText",
+            queryItems: [URLQueryItem(name: "root", value: root)],
+            body: request
+        ))
+    }
+
+    func writeWorkspaceFile(connectorId: V2ConnectorID, root: String, request: V2WorkspaceFileWriteRequest) async throws -> V2WorkspaceFileWriteResponse {
+        try await transport.send(HTTPRequest<V2WorkspaceFileWriteRequest, V2WorkspaceFileWriteResponse>(
+            method: .post,
+            path: "\(connectorPath(connectorId))/fs/write",
             queryItems: [URLQueryItem(name: "root", value: root)],
             body: request
         ))

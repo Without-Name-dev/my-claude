@@ -29,7 +29,17 @@ struct V2AttachmentService {
 
     func download(sessionId: V2SessionID, fileId: V2AttachmentID) async throws -> Data {
         let response = try await attachmentAPI.download(sessionId: sessionId, fileId: fileId)
-        guard let data = Data(base64Encoded: response.contentBase64) else {
+        // Large base64 payloads can take noticeable time to decode. Keep the
+        // chat and the keyboard responsive while the image bytes are prepared.
+        let encoded = response.contentBase64
+        let worker = Task.detached(priority: .userInitiated) { Data(base64Encoded: encoded) }
+        let decoded = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        try Task.checkCancellation()
+        guard let data = decoded else {
             throw HTTPError.decoding(message: String(localized: "The attachment content is not valid Base64 data."))
         }
         return data
@@ -42,21 +52,32 @@ struct V2AttachmentService {
 /// stuck; the second caller now awaits the first task's result.
 @MainActor
 final class V2AttachmentInflight {
-    private var tasks: [String: Task<Data, Error>] = [:]
+    private struct Download {
+        let id: UUID
+        let task: Task<Data, Error>
+    }
+    private var tasks: [String: Download] = [:]
 
     func download(using service: V2AttachmentService, sessionId: V2SessionID, fileId: V2AttachmentID) async throws -> Data {
         let key = "\(sessionId)/\(fileId)"
         if let existing = tasks[key] {
-            return try await existing.value
+            return try await existing.task.value
         }
+        let id = UUID()
         let task = Task { try await service.download(sessionId: sessionId, fileId: fileId) }
-        tasks[key] = task
-        defer { tasks[key] = nil }
+        tasks[key] = Download(id: id, task: task)
+        defer { if tasks[key]?.id == id { tasks[key] = nil } }
         do {
             return try await task.value
         } catch {
             // A failed read must not poison the next attempt.
             throw error
         }
+    }
+
+    func cancel(sessionId: V2SessionID, fileId: V2AttachmentID) {
+        let key = "\(sessionId)/\(fileId)"
+        let current = tasks.removeValue(forKey: key)
+        current?.task.cancel()
     }
 }

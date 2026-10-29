@@ -90,6 +90,13 @@ func (d *Discovery) PathFor(externalID string) (string, bool) {
 // Blocks are therefore accumulated per message id and emitted when the id
 // changes.
 func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
+	return readHistory(path, limit, true)
+}
+
+// readHistory can omit the final assistant message while its transcript is
+// still changing. Completed earlier records and user prompts can then reach
+// other devices without presenting an unfinished response as final.
+func readHistory(path string, limit int, includePending bool) ([]protocol.HistoryItem, error) {
 	if limit <= 0 || limit > maxHistoryItems {
 		limit = maxHistoryItems
 	}
@@ -98,7 +105,9 @@ func ReadHistory(path string, limit int) ([]protocol.HistoryItem, error) {
 	if err := readHistoryFile(path, builder); err != nil {
 		return nil, err
 	}
-	builder.flush()
+	if includePending {
+		builder.flush()
+	}
 
 	return builder.items, nil
 }

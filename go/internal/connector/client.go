@@ -1805,6 +1805,17 @@ func (c *Client) sendHistory(req protocol.HistoryRequest) {
 	if info, err := os.Stat(path); err == nil {
 		version = strconv.FormatInt(info.Size(), 10) + ":" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
 		if delay := historyRetryDelay(info.ModTime(), time.Now()); delay > 0 {
+			// Send complete records now, but leave the trailing assistant
+			// message for the settled pass. Omitting Version prevents an ACK
+			// for this partial pass from suppressing that final reconciliation.
+			items, readErr := readHistory(path, req.Limit, false)
+			if readErr != nil {
+				c.Log.Debug("could not read changing transcript", "session", req.SessionID, "error", readErr)
+			} else if len(items) > 0 {
+				if err := c.send(protocol.TypeHistory, protocol.History{SessionID: req.SessionID, Items: items}); err != nil {
+					c.Log.Debug("could not send partial history prefix", "session", req.SessionID, "error", err)
+				}
+			}
 			c.scheduleHistoryRetry(req, delay)
 			return
 		}

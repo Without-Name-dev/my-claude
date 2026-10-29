@@ -19,6 +19,10 @@ struct ChatMessageAttachment: Identifiable, Equatable {
     @ObservationIgnored private var sent: [String: [V2AttachmentContent]] = [:]
     @ObservationIgnored private var sentOrder: [String] = []
     @ObservationIgnored private let byteLimit: Int
+    // Originals are a bounded, in-memory convenience, never part of Archive.
+    @ObservationIgnored private var originals: [String: Data] = [:]
+    @ObservationIgnored private var originalOrder: [String] = []
+    @ObservationIgnored private let originalByteLimit = 50 * 1024 * 1024
     init(byteLimit: Int = 16 * 1024 * 1024) { self.byteLimit = byteLimit }
 
     func remember(_ attachments: [ChatAttachment], clientID: String) {
@@ -30,6 +34,9 @@ struct ChatMessageAttachment: Identifiable, Equatable {
             let value = entry(content.cacheKey)
             value.content = content
             value.previewData = attachment.previewData
+            if attachment.isImage, attachment.uploaded != nil, !attachment.data.isEmpty {
+                cacheOriginal(attachment.data, for: content)
+            }
         }
         trim()
     }
@@ -48,12 +55,34 @@ struct ChatMessageAttachment: Identifiable, Equatable {
             // SwiftUI recreate the image view mid-message — the decoded state
             // reset, the tile re-decoded and its frame bounced 180↔320,
             // which read as the picture flickering back and forth.
-            let identity = "att:\(index):\(merged.name ?? ""):\(merged.size ?? 0)"
+            let identity: String
+            if let clientID {
+                let originalIndex = merged.fileId.flatMap { id in fallback.firstIndex { $0.fileId == id } } ?? index
+                identity = "sent:\(clientID):\(originalIndex)"
+            } else {
+                identity = "file:\(merged.cacheKey):\(index)"
+            }
             return ChatMessageAttachment(id: identity, content: merged, previewData: value.previewData)
         }
     }
 
     func preview(for file: V2AttachmentContent) -> Data? { entry(file.cacheKey).previewData }
+    func original(for file: V2AttachmentContent) -> Data? {
+        guard let id = file.fileId, let data = originals[id] else { return nil }
+        originalOrder.removeAll { $0 == id }; originalOrder.append(id)
+        return data
+    }
+    func cacheOriginal(_ data: Data, for file: V2AttachmentContent) {
+        guard file.isImage, let id = file.fileId, !id.hasPrefix("local:"),
+              !data.isEmpty, data.count <= originalByteLimit else { return }
+        originals[id] = data
+        originalOrder.removeAll { $0 == id }; originalOrder.append(id)
+        var bytes = originals.values.reduce(0) { $0 + $1.count }
+        while bytes > originalByteLimit, let oldest = originalOrder.first {
+            originalOrder.removeFirst()
+            if let removed = originals.removeValue(forKey: oldest) { bytes -= removed.count }
+        }
+    }
     func cache(_ data: Data, for file: V2AttachmentContent) {
         guard data.count <= byteLimit else { return }
         let value = entry(file.cacheKey); value.content = file; value.previewData = data
@@ -77,7 +106,7 @@ struct ChatMessageAttachment: Identifiable, Equatable {
         sent = value.sent.mapValues { $0.map(V2AttachmentContent.init(rawContent:)) }
         sentOrder = Array(sent.keys); trim()
     }
-    func clear() { entries = [:]; order = []; sent = [:]; sentOrder = [] }
+    func clear() { entries = [:]; order = []; sent = [:]; sentOrder = []; originals = [:]; originalOrder = [] }
     private func entry(_ key: String) -> Entry {
         order.removeAll { $0 == key }; order.append(key)
         if let value = entries[key] { return value }

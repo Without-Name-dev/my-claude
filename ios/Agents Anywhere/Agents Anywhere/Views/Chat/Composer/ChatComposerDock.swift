@@ -16,6 +16,7 @@ struct ChatComposerDock: View {
     var isStreaming = false
     var canStop = true
     var isBusy = false
+    var sendUnavailableReason: String?
     var placeholder = String(localized: "询问 Agents")
     var isLoadingSettings = false
     var settingsError: String?
@@ -55,6 +56,7 @@ struct ChatComposerDock: View {
             ChatComposer(draft: draft, editor: editor, isStreaming: isStreaming,
                 canSend: canSend && importCount == 0, canStop: canStop, isBusy: isBusy || isPreparingSend,
                 isImporting: importCount > 0,
+                sendUnavailableReason: sendUnavailableReason,
                 placeholder: placeholder,
                 maximumEditorHeight: maximumEditorHeight, controls: controls,
                 onSend: send, onStop: { Task { await onStop() } },
@@ -94,7 +96,9 @@ struct ChatComposerDock: View {
         }
         .alert(String(localized: "无法添加附件"), isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
             Button(String(localized: "好"), role: .cancel) { attachmentError = nil }
-        } message: { Text(attachmentError ?? "") }
+        } message: {
+            Text("\(attachmentError ?? "")\n\n\(String(localized: "已添加的附件会保留。"))")
+        }
     }
 
     private func send() {
@@ -119,15 +123,17 @@ struct ChatComposerDock: View {
         Binding(get: { picker == value }, set: { if $0 { picker = value } else if picker == value { picker = nil } })
     }
 
-    private func append(name: String, data: Data, mediaType: String) async {
-        guard draft.isValid else { return }
-        guard draft.attachments.count < 5 else { attachmentError = String(localized: "每条消息最多添加 5 个附件。"); return }
-        guard !data.isEmpty else { attachmentError = String(localized: "文件为空。"); return }
-        guard data.count <= 25 * 1024 * 1024 else { attachmentError = String(localized: "单个附件请控制在 25 MiB 以内。"); return }
+    private func append(name: String, data: Data, mediaType: String) async -> String? {
+        guard draft.isValid else { return nil }
+        guard draft.attachments.count < 5 else { return String(localized: "每条消息最多添加 5 个附件。") }
+        guard !data.isEmpty else { return String(localized: "文件为空。") }
+        guard data.count <= 25 * 1024 * 1024 else { return String(localized: "单个附件请控制在 25 MiB 以内。") }
         let preview = mediaType.hasPrefix("image/")
             ? await Task.detached(priority: .utility) { ChatImageThumbnail.make(data: data) }.value : nil
-        guard draft.isValid, draft.attachments.count < 5 else { return }
+        guard draft.isValid else { return nil }
+        guard draft.attachments.count < 5 else { return String(localized: "每条消息最多添加 5 个附件。") }
         draft.attachments.append(ChatAttachment(name: name, data: data, mediaType: mediaType, previewData: preview))
+        return nil
     }
 
     private func importPhotos(_ items: [PhotosPickerItem]) {
@@ -135,14 +141,21 @@ struct ChatComposerDock: View {
         importCount += 1
         Task { @MainActor in
             defer { importCount -= 1; photos = [] }
+            var failures: [String] = []
             for item in items {
                 do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        failures.append(String(localized: "有一张照片无法读取。"))
+                        continue
+                    }
                     let type = item.supportedContentTypes.first ?? .jpeg
-                    await append(name: "Photo-\(UUID().uuidString.prefix(8)).\(type.preferredFilenameExtension ?? "jpg")",
-                           data: data, mediaType: type.preferredMIMEType ?? "image/jpeg")
-                } catch { attachmentError = error.localizedDescription }
+                    if let failure = await append(name: "Photo-\(UUID().uuidString.prefix(8)).\(type.preferredFilenameExtension ?? "jpg")",
+                           data: data, mediaType: type.preferredMIMEType ?? "image/jpeg") {
+                        failures.append(failure)
+                    }
+                } catch { failures.append(error.localizedDescription) }
             }
+            if draft.isValid, !failures.isEmpty { attachmentError = failures.joined(separator: "\n") }
         }
     }
 
@@ -152,13 +165,22 @@ struct ChatComposerDock: View {
             importCount += 1
             Task { @MainActor in
                 defer { importCount -= 1 }
-                for url in urls.prefix(5) {
+                var failures: [String] = []
+                for (index, url) in urls.enumerated() {
+                    guard draft.isValid else { return }
+                    if draft.attachments.count >= 5 {
+                        let skipped = urls.count - index
+                        failures.append(String(localized: "已达到 5 个附件的上限，另有 \(skipped) 个文件未添加。"))
+                        break
+                    }
                     do {
                         let file = try await Task.detached(priority: .userInitiated) { try ImportedChatFile.read(url) }.value
-                        await append(name: file.name, data: file.data, mediaType: file.mediaType)
-                    } catch { attachmentError = error.localizedDescription }
+                        if let failure = await append(name: file.name, data: file.data, mediaType: file.mediaType) {
+                            failures.append("\(file.name)：\(failure)")
+                        }
+                    } catch { failures.append("\(url.lastPathComponent)：\(error.localizedDescription)") }
                 }
-                if urls.count > 5 { attachmentError = String(localized: "每条消息最多添加 5 个附件。") }
+                if draft.isValid, !failures.isEmpty { attachmentError = failures.joined(separator: "\n") }
             }
         } catch { attachmentError = error.localizedDescription }
     }

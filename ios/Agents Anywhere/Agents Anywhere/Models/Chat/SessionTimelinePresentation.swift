@@ -55,7 +55,12 @@ final class ChatTimelineRowModel: Identifiable {
 /// `pending`, and the visible row advances to the latest text on the next tick.
 @MainActor @Observable
 final class SessionTimelinePresentation {
+    struct SyncNotice: Identifiable {
+        let id = UUID()
+        let messageCount: Int
+    }
     private(set) var rows: [ChatTimelineRowModel] = []
+    private(set) var syncNotice: SyncNotice?
     private(set) var pendingMessages: [V2PendingMessage] = []
     private(set) var hasPresentedSnapshot = false
     private(set) var presentationRevision = 0
@@ -171,6 +176,10 @@ final class SessionTimelinePresentation {
             }
             let firstPresentation = !hasPresentedSnapshot
             if orderChanged {
+                let oldIDs = Set(rows.map(\.id))
+                let addedCount = updated.reduce(into: 0) { count, row in
+                    if !oldIDs.contains(row.id) { count += 1 }
+                }
                 // An older page changes the first published row. Publish it in
                 // a transaction with animations disabled; even if a caller has
                 // an animation in flight, history insertion stays a jump that
@@ -179,6 +188,13 @@ final class SessionTimelinePresentation {
                 if let previousFirst, let first = updated.first?.value.orderSeq, first < previousFirst {
                     insertedOlder = true
                 } else {
+                    if !firstPresentation && addedCount > 1 {
+                        let messages = updated.filter {
+                            !oldIDs.contains($0.id) && $0.value.type == .message
+                                && ($0.value.role == .user || $0.value.role == .assistant)
+                        }.count
+                        if messages > 1 { syncNotice = SyncNotice(messageCount: messages) }
+                    }
                     insertedOlder = false
                 }
                 if insertedOlder {
@@ -190,15 +206,15 @@ final class SessionTimelinePresentation {
                         rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
                     }
                 } else {
-                    // New rows fade in. A reconnect can deliver a whole batch
-                    // of messages in one flush, and they used to pop in at
-                    // once. Opacity changes no layout: every row's final
-                    // height is applied in this same pass, so the follow and
-                    // history logic is not chasing an animation.
-                    if firstPresentation {
-                        // Opening uses the mask fade, not a transcript fade.
-                        rows = updated
-                        rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                    if firstPresentation || addedCount > 1 {
+                        // A recovered batch is historical content, not many
+                        // new live messages. Do not fade every row at once.
+                        var transaction = Transaction(animation: nil)
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            rows = updated
+                            rowsByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+                        }
                     } else {
                         withAnimation(.easeOut(duration: 0.22)) {
                             self.rows = updated
@@ -211,6 +227,10 @@ final class SessionTimelinePresentation {
             if contentChanged || orderChanged || firstPresentation { presentationRevision &+= 1 }
             self.pending = nil
         }
+    }
+
+    func dismissSyncNotice(id: UUID) {
+        if syncNotice?.id == id { syncNotice = nil }
     }
 
     func run(sessionID: V2SessionID, repository: V2SessionRepository) async {

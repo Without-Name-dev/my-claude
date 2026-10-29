@@ -75,6 +75,7 @@ struct UserMessageBubble: View {
     var onAttachment: (V2AttachmentContent) -> Void = { _ in }
     var loadThumbnail: (V2AttachmentContent) async throws -> Data? = { _ in nil }
     var isPending = false
+    var pendingLabel: String?
     var dispatchStatus: V2TimelineItemStatus?
     var onDeliveryIssue: (() -> Void)?
     @Environment(\.colorScheme) private var colorScheme
@@ -89,6 +90,9 @@ struct UserMessageBubble: View {
                     ChatSelectableText(text: text).font(.body)
                         .padding(.horizontal, 17).padding(.vertical, 12)
                         .background(colorScheme == .dark ? Color(white: 0.13) : Color(white: 0.94), in: .rect(cornerRadius: 24))
+                }
+                if let pendingLabel {
+                    Text(pendingLabel).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .overlay(alignment: .bottomLeading) {
@@ -127,15 +131,17 @@ struct PendingMessageRow: View {
             attachments: chat.session.attachmentPreviews.resolve(pending.attachments.map(\.content), clientID: pending.id),
             onAttachment: onAttachment, loadThumbnail: chat.thumbnail,
             isPending: pending.delivery == .sending,
+            pendingLabel: pendingLabel,
             dispatchStatus: pending.delivery == .accepted ? .pending : nil,
             onDeliveryIssue: deliveryIssue == nil ? nil : { confirmsDismiss = true })
         .confirmationDialog(deliveryIssue ?? "", isPresented: $confirmsDismiss, titleVisibility: .visible) {
             Button(String(localized: "返回编辑")) {
                 if chat.session.isLocalCreation { chat.onEditCreation?(pending) }
-                // A failed send that already put its text back in the composer
-                // needs no second restore; doing it again reported "the input
-                // already has content" for the person's own restored message.
-                else if !pending.didRestoreDraft && !chat.session.restoreDraft(from: pending) {
+                // The person may have cleared or changed an automatically
+                // restored draft since the failure. Check what is there now,
+                // rather than relying on a historical restoration flag.
+                else if pendingMatchesDraft { chat.session.composer.isFocused = true }
+                else if !chat.session.restoreDraft(from: pending) {
                     // Refused because the composer already holds a draft;
                     // saying so beats a dialog that closes and does nothing.
                     chat.error = String(localized: "输入框里已有内容。请先发送或清空，再返回这条记录。")
@@ -147,14 +153,29 @@ struct PendingMessageRow: View {
             Button(String(localized: "取消"), role: .cancel) {}
         }
     }
+    private var pendingLabel: String? {
+        guard pending.delivery == .sending else { return nil }
+        let total = pending.attachments.count
+        let completed = pending.attachments.filter { $0.uploaded != nil }.count
+        if total > 0 && completed < total {
+            return String(localized: "正在上传附件 \(completed + 1)/\(total)")
+        }
+        return String(localized: "正在发送…")
+    }
+    private var pendingMatchesDraft: Bool {
+        chat.session.composer.text == pending.content
+            && chat.session.composer.attachments.map(\.id) == pending.attachments.map(\.id)
+    }
     private var deliveryIssue: String? {
         switch pending.delivery {
         case .uncertain:
             // The draft is only restored when the composer was empty; the old
             // fixed copy claimed it was kept even when it was not, then the
             // 返回编辑 action refused with "the input already has content".
-            if pending.didRestoreDraft || (chat.session.draft.isEmpty && chat.session.composer.attachments.isEmpty) {
+            if pendingMatchesDraft {
                 String(localized: "发送结果尚未确认，草稿已保留。请先检查会话是否已收到消息；移除记录后再次发送可能产生重复消息。")
+            } else if chat.session.composer.text.isEmpty && chat.session.composer.attachments.isEmpty {
+                String(localized: "发送结果尚未确认。可选择“返回编辑”取回内容；再次发送前请先检查会话，避免重复。")
             } else {
                 String(localized: "发送结果尚未确认。这条内容没有恢复到输入框（输入框已有内容）；清空输入框后可用“返回编辑”取回。")
             }

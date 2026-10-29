@@ -600,15 +600,16 @@ final class V2SessionRepository {
                             do {
                                 try await self.receive(event, entry: entry)
                             } catch {
-                                // One frame this build cannot decode must not
-                                // end the live connection: that set the entry
-                                // to .failed for good, which disabled the
-                                // composer, and a refresh repeated the same
-                                // decode. Drop it, ask for a snapshot on the
-                                // next chance, and keep listening. The check
-                                // must cover the wrapped HTTPError.decoding
-                                // too, not only Swift's DecodingError.
+                                // Recover promptly from a snapshot instead of
+                                // leaving an undecodable frame unresolved until
+                                // some unrelated future reconnect.
                                 guard isUndecodableEvent(error) else { throw error }
+                                // Drop the frame and keep listening. Rethrowing
+                                // ended the consumer loop, and the coordinator
+                                // replays its per-session buffer to the next
+                                // subscriber - the same undecodable frame came
+                                // back and the session looped on
+                                // load-hydrate-resubscribe-fail for ever.
                                 entry.needsSnapshot = true
                                 entry.projection?.markStale()
                                 TimelineTrace.shared.record("EVENT.decode", "type=\(event.type)")
@@ -656,11 +657,11 @@ final class V2SessionRepository {
             } catch let error as CacheError {
                 throw error
             } catch {
-                // A recovery read that fails must not tear down a healthy
-                // socket, and a gap must not leave the conversation silently
-                // stale: flag it so the next snapshot or gap retries.
+                // Do not apply the newer event after a failed recovery: doing
+                // so advances the cursor past messages that were never read.
                 entry.projection?.markStale()
                 TimelineTrace.shared.record("EVENT.recoverFailed", "type=\(event.type)")
+                throw error
             }
         }
         try requireCurrent(entry)

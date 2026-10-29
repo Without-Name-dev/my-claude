@@ -10,6 +10,7 @@ nonisolated struct TimelineScrollState: Equatable {
         let generation: Int
         let contentHeight: CGFloat
         let visibleHeight: CGFloat
+        let bottomEdge: CGFloat
         /// Animated returns are for content growth and explicit returns. An
         /// inset change (keyboard, composer, panel) pins without animation so
         /// the transcript tracks the already-animated inset frame by frame
@@ -39,6 +40,9 @@ nonisolated struct TimelineScrollState: Equatable {
     /// Whether the reader was following the tail when an interaction card
     /// appeared, so dismissing it restores that intent and nothing else.
     private var followedBeforeInteraction = false
+    /// A stream can grow while the approval is open. Preserve the previous
+    /// follow intent only if the reader did not scroll away in the meantime.
+    private var scrolledDuringInteraction = false
 
     var userIsScrolling: Bool { [.tracking, .interacting, .decelerating].contains(phase) }
     /// The person's finger is still on the screen. Deceleration is not a
@@ -76,7 +80,7 @@ nonisolated struct TimelineScrollState: Equatable {
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
     var mayFollowNewContent: Bool {
-        !userIsScrolling && !navigationIsSuspended && !needsUserScrollSettlement
+        !userIsScrolling && !navigationIsSuspended && !needsUserScrollSettlement && !interactionIsPresented
             && (mode == .following || atContentBottom)
     }
 
@@ -84,6 +88,8 @@ nonisolated struct TimelineScrollState: Equatable {
         guard !hasOpened else { return }
         hasOpened = true
         interactionIsPresented = interactionPresented
+        followedBeforeInteraction = interactionPresented
+        scrolledDuringInteraction = false
         // Opening is not a return the reader can be in the middle of: the view
         // is not hit-testable until it is ready. A transient phase callback
         // (for example deceleration reported while the first layout lands) must
@@ -109,7 +115,8 @@ nonisolated struct TimelineScrollState: Equatable {
         if let lastRequest,
            lastRequest.animated == animated,
            abs(lastRequest.contentHeight - viewport.contentHeight.rounded()) <= 0.5,
-           abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5 {
+           abs(lastRequest.visibleHeight - viewport.visibleHeight.rounded()) <= 0.5,
+           abs(lastRequest.bottomEdge - viewport.bottomEdge.rounded()) <= 0.5 {
             return true
         }
         // An animated return already in flight must not restart for inset-only
@@ -145,8 +152,9 @@ nonisolated struct TimelineScrollState: Equatable {
     /// requestBottom early-return swallowed every keyboard frame and the
     /// newest message stayed behind the keyboard.
     mutating func armKeyboardFollow() {
-        guard !userIsScrolling else { return }
-        guard mode == .following || mode == .returning else { return }
+        guard !userIsScrolling, !navigationIsSuspended, !interactionIsPresented,
+              !awaitsUserScrollSettlement else { return }
+        guard mode == .following || mode == .returning || atContentBottom else { return }
         pendingAnimated = false
         armBottomReturn()
     }
@@ -165,8 +173,9 @@ nonisolated struct TimelineScrollState: Equatable {
             // return unconditionally, which yanked people who had deliberately
             // scrolled up while an approval was open.
             followedBeforeInteraction = mode == .following || mode == .returning || atContentBottom
+            scrolledDuringInteraction = false
             browseHistory()
-        } else if followedBeforeInteraction, atContentBottom {
+        } else if followedBeforeInteraction, !scrolledDuringInteraction || atContentBottom {
             // The reply resumes as soon as the last card is dismissed. A
             // transient deceleration callback must not leave the timeline in
             // reading mode for the rest of the stream; arm the return directly
@@ -228,6 +237,9 @@ nonisolated struct TimelineScrollState: Equatable {
         // .tracking callback that will never arrive left the timeline following
         // the tail, so the next streamed token pulled the page back down.
         let userPhase = next == .tracking || next == .interacting || next == .decelerating
+        if interactionIsPresented && (next == .interacting || next == .decelerating) {
+            scrolledDuringInteraction = true
+        }
         if userPhase {
             if mode != .reading { browseHistory() }
             awaitsUserScrollSettlement = true
@@ -259,7 +271,7 @@ nonisolated struct TimelineScrollState: Equatable {
         if mode == .following, atContentBottom { return nil }
         let request = BottomRequest(generation: navigationGeneration,
             contentHeight: viewport.contentHeight.rounded(), visibleHeight: viewport.visibleHeight.rounded(),
-            animated: pendingAnimated)
+            bottomEdge: viewport.bottomEdge.rounded(), animated: pendingAnimated)
         return request == lastRequest ? nil : request
     }
 
@@ -286,6 +298,7 @@ nonisolated struct TimelineScrollState: Equatable {
             let landed = viewport.isMeasured
                 && abs(viewport.contentHeight - command.request.contentHeight) <= 0.5
                 && abs(viewport.visibleHeight - command.request.visibleHeight) <= 0.5
+                && abs(viewport.bottomEdge - command.request.bottomEdge) <= 0.5
             if !landed, mode == .following, !atContentBottom {
                 armBottomReturn()
             }

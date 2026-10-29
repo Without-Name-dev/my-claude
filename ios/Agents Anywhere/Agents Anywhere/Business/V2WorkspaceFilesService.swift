@@ -31,6 +31,29 @@ struct V2WorkspaceFilesService {
         )
     }
 
+    func writeFile(
+        connectorId: V2ConnectorID,
+        root: String,
+        path: String,
+        content: String,
+        ifMatch: String? = nil
+    ) async throws -> V2WorkspaceWriteResult {
+        let response = try await connectorAPI.writeWorkspaceFile(
+            connectorId: connectorId,
+            root: ProjectWorkspacePath.requestRoot(root, path: path),
+            request: V2WorkspaceFileWriteRequest(path: path, content: content, ifMatch: ifMatch)
+        )
+        if let error = response.error, !response.ok {
+            throw error
+        }
+        guard response.ok, let result = response.result else {
+            throw V2BusinessError.workspaceFilesUnavailable(
+                message: String(localized: "The file could not be saved.")
+            )
+        }
+        return result
+    }
+
     /// Explicit export/open-in action uses the full binary transfer, including for
     /// text files. The size-limited Web text preview is never used as a download.
     func download(connectorId: V2ConnectorID, root: String, entry: V2WorkspaceEntry) async throws -> WorkspaceDownloadedFile {

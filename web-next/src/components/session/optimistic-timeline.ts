@@ -71,24 +71,38 @@ export function mergeTimelineItems(
   }
 
   const byId = new Map(currentItems.map((item) => [item.id, item]))
+  // Only optimistic user messages can match a server message. Long histories
+  // may contain thousands of other rows, so do not scan them for every user.
+  const optimisticUsers = new Set(
+    currentItems.filter((item) => isOptimisticTimelineItem(item) && item.type === "message" && item.role === "user")
+      .map((item) => item.id),
+  )
   for (const item of incomingItems) {
     let nextItem = item
     const clientMessageId = timelineClientMessageId(item)
     if (!isOptimisticTimelineItem(item) && item.type === "message" && item.role === "user" && clientMessageId) {
-      for (const [id, existing] of byId) {
-        if (optimisticUserMessageMatchesServerItem(existing, item, clientMessageId)) {
+      for (const id of optimisticUsers) {
+        const existing = byId.get(id)
+        if (existing && optimisticUserMessageMatchesServerItem(existing, item, clientMessageId)) {
           nextItem = mergeOptimisticAttachmentMetadata(item, existing)
           byId.delete(id)
+          optimisticUsers.delete(id)
         }
       }
     }
     const existing = byId.get(nextItem.id)
     if (!existing || incomingTimelineItemCanReplace(existing, nextItem)) {
       byId.set(nextItem.id, nextItem)
+      if (isOptimisticTimelineItem(nextItem) && nextItem.type === "message" && nextItem.role === "user") {
+        optimisticUsers.add(nextItem.id)
+      } else {
+        optimisticUsers.delete(nextItem.id)
+      }
     }
   }
   const result = sortTimelineItems(Array.from(byId.values()))
-  timelineIndexes.set(result, new Map(result.map((item, index) => [item.id, index])))
+  const resultIndex = new Map(result.map((item, index) => [item.id, index]))
+  timelineIndexes.set(result, resultIndex)
   return result
 }
 

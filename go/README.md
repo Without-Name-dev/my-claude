@@ -92,7 +92,9 @@ bin/aa-connector --config ~/.agents-anywhere/connector.json
 
 - **Discovers sessions.** Every transcript under `~/.claude/projects` becomes a
   session on the server, grouped into projects by working directory. Scans are
-  incremental: only changed transcripts are re-sent.
+  incremental: only changed transcripts are re-sent. While a transcript is still
+  being written, complete earlier records are synchronized promptly; its final
+  assistant message waits for the file to settle before being imported as done.
 - **Drives the phone-pane plugin.** A queued message is written to the bridge;
   the plugin submits it inside the running Claude session, and the answer is
   streamed back token by token. Messages are written to Claude's durable FIFO

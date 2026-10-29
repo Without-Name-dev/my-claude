@@ -126,6 +126,7 @@ struct V2SessionProjection {
             default:
                 break
             }
+            remember(event)
             return
         }
         switch event.type {
@@ -151,15 +152,18 @@ struct V2SessionProjection {
             data.lastExtensionEvent = event
         }
         advanceCursor(event.cursor)
-        if !event.isLiveProjection {
-            eventIDs.insert(event.eventId)
-            if eventOrder.count < Self.dedupeWindow {
-                eventOrder.append(event.eventId)
-            } else {
-                eventIDs.remove(eventOrder[eventOrderNext])
-                eventOrder[eventOrderNext] = event.eventId
-                eventOrderNext = (eventOrderNext + 1) % Self.dedupeWindow
-            }
+        remember(event)
+    }
+
+    private mutating func remember(_ event: V2SessionEvent) {
+        guard !event.isLiveProjection else { return }
+        eventIDs.insert(event.eventId)
+        if eventOrder.count < Self.dedupeWindow {
+            eventOrder.append(event.eventId)
+        } else {
+            eventIDs.remove(eventOrder[eventOrderNext])
+            eventOrder[eventOrderNext] = event.eventId
+            eventOrderNext = (eventOrderNext + 1) % Self.dedupeWindow
         }
     }
 
@@ -221,44 +225,29 @@ struct V2SessionProjection {
     }
 
     private mutating func merge(_ incoming: [V2TimelineItem], history: Bool, preservingCurrentWindow: Bool = false) {
-        if !history, incoming.count == 1 { mergeOne(incoming[0]); return }
-        // Build index only once for lookups, not full dictionary rebuild
-        var itemIndex = Dictionary(uniqueKeysWithValues: data.items.enumerated().map { ($1.id, $0) })
+        if !history, !preservingCurrentWindow, incoming.count == 1 { mergeOne(incoming[0]); return }
+        // A snapshot or history page can contain hundreds of items. Inserting
+        // each into the array and shifting every later index made recovery
+        // quadratic on the main actor. Resolve versions by ID, then sort once.
+        var itemsByID: [V2TimelineItemID: V2TimelineItem] = [:]
+        itemsByID.reserveCapacity(data.items.count + incoming.count)
+        for item in data.items { itemsByID[item.id] = item }
         let start = data.items.first?.orderSeq ?? 0
         let end = data.items.last?.orderSeq ?? 0
-        var needsSort = false
 
         for item in incoming where item.sessionId == data.session.id {
-            if let idx = itemIndex[item.id] {
-                let old = data.items[idx]
+            if let old = itemsByID[item.id] {
                 guard item.revision > old.revision || (item.revision == old.revision && item.updatedSeq >= old.updatedSeq) else { continue }
-                // Update in place if orderSeq unchanged, otherwise mark for re-sort
-                if old.orderSeq == item.orderSeq {
-                    data.items[idx] = item
-                } else {
-                    data.items[idx] = item
-                    needsSort = true
-                }
+                itemsByID[item.id] = item
             } else if !history, data.hasOlderItems, item.orderSeq < start {
                 continue
             } else if !history, data.hasNewerItems, item.orderSeq > end {
                 continue
             } else {
-                // New item: binary search insert
-                let key = (item.orderSeq, item.id)
-                let position = insertionIndex(of: key)
-                data.items.insert(item, at: position)
-                // Update all indices after insertion
-                for i in position..<data.items.count {
-                    itemIndex[data.items[i].id] = i
-                }
+                itemsByID[item.id] = item
             }
         }
-
-        // Only sort if orderSeq changed for existing items
-        if needsSort {
-            data.items.sort { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
-        }
+        data.items = itemsByID.values.sorted { ($0.orderSeq, $0.id) < ($1.orderSeq, $1.id) }
 
         // Apply window limits
         if preservingCurrentWindow {

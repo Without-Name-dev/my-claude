@@ -63,8 +63,17 @@ final class DeviceAgentModel {
     func invalidate() { isValid = false; version += 1; inventory = .init(types: [], instances: []); connected = false }
 
     private func perform(_ id: String, action: () async throws -> Void) async throws {
-        guard isValid, connected else { throw URLError(.notConnectedToInternet) }
-        guard busyID == nil else { throw V2BusinessError.workspaceFilesUnavailable(message: String(localized: "请等待当前 Agent 操作完成。")) }
+        guard isValid else { throw CancellationError() }
+        guard connected else {
+            let failure = URLError(.notConnectedToInternet)
+            error = failure.localizedDescription
+            throw failure
+        }
+        guard busyID == nil else {
+            let failure = V2BusinessError.workspaceFilesUnavailable(message: String(localized: "请等待当前 Agent 操作完成。"))
+            error = failure.localizedDescription
+            throw failure
+        }
         busyID = id; error = nil; version += 1; isLoading = false
         defer { busyID = nil }
         do {

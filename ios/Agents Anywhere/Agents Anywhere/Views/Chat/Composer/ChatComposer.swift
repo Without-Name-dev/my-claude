@@ -9,6 +9,7 @@ struct ChatComposer: View {
     var isBusy = false
     /// Photo/file import is running. It blocks sending but must not block stop.
     var isImporting = false
+    var sendUnavailableReason: String?
     var placeholder = String(localized: "询问 Agents")
     let maximumEditorHeight: CGFloat
     let controls: ChatControlMetrics
@@ -52,6 +53,13 @@ struct ChatComposer: View {
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 2)
                         .transition(.opacity)
+                }
+                if hasSendableContent && !canSend && !isBusy && !isImporting {
+                    Text(sendUnavailableReason ?? String(localized: "当前无法发送，草稿会保留。"))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 12).padding(.bottom, 4)
+                        .accessibilityIdentifier("chat.composer.unavailable")
                 }
                 if !draft.attachments.isEmpty || isImporting { attachmentTray }
                 ComposerLayout(expanded: draft.isExpanded, maximumEditorHeight: maximumEditorHeight, controls: controls) {

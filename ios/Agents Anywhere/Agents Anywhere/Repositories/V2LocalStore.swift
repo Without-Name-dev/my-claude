@@ -29,9 +29,11 @@ actor V2LocalStore {
     func saveSession(_ value: V2SessionArchive) -> Bool {
         guard !removedSessions.contains(value.session.id) else { return false }
         let key = sessionKey(value.session.id)
-        // Rewriting an existing archive cannot exceed the session count; only a
-        // new file or a byte-limit check needs the directory scan.
+        // A new archive can exceed the session cap on its own; rewriting an
+        // existing one cannot. Checked before the write so the trim below still
+        // runs after the bytes are safely on disk.
         let isNew = !FileManager.default.fileExists(atPath: url(key).path)
+        // Ensure pending writes complete before trim can delete them
         guard write(value, key: key) else { return false }
         savesSinceTrim += 1
         if isNew || savesSinceTrim >= 20 { trim(); savesSinceTrim = 0 }

@@ -48,12 +48,18 @@ func (s *Subscriber) closed() bool {
 // Broker fans session events out to every socket watching that session.
 type Broker struct {
 	mu   sync.RWMutex
-	subs map[string]map[*Subscriber]struct{}
+	subs map[string]*sessionSubscribers
+}
+
+type sessionSubscribers struct {
+	// Serialize publishes for one session without blocking unrelated sessions.
+	publishMu sync.Mutex
+	members   map[*Subscriber]struct{}
 }
 
 // NewBroker returns an empty broker.
 func NewBroker() *Broker {
-	return &Broker{subs: map[string]map[*Subscriber]struct{}{}}
+	return &Broker{subs: map[string]*sessionSubscribers{}}
 }
 
 // Subscribe registers a socket for one session.
@@ -64,21 +70,21 @@ func (b *Broker) Subscribe(sessionID string) *Subscriber {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	set, ok := b.subs[sessionID]
+	group, ok := b.subs[sessionID]
 	if !ok {
-		set = map[*Subscriber]struct{}{}
-		b.subs[sessionID] = set
+		group = &sessionSubscribers{members: map[*Subscriber]struct{}{}}
+		b.subs[sessionID] = group
 	}
-	set[sub] = struct{}{}
+	group.members[sub] = struct{}{}
 	return sub
 }
 
 // Unsubscribe removes a socket and signals its reader to stop.
 func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 	b.mu.Lock()
-	if set, ok := b.subs[sessionID]; ok {
-		delete(set, sub)
-		if len(set) == 0 {
+	if group, ok := b.subs[sessionID]; ok {
+		delete(group.members, sub)
+		if len(group.members) == 0 {
 			delete(b.subs, sessionID)
 		}
 	}
@@ -88,9 +94,8 @@ func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 
 // Publish delivers one frame to every subscriber of a session.
 //
-// Enqueueing happens under the write lock so every subscriber of a session
-// observes publishes in the same order. Without that, two concurrent publishes
-// could reach two sockets in opposite orders.
+// Each session serializes its own publishes so all of its subscribers see the
+// same order, while unrelated sessions remain independent.
 //
 // A full queue cannot receive the whole stream. Rather than drop its oldest
 // frame and leave a hole the client cannot see, the queue is drained and a
@@ -98,16 +103,23 @@ func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 // durable event log from its own cursor. Reconnects are more disruptive than a
 // refetch, so the socket is left open.
 func (b *Broker) Publish(sessionID string, frame []byte) {
-	// Take snapshot of subscribers while holding lock, then release before draining
 	b.mu.RLock()
-	set := b.subs[sessionID]
-	if len(set) == 0 {
+	group := b.subs[sessionID]
+	b.mu.RUnlock()
+	if group == nil {
+		return
+	}
+	group.publishMu.Lock()
+	defer group.publishMu.Unlock()
+	b.mu.RLock()
+	// The last subscriber may have left while this publish waited. A new group
+	// for the same session must not receive frames addressed to the old group.
+	if b.subs[sessionID] != group {
 		b.mu.RUnlock()
 		return
 	}
-	// Copy subscriber set to avoid holding lock during slow operations
-	subscribers := make([]*Subscriber, 0, len(set))
-	for sub := range set {
+	subscribers := make([]*Subscriber, 0, len(group.members))
+	for sub := range group.members {
 		subscribers = append(subscribers, sub)
 	}
 	b.mu.RUnlock()

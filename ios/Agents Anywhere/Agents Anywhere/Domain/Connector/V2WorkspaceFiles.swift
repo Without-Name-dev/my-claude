@@ -70,3 +70,30 @@ nonisolated struct V2WorkspaceTextResponse: Decodable, Hashable {
     let binary: Bool
     let serverTime: String
 }
+
+nonisolated struct V2WorkspaceFileWriteRequest: Encodable, Hashable {
+    let path: String
+    let content: String
+    let encoding: String
+    let ifMatch: String?
+
+    init(path: String, content: String, encoding: String = "utf-8", ifMatch: String? = nil) {
+        self.path = path
+        self.content = content
+        self.encoding = encoding
+        self.ifMatch = ifMatch
+    }
+}
+
+nonisolated struct V2WorkspaceFileWriteResponse: Decodable, Hashable {
+    let ok: Bool
+    let result: V2WorkspaceWriteResult?
+    let error: V2RuntimeError?
+    let serverTime: String
+}
+
+nonisolated struct V2WorkspaceWriteResult: Decodable, Hashable {
+    let path: String
+    let size: Int
+    let sha256: String
+}

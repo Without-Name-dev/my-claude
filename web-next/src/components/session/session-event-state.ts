@@ -87,6 +87,8 @@ export function sessionEventUsesDurableEventIdDedup(
   return !LIVE_PROJECTION_EVENT_TYPES.has(event.type)
 }
 
+const MAX_DEDUP_SET_SIZE = 10000
+
 export function acceptSessionEventId(
   event: ProtocolEventEnvelope,
   processedEventIds: Set<string>,
@@ -94,6 +96,11 @@ export function acceptSessionEventId(
   if (!sessionEventUsesDurableEventIdDedup(event)) return true
   if (processedEventIds.has(event.eventId)) return false
   processedEventIds.add(event.eventId)
+  // Trim dedup set to prevent unbounded growth
+  if (processedEventIds.size > MAX_DEDUP_SET_SIZE) {
+    const toRemove = Array.from(processedEventIds).slice(0, processedEventIds.size - MAX_DEDUP_SET_SIZE)
+    toRemove.forEach(id => processedEventIds.delete(id))
+  }
   return true
 }
 

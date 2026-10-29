@@ -613,6 +613,22 @@ export class DashboardApi {
     );
   }
 
+  pinMessage(token: string, sessionId: string, messageId: string): Promise<SessionResponse> {
+    return this.client.post<SessionResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/messages/pin`,
+      { messageId },
+      { token },
+    );
+  }
+
+  unpinMessage(token: string, sessionId: string, messageId: string): Promise<SessionResponse> {
+    return this.client.post<SessionResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}/messages/unpin`,
+      { messageId },
+      { token },
+    );
+  }
+
   interruptSession(token: string, sessionId: string): Promise<RpcResponse<unknown>> {
     return this.client.post<RpcResponse<unknown>>(
       `/sessions/${encodeURIComponent(sessionId)}/runtime/interrupt`,
@@ -959,3 +975,48 @@ export class DashboardApi {
 }
 
 export const dashboardApi = new DashboardApi();
+
+// Timeline editing and retry
+export async function editTimelineItem(
+  token: string,
+  sessionId: string,
+  itemId: string,
+  content: string
+): Promise<{ ok: boolean }> {
+  const response = await fetch(`/api/v2/sessions/${sessionId}/timeline/${itemId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ content }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Failed to edit message" }))
+    throw new Error(error.detail || "Failed to edit message")
+  }
+
+  return response.json()
+}
+
+export async function retryMessage(
+  token: string,
+  sessionId: string,
+  itemId: string
+): Promise<{ ok: boolean; result?: { messageId: string } }> {
+  const response = await fetch(`/api/v2/sessions/${sessionId}/timeline/${itemId}/retry`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Failed to retry message" }))
+    throw new Error(error.detail || "Failed to retry message")
+  }
+
+  return response.json()
+}

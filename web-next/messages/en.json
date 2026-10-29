@@ -1092,7 +1092,18 @@
         "reviewOpenFilePreview": "Open full preview for {file}",
         "reviewPreviewBlocked": "The file preview window was blocked.",
         "reviewDiffCard": "Change {index} of {count}"
-      }
+      },
+      "editMessage": "Edit message",
+      "editMessageDescription": "Editing resends this message to the agent. Earlier replies stay in the transcript.",
+      "editMessagePlaceholder": "Message content",
+      "editMessageSave": "Save and resend",
+      "editMessageSaving": "Saving…",
+      "editMessageEmpty": "Message cannot be empty.",
+      "editMessageSuccess": "Message updated and resent.",
+      "editMessageFailed": "Could not update the message.",
+      "retryMessage": "Retry",
+      "retryMessageSuccess": "Retry requested.",
+      "retryMessageFailed": "Could not retry this message."
     },
     "sessionStatus": {
       "idle": "Idle",

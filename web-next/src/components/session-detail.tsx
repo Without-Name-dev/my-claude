@@ -1014,7 +1014,7 @@ function SessionDetailView({
 
     const applyEvent = (
       event: ProtocolEventEnvelope,
-      options: { detectGap?: boolean; recovered?: boolean } = {},
+      options: { detectGap?: boolean; recovered?: boolean; recoveryBatch?: ProtocolEventEnvelope[] } = {},
     ) => {
       if (cancelled || event.sessionId !== sessionId) return
       if (event.type === "keepalive") return
@@ -1054,7 +1054,11 @@ function SessionDetailView({
         // moved past the lost revision when a later live frame arrived first.
         // The sequence guard exists for late duplicate frames, so bypass it
         // here and let the per-item revision checks decide.
-        commitEvents([event], { allowStaleSequence: true })
+        if (options.recoveryBatch) {
+          options.recoveryBatch.push(event)
+        } else {
+          commitEvents([event], { allowStaleSequence: true })
+        }
       } else {
         renderBuffer.push(event)
       }
@@ -1083,7 +1087,7 @@ function SessionDetailView({
       try {
         const recoveryRequest = (async () => {
             let recoveryCursor = recoveryAfterSeq
-            let recoveryEvents: ProtocolEventEnvelope[] = []
+            const recoveryEvents: ProtocolEventEnvelope[] = []
             while (true) {
               const page = await dashboardApi.getSessionEvents(token, sessionId, `seq:${recoveryCursor}`)
               const nextCursor = cursorSequence(page.nextCursor)
@@ -1091,7 +1095,7 @@ function SessionDetailView({
                 await refetch(`${reason}:snapshot-required`)
                 return
               }
-              recoveryEvents = recoveryEvents.concat(page.events)
+              for (const event of page.events) recoveryEvents.push(event)
               recoveryCursor = nextCursor
               if (!page.snapshotRequired) break
             }
@@ -1113,11 +1117,15 @@ function SessionDetailView({
             // events are buffered while recovery runs, so nothing else
             // advances the cursor in this window.
             eventSequenceCursor.replaceFromSnapshot(sessionId, recoveryAfterSeq)
+            const recoveryBatch: ProtocolEventEnvelope[] = []
             for (const event of recoveryEvents) {
               if (event.type === "runtime.capability.updated" && shouldReadLiveCapabilities) {
                 continue
               }
-              applyEvent(event, { detectGap: false, recovered: true })
+              applyEvent(event, { detectGap: false, recovered: true, recoveryBatch })
+            }
+            if (recoveryBatch.length > 0) {
+              commitEvents(recoveryBatch, { allowStaleSequence: true })
             }
             eventSequenceCursor.advance(sessionId, recoveryCursor)
             // Runtime state and pending notices are not recovered by /events.

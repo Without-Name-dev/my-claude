@@ -46,7 +46,7 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 	if item.ItemTime != nil {
 		itemTime = *item.ItemTime
 	}
-	_, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO timeline_items
 			(session_id, id, type, status, role, order_seq, updated_seq, item_time, payload_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -63,6 +63,15 @@ func UpsertTimelineItem(ctx context.Context, tx *sql.Tx, item TimelineItem, now 
 		item.UpdatedSeq, itemTime, string(item.Payload))
 	if err != nil {
 		return err
+	}
+	// An older revision is rejected by the conflict WHERE clause. Its text
+	// must not replace the search index for the newer stored timeline item.
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return nil
 	}
 	return syncTimelineSearch(ctx, tx, item)
 }

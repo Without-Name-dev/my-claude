@@ -76,10 +76,12 @@ nonisolated struct V2StreamAPI {
                         let frame = try Self.decodeFrame(data, decoder: decoder)
                         // Keepalives refresh the watchdog but are not values.
                         if case .keepalive = frame { continue }
-                        // A full buffer drops one frame; the sequence-gap
-                        // recovery re-reads it. Failing the stream instead
-                        // cost a reconnect for one slow consumer.
-                        _ = continuation.yield(frame)
+                        // There may be no later frame to expose a gap.
+                        if case .dropped = continuation.yield(frame) {
+                            continuation.finish(throwing: HTTPError.streamOverflow)
+                            connection.close()
+                            return
+                        }
                     }
                     continuation.finish()
                 } catch let error as DecodingError {

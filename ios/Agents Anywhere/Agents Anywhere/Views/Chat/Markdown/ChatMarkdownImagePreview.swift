@@ -37,7 +37,7 @@ struct ChatMarkdownImagePreview: View {
 
 /// UIKit owns pinch-to-zoom, panning and bounce. Bounds changes preserve the
 /// current zoom relative to the fitted image instead of adding SwiftUI gestures.
-private struct ZoomableMarkdownImage: UIViewRepresentable {
+struct ZoomableMarkdownImage: UIViewRepresentable {
     let image: UIImage
     func makeUIView(context: Context) -> ImageScrollView { ImageScrollView(image: image) }
     func updateUIView(_ view: ImageScrollView, context: Context) {}
@@ -57,6 +57,9 @@ private struct ZoomableMarkdownImage: UIViewRepresentable {
             imageView.frame = CGRect(origin: .zero, size: image.size)
             addSubview(imageView)
             contentSize = image.size
+            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleZoom(_:)))
+            doubleTap.numberOfTapsRequired = 2
+            addGestureRecognizer(doubleTap)
         }
 
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -77,6 +80,18 @@ private struct ZoomableMarkdownImage: UIViewRepresentable {
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
         func scrollViewDidZoom(_ scrollView: UIScrollView) { centerImage() }
+
+        @objc private func toggleZoom(_ gesture: UITapGestureRecognizer) {
+            if zoomScale > minimumZoomScale * 1.01 {
+                setZoomScale(minimumZoomScale, animated: true)
+            } else {
+                let target = min(maximumZoomScale, minimumZoomScale * 2.5)
+                let point = gesture.location(in: imageView)
+                let size = CGSize(width: bounds.width / target, height: bounds.height / target)
+                zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                    width: size.width, height: size.height), animated: true)
+            }
+        }
 
         private func centerImage() {
             imageView.center = CGPoint(x: max(bounds.width, contentSize.width) / 2,

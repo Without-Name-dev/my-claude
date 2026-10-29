@@ -105,13 +105,15 @@ final class V2DashboardRepository {
         let pending = sessions.filter { $0.id.hasPrefix("local:") && validDevices.contains($0.connectorId) }
         let merged = unique(pending + incoming.map { merge(current[$0.id], $0) })
         if sessions != merged { sessions = merged; mutated = true }
+        let statusChanged = !isFresh || error != nil
         if !hasLoaded { hasLoaded = true }
         if !isFresh { isFresh = true }
         if error != nil { error = nil }
         // Snapshots repeat every tick; an unchanged one must not fence an
         // in-flight refresh or project read out of its result.
         if mutated { generation += 1; projectGeneration += 1 }
-        changed(persist: mutated); refreshMissingProjects()
+        if mutated || statusChanged { changed(persist: mutated) }
+        refreshMissingProjects()
     }
 
     /// The project list is shared by all expanded groups and refreshed independently

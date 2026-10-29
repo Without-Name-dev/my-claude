@@ -1092,7 +1092,18 @@
         "reviewOpenFilePreview": "打开 {file} 的完整文件预览",
         "reviewPreviewBlocked": "文件预览窗口被浏览器拦截了。",
         "reviewDiffCard": "第 {index}/{count} 次修改"
-      }
+      },
+      "editMessage": "编辑消息",
+      "editMessageDescription": "编辑后会把这条消息重新发送给 Agent；之前的回复会保留在记录里。",
+      "editMessagePlaceholder": "消息内容",
+      "editMessageSave": "保存并重发",
+      "editMessageSaving": "正在保存…",
+      "editMessageEmpty": "消息内容不能为空。",
+      "editMessageSuccess": "消息已更新并重新发送。",
+      "editMessageFailed": "无法更新这条消息。",
+      "retryMessage": "重试",
+      "retryMessageSuccess": "已请求重试。",
+      "retryMessageFailed": "无法重试这条消息。"
     },
     "sessionStatus": {
       "idle": "空闲",
