@@ -705,6 +705,9 @@ type serviceInfoResponse struct {
 	ServerTime            string  `json:"serverTime"`
 	UserCount             int     `json:"userCount"`
 	DatabaseSizeBytes     int64   `json:"databaseSizeBytes"`
+	// ModelGateway carries aggregated counters only: requests, errors,
+	// streams, bytes, per-provider totals. No user content, no credentials.
+	ModelGateway map[string]any `json:"modelGateway"`
 }
 
 func (a *App) handleAdminServiceInfo(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -735,8 +738,13 @@ func (a *App) handleAdminServiceInfo(w http.ResponseWriter, r *http.Request, _ s
 		ServerTime:            timestampNow(),
 		UserCount:             info.UserCount,
 		DatabaseSizeBytes:     info.DatabaseSizeBytes,
+		ModelGateway:          a.gateway.statsSnapshot(),
 	})
 }
+
+// gatewayRequestLogKeep bounds the gateway request summary table; the trim
+// loop in Start keeps it from growing without end.
+const gatewayRequestLogKeep = 20000
 
 // requestEndpoint reconstructs the public origin, honouring the reverse-proxy
 // headers the deployment guide asks nginx to set.

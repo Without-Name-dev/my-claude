@@ -50,6 +50,7 @@ import type {
   SessionView as RealSessionView,
 } from "@/features/dashboard/types"
 import { useWorkspace } from "@/components/workspace-context"
+import { DeviceModelGatewaySection } from "@/components/pages/device-model-gateway-section"
 import { useAuth } from "@/components/auth/auth-context"
 import { dashboardApi } from "@/features/dashboard/api"
 import { PairDeviceDialog } from "@/components/pair-device-dialog"
@@ -942,6 +943,9 @@ export function DevicePage() {
             </TooltipProvider>
           )}
         </section>
+
+        {/* Model gateway: device default provider and gateway credential */}
+        <DeviceModelGatewaySection connectorId={connector.id} token={authSession?.accessToken ?? ""} />
 
         {/* Projects */}
         <section className="mb-8">

@@ -534,6 +534,9 @@ func (a *App) handleConnectorFrame(ctx context.Context, conn *connectorConn, env
 			a.healStalledSessions(ctx, conn.id, conn.userID)
 		}
 		a.replayPendingSubmits(ctx, conn.id, true)
+		// A credential revoked while this device was offline is still in its
+		// local config; clear it now that the socket can carry the change.
+		a.resyncGatewayConfig(ctx, conn.id, conn.userID)
 	case protocol.TypeInventory:
 		var inv protocol.Inventory
 		if err := json.Unmarshal(env.Data, &inv); err != nil {

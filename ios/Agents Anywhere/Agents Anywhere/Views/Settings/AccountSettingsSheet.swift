@@ -70,6 +70,9 @@ struct AccountSettingsSheet: View {
                     NavigationLink { SettingsServerView() } label: {
                         SettingsRow(title: String(localized: "Server"), symbol: "server.rack", value: appState.serverURL?.host)
                     }
+                    NavigationLink { ModelProviderSettingsView() } label: {
+                        SettingsRow(title: String(localized: "模型供应商"), symbol: "sparkles")
+                    }
                 }
                 Section {
                     NavigationLink {

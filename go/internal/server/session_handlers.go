@@ -1039,6 +1039,11 @@ func (a *App) capabilitySet(session store.Session) map[string]any {
 		// Images and files a person attaches travel with the message: the
 		// server stores them and the connector hands the desktop local paths.
 		"runtime.attachment",
+		// Model and permission catalogs. The model catalog lists the user's
+		// providers; the permission catalog lists the four modes (items carry
+		// their own availability).
+		"catalog.model",
+		"catalog.permission",
 	}
 	caps := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {

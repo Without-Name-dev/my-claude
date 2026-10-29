@@ -28,6 +28,8 @@ bin/aa-server
 | `AA_WEB_DIR` | unset | pre-built web client to serve from the same origin |
 | `AGENT_SERVER_SECRET` | dev value | HMAC key for every token; **set this** |
 | `AA_SETUP_TOKEN` | generated | fixes the first-run bootstrap token instead of printing one |
+| `AA_GATEWAY_MAX_BODY_BYTES` | `67108864` | ceiling for one model-gateway request body (images and long contexts ride it) |
+| `AA_GATEWAY_UPSTREAM_HEADER_TIMEOUT` | `5m` | how long the gateway waits for a provider's response headers; the body may stream longer |
 
 The database is created and migrated on start. `-migrate` applies migrations and exits.
 
@@ -58,6 +60,30 @@ server {
     location / { try_files $uri $uri/index.html $uri.html /index.html; }
 }
 ```
+
+The model gateway (`/api/v2/gateway/…`) streams model responses through this
+same `/api/` location: `proxy_buffering off` and the long `proxy_read_timeout`
+above are what keep SSE flowing; do not add response buffering for that path.
+
+## Model gateway (providers & routing)
+
+Users configure third-party model providers (endpoint, credential, one model
+id each) in the app; desktop Claude sessions then send `/v1/messages` requests
+through `<AA_PUBLIC_URL>/api/v2/gateway`, and the server routes them per
+session or per device. See [docs/api/model-gateway.md](../docs/api/model-gateway.md)
+for the full API contract.
+
+Wiring a desktop: in the app's device page, enable the gateway while the
+connector is online. The server issues a revocable credential and pushes it to
+the connector, which sets `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for
+every Claude terminal it opens. Terminals started by hand must be pointed at
+the gateway manually (or via CC Switch) — only connector-opened terminals are
+wired automatically.
+
+Credentials and provider API keys cross the network in every request, so the
+public endpoint must be TLS (or an equivalently trusted channel) before
+gateway traffic carries real keys — plan for HTTPS at the proxy when enabling
+this in production.
 
 ## Connector
 

@@ -87,6 +87,9 @@ func launchUnixTerminal(name string, args []string, cwd string) (string, bool) {
 	}
 	cmd := exec.Command(path, args...)
 	cmd.Dir = cwd
+	// The terminal inherits this environment, so a wired model gateway reaches
+	// the Claude process it starts.
+	cmd.Env = childEnvironment()
 	if err := cmd.Start(); err != nil {
 		return "", false
 	}

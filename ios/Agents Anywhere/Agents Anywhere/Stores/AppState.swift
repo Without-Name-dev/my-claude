@@ -671,6 +671,11 @@ final class AppState {
         makeV2Services()?.workspaceFiles
     }
 
+    /// Model provider management and device gateway control.
+    var modelProviderService: V2ModelProviderService? {
+        makeV2Services()?.modelProviders
+    }
+
     func updateSession(_ updated: V2SessionMeta) {
         cachedServices?.dashboardRepository.upsert([updated])
     }

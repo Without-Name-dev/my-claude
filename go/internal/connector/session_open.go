@@ -91,19 +91,35 @@ var startSessionTerminalProcess = startSessionTerminal
 // therefore dropped, and persistence is asserted for the new process.
 func childEnvironment() []string {
 	env := os.Environ()
-	out := make([]string, 0, len(env)+1)
+	gateway := gatewayEnvironment()
+	out := make([]string, 0, len(env)+3)
+	// With the model gateway wired, its endpoint and credential own these
+	// fixed names: a stale inherited value must not outlive a config change or
+	// a revocation. Without the gateway the person's own Anthropic variables
+	// are left exactly as they were.
+	skip := map[string]bool{"CLAUDE_CODE_CHILD_SESSION": true}
+	if len(gateway) > 0 {
+		// Provider-selection variables would route the process around the
+		// gateway entirely, so they are removed while it is wired.
+		for _, name := range []string{
+			"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+			"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		} {
+			skip[name] = true
+		}
+	}
 	for _, entry := range env {
 		name := entry
 		if i := strings.IndexByte(entry, '='); i >= 0 {
 			name = entry[:i]
 		}
-		switch strings.ToUpper(name) {
-		case "CLAUDE_CODE_CHILD_SESSION":
+		if skip[strings.ToUpper(name)] {
 			continue
 		}
 		out = append(out, entry)
 	}
-	return append(out, "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1")
+	out = append(out, "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1")
+	return append(out, gateway...)
 }
 
 // handleSessionOpen runs one session.open frame.

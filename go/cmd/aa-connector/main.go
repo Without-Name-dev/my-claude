@@ -83,6 +83,10 @@ func main() {
 	if b == nil {
 		client.SetDurableDir(filepath.Join(cfg.DataDir, "connector-state"))
 	}
+	// Gateway wiring lives with the pairing state, not the bridge directory:
+	// the plugin never reads it and a bridge toggle must not drop it.
+	connector.SetGatewayStateDir(cfg.DataDir)
+	connector.LoadStoredGatewayConfig() // install persisted wiring into the spawn env
 	// Attachment downloads go over HTTP to the same server that was paired.
 	client.ServerURL = profile.ServerURL
 

@@ -23,6 +23,7 @@ const (
 	EventRuntimeState   = "runtime.state.updated"
 	EventNoticeUpdated  = "runtime.notice.updated"
 	EventNoticeSnapshot = "runtime.notice.snapshot"
+	EventCatalogUpdated = "runtime.catalog.updated"
 	EventRefetch        = "session.refetch_required"
 	EventKeepalive      = "keepalive"
 )

@@ -35,6 +35,7 @@ type App struct {
 	history    *historyLimiter
 	rpc        *rpcClient
 	activity   *activityRegistry
+	gateway    *gateway
 
 	// openMu guards lastAutoOpen: when the send path last asked each session's
 	// connector to open a terminal, so a retried message does not ask again
@@ -63,11 +64,13 @@ func New(cfg config.Server, db *store.Store, log *slog.Logger) *App {
 		history:    newHistoryLimiter(),
 		rpc:        newRPCClient(),
 		activity:   newActivityRegistry(),
+		gateway:    nil, // set below; newGateway needs the assembled app
 
 		lastAutoOpen:  map[string]time.Time{},
 		commandAcks:   map[string]pendingCommandAck{},
 		submitReplayQ: make(chan string, 128),
 	}
+	app.gateway = newGateway(app)
 	return app
 }
 
@@ -217,6 +220,28 @@ func (a *App) Handler() http.Handler {
 	a.registerShareRoutes(mux)
 	a.registerTerminalRoutes(mux)
 
+	// Model providers and routing (management plane).
+	mux.HandleFunc("GET /api/v2/model-providers", a.requireUser(a.handleListModelProviders))
+	mux.HandleFunc("POST /api/v2/model-providers", a.requireUser(a.handleCreateModelProvider))
+	mux.HandleFunc("GET /api/v2/model-providers/{provider_id}", a.requireUser(a.handleGetModelProvider))
+	mux.HandleFunc("PATCH /api/v2/model-providers/{provider_id}", a.requireUser(a.handlePatchModelProvider))
+	mux.HandleFunc("DELETE /api/v2/model-providers/{provider_id}", a.requireUser(a.handleDeleteModelProvider))
+	mux.HandleFunc("POST /api/v2/model-providers/{provider_id}/check", a.requireUser(a.handleCheckModelProvider))
+	mux.HandleFunc("GET /api/v2/connectors/{connector_id}/model-route", a.requireUser(a.handleGetConnectorModelRoute))
+	mux.HandleFunc("PUT /api/v2/connectors/{connector_id}/model-route", a.requireUser(a.handlePutConnectorModelRoute))
+	mux.HandleFunc("POST /api/v2/connectors/{connector_id}/model-route/gateway", a.requireUser(a.handleEnableConnectorGateway))
+	mux.HandleFunc("DELETE /api/v2/connectors/{connector_id}/model-route/gateway", a.requireUser(a.handleDisableConnectorGateway))
+	mux.HandleFunc("GET /api/v2/sessions/{session_id}/model-route", a.requireUser(a.handleGetSessionModelRoute))
+	mux.HandleFunc("PUT /api/v2/sessions/{session_id}/model-route", a.requireUser(a.handlePutSessionModelRoute))
+	mux.HandleFunc("GET /api/v2/model-route-operations/{operation_id}", a.requireUser(a.handleGetRouteOperation))
+	mux.HandleFunc("POST /api/v2/model-route-operations/{operation_id}/cancel", a.requireUser(a.handleCancelRouteOperation))
+
+	// Model gateway (data plane). These routes authenticate with revocable
+	// gateway credentials, not user bearer tokens.
+	mux.HandleFunc("POST /api/v2/gateway/v1/messages", a.handleGatewayMessages)
+	mux.HandleFunc("POST /api/v2/gateway/v1/messages/count_tokens", a.handleGatewayCountTokens)
+	mux.HandleFunc("GET /api/v2/gateway/v1/models", a.handleGatewayModels)
+
 	// Websockets.
 	mux.HandleFunc("GET /api/v2/sessions/{session_id}/ws", a.handleSessionWS)
 	mux.HandleFunc("GET /api/v2/connector/ws", a.ServeConnectorWS)
@@ -239,6 +264,24 @@ func (a *App) Handler() http.Handler {
 // Start launches the background work that outlives a single request.
 func (a *App) Start(ctx context.Context) {
 	go a.refreshLiveHistories(ctx)
+	go a.trimGatewayRequestLog(ctx)
+}
+
+// trimGatewayRequestLog keeps the gateway request summary table bounded. A
+// failed trim is logged and retried on the next tick, never fatal.
+func (a *App) trimGatewayRequestLog(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		if err := a.db.TrimGatewayRequestLog(ctx, gatewayRequestLogKeep); err != nil && ctx.Err() == nil {
+			a.log.Warn("gateway request log trim failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // handleReady reports database reachability.
@@ -272,9 +315,10 @@ func (a *App) withCommon(next http.Handler) http.Handler {
 		// Uploads have their own limits; everything else is JSON and must not be
 		// able to make the server read megabytes. The connector's transfer
 		// upload carries raw file bytes and enforces the 256MiB ceiling itself,
-		// so the 2MiB JSON cap would truncate it.
+		// so the 2MiB JSON cap would truncate it. Gateway model requests carry
+		// images and long contexts and enforce their own, larger ceiling.
 		if r.Body != nil && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") &&
-			!isRawUpload(r) {
+			!isRawUpload(r) && !isGatewayRequest(r) {
 			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 		}
 		start := time.Now()
@@ -311,6 +355,16 @@ const rawTransferUploadPath = "/api/v2/connector/fs/transfers/"
 // which carries file bytes rather than JSON. Its handler applies fsMaxPushBytes.
 func isRawUpload(r *http.Request) bool {
 	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, rawTransferUploadPath)
+}
+
+// gatewayPrefix is the model gateway's slice of the API namespace. Claude's
+// ANTHROPIC_BASE_URL points here, so the native /v1/... paths live under it.
+const gatewayPrefix = "/api/v2/gateway/"
+
+// isGatewayRequest reports whether the request belongs to the model gateway,
+// whose bodies are bounded by GatewayMaxBodyBytes inside the handlers.
+func isGatewayRequest(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, gatewayPrefix)
 }
 
 // statusRecorder remembers the status for the access log.

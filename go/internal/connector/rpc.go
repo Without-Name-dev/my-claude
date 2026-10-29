@@ -53,6 +53,8 @@ func (c *Client) handleRPC(raw json.RawMessage) {
 			result, rpcErr = c.fsWrite(req.Params)
 		case "fs.size":
 			result, rpcErr = c.fsSize(req.Params)
+		case "gateway.config":
+			result, rpcErr = c.handleGatewayConfig(req.Params)
 		case "ping":
 			result, _ = json.Marshal(map[string]any{"ok": true})
 		default:

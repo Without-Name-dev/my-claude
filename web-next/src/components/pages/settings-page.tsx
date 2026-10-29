@@ -37,6 +37,7 @@ import { AccountProfileCard } from "@/components/pages/account-profile-card"
 import { accountDisplayName } from "@/features/auth/account-profile"
 import { MobileConnectionDialog } from "@/components/pages/mobile-signin-panel"
 import { ArchivedSessionsTab } from "@/components/settings/archived-sessions-tab"
+import { ModelProvidersTab } from "@/components/settings/model-providers-tab"
 import { parseSettingsTab, settingsNavigation } from "@/components/settings/settings-navigation"
 import { PageHeader } from "@/components/pages/page-header"
 import { useAuth } from "@/components/auth/auth-context"
@@ -620,6 +621,9 @@ export function SettingsPage() {
               token={session?.accessToken ?? ""}
               userId={mobileUserId}
             />
+          )}
+          {tab === "modelProviders" && (
+            <ModelProvidersTab token={session?.accessToken ?? ""} />
           )}
           {tab === "archived-sessions" && (
             <ArchivedSessionsTab

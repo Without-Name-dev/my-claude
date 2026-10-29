@@ -28,22 +28,32 @@ type Server struct {
 	// WebDir, when set, is a directory of pre-built client files served from
 	// the same origin as the API. Empty means API only.
 	WebDir string
+	// GatewayMaxBodyBytes caps one model gateway request body. Gateway
+	// requests carry images and long contexts, so the JSON cap that protects
+	// the management API does not apply to them.
+	GatewayMaxBodyBytes int64
+	// GatewayUpstreamHeaderTimeout bounds how long the gateway waits for the
+	// upstream's response headers. The body itself may stream for as long as
+	// both sides stay connected.
+	GatewayUpstreamHeaderTimeout time.Duration
 }
 
 // LoadServer builds the server configuration from the environment.
 func LoadServer() Server {
 	root := env("AA_DATA_DIR", "data")
 	return Server{
-		Listen:          env("AA_LISTEN", ":8080"),
-		DBPath:          env("AA_DB_PATH", filepath.Join(root, "server.db")),
-		UploadDir:       env("AA_UPLOAD_DIR", filepath.Join(root, "uploads")),
-		PublicURL:       strings.TrimRight(env("AA_PUBLIC_URL", "http://127.0.0.1:8080"), "/"),
-		CORSOrigins:     splitList(env("AA_CORS_ORIGINS", "")),
-		LogLevel:        env("AA_LOG_LEVEL", "info"),
-		SessionTTL:      durationEnv("AA_SESSION_TTL", 7*24*time.Hour),
-		WSOriginPattern: splitList(env("AA_WS_ORIGINS", "*")),
-		MaxUploadBytes:  int64Env("AA_MAX_UPLOAD_BYTES", 256<<20),
-		WebDir:          env("AA_WEB_DIR", ""),
+		Listen:                       env("AA_LISTEN", ":8080"),
+		DBPath:                       env("AA_DB_PATH", filepath.Join(root, "server.db")),
+		UploadDir:                    env("AA_UPLOAD_DIR", filepath.Join(root, "uploads")),
+		PublicURL:                    strings.TrimRight(env("AA_PUBLIC_URL", "http://127.0.0.1:8080"), "/"),
+		CORSOrigins:                  splitList(env("AA_CORS_ORIGINS", "")),
+		LogLevel:                     env("AA_LOG_LEVEL", "info"),
+		SessionTTL:                   durationEnv("AA_SESSION_TTL", 7*24*time.Hour),
+		WSOriginPattern:              splitList(env("AA_WS_ORIGINS", "*")),
+		MaxUploadBytes:               int64Env("AA_MAX_UPLOAD_BYTES", 256<<20),
+		WebDir:                       env("AA_WEB_DIR", ""),
+		GatewayMaxBodyBytes:          int64Env("AA_GATEWAY_MAX_BODY_BYTES", 64<<20),
+		GatewayUpstreamHeaderTimeout: durationEnv("AA_GATEWAY_UPSTREAM_HEADER_TIMEOUT", 5*time.Minute),
 	}
 }
 

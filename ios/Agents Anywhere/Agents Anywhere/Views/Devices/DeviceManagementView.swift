@@ -57,6 +57,7 @@ struct DeviceManagementView: View {
                 VStack(alignment: .leading, spacing: 32) {
                     header
                     DeviceAgentSection(model: agents, showsConnectionNotice: false) { report($0, source: "agents") }
+                    DeviceModelGatewaySection(connector: connector)
                     if showsSessionList {
                         DeviceWorkspaceList(workspaces: workspaceChoices, canReadFiles: canReadFiles,
                             onBrowse: { choosesDirectory = true }, onOpen: openWorkspace,

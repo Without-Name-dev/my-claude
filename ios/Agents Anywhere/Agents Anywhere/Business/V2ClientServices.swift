@@ -25,6 +25,7 @@ final class V2ClientServices {
     let agentSetup: AgentSetupCoordinator
     private var agentModels: [String: DeviceAgentModel] = [:]
     let deviceManagement: V2DeviceManagementService
+    let modelProviders: V2ModelProviderService
     let workspaceFiles: V2WorkspaceFilesService
     let newSession: NewSessionModel
 
@@ -75,6 +76,7 @@ final class V2ClientServices {
         devicePairing = V2DevicePairingService(connectorAPI: api.connectors)
         agentSetup = AgentSetupCoordinator(service: devicePairing)
         deviceManagement = V2DeviceManagementService(connectorAPI: api.connectors)
+        modelProviders = V2ModelProviderService(providerAPI: api.modelProviders)
         workspaceFiles = V2WorkspaceFilesService(
             connectorAPI: api.connectors,
             serverURL: api.serverURL

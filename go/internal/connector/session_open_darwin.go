@@ -23,20 +23,40 @@ func sessionOpenSupported() bool {
 // an AppleScript string literal, so a project path containing quotes, dollar
 // signs or backticks stays one argument.
 func startSessionTerminal(cwd, externalSessionID, title string, resume bool) (string, error) {
-	flag := "--session-id"
-	if resume {
-		flag = "--resume"
-	}
-	// Terminal runs a login shell of its own, so the marker is cleared again
-	// inside the command that starts the conversation.
-	line := "unset CLAUDE_CODE_CHILD_SESSION; cd -- " + posixQuote(cwd) +
-		" && exec claude " + flag + " " + posixQuote(externalSessionID)
+	line := darwinSessionCommandLine(cwd, externalSessionID, resume)
 	script := "tell application \"Terminal\"\nactivate\ndo script " + appleScriptString(line) + "\nend tell"
 	args := []string{"-e", script}
 	if err := exec.Command("/usr/bin/osascript", args...).Run(); err != nil {
 		return "", fmt.Errorf("open Terminal: %w", err)
 	}
 	return formatCommand("osascript", args), nil
+}
+
+// darwinSessionCommandLine is the shell line Terminal.app runs. It is split
+// out so the gateway wiring can be inspected without opening a window.
+//
+// Terminal runs a login shell of its own, so the child-session marker is
+// cleared again here. A wired model gateway is passed with `env` because that
+// shell does not inherit the connector's environment, and the variables that
+// would route around the gateway are unset first.
+func darwinSessionCommandLine(cwd, externalSessionID string, resume bool) string {
+	flag := "--session-id"
+	if resume {
+		flag = "--resume"
+	}
+	unset := "unset CLAUDE_CODE_CHILD_SESSION"
+	prefix := ""
+	if env := gatewayEnvironment(); len(env) > 0 {
+		unset += " ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY" +
+			" CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX"
+		prefix = "env " + posixQuote(env[0])
+		for _, entry := range env[1:] {
+			prefix += " " + posixQuote(entry)
+		}
+		prefix += " "
+	}
+	return unset + "; cd -- " + posixQuote(cwd) + " && exec " + prefix +
+		"claude " + flag + " " + posixQuote(externalSessionID)
 }
 
 // posixQuote quotes one value for the shell Terminal.app runs. Single quotes

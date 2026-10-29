@@ -18,6 +18,14 @@ nonisolated enum HTTPError: LocalizedError {
         return nil
     }
 
+    /// The server's structured `detail` object, when the body carried one.
+    /// Handlers that return machine-readable codes and counts (for example
+    /// `provider_referenced`) are read from here.
+    var detailValue: JSONValue? {
+        if case let .server(_, _, detail) = self { return detail }
+        return nil
+    }
+
     var errorDescription: String? {
         switch self {
         case let .invalidRequestURL(path):

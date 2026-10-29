@@ -5,6 +5,7 @@ struct V2APIClient {
     let account: V2AccountAPI
     let connectors: V2ConnectorAPI
     let projects: V2ProjectAPI
+    let modelProviders: V2ModelProviderAPI
     let sessions: V2SessionAPI
     let runtime: V2RuntimeAPI
     let attachments: V2AttachmentAPI
@@ -28,6 +29,7 @@ struct V2APIClient {
         account = V2AccountAPI(transport: transport)
         connectors = V2ConnectorAPI(transport: transport)
         projects = V2ProjectAPI(transport: transport)
+        modelProviders = V2ModelProviderAPI(transport: transport)
         sessions = V2SessionAPI(transport: transport)
         runtime = V2RuntimeAPI(transport: transport)
         attachments = V2AttachmentAPI(transport: transport)

@@ -257,6 +257,8 @@ func (a *App) handleRuntimeCapabilities(w http.ResponseWriter, r *http.Request, 
 		"session.commands",
 		"session.interaction.approval",
 		"runtime.attachment",
+		"catalog.model",
+		"catalog.permission",
 	}
 	caps := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -295,20 +297,177 @@ func (a *App) handleRuntimeState(w http.ResponseWriter, r *http.Request, user st
 	})
 }
 
-// handleModelCatalog returns the models offered for a session. The connector
-// does not publish a catalog yet, so an empty one keeps the picker usable.
+// handleModelCatalog returns the models offered for a session: one entry per
+// model provider the account owns. The catalog item's selectionId is the
+// provider id, so a picker selection and a route switch are the same act.
 func (a *App) handleModelCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
-	if _, ok := a.ownedSession(w, r, user); !ok {
+	session, ok := a.ownedSession(w, r, user)
+	if !ok {
 		return
 	}
 	httpx.OK(w, map[string]any{
-		"catalog": map[string]any{
-			"runtime":  "claude",
-			"revision": 1,
-			"models":   []any{},
-		},
+		"catalog":    a.modelCatalogForProviders(r.Context(), session.ConnectorID, session.ID, user.ID),
 		"serverTime": timestampNow(),
 	})
+}
+
+// modelCatalogForProviders builds the model catalog from the account's
+// providers. revision changes whenever any provider or the default moves, so
+// clients refetch rather than serve a stale list.
+func (a *App) modelCatalogForProviders(ctx context.Context, connectorID, sessionID, userID string) map[string]any {
+	providers, err := a.db.ListModelProviders(ctx, userID)
+	if err != nil {
+		return map[string]any{"runtime": "claude", "revision": 1, "models": []any{}}
+	}
+	var defaultProviderID string
+	if def, err := a.db.ConnectorModelDefaultFor(ctx, connectorID); err == nil {
+		defaultProviderID = def.ProviderID
+	}
+	var currentSelection string
+	var routeStatus, appliedProviderID, lastRequestStatus string
+	if sessionID != "" {
+		currentSelection = a.currentModelSelection(ctx, sessionID, userID)
+		if route, err := a.db.SessionModelRouteFor(ctx, sessionID); err == nil {
+			routeStatus = route.Status
+			if route.AppliedProviderID != nil {
+				appliedProviderID = *route.AppliedProviderID
+			}
+		}
+		if last, err := a.db.LastGatewayRequest(ctx, sessionID); err == nil {
+			lastRequestStatus = last.Status
+		}
+	}
+	models := make([]map[string]any, 0, len(providers))
+	var revision int64 = 1
+	if def, err := a.db.ConnectorModelDefaultFor(ctx, connectorID); err == nil {
+		revision += def.Revision
+	}
+	if sessionID != "" {
+		if route, err := a.db.SessionModelRouteFor(ctx, sessionID); err == nil {
+			revision += route.UpdatedAt % 1000
+		}
+	}
+	for _, p := range providers {
+		revision += p.Revision + p.UpdatedAt%1000
+		// The picker shows provider and model together: choosing the entry
+		// chooses both, so naming only one of them would hide half the choice.
+		display := p.Name
+		if p.ModelName != "" {
+			display = p.Name + " · " + p.ModelName
+		}
+		description := p.ModelID + " · " + providerProtocolLabel(p.Protocol)
+		// Routing state rides the description so the existing pickers show
+		// target versus applied without new client plumbing: "waiting" is the
+		// honest state while a turn still runs on the previous provider.
+		routeState := ""
+		switch {
+		case p.ID == currentSelection && routeStatus == "waiting_for_turn_end":
+			routeState = "waiting_for_turn_end"
+			description += " · 等待当前回合结束"
+		case p.ID == appliedProviderID && lastRequestStatus == "failed":
+			routeState = "last_request_failed"
+			description += " · 最近请求失败"
+		case p.ID == appliedProviderID && (routeStatus == "applied" || lastRequestStatus == "completed"):
+			routeState = "applied"
+			description += " · 已生效"
+		}
+		if !p.Enabled {
+			description += " · disabled"
+		}
+		entry := map[string]any{
+			"id":          p.ID,
+			"displayName": display,
+			"selectionId": p.ID,
+			"description": description,
+			"default":     p.ID == defaultProviderID,
+			"enabled":     p.Enabled,
+			// reasoningItems is a required key for the shipped mobile decoder;
+			// an omitted one would fail the whole catalog decode.
+			"reasoningItems": []any{},
+			"metadata": map[string]any{
+				"providerId": p.ID,
+				"modelId":    p.ModelID,
+				"protocol":   p.Protocol,
+				"revision":   p.Revision,
+				// Machine-readable routing state; clients that localize later
+				// can read this instead of the description suffix.
+				"routeState": routeState,
+			},
+		}
+		if !p.Enabled {
+			entry["disabledReason"] = "provider is disabled"
+		}
+		if p.ID == currentSelection {
+			entry["current"] = true
+		}
+		models = append(models, entry)
+	}
+	return map[string]any{"runtime": "claude", "revision": revision, "models": models}
+}
+
+// currentModelSelection resolves what the session's picker should show as
+// selected: the explicit route's provider, or the inherited default.
+func (a *App) currentModelSelection(ctx context.Context, sessionID, userID string) string {
+	session, err := a.db.SessionByID(ctx, a.db.Read(), sessionID, userID)
+	if err != nil {
+		return ""
+	}
+	if route, err := a.db.SessionModelRouteFor(ctx, sessionID); err == nil && route.Mode == "explicit" {
+		// A deleted explicit target stays explicit and empty: showing the
+		// device default here would claim a route the gateway will refuse.
+		if route.ProviderID == nil {
+			return ""
+		}
+		return *route.ProviderID
+	}
+	if def, err := a.db.ConnectorModelDefaultFor(ctx, session.ConnectorID); err == nil {
+		return def.ProviderID
+	}
+	return ""
+}
+
+func providerProtocolLabel(protocol string) string {
+	switch protocol {
+	case "anthropic_messages":
+		return "Anthropic"
+	case "openai_chat_completions":
+		return "OpenAI"
+	default:
+		return protocol
+	}
+}
+
+// permissionCatalogItems is the fixed four-mode permission catalog. The
+// plugin API has no verified way to read or set the live mode of a running
+// session, so every mode is published but marked not remotely settable; the
+// mobile clients store a target while showing the honest limitation. When a
+// verified control path exists, this table is where availability flips.
+func permissionCatalogItems() []map[string]any {
+	modes := []struct{ ID, Label, Description string }{
+		{"default", "Ask every time", "Follow the session's permission rules; ask before anything not allowed."},
+		{"acceptEdits", "Accept edits", "Automatically accept allowed file edits; other actions still follow the rules."},
+		{"plan", "Plan", "Explore and plan without modifying files."},
+		{"auto", "Auto", "Claude decides permissions automatically; only available on supporting environments."},
+	}
+	out := make([]map[string]any, 0, len(modes))
+	for i, m := range modes {
+		out = append(out, map[string]any{
+			"id":             m.ID,
+			"displayName":    m.Label,
+			"selectionId":    m.ID,
+			"description":    m.Description,
+			"default":        i == 0,
+			"enabled":        false,
+			"disabledReason": "remote permission switching is not verified for this runtime yet; change it in the terminal",
+			"metadata": map[string]any{
+				"i18n": map[string]any{
+					"labelKey":       "dashboard.new.permissionModes.claude." + m.ID + ".label",
+					"descriptionKey": "dashboard.new.permissionModes.claude." + m.ID + ".description",
+				},
+			},
+		})
+	}
+	return out
 }
 
 // handlePermissionCatalog mirrors the model catalog for permission modes.
@@ -320,16 +479,17 @@ func (a *App) handlePermissionCatalog(w http.ResponseWriter, r *http.Request, us
 		"catalog": map[string]any{
 			"runtime":     "claude",
 			"revision":    1,
-			"permissions": []any{},
+			"permissions": permissionCatalogItems(),
 		},
 		"serverTime": timestampNow(),
 	})
 }
 
 // handleConnectorModelCatalog is the device-page variant of the session
-// catalog. There is only one runtime, and it publishes no catalog yet.
+// catalog: the account's providers with the device default flagged.
 func (a *App) handleConnectorModelCatalog(w http.ResponseWriter, r *http.Request, user store.User) {
-	if _, ok := a.ownedConnector(w, r, user); !ok {
+	connector, ok := a.ownedConnector(w, r, user)
+	if !ok {
 		return
 	}
 	if r.PathValue("runtime_id") != "claude" {
@@ -337,11 +497,7 @@ func (a *App) handleConnectorModelCatalog(w http.ResponseWriter, r *http.Request
 		return
 	}
 	httpx.OK(w, map[string]any{
-		"catalog": map[string]any{
-			"runtime":  "claude",
-			"revision": 1,
-			"models":   []any{},
-		},
+		"catalog":    a.modelCatalogForProviders(r.Context(), connector.ID, "", user.ID),
 		"serverTime": timestampNow(),
 	})
 }
@@ -359,7 +515,7 @@ func (a *App) handleConnectorPermissionCatalog(w http.ResponseWriter, r *http.Re
 		"catalog": map[string]any{
 			"runtime":     "claude",
 			"revision":    1,
-			"permissions": []any{},
+			"permissions": permissionCatalogItems(),
 		},
 		"serverTime": timestampNow(),
 	})
@@ -430,8 +586,19 @@ func (a *App) handleUpdateSelections(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	if err := a.applySelections(r.Context(), session.ID, body.Selections); err != nil {
-		httpx.Fail(w, err)
+		a.failModelGateway(w, err)
 		return
+	}
+	// A model selection is a route switch: watchers of this session must see
+	// the new state and catalog under a bumped sequence, and the gateway must
+	// stop using any cached decision for it.
+	_, changedModel := body.Selections["model"]
+	_, changedPermission := body.Selections["permission"]
+	if changedModel || changedPermission {
+		a.gateway.invalidateSession(session.ID)
+		if bumped, err := a.db.BumpSessionSeq(r.Context(), session.ID, user.ID); err == nil {
+			a.publishRouteChanged(r.Context(), bumped, user.ID)
+		}
 	}
 	updated, err := a.db.SessionByIDAny(r.Context(), a.db.Read(), session.ID)
 	if err != nil {
@@ -449,46 +616,98 @@ func (a *App) handleUpdateSelections(w http.ResponseWriter, r *http.Request, use
 // applySelections writes the known selection scopes to the session columns.
 // Unknown scopes are ignored: the clients may send an effort selection that
 // this server has nowhere to keep.
+//
+// A model selection is also a route switch: the catalog publishes one
+// selectionId per model provider, so choosing a model pins the session's
+// gateway route to that provider. A null model selection restores
+// inheritance of the device default. Permission selections stay target-only
+// until a verified control path exists (see permissionCatalogItems).
 func (a *App) applySelections(ctx context.Context, sessionID string, selections map[string]*string) error {
 	if len(selections) == 0 {
 		return nil
 	}
-	var model, permission any
-	hasModel, hasPermission := false, false
-	for scope, value := range selections {
-		switch scope {
-		case "model":
-			hasModel = true
-			if value != nil {
-				model = *value
-			}
-		case "permission":
-			hasPermission = true
-			if value != nil {
-				permission = *value
-			}
-		}
-	}
+	modelValue, hasModel := selections["model"]
+	permissionValue, hasPermission := selections["permission"]
 	if !hasModel && !hasPermission {
 		return nil
 	}
+
+	var routeError error
+	if hasModel {
+		session, err := a.db.SessionByIDAny(ctx, a.db.Read(), sessionID)
+		if err != nil {
+			return err
+		}
+		mode, providerID := "inherit_device_default", ""
+		if modelValue != nil && *modelValue != "" {
+			mode, providerID = "explicit", *modelValue
+		}
+		ownerID := sessionOwnerUserID(ctx, a, session)
+		// The catalog publishes provider ids as model selection ids, so an
+		// explicit value that is not one of this account's providers is either
+		// stale (the provider was deleted) or not a model at all. Reporting
+		// that is honest; silently keeping the old column would tell the
+		// client a switch happened when it did not.
+		if mode == "explicit" {
+			if _, err := a.db.ModelProviderOwned(ctx, providerID, ownerID); err != nil {
+				return httpx.BadRequest("the selected model provider no longer exists; refresh and choose another")
+			}
+		}
+		if mode != "" {
+			_, routeError = a.db.SetSessionModelRoute(ctx, sessionID, ownerID, mode, providerID, turnInFlight(session))
+			if routeError == nil {
+				a.gateway.invalidateSession(sessionID)
+			}
+		}
+	}
+	// A refused route means the whole selection is refused: writing the
+	// permission column anyway would leave the session half-updated.
+	if routeError != nil {
+		return routeError
+	}
+
 	sets := make([]string, 0, 3)
 	args := make([]any, 0, 4)
-	if hasModel {
+	// The legacy column mirrors the route. When the route write failed, the
+	// column must not be moved either, or readers would see a selection the
+	// gateway refuses to use.
+	if hasModel && routeError == nil {
+		var model any
+		if modelValue != nil {
+			model = *modelValue
+		}
 		sets = append(sets, "model_selection_id = ?")
 		args = append(args, model)
 	}
 	if hasPermission {
+		var permission any
+		if permissionValue != nil {
+			permission = *permissionValue
+		}
 		sets = append(sets, "permission_selection_id = ?")
 		args = append(args, permission)
 	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, store.NowMS(), sessionID)
-	return a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	err := a.db.Write(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
 			`UPDATE sessions SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	return routeError
+}
+
+// sessionOwnerUserID resolves the account that owns a session's connector.
+// Route writes verify ownership against it.
+func sessionOwnerUserID(ctx context.Context, a *App, session store.Session) string {
+	connector, err := a.db.ConnectorByID(ctx, session.ConnectorID)
+	if err != nil {
+		return ""
+	}
+	return connector.UserID
 }
 
 // handleRuntimeTypes lists the engines this connector could run.

@@ -92,6 +92,30 @@ func (b *Broker) Unsubscribe(sessionID string, sub *Subscriber) {
 	sub.Close()
 }
 
+// SessionsWithSubscribers lists the sessions at least one socket is watching.
+// Callers fan out catalog refreshes only to those, instead of paging an
+// account's whole session list and hitting the page limit.
+func (b *Broker) SessionsWithSubscribers() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]string, 0, len(b.subs))
+	for id, group := range b.subs {
+		if len(group.members) > 0 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// HasSubscribers reports whether any socket is watching the session, so
+// callers can skip building frames nobody will read.
+func (b *Broker) HasSubscribers(sessionID string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	group, ok := b.subs[sessionID]
+	return ok && len(group.members) > 0
+}
+
 // Publish delivers one frame to every subscriber of a session.
 //
 // Each session serializes its own publishes so all of its subscribers see the
