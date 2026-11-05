@@ -43,7 +43,7 @@ import { errorLog, log } from './log'
 import {
   isProcessAlive,
   listBunProcesses,
-  readRegistry,
+  readRegistryWithReal,
   verifySession,
   type BunProcess,
   type RegistryEntry,
@@ -111,7 +111,7 @@ async function discoverRunningSessions(): Promise<void> {
   if (discovering) return
   discovering = true
   try {
-    const entries = await readRegistry(config.claudeConfigDir)
+    const entries = await readRegistryWithReal(config.claudeConfigDir)
     const processes = await listBunProcesses()
     for (const entry of entries) {
       if (!isProcessAlive(entry.pid)) continue
@@ -290,7 +290,7 @@ function managedRuntimeState(
 async function collectRuntimeStates(): Promise<SessionRuntimeState[]> {
   const states: SessionRuntimeState[] = []
   // One registry read + one process scan per report, not one per session.
-  const entries = await readRegistry(config.claudeConfigDir)
+  const entries = await readRegistryWithReal(config.claudeConfigDir)
   const processes = await listBunProcesses()
   for (const localSessionId of trackedSessions) {
     const managedState = managedRuntimeState(localSessionId, entries, processes)
@@ -486,7 +486,7 @@ async function handleRequest(
         trackedSessions.add(localSessionId)
         const cwd = stringField(params, 'cwd', 2048)
         const bridgeSessionId = stringField(params, 'bridgeSessionId', 200)
-        const entries = await readRegistry(config.claudeConfigDir)
+        const entries = await readRegistryWithReal(config.claudeConfigDir)
         const processes = await listBunProcesses()
         const managedState = managedRuntimeState(
           localSessionId,

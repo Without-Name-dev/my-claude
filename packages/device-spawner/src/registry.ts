@@ -50,9 +50,25 @@ function isUuid(value: string): boolean {
 export async function readRegistry(
   configDir: string,
 ): Promise<RegistryEntry[]> {
-  // Isolated config (spawned terminals) + real config (manual terminals).
+  return mergeRegistryEntries(
+    await Promise.all([configDir].map(dir => readRegistryDir(dir))),
+  )
+}
+
+/**
+ * Registry view used by discovery: isolated config (spawned terminals) plus
+ * the real config dir (terminals started by hand), deduped by pid. Kept
+ * separate from readRegistry so the single-dir read stays hermetic for tests.
+ */
+export async function readRegistryWithReal(
+  configDir: string,
+): Promise<RegistryEntry[]> {
   const dirs = [...new Set([configDir, realConfigDir()])]
   const pages = await Promise.all(dirs.map(dir => readRegistryDir(dir)))
+  return mergeRegistryEntries(pages)
+}
+
+function mergeRegistryEntries(pages: RegistryEntry[][]): RegistryEntry[] {
   const byPid = new Map<number, RegistryEntry>()
   for (const entry of pages.flat()) {
     const existing = byPid.get(entry.pid)
@@ -296,7 +312,7 @@ export async function verifySession(
     processes?: Map<number, BunProcess>
   } = {},
 ): Promise<VerifiedSession> {
-  const entries = await readRegistry(configDir)
+  const entries = await readRegistryWithReal(configDir)
   const processes = options.processes ?? (await listBunProcesses())
   // After `--resume`, the CLI can leave the startup session id in its PID
   // file while switching the in-memory session. Match the launched process
@@ -406,7 +422,7 @@ export async function waitForBridge(
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
     const alive = isProcessAlive(pid)
-    const entries = await readRegistry(configDir)
+    const entries = await readRegistryWithReal(configDir)
     const entry = entries.find(item => item.pid === pid)
     onTick({ elapsedMs: Date.now() - startedAt, alive, entry })
     if (!alive) return undefined

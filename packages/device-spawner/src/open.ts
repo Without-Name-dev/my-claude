@@ -27,7 +27,7 @@ import { log } from './log'
 import {
   findLaunchPids,
   isProcessAlive,
-  readRegistry,
+  readRegistryWithReal,
   samePath,
   verifySession,
   type RegistryEntry,
@@ -352,7 +352,7 @@ export async function openSession(
         }
       }
 
-      const entries = await readRegistry(config.claudeConfigDir)
+      const entries = await readRegistryWithReal(config.claudeConfigDir)
       const entry =
         (currentPid !== undefined
           ? entries.find(

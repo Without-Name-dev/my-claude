@@ -6,9 +6,11 @@ import plan from '../commands/plan/index.js'
 import proactive from '../commands/proactive.js'
 
 describe('isBridgeSafeCommand', () => {
-  test('allows bridge-safe local-jsx commands', () => {
-    expect(isBridgeSafeCommand(plan)).toBe(true)
-    expect(isBridgeSafeCommand(proactive)).toBe(true)
+  test('blocks local-jsx commands even when they opt into bridgeSafe', () => {
+    // local-jsx renders Ink UI, which the remote client cannot display; the
+    // opt-in flag alone is no longer enough (plan/proactive used to pass).
+    expect(isBridgeSafeCommand(plan)).toBe(false)
+    expect(isBridgeSafeCommand(proactive)).toBe(false)
   })
 
   test('continues allowing explicit local bridge-safe commands', () => {
