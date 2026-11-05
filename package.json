@@ -95,7 +95,7 @@
     "@aws-sdk/credential-provider-node": "^3.972.36",
     "@aws-sdk/credential-providers": "^3.1037.0",
     "@azure/identity": "^4.13.1",
-    "@biomejs/biome": "^2.4.12",
+    "@biomejs/biome": "2.4.12",
     "@claude-code-best/agent-tools": "workspace:*",
     "@claude-code-best/builtin-tools": "workspace:*",
     "@claude-code-best/mcp-client": "workspace:*",
