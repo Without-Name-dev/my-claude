@@ -30,3 +30,5 @@ existing app instead of creating a second one.
 - The app needs the server reachable over HTTP; the workflow adds the ATS
   exception to the generated `Info.plist`.
 - Change `server.url` in `capacitor.config.ts` when the public address changes.
+
+The shell is deployed from CI; see `.github/workflows/ios-unsigned-ipa.yml`.
