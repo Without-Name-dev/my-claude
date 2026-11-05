@@ -22,6 +22,7 @@
     (function () {
       var stored = 'system';
       var dark = false;
+      var handlers = null;
       try {
         stored = localStorage.getItem('theme') || 'system';
         dark =
@@ -34,7 +35,7 @@
       // Tell the iOS shell which chrome (status bar, launch + splash colour)
       // to use. It remembers the choice for the next cold launch.
       try {
-        var handlers = window.webkit && window.webkit.messageHandlers;
+        handlers = window.webkit && window.webkit.messageHandlers;
         if (handlers && handlers.appearance) {
           handlers.appearance.postMessage(stored);
         }
