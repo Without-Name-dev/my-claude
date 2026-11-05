@@ -21,9 +21,12 @@ export const Conversation = ({ className, ...props }: ConversationProps) => (
 
 export type ConversationContentProps = ComponentProps<typeof StickToBottom.Content>;
 
-export const ConversationContent = ({ className, ...props }: ConversationContentProps) => (
+export const ConversationContent = ({ className, scrollClassName, ...props }: ConversationContentProps) => (
   <StickToBottom.Content
     className={cn('mx-auto flex max-w-3xl flex-col gap-2 px-4 py-8 sm:px-8 sm:py-12 min-w-0', className)}
+    // Stops a drag at the end of the transcript from chaining to the page;
+    // the WKWebView rubber-banding is what made the screen shake.
+    scrollClassName={cn('rcs-scroller', scrollClassName)}
     {...props}
   />
 );

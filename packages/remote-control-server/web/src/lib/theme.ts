@@ -38,6 +38,25 @@ function getStoredTheme(): Theme {
   return 'system'
 }
 
+/** Ask the iOS shell to match its status bar and surfaces to our theme. */
+export function syncNativeAppearance(theme: Theme) {
+  try {
+    const handlers = (
+      window as unknown as {
+        webkit?: {
+          messageHandlers?: Record<
+            string,
+            { postMessage: (v: unknown) => void }
+          >
+        }
+      }
+    ).webkit?.messageHandlers
+    handlers?.appearance?.postMessage(theme)
+  } catch {
+    // Not running inside the native shell.
+  }
+}
+
 function applyTheme(theme: 'light' | 'dark') {
   const root = document.documentElement
   root.classList.remove('light', 'dark')
@@ -83,6 +102,9 @@ export function ThemeProvider({
     const resolved = theme === 'system' ? getSystemTheme() : theme
     setResolvedTheme(resolved)
     applyTheme(resolved)
+    // Send the user's *choice* (not the resolved value) so the shell follows
+    // the system again when they pick "system".
+    syncNativeAppearance(theme)
   }, [theme])
 
   // Listen for system theme changes

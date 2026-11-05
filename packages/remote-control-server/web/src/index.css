@@ -160,6 +160,13 @@
   height: var(--app-height, 100dvh);
 }
 
+/* Transcript scroller: native momentum, and no scroll chaining onto the page.
+   Chaining is what let a drag past the end rubber-band the whole WKWebView. */
+.rcs-scroller {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 /* Safe-area helpers for the iOS wrapper / standalone PWA. */
 .safe-top {
   padding-top: env(safe-area-inset-top, 0px);

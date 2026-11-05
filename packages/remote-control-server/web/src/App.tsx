@@ -88,17 +88,18 @@ export default function App() {
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
+    let lastHeight = 0;
+    // Only react to real height changes (the keyboard). Listening to scroll and
+    // forcing scrollTo(0,0) fights the user's gesture and makes the page shake.
     const sync = () => {
-      document.documentElement.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
-      window.scrollTo(0, 0);
+      const height = Math.round(viewport.height);
+      if (height === lastHeight) return;
+      lastHeight = height;
+      document.documentElement.style.setProperty('--app-height', `${height}px`);
     };
     sync();
     viewport.addEventListener('resize', sync);
-    viewport.addEventListener('scroll', sync);
-    return () => {
-      viewport.removeEventListener('resize', sync);
-      viewport.removeEventListener('scroll', sync);
-    };
+    return () => viewport.removeEventListener('resize', sync);
   }, []);
 
   useEffect(() => {
