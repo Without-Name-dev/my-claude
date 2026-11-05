@@ -35,12 +35,15 @@ jobs:
 
       - name: Generate the project
         working-directory: apps/ios-native
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          ls -la
+          ls -la ClaudeRemote.xcodeproj
 
       - name: Build unsigned
         working-directory: apps/ios-native
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           xcodebuild \
             -project ClaudeRemote.xcodeproj \
             -target ClaudeRemote \
@@ -50,8 +53,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | tee "$RUNNER_TEMP/native-build.log"
-          tail -n 20 "$RUNNER_TEMP/native-build.log"
+            build 2>&1 | tee native-build.log
+          tail -n 20 native-build.log
 
       - name: Publish build errors
         if: failure()
@@ -60,11 +63,16 @@ jobs:
         run: |
           {
             echo "commit ${GITHUB_SHA}"
-            tail -n 150 "$RUNNER_TEMP/native-build.log" 2>/dev/null || true
+            echo "=== workspace ==="
+            ls -la apps/ios-native || true
+            echo "=== build log ==="
+            tail -n 220 apps/ios-native/native-build.log 2>/dev/null || true
           } > native-errors.txt
           wc -l native-errors.txt
           gh release delete ios-native-errors --yes --cleanup-tag >/dev/null 2>&1 || true
-          gh release create ios-native-errors native-errors.txt             --title "iOS native build errors" --notes "Diagnostics from the latest failed native build"
+          gh release create ios-native-errors native-errors.txt \
+            --title "iOS native build errors" \
+            --notes "Diagnostics from the latest failed native build"
 
       - name: Package IPA
         working-directory: apps/ios-native

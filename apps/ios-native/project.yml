@@ -19,8 +19,10 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources
+    # Keep the plist out of `sources`; otherwise Xcode sees two build commands
+    # producing the same Info.plist.
     info:
-      path: Sources/Info.plist
+      path: Info.plist
       properties:
         CFBundleDisplayName: Claude Remote
         CFBundleName: ClaudeRemote
