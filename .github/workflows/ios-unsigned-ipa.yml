@@ -28,6 +28,9 @@ permissions:
   # The build publishes the IPA as a release asset so it can be downloaded
   # without signing in, unlike an Actions artifact.
   contents: write
+  # Surface compile errors as check annotations and a release asset; logs
+  # themselves need an authenticated session to download.
+  checks: write
 
 # Builds race on the same release tag: when two finished out of order the older
 # commit's IPA became "latest" and the server synced it. Serialize them.
@@ -91,6 +94,20 @@ jobs:
             done < <(grep -E '(^|[[:space:]])error:|fatal error:' "$BUILD_LOG" | tail -n 40)
           fi
           exit "$BUILD_STATUS"
+
+      - name: Publish build errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG="${RUNNER_TEMP}/ios-archive.log"
+          {
+            echo "commit ${GITHUB_SHA}"
+            grep -nE "error:|fatal error:" "$LOG" | tail -n 300 || true
+          } > errors.txt
+          wc -l errors.txt
+          gh release delete ios-build-errors --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-build-errors errors.txt             --title "iOS build errors"             --notes "Diagnostics from the most recent failed iOS build"
 
       - name: Package IPA
         run: |
