@@ -108,6 +108,10 @@ export default function App() {
       if (height === lastHeight) return;
       lastHeight = height;
       document.documentElement.style.setProperty('--app-height', `${height}px`);
+      // Keyboard open? Then the home-indicator inset must not be reserved
+      // above the keys, and the composer can sit flush with the keyboard.
+      const layoutHeight = window.innerHeight;
+      document.documentElement.classList.toggle('kb-open', layoutHeight - height > 120);
       // Before this resize lands iOS scrolls the document up to reveal the
       // focused composer. The shell now fits the keyboard, so there is nothing
       // left to scroll — reset once. Only height changes run this; doing it on
@@ -158,7 +162,7 @@ export default function App() {
 
   return (
     <ThemeProvider defaultTheme="system">
-      <div className="app-shell safe-top flex flex-col overflow-hidden bg-surface-0 text-text-primary">
+      <div className="app-shell safe-top safe-x flex flex-col overflow-hidden bg-surface-0 text-text-primary">
         <Suspense
           fallback={
             <div className="flex flex-1 items-center justify-center">

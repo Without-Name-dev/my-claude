@@ -50,7 +50,7 @@ export function ToolPermissionButtons({ requestId, options, onRespond, className
     <div className={cn('p-3 border-t border-warning-border/30 bg-warning-bg/50', className)}>
       <div className="flex items-center gap-2 mb-2">
         <ShieldAlertIcon className="size-4 text-warning-text" />
-        <span className="text-xs font-medium text-warning-text">Permission Required</span>
+        <span className="text-xs font-medium text-warning-text">需要权限</span>
       </div>
       <div className="flex flex-wrap gap-2">
         {options.map(option => (

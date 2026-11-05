@@ -208,6 +208,7 @@ export function Workspace({
                 value={search}
                 onChange={event => setSearch(event.target.value)}
                 placeholder="搜索项目或会话"
+                aria-label="搜索项目或会话"
                 className="h-10 w-full rounded-lg border border-border bg-surface-2 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none sm:text-sm"
               />
             </div>
@@ -236,7 +237,7 @@ export function Workspace({
                     onNavigate(device.id);
                   }}
                   className={cn(
-                    'flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors',
+                    'flex min-h-10 shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors',
                     device.id === activeDeviceId
                       ? 'border-brand/40 bg-brand/10 text-text-primary'
                       : 'border-border bg-surface-2 text-text-secondary',
@@ -263,7 +264,7 @@ export function Workspace({
 
         <div className="flex-1 overflow-y-auto">
           {projectsError && <p className="px-4 py-2 text-xs text-status-error">{projectsError}</p>}
-          <div className="pb-4">
+          <div className="pb-[calc(1rem+env(safe-area-inset-bottom))]">
             {filteredProjects.map(project => {
               const expanded = expandedProjectId === project.projectId;
               const sessions = filteredSessions(project);

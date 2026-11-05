@@ -45,6 +45,9 @@
 
   /* Status */
   --color-status-active: #5d8a3c;
+  /* The device/connection dots use bg-status-success; without this token the
+     utility is never generated and the "online" dot was invisible. */
+  --color-status-success: #5d8a3c;
   --color-status-running: #3d72a8;
   --color-status-idle: #7c3aed;
   --color-status-error: #b83b31;
@@ -178,8 +181,19 @@
 .safe-top {
   padding-top: env(safe-area-inset-top, 0px);
 }
+/* Landscape on a notched phone puts the sensor housing over the left edge. */
+.safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* The home-indicator inset still resolves while the keyboard is up, which
+   leaves a dead strip between the composer and the keys. */
+html.kb-open .composer-safe {
+  padding-bottom: 0.75rem;
 }
 
 /* ============================================================

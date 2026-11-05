@@ -43,7 +43,14 @@ export function ChatView({
     <Conversation className="flex-1">
       <ConversationContent>
         {!hasMessages ? (
-          <ConversationEmptyState title={emptyTitle} description={emptyDescription} />
+          isLoading ? (
+            <div role="status" className="flex flex-1 flex-col items-center justify-center gap-4 py-24 text-center">
+              <span className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-brand" />
+              <p className="text-sm text-text-muted">{emptyTitle}</p>
+            </div>
+          ) : (
+            <ConversationEmptyState title={emptyTitle} description={emptyDescription} />
+          )
         ) : (
           <>
             {grouped.map(item => {

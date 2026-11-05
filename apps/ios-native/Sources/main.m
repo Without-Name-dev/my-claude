@@ -428,7 +428,9 @@ static NSString *const CCRAppearanceChangedNotification =
 
 // MARK: - App delegate
 
-@interface AppDelegate : UIResponder <UIApplicationDelegate, WKNavigationDelegate>
+@interface AppDelegate : UIResponder <UIApplicationDelegate,
+                                      WKNavigationDelegate,
+                                      WKUIDelegate>
 @property(strong, nonatomic) UIWindow *window;
 @property(strong, nonatomic) WKWebView *web;
 @property(strong, nonatomic) SplashView *splash;
@@ -465,6 +467,10 @@ static NSString *const CCRAppearanceChangedNotification =
       UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   web.allowsBackForwardNavigationGestures = YES;
   web.navigationDelegate = self;
+  // Without a WKUIDelegate, window.confirm() returns false and
+  // window.alert() does nothing — the "restart terminal" confirmation in the
+  // page looked like a dead button.
+  web.UIDelegate = self;
   // The page owns safe-area insets and the 100dvh layout.
   web.scrollView.contentInsetAdjustmentBehavior =
       UIScrollViewContentInsetAdjustmentNever;
@@ -633,6 +639,119 @@ static NSString *const CCRAppearanceChangedNotification =
     return;
   }
   [self showError:error];
+}
+
+#pragma mark - WKUIDelegate (JS dialogs)
+
+- (void)presentAlert:(UIAlertController *)alert completion:(void (^)(void))done {
+  UIViewController *root = self.window.rootViewController;
+  if (!root) {
+    // Never leave the JS completion handler hanging.
+    done();
+    return;
+  }
+  UIViewController *top = root;
+  while (top.presentedViewController) {
+    top = top.presentedViewController;
+  }
+  [top presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptAlertPanelWithMessage:(NSString *)message
+                      initiatedByFrame:(WKFrameInfo *)frame
+                     completionHandler:(void (^)(void))completionHandler {
+  UIAlertController *alert =
+      [UIAlertController alertControllerWithTitle:nil
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  __block BOOL done = NO;
+  [alert addAction:[UIAlertAction actionWithTitle:@"好"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction *action) {
+                                            if (done) return;
+                                            done = YES;
+                                            completionHandler();
+                                          }]];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self presentAlert:alert
+            completion:^{
+              if (done) return;
+              done = YES;
+              completionHandler();
+            }];
+  });
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptConfirmPanelWithMessage:(NSString *)message
+                        initiatedByFrame:(WKFrameInfo *)frame
+                       completionHandler:(void (^)(BOOL))completionHandler {
+  UIAlertController *alert =
+      [UIAlertController alertControllerWithTitle:nil
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  __block BOOL done = NO;
+  [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(UIAlertAction *action) {
+                                            if (done) return;
+                                            done = YES;
+                                            completionHandler(NO);
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"确定"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction *action) {
+                                            if (done) return;
+                                            done = YES;
+                                            completionHandler(YES);
+                                          }]];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self presentAlert:alert
+            completion:^{
+              if (done) return;
+              done = YES;
+              completionHandler(NO);
+            }];
+  });
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+                              defaultText:(NSString *)defaultText
+                         initiatedByFrame:(WKFrameInfo *)frame
+                        completionHandler:(void (^)(NSString *_Nullable))completionHandler {
+  UIAlertController *alert =
+      [UIAlertController alertControllerWithTitle:nil
+                                          message:prompt
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+    textField.text = defaultText;
+  }];
+  __block BOOL done = NO;
+  [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(UIAlertAction *action) {
+                                            if (done) return;
+                                            done = YES;
+                                            completionHandler(nil);
+                                          }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"确定"
+                                            style:UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction *action) {
+                                            if (done) return;
+                                            done = YES;
+                                            completionHandler(
+                                                alert.textFields.firstObject.text);
+                                          }]];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self presentAlert:alert
+            completion:^{
+              if (done) return;
+              done = YES;
+              completionHandler(defaultText ?: @"");
+            }];
+  });
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {

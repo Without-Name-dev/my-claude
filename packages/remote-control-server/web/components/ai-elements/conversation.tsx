@@ -9,11 +9,16 @@ import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
+const reduceMotion =
+  typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn('relative min-h-0 flex-1 overflow-y-hidden overflow-x-hidden', className)}
-    initial="smooth"
-    resize="smooth"
+    // A long transcript used to glide for a second on open, and every keyboard
+    // resize re-animated the scroll. Respect the system motion setting.
+    initial={reduceMotion ? 'instant' : 'smooth'}
+    resize={reduceMotion ? 'instant' : 'smooth'}
     role="log"
     {...props}
   />
@@ -23,7 +28,7 @@ export type ConversationContentProps = ComponentProps<typeof StickToBottom.Conte
 
 export const ConversationContent = ({ className, scrollClassName, ...props }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn('mx-auto flex max-w-3xl flex-col gap-2 px-4 py-8 sm:px-8 sm:py-12 min-w-0', className)}
+    className={cn('mx-auto flex min-h-full max-w-3xl flex-col gap-2 px-4 py-8 sm:px-8 sm:py-12 min-w-0', className)}
     // Stops a drag at the end of the transcript from chaining to the page;
     // the WKWebView rubber-banding is what made the screen shake.
     scrollClassName={cn('rcs-scroller', scrollClassName)}

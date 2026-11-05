@@ -115,7 +115,7 @@ function SingleToolCard({ tool, compact, onPermissionRespond }: SingleToolCardPr
         <span className="text-xs font-display font-medium text-text-secondary group-hover:text-text-primary transition-colors truncate">
           {tool.title}
         </span>
-        {tool.status === 'running' && <span className="text-[10px] text-status-running animate-pulse">running</span>}
+        {tool.status === 'running' && <span className="text-[10px] text-status-running animate-pulse">运行中</span>}
       </button>
 
       {/* 权限请求按钮 */}

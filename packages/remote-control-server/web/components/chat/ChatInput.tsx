@@ -1,4 +1,13 @@
-import { useState, useRef, useCallback, useMemo, type KeyboardEvent, type ClipboardEvent, type ReactNode } from 'react';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useLayoutEffect,
+  type KeyboardEvent,
+  type ClipboardEvent,
+  type ReactNode,
+} from 'react';
 import { cn } from '../../src/lib/utils';
 import { ArrowUp, Square, Paperclip, Plus, Slash } from 'lucide-react';
 import type { ChatInputMessage, UserMessageImage } from '../../src/lib/types';
@@ -101,6 +110,10 @@ export function ChatInput({
         }
       }
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+        // Soft keyboards label this key "换行/newline" and have no Shift, so
+        // Enter inserts a line break there; the send button submits. Hardware
+        // keyboards keep the desktop behaviour.
+        if (window.matchMedia?.('(pointer: coarse)').matches) return;
         e.preventDefault();
         if (isLoading) {
           onInterrupt?.();
@@ -165,27 +178,44 @@ export function ChatInput({
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleCommandSelect = useCallback((command: AvailableCommand) => {
-    setText(`/${command.name} `);
-    setShowCommandMenu(false);
-    setCommandFilter('');
-    textareaRef.current?.focus();
-  }, []);
+  const handleCommandSelect = useCallback(
+    (command: AvailableCommand) => {
+      // Keep anything the user already typed instead of throwing the draft
+      // away: "/plan 帮我重构这个函数".
+      const draft = text.startsWith('/') ? '' : text.trim();
+      setText(`/${command.name} ${draft}`);
+      setShowCommandMenu(false);
+      setCommandFilter('');
+      textareaRef.current?.focus();
+    },
+    [text],
+  );
 
   const toggleCommandMenu = useCallback(() => {
     if (showCommandMenu) {
       setShowCommandMenu(false);
       setCommandFilter('');
-    } else {
-      const next = text.startsWith('/') ? text : '/' + text;
-      if (next !== text) setText(next);
-      setShowCommandMenu(true);
-      // Filter on the text that will actually be in the input; using the old
-      // value made a typed prefix invisible to the menu.
-      setCommandFilter(next.slice(1));
-      textareaRef.current?.focus();
+      return;
     }
+    const slashMode = text.startsWith('/');
+    // Tapping "/" used to prefix the whole draft, turning "hello" into
+    // "/hello". Only seed the slash when the composer is empty.
+    if (!text) setText('/');
+    setShowCommandMenu(true);
+    // Filter on the text that will actually be in the input; using the old
+    // value made a typed prefix invisible to the menu.
+    setCommandFilter(slashMode ? text.slice(1) : '');
+    textareaRef.current?.focus();
   }, [showCommandMenu, text]);
+
+  // The textarea grows with the text — including text set programmatically by
+  // the command menu, which used to leave a one-line command in a 200px box.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [text]);
 
   const canSend = (text.trim() || images.length > 0) && !disabled;
   // A stop button with no handler is a lie: only show it when interrupting is
@@ -195,7 +225,7 @@ export function ChatInput({
   return (
     <div
       className={cn(
-        'w-full max-w-3xl mx-auto px-3 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
+        'composer-safe w-full max-w-3xl mx-auto px-3 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
         className,
       )}
     >
@@ -253,6 +283,7 @@ export function ChatInput({
               placeholder={placeholder}
               disabled={disabled}
               rows={1}
+              aria-label="消息输入框"
               className={cn(
                 'w-full resize-none border-none bg-transparent outline-none',
                 'text-base text-text-primary placeholder:text-text-muted font-display sm:text-sm',
@@ -270,7 +301,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
                     disabled={disabled}
                     aria-label="添加附件"
                   >
@@ -291,7 +322,7 @@ export function ChatInput({
                   type="button"
                   onClick={toggleCommandMenu}
                   className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50',
+                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50',
                     showCommandMenu
                       ? 'bg-brand/15 text-brand'
                       : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
@@ -313,7 +344,7 @@ export function ChatInput({
                 disabled={canInterrupt ? false : !canSend}
                 aria-label={canInterrupt ? '停止生成' : '发送消息'}
                 className={cn(
-                  'ml-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all',
+                  'ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all',
                   canInterrupt
                     ? 'bg-text-primary text-surface-2 hover:opacity-90'
                     : canSend

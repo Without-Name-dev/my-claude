@@ -48,7 +48,7 @@ export function UserBubble({ entry }: UserBubbleProps) {
             <div
               ref={contentRef}
               className={cn(
-                'px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap font-display leading-relaxed',
+                'px-4 py-2.5 text-sm text-text-primary whitespace-pre-wrap break-words font-display leading-relaxed',
                 !expanded && overflowing && `max-h-[${COLLAPSED_MAX_HEIGHT}px]`,
               )}
               style={!expanded && overflowing ? { maxHeight: `${COLLAPSED_MAX_HEIGHT}px` } : undefined}
@@ -131,19 +131,40 @@ export function AssistantBubble({ entry, isStreaming }: AssistantBubbleProps) {
 // =============================================================================
 
 function ImageThumbnail({ image }: { image: UserMessageImage }) {
+  // A WKWebView without a WKUIDelegate returns null from window.open(), so
+  // tapping used to do nothing. Preview in-app instead.
+  const [open, setOpen] = useState(false);
   const dataUrl = `data:${image.mimeType};base64,${image.data}`;
   return (
-    <button
-      type="button"
-      className="rounded-lg overflow-hidden border border-border hover:border-brand/40 transition-colors cursor-pointer"
-      onClick={() => {
-        const w = window.open('');
-        if (w) {
-          w.document.write(`<img src="${dataUrl}" style="max-width:100%;max-height:100%" />`);
-        }
-      }}
-    >
-      <img src={dataUrl} alt="Uploaded image" className="h-20 w-20 object-cover" />
-    </button>
+    <>
+      <button
+        type="button"
+        className="rounded-lg overflow-hidden border border-border hover:border-brand/40 transition-colors cursor-pointer"
+        onClick={() => setOpen(true)}
+        aria-label="查看大图"
+      >
+        <img src={dataUrl} alt="Uploaded image" className="h-20 w-20 object-cover" />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setOpen(false)}
+        >
+          <img src={dataUrl} alt="Uploaded image" className="max-h-full max-w-full rounded-lg object-contain" />
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="关闭"
+            className="absolute right-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-2xl leading-none text-white backdrop-blur"
+            style={{ top: 'calc(0.75rem + env(safe-area-inset-top))' }}
+          >
+            {'×'}
+          </button>
+        </div>
+      )}
+    </>
   );
 }

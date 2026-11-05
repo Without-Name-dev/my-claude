@@ -86,7 +86,9 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
         className="max-h-[320px] overflow-y-auto py-1"
         // Never taller than the space above the composer: with the keyboard
         // open the menu would otherwise be clipped by the status bar.
-        style={{ maxHeight: 'min(320px, calc(var(--app-height, 100dvh) - 210px))' }}
+        style={{
+          maxHeight: 'clamp(120px, calc(var(--app-height, 100dvh) - 220px), 320px)',
+        }}
       >
         {filtered.length === 0 ? (
           <div className="text-xs text-text-muted font-display py-3 text-center">没有匹配的命令</div>
@@ -99,7 +101,7 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
               onClick={() => onSelect(cmd)}
               onMouseEnter={() => setActiveIndex(index)}
               className={cn(
-                'flex w-full items-center gap-2 px-3 py-2 cursor-pointer rounded-lg mx-1 text-left',
+                'flex min-h-11 w-full items-center gap-2 px-3 py-2 cursor-pointer rounded-lg mx-1 text-left',
                 'transition-colors',
                 index === activeIndex ? 'bg-brand/10 text-text-primary' : 'text-text-secondary hover:bg-surface-1/50',
               )}

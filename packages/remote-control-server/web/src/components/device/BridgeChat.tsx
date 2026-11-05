@@ -387,9 +387,15 @@ export function BridgeChat({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         {header}
         {controlError && (
-          <div className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">{controlError}</div>
+          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            {controlError}
+          </div>
         )}
-        {error && <div className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">{error}</div>}
+        {error && (
+          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
         <ChatView
           entries={entries}
           isLoading={isLoading}
@@ -397,7 +403,9 @@ export function BridgeChat({
           emptyDescription="输入消息继续这个会话"
         />
         {permissions.length > 0 && (
-          <div className="border-t bg-surface-1 px-4 py-3">
+          /* A long AskUserQuestion/plan card used to squeeze the transcript and
+             could push the composer off a phone screen; scroll it instead. */
+          <div className="max-h-[50%] overflow-y-auto overscroll-contain border-t bg-surface-1 px-4 py-3">
             <div className="mx-auto max-w-3xl space-y-3">
               {permissions.map(request => (
                 <PermissionEventView
@@ -461,12 +469,14 @@ export function BridgeChat({
                   value={modelId}
                   onChange={event => void changeModel(event.target.value)}
                   disabled={controlPending}
-                  className="h-9 w-[8.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-6 text-xs text-text-secondary outline-none disabled:opacity-60 sm:w-[11rem]"
+                  className="h-9 w-[9.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-6 text-xs text-text-secondary outline-none disabled:opacity-60 sm:w-[11rem]"
                   aria-label="切换模型"
                 >
                   {models.map(model => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
+                    <option key={model.id} value={model.id} title={model.name}>
+                      {/* Provider prefixes make the closed select truncate to
+                          "deepseek/deeps…" on a phone; show the model itself. */}
+                      {shortModelName(model.name)}
                     </option>
                   ))}
                 </select>
@@ -478,6 +488,12 @@ export function BridgeChat({
       </div>
     </TooltipProvider>
   );
+}
+
+/** "deepseek/deepseek-flash[1m]" -> "deepseek-flash[1m]" for narrow pickers. */
+function shortModelName(name: string): string {
+  const tail = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
+  return tail || name;
 }
 
 function PermissionEventView({

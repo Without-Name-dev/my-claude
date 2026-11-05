@@ -30,7 +30,7 @@ export function PermissionPromptView({
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-warning-border/15 text-warning-text">
           <TriangleAlert className="h-3 w-3" />
         </span>
-        <span className="text-sm font-semibold text-warning-text">Permission Request</span>
+        <span className="text-sm font-semibold text-warning-text">权限请求</span>
       </div>
       {description && <div className="mb-2 text-sm text-text-secondary">{esc(description)}</div>}
       <div className="mb-2 font-mono text-xs font-bold text-text-primary">{esc(toolName)}</div>
@@ -44,13 +44,13 @@ export function PermissionPromptView({
           onClick={onApprove}
           className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
         >
-          Approve
+          允许
         </button>
         <button
           onClick={onReject}
           className="rounded-lg bg-status-error/20 px-4 py-2 text-sm font-medium text-status-error hover:bg-status-error/30 transition-colors"
         >
-          Reject
+          拒绝
         </button>
       </div>
     </div>
@@ -113,9 +113,7 @@ export function AskUserPanelView({
 
     return (
       <div className="rounded-xl border border-brand/30 bg-surface-1 p-4">
-        <div className="mb-3 text-sm font-semibold text-text-primary">
-          {esc(description || q.question || 'Question')}
-        </div>
+        <div className="mb-3 text-sm font-semibold text-text-primary">{esc(description || q.question || '问题')}</div>
         <div className="space-y-2">
           {(q.options || []).map((opt, j) => {
             const isSelected = multiSelect ? ((answers[0] as number[]) || []).includes(j) : answers[0] === j;
@@ -140,7 +138,7 @@ export function AskUserPanelView({
               type="text"
               value={otherTexts[0] || ''}
               onChange={e => setOtherTexts({ ...otherTexts, [0]: e.target.value })}
-              placeholder="Other..."
+              placeholder="其他…"
               className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none"
               onKeyDown={e => e.key === 'Enter' && handleOtherSubmit(0)}
             />
@@ -148,7 +146,7 @@ export function AskUserPanelView({
               onClick={() => handleOtherSubmit(0)}
               className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
             >
-              Send
+              发送
             </button>
           </div>
         </div>
@@ -157,13 +155,13 @@ export function AskUserPanelView({
             onClick={handleSubmit}
             className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
           >
-            Submit
+            提交
           </button>
           <button
             onClick={onSkip}
             className="rounded-lg border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
           >
-            Skip
+            跳过
           </button>
         </div>
       </div>
@@ -175,7 +173,7 @@ export function AskUserPanelView({
 
   return (
     <div className="rounded-xl border border-brand/30 bg-surface-1 p-4">
-      <div className="mb-3 text-sm font-semibold text-text-primary">{esc(description || 'Questions')}</div>
+      <div className="mb-3 text-sm font-semibold text-text-primary">{esc(description || '问题')}</div>
       <div className="mb-3 flex gap-1 overflow-x-auto">
         {questions.map((q, i) => (
           <button
@@ -212,13 +210,13 @@ export function AskUserPanelView({
             onClick={handleSubmit}
             className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
           >
-            Submit All
+            全部提交
           </button>
           <button
             onClick={onSkip}
             className="rounded-lg border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
           >
-            Skip
+            跳过
           </button>
         </div>
       </div>
@@ -272,7 +270,7 @@ function QuestionTab({
             type="text"
             value={otherTexts[qIdx] || ''}
             onChange={e => onOtherTextChange(qIdx, e.target.value)}
-            placeholder="Other..."
+            placeholder="其他…"
             className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none"
             onKeyDown={e => e.key === 'Enter' && onOtherSubmit(qIdx)}
           />
@@ -317,9 +315,7 @@ export function PlanPanelView({
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand/15 text-brand">
           <Check className="h-3 w-3" strokeWidth={2.5} />
         </span>
-        <span className="text-sm font-semibold text-text-primary">
-          {isEmpty ? 'Exit plan mode?' : 'Ready to code?'}
-        </span>
+        <span className="text-sm font-semibold text-text-primary">{isEmpty ? '退出计划模式？' : '准备开始编写？'}</span>
       </div>
       {!isEmpty && (
         <div
@@ -331,28 +327,28 @@ export function PlanPanelView({
       <div className="space-y-2">
         {isEmpty ? (
           <>
-            <PlanOption selected={selected === 'yes-default'} onClick={() => setSelected('yes-default')} label="Yes" />
-            <PlanOption selected={selected === 'no'} onClick={() => setSelected('no')} label="No" />
+            <PlanOption selected={selected === 'yes-default'} onClick={() => setSelected('yes-default')} label="是" />
+            <PlanOption selected={selected === 'no'} onClick={() => setSelected('no')} label="否" />
           </>
         ) : (
           <>
             <PlanOption
               selected={selected === 'yes-accept-edits'}
               onClick={() => setSelected('yes-accept-edits')}
-              label="Yes, auto-accept edits"
-              desc="Approve plan and auto-accept file edits"
+              label="是，自动接受编辑"
+              desc="批准计划并自动接受文件修改"
             />
             <PlanOption
               selected={selected === 'yes-default'}
               onClick={() => setSelected('yes-default')}
-              label="Yes, manually approve edits"
-              desc="Approve plan but confirm each edit"
+              label="是，逐条确认编辑"
+              desc="批准计划，但每次修改都需要确认"
             />
             <PlanOption
               selected={selected === 'no'}
               onClick={() => setSelected('no')}
-              label="No, keep planning"
-              desc="Provide feedback to refine the plan"
+              label="否，继续完善计划"
+              desc="补充你的意见，继续调整计划"
             />
           </>
         )}
@@ -361,7 +357,7 @@ export function PlanPanelView({
         <textarea
           value={feedback}
           onChange={e => setFeedback(e.target.value)}
-          placeholder="Tell Claude what to change..."
+          placeholder="告诉 Claude 需要改什么…"
           className="mt-3 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none"
           rows={3}
         />

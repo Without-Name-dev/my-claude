@@ -366,7 +366,10 @@ export function DeviceSessionChat({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         <MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />
         {error && (
-          <div className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          <div
+            role="alert"
+            className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive"
+          >
             <span className="min-w-0 flex-1">{error}</span>
             <button type="button" onClick={() => void reload()} className="shrink-0 text-xs text-brand hover:underline">
               重试
@@ -404,7 +407,9 @@ export function DeviceSessionChat({
           </div>
         )}
         {statusText && (
-          <div className="mx-auto w-full max-w-3xl px-4 pt-1 text-[11px] text-text-muted">{statusText}</div>
+          <div aria-live="polite" className="mx-auto w-full max-w-3xl px-4 pt-1 text-xs leading-snug text-text-muted">
+            {statusText}
+          </div>
         )}
         <ChatInput
           onSubmit={send}
