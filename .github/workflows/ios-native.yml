@@ -53,6 +53,19 @@ jobs:
             build | tee "$RUNNER_TEMP/native-build.log"
           tail -n 20 "$RUNNER_TEMP/native-build.log"
 
+      - name: Publish build errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "commit ${GITHUB_SHA}"
+            tail -n 150 "$RUNNER_TEMP/native-build.log" 2>/dev/null || true
+          } > native-errors.txt
+          wc -l native-errors.txt
+          gh release delete ios-native-errors --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-native-errors native-errors.txt             --title "iOS native build errors" --notes "Diagnostics from the latest failed native build"
+
       - name: Package IPA
         working-directory: apps/ios-native
         run: |
