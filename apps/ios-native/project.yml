@@ -37,7 +37,7 @@ targets:
           NSAllowsArbitraryLoads: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.jade5197.ccremote
+        PRODUCT_BUNDLE_IDENTIFIER: app.jade5197.gypsum9420
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
