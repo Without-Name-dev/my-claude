@@ -50,11 +50,7 @@ export function ChatView({
               if (item.type === 'single') {
                 return (
                   <div
-                    key={
-                      item.entry.type === 'tool_call'
-                        ? `tool-${item.entry.toolCall.id}`
-                        : item.entry.id
-                    }
+                    key={item.entry.type === 'tool_call' ? `tool-${item.entry.toolCall.id}` : item.entry.id}
                     className={cn(entrySpacing(entries, item.index))}
                   >
                     <EntryRenderer entry={item.entry} isLoading={isLoading} onPermissionRespond={onPermissionRespond} />

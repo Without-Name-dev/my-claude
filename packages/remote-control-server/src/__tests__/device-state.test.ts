@@ -84,14 +84,14 @@ describe('device state', () => {
       deviceId: 'dev_test1',
       localSessionId,
       bridgeSessionId: 'session_abcdef0123456789',
-      cwd: 'C:\work',
+      cwd: 'C:work',
       updatedAt: Date.now(),
     })
     // After --resume the CLI may report a new local id for the same bridge.
     const resumedLocal = '11111111-2222-3333-4444-555555555555'
     setRuntime('dev_test1', resumedLocal, {
       localSessionId: resumedLocal,
-      cwd: 'C:\work',
+      cwd: 'C:work',
       processAlive: true,
       bridgeSessionId: 'session_abcdef0123456789',
       verifiedAt: Date.now(),
@@ -114,14 +114,14 @@ describe('device state', () => {
       deviceId: 'dev_test1',
       localSessionId,
       bridgeSessionId: 'session_abcdef0123456789',
-      cwd: 'C:\work',
+      cwd: 'C:work',
       updatedAt: Date.now() - 1000,
     })
     setMapping({
       deviceId: 'dev_test1',
       localSessionId: otherLocal,
       bridgeSessionId: 'session_abcdef0123456789',
-      cwd: 'C:\work',
+      cwd: 'C:work',
       updatedAt: Date.now(),
     })
 

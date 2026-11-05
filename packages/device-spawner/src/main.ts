@@ -293,11 +293,7 @@ async function collectRuntimeStates(): Promise<SessionRuntimeState[]> {
   const entries = await readRegistry(config.claudeConfigDir)
   const processes = await listBunProcesses()
   for (const localSessionId of trackedSessions) {
-    const managedState = managedRuntimeState(
-      localSessionId,
-      entries,
-      processes,
-    )
+    const managedState = managedRuntimeState(localSessionId, entries, processes)
     if (managedState) {
       states.push(managedState)
       continue

@@ -26,7 +26,6 @@ import type {
 // SSE Event Bus — 复用自 rcs-transport.ts，仅保留连接管理
 type SSEEventHandler = (event: SessionEvent) => void
 
-
 /**
  * The REPL emits its own bookkeeping as user messages when a slash command
  * runs: a caveat, the <command-name> echo, and the stdout/stderr body. They
@@ -36,13 +35,23 @@ type SSEEventHandler = (event: SessionEvent) => void
 function classifyLocalCommandText(
   content: string,
   synthetic: boolean,
-): { kind: 'drop' } | { kind: 'text'; text: string } | { kind: 'output'; text: string } {
-  const stdout = content.match(/<local-command-std(out|err)>([\s\S]*?)<\/local-command-std(out|err)>/)
+):
+  | { kind: 'drop' }
+  | { kind: 'text'; text: string }
+  | { kind: 'output'; text: string } {
+  const stdout = content.match(
+    /<local-command-std(out|err)>([\s\S]*?)<\/local-command-std(out|err)>/,
+  )
   if (stdout) {
     const text = (stdout[2] || '').trim()
     return text ? { kind: 'output', text } : { kind: 'drop' }
   }
-  if (synthetic || /<local-command-caveat>|<command-name>|<command-message>|<command-args>/.test(content)) {
+  if (
+    synthetic ||
+    /<local-command-caveat>|<command-name>|<command-message>|<command-args>/.test(
+      content,
+    )
+  ) {
     return { kind: 'drop' }
   }
   const text = content.replace(/<\/?[a-z][\w-]*>/gi, '').trim()
@@ -349,9 +358,7 @@ export class RCSChatAdapter {
       await this.loadHistory()
     } catch (error) {
       // A failed history fetch must not disable live messaging.
-      this.onError?.(
-        error instanceof Error ? error.message : '加载历史失败',
-      )
+      this.onError?.(error instanceof Error ? error.message : '加载历史失败')
     }
     if (this.disposed) return
     this.historyReady = true
@@ -394,7 +401,8 @@ export class RCSChatAdapter {
         if (text) {
           const synthetic =
             (payload as Record<string, unknown>).isSynthetic === true ||
-            (payload.raw as Record<string, unknown> | undefined)?.isSynthetic === true
+            (payload.raw as Record<string, unknown> | undefined)
+              ?.isSynthetic === true
           const classified = classifyLocalCommandText(text, synthetic)
           if (classified.kind === 'drop') continue
           const id = payload.uuid
@@ -442,7 +450,8 @@ export class RCSChatAdapter {
           currentAssistant = {
             type: 'assistant_message',
             id:
-              (typeof payload.uuid === 'string' && `assistant-${payload.uuid}`) ||
+              (typeof payload.uuid === 'string' &&
+                `assistant-${payload.uuid}`) ||
               event.id ||
               `hist-asst-${historyEntries.length}`,
             chunks: text ? [{ type: 'message', text }] : [],
@@ -598,17 +607,29 @@ export class RCSChatAdapter {
         if (!content) break
         const synthetic =
           (payload as Record<string, unknown>).isSynthetic === true ||
-          (payload.raw as Record<string, unknown> | undefined)?.isSynthetic === true
+          (payload.raw as Record<string, unknown> | undefined)?.isSynthetic ===
+            true
         const classified = classifyLocalCommandText(content, synthetic)
         if (classified.kind === 'drop') break
         if (classified.kind === 'output') {
           const outputId = `command-${
-            typeof payload.uuid === 'string' ? payload.uuid : event.id || generateMessageUuid()
+            typeof payload.uuid === 'string'
+              ? payload.uuid
+              : event.id || generateMessageUuid()
           }`
           this.setEntries(prev =>
-            prev.some(entry => entry.type === 'command_output' && entry.id === outputId)
+            prev.some(
+              entry => entry.type === 'command_output' && entry.id === outputId,
+            )
               ? prev
-              : [...prev, { type: 'command_output', id: outputId, text: classified.text }],
+              : [
+                  ...prev,
+                  {
+                    type: 'command_output',
+                    id: outputId,
+                    text: classified.text,
+                  },
+                ],
           )
           break
         }
@@ -617,7 +638,9 @@ export class RCSChatAdapter {
           ? `user-${payload.uuid}`
           : event.id || `user-${generateMessageUuid()}`
         this.setEntries(prev => {
-          if (prev.some(entry => entry.type === 'user_message' && entry.id === id)) {
+          if (
+            prev.some(entry => entry.type === 'user_message' && entry.id === id)
+          ) {
             return prev
           }
           // A message sent from the device view is shown optimistically with
@@ -656,7 +679,8 @@ export class RCSChatAdapter {
           // replay, not a new turn — dropping it here is what stops old
           // messages from suddenly appearing at the bottom of the chat.
           const seen = prev.some(
-            entry => entry.type === 'assistant_message' && entry.id === assistantId,
+            entry =>
+              entry.type === 'assistant_message' && entry.id === assistantId,
           )
           if (seen) return prev
           const lastEntry = prev[prev.length - 1]
@@ -857,10 +881,14 @@ export class RCSChatAdapter {
           const text = raw.replace(/<\/?local-command-[^>]*>/g, '').trim()
           if (text) {
             const id = `command-${
-              typeof record.uuid === 'string' ? record.uuid : event.id || generateMessageUuid()
+              typeof record.uuid === 'string'
+                ? record.uuid
+                : event.id || generateMessageUuid()
             }`
             this.setEntries(prev =>
-              prev.some(entry => entry.type === 'command_output' && entry.id === id)
+              prev.some(
+                entry => entry.type === 'command_output' && entry.id === id,
+              )
                 ? prev
                 : [...prev, { type: 'command_output', id, text }],
             )

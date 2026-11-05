@@ -70,7 +70,6 @@ describe('transcriptToEntries', () => {
   })
 })
 
-
 describe('mergeThreadEntries', () => {
   test('does not duplicate the same assistant message from two sources', () => {
     const history = transcriptToEntries([
@@ -111,18 +110,15 @@ describe('mergeThreadEntries', () => {
   })
 })
 
-
 const entryId = (entry: ThreadEntry): string =>
   entry.type === 'tool_call' ? `tool:${entry.toolCall.id}` : entry.id
 
 describe('mergeHistoryPage', () => {
   const page = transcriptToEntries(
     Array.from({ length: 100 }, (_, index) =>
-      message(
-        `m${index}`,
-        index % 2 === 0 ? 'assistant' : 'user',
-        [{ type: 'text', text: `message ${index}` }],
-      ),
+      message(`m${index}`, index % 2 === 0 ? 'assistant' : 'user', [
+        { type: 'text', text: `message ${index}` },
+      ]),
     ),
   )
 

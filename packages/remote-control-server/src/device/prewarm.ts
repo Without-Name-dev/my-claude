@@ -8,7 +8,11 @@
 
 import { log } from '../logger'
 import { requestDevice, isDeviceOnline } from './hub'
-import type { ProjectSummary, SessionSummary, TranscriptMessage } from './protocol'
+import type {
+  ProjectSummary,
+  SessionSummary,
+  TranscriptMessage,
+} from './protocol'
 import { saveTranscript } from './conversation-store'
 import { getCatalog, setCatalog } from './state'
 
@@ -37,7 +41,12 @@ async function cacheRecentTranscripts(
         20_000,
       )) as { messages?: TranscriptMessage[] }
       if (Array.isArray(page.messages)) {
-        saveTranscript(deviceId, session.localSessionId, page.messages, 'newest')
+        saveTranscript(
+          deviceId,
+          session.localSessionId,
+          page.messages,
+          'newest',
+        )
       }
     } catch {
       // A single unreadable transcript must not stop the prewarm.
@@ -66,7 +75,9 @@ export function warmCatalog(deviceId: string): void {
         )
       }
     } catch (error) {
-      log(`[device] catalog prewarm (projects) failed: ${(error as Error).message}`)
+      log(
+        `[device] catalog prewarm (projects) failed: ${(error as Error).message}`,
+      )
       return
     }
     try {
@@ -85,7 +96,9 @@ export function warmCatalog(deviceId: string): void {
         await cacheRecentTranscripts(deviceId, result.sessions)
       }
     } catch (error) {
-      log(`[device] catalog prewarm (sessions) failed: ${(error as Error).message}`)
+      log(
+        `[device] catalog prewarm (sessions) failed: ${(error as Error).message}`,
+      )
     }
   })()
 }

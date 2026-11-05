@@ -3,11 +3,7 @@ import { ChatInput } from '../../../components/chat/ChatInput';
 import { ChatView } from '../../../components/chat/ChatView';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import type { ChatInputMessage, ThreadEntry } from '../../lib/types';
-import {
-  mergeHistoryPage,
-  mergeThreadEntries,
-  transcriptToEntries,
-} from '../../lib/device-history';
+import { mergeHistoryPage, mergeThreadEntries, transcriptToEntries } from '../../lib/device-history';
 import {
   fetchHistory,
   fetchOperation,
@@ -61,11 +57,7 @@ export function DeviceSessionChat({
     const next = await fetchSession(deviceId, localSessionId);
     setDetail(next);
     if (isBridgeFresh(next)) setForcedBridgeId(next.bridgeSessionId);
-    if (
-      next.operation &&
-      next.operation.state !== 'ready' &&
-      next.operation.state !== 'failed'
-    ) {
+    if (next.operation && next.operation.state !== 'ready' && next.operation.state !== 'failed') {
       // Includes waiting_for_user: the terminal is open on the PC and the
       // user needs to see its instruction, not a generic spinner.
       setOperation(next.operation);
@@ -85,13 +77,10 @@ export function DeviceSessionChat({
         if (!before) {
           // A live bridge may have appended entries while this async load was
           // in flight. Merge instead of replacing, keeping history first.
-          return previous.length === 0
-            ? converted
-            : mergeHistoryPage(previous, converted);
+          return previous.length === 0 ? converted : mergeHistoryPage(previous, converted);
         }
         // Guard against a double-click sending the same cursor twice.
-        const key = (entry: ThreadEntry) =>
-          entry.type === 'tool_call' ? `tool-${entry.toolCall.id}` : entry.id;
+        const key = (entry: ThreadEntry) => (entry.type === 'tool_call' ? `tool-${entry.toolCall.id}` : entry.id);
         const seen = new Set(previous.map(key));
         return [...converted.filter(entry => !seen.has(key(entry))), ...previous];
       });
@@ -235,11 +224,7 @@ export function DeviceSessionChat({
   const bridgeId = forcedBridgeId;
 
   const forceRestart = useCallback(async () => {
-    if (
-      !window.confirm(
-        '重启会中断该终端里正在执行的任务，但会话记录会保留。确定重启并启用远程控制吗？',
-      )
-    ) {
+    if (!window.confirm('重启会中断该终端里正在执行的任务，但会话记录会保留。确定重启并启用远程控制吗？')) {
       return;
     }
     setBlockedSession(false);
@@ -405,45 +390,27 @@ export function DeviceSessionChat({
           isLoading={sending || starting || loadingDetail}
           emptyTitle={loadingDetail ? '正在加载会话…' : '暂无消息'}
           emptyDescription={
-            loadingDetail
-              ? ''
-              : detail?.online
-                ? '发送消息后会自动打开终端'
-                : '设备离线，发送的消息会在上线后发出'
+            loadingDetail ? '' : detail?.online ? '发送消息后会自动打开终端' : '设备离线，发送的消息会在上线后发出'
           }
         />
         {blockedSession && (
           <div className="mx-auto w-full max-w-3xl px-4 pt-2">
             <div className="flex items-center gap-3 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs">
-              <span className="min-w-0 flex-1 text-text-secondary">
-                这个会话在终端里运行，但没有启用远程控制。
-              </span>
-              <button
-                type="button"
-                onClick={() => void forceRestart()}
-                className="shrink-0 text-brand hover:underline"
-              >
+              <span className="min-w-0 flex-1 text-text-secondary">这个会话在终端里运行，但没有启用远程控制。</span>
+              <button type="button" onClick={() => void forceRestart()} className="shrink-0 text-brand hover:underline">
                 重启终端并启用
               </button>
             </div>
           </div>
         )}
         {statusText && (
-          <div className="mx-auto w-full max-w-3xl px-4 pt-1 text-[11px] text-text-muted">
-            {statusText}
-          </div>
+          <div className="mx-auto w-full max-w-3xl px-4 pt-1 text-[11px] text-text-muted">{statusText}</div>
         )}
         <ChatInput
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail}
-          placeholder={
-            loadingDetail
-              ? '正在加载…'
-              : detail?.online
-                ? '输入消息…'
-                : '设备离线，消息会在上线后发送'
-          }
+          placeholder={loadingDetail ? '正在加载…' : detail?.online ? '输入消息…' : '设备离线，消息会在上线后发送'}
         />
       </div>
     </TooltipProvider>

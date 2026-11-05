@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { RCSChatAdapter } from '../../lib/rcs-chat-adapter';
 import type { BridgeSessionInfo } from '../../lib/rcs-chat-adapter';
 import { mergeThreadEntries } from '../../lib/device-history';
@@ -53,9 +62,7 @@ export function BridgeChat({
   /** The SSE stream is open; catch up on anything produced before it. */
   onBridgeReady?: () => void;
 }) {
-  const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(
-    () => initialEntries ?? [],
-  );
+  const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
   const setEntries = onEntriesChange ?? setInternalEntries;
   const controlled = controlledEntries !== undefined;
@@ -140,9 +147,7 @@ export function BridgeChat({
         onStatusChange: status => {
           setIsLoading(status === 'running' || status === 'requires_action');
         },
-        onStreamOpen: controlled
-          ? () => onBridgeReadyRef.current?.()
-          : undefined,
+        onStreamOpen: controlled ? () => onBridgeReadyRef.current?.() : undefined,
         // The controlled (device) view already has the authoritative
         // transcript. Re-reading bridge history there is what made the chat
         // flash/reload on every connect; only its init metadata is needed.
@@ -177,14 +182,10 @@ export function BridgeChat({
     };
   }, [adapter]);
 
-
   const appendCommandOutput = useCallback(
     (text: string) => {
       const id = `command-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
-      setEntries(prev => [
-        ...prev,
-        { type: 'command_output', id, text },
-      ]);
+      setEntries(prev => [...prev, { type: 'command_output', id, text }]);
     },
     [setEntries],
   );
@@ -202,9 +203,7 @@ export function BridgeChat({
       if (effortMatch) {
         const arg = (effortMatch[1] ?? '').trim().toLowerCase();
         if (!arg || arg === 'status' || arg === 'current') {
-          appendCommandOutput(
-            'effort 由终端会话管理。可用 /effort low|medium|high|xhigh|max|auto 设置。',
-          );
+          appendCommandOutput('effort 由终端会话管理。可用 /effort low|medium|high|xhigh|max|auto 设置。');
           return;
         }
         const levels = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
@@ -423,11 +422,7 @@ export function BridgeChat({
               <span
                 className={cn(
                   'ml-1 mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full',
-                  isLoading
-                    ? 'animate-pulse bg-brand'
-                    : connected
-                      ? 'bg-status-success'
-                      : 'bg-status-error',
+                  isLoading ? 'animate-pulse bg-brand' : connected ? 'bg-status-success' : 'bg-status-error',
                 )}
                 title={isLoading ? '处理中' : connected ? '已连接' : '连接断开'}
               />

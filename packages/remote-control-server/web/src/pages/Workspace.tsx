@@ -46,26 +46,29 @@ export function Workspace({
   const [mobileChat, setMobileChat] = useState(Boolean(initialLocalSessionId));
   const [search, setSearch] = useState('');
 
-  const refreshDevices = useCallback(async (manual = false) => {
-    if (manual) setRefreshingDevices(true);
-    try {
-      const result = await fetchDevices();
-      setDevices(result.devices);
-      setDevicesError('');
-      setActiveDeviceId(current => {
-        if (current && result.devices.some(device => device.id === current)) {
-          return current;
-        }
-        const preferred = initialDeviceId ? result.devices.find(device => device.id === initialDeviceId) : undefined;
-        return preferred?.id || result.devices.find(device => device.online)?.id || result.devices[0]?.id || '';
-      });
-    } catch (error) {
-      setDevicesError(error instanceof Error ? error.message : '无法读取设备列表');
-    } finally {
-      setLoadingDevices(false);
-      if (manual) setRefreshingDevices(false);
-    }
-  }, [initialDeviceId]);
+  const refreshDevices = useCallback(
+    async (manual = false) => {
+      if (manual) setRefreshingDevices(true);
+      try {
+        const result = await fetchDevices();
+        setDevices(result.devices);
+        setDevicesError('');
+        setActiveDeviceId(current => {
+          if (current && result.devices.some(device => device.id === current)) {
+            return current;
+          }
+          const preferred = initialDeviceId ? result.devices.find(device => device.id === initialDeviceId) : undefined;
+          return preferred?.id || result.devices.find(device => device.online)?.id || result.devices[0]?.id || '';
+        });
+      } catch (error) {
+        setDevicesError(error instanceof Error ? error.message : '无法读取设备列表');
+      } finally {
+        setLoadingDevices(false);
+        if (manual) setRefreshingDevices(false);
+      }
+    },
+    [initialDeviceId],
+  );
 
   useEffect(() => {
     void refreshDevices();
@@ -120,16 +123,12 @@ export function Workspace({
         setProjects(projectResult.value.projects);
       } else {
         setProjects([]);
-        setProjectsError(
-          projectResult.reason instanceof Error ? projectResult.reason.message : '无法读取项目',
-        );
+        setProjectsError(projectResult.reason instanceof Error ? projectResult.reason.message : '无法读取项目');
       }
       if (sessionResult.status === 'fulfilled') {
         setAllSessions(sessionResult.value.sessions);
       } else {
-        setSessionsError(
-          sessionResult.reason instanceof Error ? sessionResult.reason.message : '无法读取会话',
-        );
+        setSessionsError(sessionResult.reason instanceof Error ? sessionResult.reason.message : '无法读取会话');
       }
       setProjectsLoading(false);
       setSessionsLoading(false);
@@ -150,13 +149,10 @@ export function Workspace({
     return grouped;
   }, [allSessions]);
 
-  const toggleProject = useCallback(
-    (project: DeviceProject) => {
-      setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
-      setSessionsError('');
-    },
-    [],
-  );
+  const toggleProject = useCallback((project: DeviceProject) => {
+    setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
+    setSessionsError('');
+  }, []);
 
   const selectSession = useCallback(
     (localSessionId: string) => {
@@ -190,9 +186,7 @@ export function Workspace({
         return sessions;
       }
       return sessions.filter(
-        session =>
-          session.title.toLowerCase().includes(query) ||
-          (session.summary ?? '').toLowerCase().includes(query),
+        session => session.title.toLowerCase().includes(query) || (session.summary ?? '').toLowerCase().includes(query),
       );
     },
     [query, sessionsByProject],
@@ -226,12 +220,7 @@ export function Workspace({
               aria-label="刷新设备"
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
             >
-              <RefreshCw
-                className={cn(
-                  'h-4 w-4',
-                  (loadingDevices || refreshingDevices) && 'animate-spin',
-                )}
-              />
+              <RefreshCw className={cn('h-4 w-4', (loadingDevices || refreshingDevices) && 'animate-spin')} />
             </button>
           </div>
           {devices.length > 0 && (
@@ -265,9 +254,7 @@ export function Workspace({
             </div>
           )}
           {devices.length === 0 && !loadingDevices && (
-            <p className="mt-2 px-1 text-xs text-text-muted">
-              {devicesError || '还没有设备连接'}
-            </p>
+            <p className="mt-2 px-1 text-xs text-text-muted">{devicesError || '还没有设备连接'}</p>
           )}
           {devices.length > 0 && devicesError && (
             <p className="mt-1 px-1 text-[11px] text-status-error">{devicesError}</p>
@@ -348,7 +335,6 @@ export function Workspace({
             )}
           </div>
         </div>
-
       </aside>
 
       <main className={cn('min-h-0 min-w-0 flex-1 flex-col bg-surface-0', mobileChat ? 'flex' : 'hidden md:flex')}>

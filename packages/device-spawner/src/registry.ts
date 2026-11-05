@@ -87,10 +87,7 @@ async function readRegistryDir(dir: string): Promise<RegistryEntry[]> {
       .filter(name => /^\d+\.json$/.test(name))
       .map(async (name): Promise<RegistryEntry | null> => {
         try {
-          const text = await readFile(
-            join(registryDir(dir), name),
-            'utf8',
-          )
+          const text = await readFile(join(registryDir(dir), name), 'utf8')
           const value: unknown = JSON.parse(text)
           if (!value || typeof value !== 'object' || Array.isArray(value))
             return null

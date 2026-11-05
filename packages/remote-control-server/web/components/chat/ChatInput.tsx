@@ -75,9 +75,7 @@ export function ChatInput({
     if (!commands) return [];
     const filter = commandFilter.toLowerCase();
     if (!filter) return commands;
-    return commands.filter(command =>
-      command.name.toLowerCase().startsWith(filter),
-    );
+    return commands.filter(command => command.name.toLowerCase().startsWith(filter));
   }, [commands, commandFilter]);
 
   const handleKeyDown = useCallback(
@@ -90,10 +88,7 @@ export function ChatInput({
         }
         // Arrow keys and Enter are handled by CommandMenu via document-level
         // listener — but only while there is something to select.
-        if (
-          commandMatches.length > 0 &&
-          (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter')
-        ) {
+        if (commandMatches.length > 0 && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter')) {
           e.preventDefault();
           return;
         }
@@ -122,12 +117,7 @@ export function ChatInput({
 
       // Slash mode is only for the command token; once the user types a space
       // (arguments), close the menu so Enter submits the command.
-      if (
-        value.startsWith('/') &&
-        !/\s/.test(value) &&
-        commands &&
-        commands.length > 0
-      ) {
+      if (value.startsWith('/') && !/\s/.test(value) && commands && commands.length > 0) {
         setShowCommandMenu(true);
         setCommandFilter(value.slice(1));
       } else if (showCommandMenu) {
@@ -201,7 +191,12 @@ export function ChatInput({
   const canInterrupt = isLoading && Boolean(onInterrupt);
 
   return (
-    <div className={cn('w-full max-w-3xl mx-auto px-3 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2', className)}>
+    <div
+      className={cn(
+        'w-full max-w-3xl mx-auto px-3 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
+        className,
+      )}
+    >
       <div className="relative">
         {/* Slash command menu — floating above input */}
         {showCommandMenu && commands && commands.length > 0 && (

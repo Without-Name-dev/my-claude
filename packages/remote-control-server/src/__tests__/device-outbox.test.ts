@@ -16,10 +16,7 @@ const deviceId = 'dev_test1'
 const localSessionId = 'db094c06-6f2d-470d-aef1-dcce041193b7'
 let dataDir = ''
 
-function entry(
-  id: string,
-  state: OutboxEntry['state'],
-): OutboxEntry {
+function entry(id: string, state: OutboxEntry['state']): OutboxEntry {
   return {
     id,
     deviceId,

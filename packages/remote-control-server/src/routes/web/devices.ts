@@ -289,7 +289,11 @@ function scheduleHistoryBackfill(
           'read_session',
           { localSessionId, limit: 200, before: cursor },
           20_000,
-        )) as { messages?: TranscriptMessage[]; before?: string; hasMore?: boolean }
+        )) as {
+          messages?: TranscriptMessage[]
+          before?: string
+          hasMore?: boolean
+        }
         const messages = Array.isArray(result.messages) ? result.messages : []
         if (messages.length === 0) {
           markBackfillComplete(deviceId, localSessionId)
@@ -338,10 +342,7 @@ const lastNewestRefresh = new Map<string, number>()
  * cached; this refreshes it from the machine in the background. A cold cache
  * still waits for the device (there is nothing else to show).
  */
-function scheduleNewestRefresh(
-  deviceId: string,
-  localSessionId: string,
-): void {
+function scheduleNewestRefresh(deviceId: string, localSessionId: string): void {
   const key = `${deviceId} ${localSessionId}`
   const now = Date.now()
   if (now - (lastNewestRefresh.get(key) ?? 0) < 20_000) return
@@ -388,7 +389,9 @@ app.get(
     try {
       page = getPage()
     } catch (error) {
-      log(`[device] conversation cache read failed: ${(error as Error).message}`)
+      log(
+        `[device] conversation cache read failed: ${(error as Error).message}`,
+      )
       if (online && !before) {
         try {
           const result = await readNewestPage(device.id, localSessionId)
@@ -553,11 +556,7 @@ app.post(
       if (isBridgeConnected(state.bridgeSessionId)) {
         if (force) {
           requeueFailedOutbox(device.id, localSessionId)
-          void flushOutbox(
-            device.id,
-            localSessionId,
-            state.bridgeSessionId,
-          )
+          void flushOutbox(device.id, localSessionId, state.bridgeSessionId)
         }
         return c.json({
           state: 'ready',
@@ -659,12 +658,7 @@ app.post(
         localSessionId,
         text,
       )
-      saveWebUserMessage(
-        device.id,
-        localSessionId,
-        delivered.entry.id,
-        text,
-      )
+      saveWebUserMessage(device.id, localSessionId, delivered.entry.id, text)
       return c.json({
         state: delivered.state,
         messageId: delivered.entry.id,

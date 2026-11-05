@@ -452,13 +452,15 @@ export function scheduleSave(): void {
 export async function flushState(): Promise<void> {
   // A rejected write must not poison the chain: without the catch, every
   // later save would be skipped and the state would silently stop persisting.
-  saveChain = saveChain.catch(() => {}).then(async () => {
-    const dir = dataDir()
-    await mkdir(dir, { recursive: true })
-    const tmp = join(dir, `.device-state-${process.pid}.tmp`)
-    await writeFile(tmp, JSON.stringify(state, null, 1), 'utf8')
-    await rename(tmp, statePath())
-  })
+  saveChain = saveChain
+    .catch(() => {})
+    .then(async () => {
+      const dir = dataDir()
+      await mkdir(dir, { recursive: true })
+      const tmp = join(dir, `.device-state-${process.pid}.tmp`)
+      await writeFile(tmp, JSON.stringify(state, null, 1), 'utf8')
+      await rename(tmp, statePath())
+    })
   try {
     await saveChain
   } catch (error) {

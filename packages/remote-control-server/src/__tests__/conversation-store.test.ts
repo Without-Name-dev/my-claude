@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,12 +71,7 @@ describe('conversation store', () => {
     expect(page.messages.at(-1)?.text).toBe('message 29')
     expect(page.hasMore).toBe(true)
 
-    const older = listStoredMessages(
-      deviceId,
-      localSessionId,
-      15,
-      page.before,
-    )
+    const older = listStoredMessages(deviceId, localSessionId, 15, page.before)
     expect(older.messages[0]?.text).toBe('message 10')
     expect(older.messages.at(-1)?.text).toBe('message 14')
     expect(older.hasMore).toBe(false)

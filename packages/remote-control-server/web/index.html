@@ -19,9 +19,10 @@
     // Apply the saved theme before first paint; otherwise dark-mode users get
     // a flash of the light theme while React mounts.
     (function () {
+      var stored, dark;
       try {
-        var stored = localStorage.getItem('theme') || 'system';
-        var dark =
+        stored = localStorage.getItem('theme') || 'system';
+        dark =
           stored === 'dark' ||
           (stored === 'system' &&
             window.matchMedia &&

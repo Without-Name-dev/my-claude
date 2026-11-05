@@ -352,11 +352,7 @@ onBridgeAttached(bridgeSessionId => {
   const mapping = findMappingByBridgeId(bridgeSessionId)
   if (!mapping) return
   markUnconfirmedSent(mapping.deviceId, mapping.localSessionId)
-  void flushOutbox(
-    mapping.deviceId,
-    mapping.localSessionId,
-    bridgeSessionId,
-  )
+  void flushOutbox(mapping.deviceId, mapping.localSessionId, bridgeSessionId)
 })
 
 /**
@@ -441,9 +437,7 @@ export function deliverNow(
     updateOutbox(entry.id, {
       state: connected ? 'sent' : 'unconfirmed',
       bridgeSessionId,
-      detail: connected
-        ? undefined
-        : '已放入服务端队列，但尚未确认终端已连接',
+      detail: connected ? undefined : '已放入服务端队列，但尚未确认终端已连接',
     })
     return {
       state: connected ? 'sent' : 'unconfirmed',

@@ -49,10 +49,7 @@ import {
   type OpenOperationState,
   type SessionRuntimeState,
 } from '../device/protocol'
-import {
-  handleDeviceEvent,
-  resumeQueuedSessions,
-} from '../device/operations'
+import { handleDeviceEvent, resumeQueuedSessions } from '../device/operations'
 
 const app = new Hono()
 

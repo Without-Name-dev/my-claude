@@ -170,7 +170,9 @@ export function handleWebSocketMessage(
   if (token !== undefined) {
     const current = cleanupBySession.get(sessionId)
     if (!current || current.token !== token) {
-      log(`[WS] Dropping message from a replaced connection session=${sessionId}`)
+      log(
+        `[WS] Dropping message from a replaced connection session=${sessionId}`,
+      )
       return
     }
   }

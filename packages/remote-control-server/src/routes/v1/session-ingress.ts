@@ -16,10 +16,7 @@ import {
   handleWebSocketClose,
   ingestBridgeMessage,
 } from '../../transport/ws-handler'
-import {
-  ensureSession,
-  resolveExistingSessionId,
-} from '../../services/session'
+import { ensureSession, resolveExistingSessionId } from '../../services/session'
 
 const app = new Hono()
 

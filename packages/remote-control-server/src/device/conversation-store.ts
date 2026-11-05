@@ -276,8 +276,8 @@ function blocksFromContent(content: unknown): TranscriptBlock[] {
 
 function textFromBlocks(blocks: TranscriptBlock[]): string {
   return blocks
-    .filter((block): block is { type: 'text'; text: string } =>
-      block.type === 'text',
+    .filter(
+      (block): block is { type: 'text'; text: string } => block.type === 'text',
     )
     .map(block => block.text)
     .join('')
@@ -513,7 +513,8 @@ type Cursor = { sortMs: number; seq: number }
 function parseCursor(before?: string): Cursor | undefined {
   if (!before) return undefined
   // Backward compatibility with the first cursor format (a bare seq).
-  if (/^\d+$/.test(before)) return { sortMs: Number.MAX_SAFE_INTEGER, seq: Number(before) }
+  if (/^\d+$/.test(before))
+    return { sortMs: Number.MAX_SAFE_INTEGER, seq: Number(before) }
   const split = before.lastIndexOf('|')
   if (split <= 0) return undefined
   const sortMs = Number(before.slice(0, split))

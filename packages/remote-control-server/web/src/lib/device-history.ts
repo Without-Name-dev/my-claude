@@ -24,7 +24,9 @@ export function mergeThreadEntries(
   base: ThreadEntry[],
   extra: ThreadEntry[],
 ): ThreadEntry[] {
-  const indexByKey = new Map(base.map((entry, index) => [entryKey(entry), index]))
+  const indexByKey = new Map(
+    base.map((entry, index) => [entryKey(entry), index]),
+  )
   const merged = [...base]
   for (const entry of extra) {
     if (entry.type === 'user_message') {
@@ -103,7 +105,12 @@ export function mergeHistoryPage(
   if (anchor < 0) {
     // Disjoint: assume the on-screen rows are a newer live tail (they are
     // written to the store before broadcast, so a real overlap would exist).
-    return [...page.filter(entry => !onScreen.some(e => entryKey(e) === entryKey(entry))), ...base]
+    return [
+      ...page.filter(
+        entry => !onScreen.some(e => entryKey(e) === entryKey(entry)),
+      ),
+      ...base,
+    ]
   }
   const olderOnly = base.slice(0, anchor)
   const newerOnly = base
@@ -126,8 +133,7 @@ export function transcriptToEntries(
         if (block.type !== 'tool_result' || !block.toolUseId) continue
         const index = entries.findIndex(
           entry =>
-            entry.type === 'tool_call' &&
-            entry.toolCall.id === block.toolUseId,
+            entry.type === 'tool_call' && entry.toolCall.id === block.toolUseId,
         )
         if (index < 0) continue
         const entry = entries[index]
@@ -145,7 +151,9 @@ export function transcriptToEntries(
         // The REPL writes its own slash-command scaffolding into the
         // transcript: a caveat, a <command-name> echo, and stdout wrappers.
         // Show the command the person actually ran, not those tags.
-        const commandName = message.text.match(/<command-name>([^<]*)<\/command-name>/)
+        const commandName = message.text.match(
+          /<command-name>([^<]*)<\/command-name>/,
+        )
         if (commandName?.[1]?.trim()) {
           entries.push({
             type: 'user_message',
@@ -154,7 +162,9 @@ export function transcriptToEntries(
           })
         } else if (
           !message.isMeta &&
-          !/<local-command-caveat>|<command-message>|<command-args>|<\/?local-command-std(out|err)>/.test(message.text)
+          !/<local-command-caveat>|<command-message>|<command-args>|<\/?local-command-std(out|err)>/.test(
+            message.text,
+          )
         ) {
           entries.push({
             type: 'user_message',

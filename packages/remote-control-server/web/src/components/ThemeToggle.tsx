@@ -12,11 +12,7 @@ export function ThemeToggle() {
       aria-label="切换主题"
       title="切换主题"
     >
-      {resolvedTheme === 'dark' ? (
-        <Sun className="h-4 w-4" />
-      ) : (
-        <Moon className="h-4 w-4" />
-      )}
+      {resolvedTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
   );
 }
