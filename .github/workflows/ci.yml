@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   ci:
@@ -39,7 +39,20 @@ jobs:
         run: bunx @biomejs/biome@2.4.12 ci .
 
       - name: Type check
-        run: bun run typecheck
+        run: bun run typecheck 2>&1 | tee tsc.log; exit ${PIPESTATUS[0]}
+
+      - name: Publish type errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "commit ${GITHUB_SHA}"
+            grep -E "error TS" tsc.log | head -n 200 || true
+          } > tsc-errors.txt
+          wc -l tsc-errors.txt
+          gh release delete ci-type-errors --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ci-type-errors tsc-errors.txt             --title "tsc errors" --notes "Diagnostics from the latest failed typecheck"
 
       - name: Test with Coverage
         run: |

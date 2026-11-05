@@ -76,25 +76,12 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Claude Remote" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$PLIST"
 
-      - name: Build unsigned archive
+      - name: Build unsigned (no codesign)
         working-directory: apps/ios-shell
         run: |
-          set -uo pipefail
-          BUILD_LOG="$RUNNER_TEMP/ios-archive.log"
-          xcodebuild \
-            # Capacitor's Pods live in the workspace; the bare .xcodeproj
-            # cannot resolve the Capacitor module.
-            -workspace ios/App/App.xcworkspace \
-            -scheme App \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            -archivePath build/App.xcarchive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            archive 2>&1 | tee "$BUILD_LOG"
-          exit ${PIPESTATUS[0]}
+          ls -la ios/App | head -20
+          xcodebuild             -workspace ios/App/App.xcworkspace             -scheme App             -configuration Release             -sdk iphoneos             -derivedDataPath build             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             build > "$RUNNER_TEMP/ios-build.log" 2>&1
+          tail -n 40 "$RUNNER_TEMP/ios-build.log"
 
       - name: Publish build errors
         if: failure()
@@ -109,10 +96,10 @@ jobs:
                 tail -n 80 "$f" || true
               fi
             done
-            LOG="${RUNNER_TEMP}/ios-archive.log"
+            LOG="${RUNNER_TEMP}/ios-build.log"
             if [ -f "$LOG" ]; then
-              echo "===== xcodebuild ====="
-              grep -nE "error:|fatal error:" "$LOG" | tail -n 300 || true
+              echo "===== xcodebuild (last 120 lines) ====="
+              tail -n 120 "$LOG" || true
             fi
           } > errors.txt
           wc -l errors.txt
@@ -125,7 +112,7 @@ jobs:
         working-directory: apps/ios-shell
         run: |
           set -euo pipefail
-          APP="build/App.xcarchive/Products/Applications/App.app"
+          APP="build/Build/Products/Release-iphoneos/App.app"
           test -d "$APP"
           rm -rf out && mkdir -p out/Payload
           cp -R "$APP" out/Payload/
