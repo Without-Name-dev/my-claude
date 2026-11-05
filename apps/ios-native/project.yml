@@ -30,7 +30,12 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundlePackageType: APPL
         LSRequiresIPhoneOS: true
-        UILaunchScreen: {}
+        # A real launch screen opts the app into native-resolution rendering.
+        # Without it iOS runs the app letterboxed with black bars and a zoomed
+        # web viewport.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
