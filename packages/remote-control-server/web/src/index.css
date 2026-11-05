@@ -155,6 +155,11 @@
   }
 }
 
+/* The shell height follows the iOS visual viewport (keyboard included). */
+.app-shell {
+  height: var(--app-height, 100dvh);
+}
+
 /* Safe-area helpers for the iOS wrapper / standalone PWA. */
 .safe-top {
   padding-top: env(safe-area-inset-top, 0px);

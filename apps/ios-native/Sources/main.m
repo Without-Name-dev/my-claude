@@ -42,6 +42,28 @@
 
 @end
 
+// Keeps the status bar legible against the dynamic page background.
+@interface RootViewController : UIViewController
+@end
+
+@implementation RootViewController
+
+- (UIStatusBarStyle)preferredStatusBarStyle {
+  if (@available(iOS 13.0, *)) {
+    return self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+               ? UIStatusBarStyleLightContent
+               : UIStatusBarStyleDarkContent;
+  }
+  return UIStatusBarStyleDefault;
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+  [super traitCollectionDidChange:previousTraitCollection];
+  [self setNeedsStatusBarAppearanceUpdate];
+}
+
+@end
+
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property(strong, nonatomic) UIWindow *window;
 @end
@@ -90,7 +112,7 @@
   web.scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
   web.scrollView.automaticallyAdjustsScrollIndicatorInsets = NO;
   self.window.backgroundColor = background;
-  UIViewController *controller = [[UIViewController alloc] init];
+  RootViewController *controller = [[RootViewController alloc] init];
   controller.view.backgroundColor = background;
   controller.view = web;
   self.window.rootViewController = controller;

@@ -83,6 +83,24 @@ export default function App() {
     setRouteReady(true);
   }, []);
 
+  // iOS gives the keyboard its own visual viewport; CSS 100dvh alone does not
+  // shrink in a WKWebView, which leaves the composer under the keyboard.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const sync = () => {
+      document.documentElement.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
+      window.scrollTo(0, 0);
+    };
+    sync();
+    viewport.addEventListener('resize', sync);
+    viewport.addEventListener('scroll', sync);
+    return () => {
+      viewport.removeEventListener('resize', sync);
+      viewport.removeEventListener('scroll', sync);
+    };
+  }, []);
+
   useEffect(() => {
     parseRoute();
     const onPop = () => withViewTransition(parseRoute);
@@ -111,7 +129,7 @@ export default function App() {
 
   return (
     <ThemeProvider defaultTheme="system">
-      <div className="safe-top flex h-[100dvh] flex-col overflow-hidden bg-surface-0 text-text-primary">
+      <div className="app-shell safe-top flex flex-col overflow-hidden bg-surface-0 text-text-primary">
         <Suspense
           fallback={
             <div className="flex flex-1 items-center justify-center">
