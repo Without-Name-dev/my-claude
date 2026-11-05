@@ -16,23 +16,24 @@
 
 ## File Structure
 
-| 文件 | 改动 | 责任 |
-|---|---|---|
-| `src/workflow/persistence.ts` | 新增 | `getRunsDir()` / `writeRunState(runsDir, run)` / `readRunState(runsDir, runId)` / `listPersistedRuns(runsDir)`；原子覆盖写；容错读 |
-| `src/workflow/__tests__/persistence.test.ts` | 新增 | 持久化往返、原子性、损坏容错、扫盘 |
-| `src/workflow/progress/store.ts` | 改 | `ProgressStore` 类型 + 实现加 `hydrate(run)` |
-| `src/workflow/__tests__/progressStore.test.ts` | 扩展 | hydrate 注入 / 已存在跳过 / 通知 listener |
-| `src/workflow/ports.ts` | 改 | `${getProjectRoot()}/.claude/workflow-runs` → `getRunsDir()` |
-| `src/workflow/service.ts` | 改 | `makeService(ports, store, bus)`；订阅 `run_done` 写盘；`loadPersistedRuns()`；`getRunAsync(id)` fallback；`persistedLoaded` flag |
-| `src/workflow/__tests__/service.test.ts` | 扩展 | run_done 写盘断言、getRunAsync fallback、loadPersistedRuns、签名更新 |
-| `src/workflow/panel/WorkflowsPanel.tsx` | 改 | mount 时 `void svc.loadPersistedRuns()` |
-| `src/workflow/__tests__/WorkflowsPanel.test.tsx` | 扩展 | mount 调一次 loadPersistedRuns（spy） |
+| 文件                                             | 改动 | 责任                                                                                                                               |
+| ------------------------------------------------ | ---- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `src/workflow/persistence.ts`                    | 新增 | `getRunsDir()` / `writeRunState(runsDir, run)` / `readRunState(runsDir, runId)` / `listPersistedRuns(runsDir)`；原子覆盖写；容错读 |
+| `src/workflow/__tests__/persistence.test.ts`     | 新增 | 持久化往返、原子性、损坏容错、扫盘                                                                                                 |
+| `src/workflow/progress/store.ts`                 | 改   | `ProgressStore` 类型 + 实现加 `hydrate(run)`                                                                                       |
+| `src/workflow/__tests__/progressStore.test.ts`   | 扩展 | hydrate 注入 / 已存在跳过 / 通知 listener                                                                                          |
+| `src/workflow/ports.ts`                          | 改   | `${getProjectRoot()}/.claude/workflow-runs` → `getRunsDir()`                                                                       |
+| `src/workflow/service.ts`                        | 改   | `makeService(ports, store, bus)`；订阅 `run_done` 写盘；`loadPersistedRuns()`；`getRunAsync(id)` fallback；`persistedLoaded` flag  |
+| `src/workflow/__tests__/service.test.ts`         | 扩展 | run_done 写盘断言、getRunAsync fallback、loadPersistedRuns、签名更新                                                               |
+| `src/workflow/panel/WorkflowsPanel.tsx`          | 改   | mount 时 `void svc.loadPersistedRuns()`                                                                                            |
+| `src/workflow/__tests__/WorkflowsPanel.test.tsx` | 扩展 | mount 调一次 loadPersistedRuns（spy）                                                                                              |
 
 ---
 
 ## Task 1: persistence.ts + 单测
 
 **Files:**
+
 - Create: `src/workflow/persistence.ts`
 - Create: `src/workflow/__tests__/persistence.test.ts`
 
@@ -42,10 +43,20 @@ Create `src/workflow/__tests__/persistence.test.ts`:
 
 ```ts
 import { expect, test } from 'bun:test'
-import { mkdtemp, rm, readFile, readdir, writeFile as fsWriteFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  rm,
+  readFile,
+  readdir,
+  writeFile as fsWriteFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeRunState, readRunState, listPersistedRuns } from '../persistence.js'
+import {
+  writeRunState,
+  readRunState,
+  listPersistedRuns,
+} from '../persistence.js'
 import type { RunProgress } from '../progress/store.js'
 
 function makeRun(over: Partial<RunProgress> = {}): RunProgress {
@@ -67,7 +78,9 @@ function makeRun(over: Partial<RunProgress> = {}): RunProgress {
 test('writeRunState → readRunState 往返一致（returnValue 为对象）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-'))
   try {
-    const run = makeRun({ returnValue: { confirmedCount: 2, items: ['a', 'b'] } })
+    const run = makeRun({
+      returnValue: { confirmedCount: 2, items: ['a', 'b'] },
+    })
     await writeRunState(dir, run)
     const got = await readRunState(dir, 'r1')
     expect(got).not.toBeNull()
@@ -310,6 +323,7 @@ git commit -m "feat(workflow): 添加 run state 持久化模块（原子写 + �
 ## Task 2: store.hydrate + 单测
 
 **Files:**
+
 - Modify: `src/workflow/progress/store.ts`
 - Modify: `src/workflow/__tests__/progressStore.test.ts`
 
@@ -345,7 +359,12 @@ test('hydrate 注入新 run → get 命中 + list 含该项 + 通知 listener', 
 
 test('hydrate 已存在的 runId → 跳过（内存优先，不被磁盘覆盖）', () => {
   const { bus, store } = newStore()
-  bus.emit({ type: 'run_started', runId: 'r1', workflowName: 'live', meta: null })
+  bus.emit({
+    type: 'run_started',
+    runId: 'r1',
+    workflowName: 'live',
+    meta: null,
+  })
 
   const stale: RunProgress = {
     runId: 'r1',
@@ -426,6 +445,7 @@ git commit -m "feat(workflow): store 添加 hydrate 用于注入磁盘历史 run
 ## Task 3: ports.ts 引用 getRunsDir（消除重复拼接）
 
 **Files:**
+
 - Modify: `src/workflow/ports.ts:72`
 
 无测试改动——这是路径来源重构，行为不变（`ports.test.ts` 现有断言覆盖 `journalStore` 创建，路径仍是同一处）。
@@ -443,13 +463,13 @@ import { getRunsDir } from './persistence.js'
 把第 72 行：
 
 ```ts
-  const runsDir = `${getProjectRoot()}/.claude/workflow-runs`
+const runsDir = `${getProjectRoot()}/.claude/workflow-runs`
 ```
 
 改为：
 
 ```ts
-  const runsDir = getRunsDir()
+const runsDir = getRunsDir()
 ```
 
 - [ ] **Step 2: 运行 ports 测试验证未破坏**
@@ -474,6 +494,7 @@ git commit -m "refactor(workflow): ports 引用 getRunsDir 消除路径拼接重
 ## Task 4: service 订阅 run_done 写盘
 
 **Files:**
+
 - Modify: `src/workflow/service.ts`
 - Modify: `src/workflow/__tests__/service.test.ts`
 
@@ -490,7 +511,9 @@ import { readRunState } from '../persistence.js'
 ```ts
 test('run_done completed → 写盘 state.json，returnValue 一致', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-svc-'))
-  const origGetRunsDir = await import('../persistence.js').then(m => m.getRunsDir)
+  const origGetRunsDir = await import('../persistence.js').then(
+    m => m.getRunsDir,
+  )
   // 通过 monkey-patch getRunsDir 让真实 writeRunState 写到 tmpdir
   const persistence = await import('../persistence.js')
   ;(persistence as any).getRunsDir = () => dir
@@ -501,7 +524,12 @@ test('run_done completed → 写盘 state.json，returnValue 一致', async () =
     // 重新构造：让 service 用我们的 bus（fakePorts 内部也有 bus 但未暴露）
     const svc = makeService(ports, storeFromBus, bus)
 
-    bus.emit({ type: 'run_started', runId: 'rW', workflowName: 'w', meta: null })
+    bus.emit({
+      type: 'run_started',
+      runId: 'rW',
+      workflowName: 'w',
+      meta: null,
+    })
     bus.emit({
       type: 'run_done',
       runId: 'rW',
@@ -533,7 +561,12 @@ test('run_done failed → 写盘 status=failed + error 字段', async () => {
     const store = createProgressStoreFromBus(bus)
     makeService(ports, store, bus)
 
-    bus.emit({ type: 'run_started', runId: 'rF', workflowName: 'w', meta: null })
+    bus.emit({
+      type: 'run_started',
+      runId: 'rF',
+      workflowName: 'w',
+      meta: null,
+    })
     bus.emit({
       type: 'run_done',
       runId: 'rF',
@@ -563,7 +596,12 @@ test('run_done killed → 写盘 status=killed', async () => {
     const store = createProgressStoreFromBus(bus)
     makeService(ports, store, bus)
 
-    bus.emit({ type: 'run_started', runId: 'rK', workflowName: 'w', meta: null })
+    bus.emit({
+      type: 'run_started',
+      runId: 'rK',
+      workflowName: 'w',
+      meta: null,
+    })
     bus.emit({ type: 'run_done', runId: 'rK', status: 'killed' })
     await new Promise(r => setTimeout(r, 50))
 
@@ -630,15 +668,15 @@ export function makeService(
 在 `makeService` 函数体开头（`const buildHost = ...` 之前）加订阅：
 
 ```ts
-  // 订阅 run_done：写终态快照到磁盘（覆盖 completed/failed/killed 三态）。
-  // store 先于本订阅注册到 bus，故 listener 执行时 store.get(runId) 已是 apply 后的终态。
-  // 注意：getRunsDir() 在 listener 内调用（运行时解析），便于测试 monkey-patch。
-  bus.subscribe(event => {
-    if (event.type !== 'run_done') return
-    const run = store.get(event.runId)
-    if (!run) return
-    void writeRunState(getRunsDir(), run)
-  })
+// 订阅 run_done：写终态快照到磁盘（覆盖 completed/failed/killed 三态）。
+// store 先于本订阅注册到 bus，故 listener 执行时 store.get(runId) 已是 apply 后的终态。
+// 注意：getRunsDir() 在 listener 内调用（运行时解析），便于测试 monkey-patch。
+bus.subscribe(event => {
+  if (event.type !== 'run_done') return
+  const run = store.get(event.runId)
+  if (!run) return
+  void writeRunState(getRunsDir(), run)
+})
 ```
 
 更新 `getWorkflowService()` 单例创建处（第 73 行附近）：
@@ -675,6 +713,7 @@ git commit -m "feat(workflow): service 订阅 run_done 写终态快照到磁盘"
 ## Task 5: service 的 loadPersistedRuns + getRunAsync fallback
 
 **Files:**
+
 - Modify: `src/workflow/service.ts`
 - Modify: `src/workflow/__tests__/service.test.ts`
 
@@ -683,7 +722,11 @@ git commit -m "feat(workflow): service 订阅 run_done 写终态快照到磁盘"
 在 `src/workflow/__tests__/service.test.ts` import 添加（若尚未）：
 
 ```ts
-import { writeRunState, readRunState, listPersistedRuns } from '../persistence.js'
+import {
+  writeRunState,
+  readRunState,
+  listPersistedRuns,
+} from '../persistence.js'
 ```
 
 文件末尾追加：
@@ -697,16 +740,30 @@ test('loadPersistedRuns 扫盘 hydrate 历史 run；已有内存 run 不被覆�
   try {
     // 磁盘先有两个历史 run
     const historicalA: RunProgress = {
-      runId: 'hA', workflowName: 'old-A', status: 'completed',
-      phases: [], declaredPhases: [], currentPhase: null,
-      agents: [], agentCount: 1, returnValue: 'a',
-      startedAt: 10, updatedAt: 20,
+      runId: 'hA',
+      workflowName: 'old-A',
+      status: 'completed',
+      phases: [],
+      declaredPhases: [],
+      currentPhase: null,
+      agents: [],
+      agentCount: 1,
+      returnValue: 'a',
+      startedAt: 10,
+      updatedAt: 20,
     } as RunProgress
     const historicalB: RunProgress = {
-      runId: 'hB', workflowName: 'old-B', status: 'failed',
-      phases: [], declaredPhases: [], currentPhase: null,
-      agents: [], agentCount: 2, error: 'x',
-      startedAt: 30, updatedAt: 40,
+      runId: 'hB',
+      workflowName: 'old-B',
+      status: 'failed',
+      phases: [],
+      declaredPhases: [],
+      currentPhase: null,
+      agents: [],
+      agentCount: 2,
+      error: 'x',
+      startedAt: 30,
+      updatedAt: 40,
     } as RunProgress
     await writeRunState(dir, historicalA)
     await writeRunState(dir, historicalB)
@@ -714,7 +771,12 @@ test('loadPersistedRuns 扫盘 hydrate 历史 run；已有内存 run 不被覆�
     const { ports, bus } = fakePorts()
     const store = createProgressStoreFromBus(bus)
     // 内存先有一个本次会话 run
-    bus.emit({ type: 'run_started', runId: 'live', workflowName: 'live-w', meta: null })
+    bus.emit({
+      type: 'run_started',
+      runId: 'live',
+      workflowName: 'live-w',
+      meta: null,
+    })
     const svc = makeService(ports, store, bus)
 
     await svc.loadPersistedRuns()
@@ -775,7 +837,12 @@ test('getRunAsync 内存命中 → 不读盘', async () => {
     const { ports, bus } = fakePorts()
     const store = createProgressStoreFromBus(bus)
     const svc = makeService(ports, store, bus)
-    bus.emit({ type: 'run_started', runId: 'live', workflowName: 'w', meta: null })
+    bus.emit({
+      type: 'run_started',
+      runId: 'live',
+      workflowName: 'w',
+      meta: null,
+    })
 
     const got = await svc.getRunAsync('live')
     expect(got?.runId).toBe('live')
@@ -800,10 +867,17 @@ test('getRunAsync 内存 miss + 磁盘命中 → 返回磁盘值，且不注入�
   }
   try {
     const historical: RunProgress = {
-      runId: 'hist-only', workflowName: 'old', status: 'completed',
-      phases: [], declaredPhases: [], currentPhase: null,
-      agents: [], agentCount: 0, returnValue: { x: 1 },
-      startedAt: 1, updatedAt: 2,
+      runId: 'hist-only',
+      workflowName: 'old',
+      status: 'completed',
+      phases: [],
+      declaredPhases: [],
+      currentPhase: null,
+      agents: [],
+      agentCount: 0,
+      returnValue: { x: 1 },
+      startedAt: 1,
+      updatedAt: 2,
     } as RunProgress
     await writeRunState(dir, historical)
 
@@ -864,7 +938,12 @@ Modify `src/workflow/service.ts`:
 import 添加：
 
 ```ts
-import { writeRunState, readRunState, listPersistedRuns, getRunsDir } from './persistence.js'
+import {
+  writeRunState,
+  readRunState,
+  listPersistedRuns,
+  getRunsDir,
+} from './persistence.js'
 ```
 （替换 Task 4 里只 import `writeRunState, getRunsDir` 的那行——合并为完整 import）
 
@@ -876,7 +955,13 @@ export type WorkflowService = {
   launch(
     input: Pick<
       WorkflowInput,
-      | 'script' | 'name' | 'scriptPath' | 'args' | 'description' | 'resumeFromRunId' | 'title'
+      | 'script'
+      | 'name'
+      | 'scriptPath'
+      | 'args'
+      | 'description'
+      | 'resumeFromRunId'
+      | 'title'
     >,
     toolUseContext: ToolUseContext,
     canUseTool: CanUseToolFn,
@@ -903,7 +988,7 @@ export type WorkflowService = {
 在 `makeService` 函数体里（订阅 run_done 之后、`return {` 之前）加：
 
 ```ts
-  let persistedLoaded = false
+let persistedLoaded = false
 ```
 
 在返回对象里加（在 `getRun` 之后、`subscribe` 之前）：
@@ -949,6 +1034,7 @@ git commit -m "feat(workflow): service 添加 loadPersistedRuns 与 getRunAsync 
 ## Task 6: WorkflowsPanel mount 触发 loadPersistedRuns
 
 **Files:**
+
 - Modify: `src/workflow/panel/WorkflowsPanel.tsx`
 - Modify: `src/workflow/__tests__/WorkflowsPanel.test.tsx`
 
@@ -972,7 +1058,9 @@ test('WorkflowsPanel mount 触发一次 loadPersistedRuns', async () => {
   const svc = getWorkflowService()
   let calls = 0
   const orig = svc.loadPersistedRuns.bind(svc)
-  svc.loadPersistedRuns = async () => { calls++ }
+  svc.loadPersistedRuns = async () => {
+    calls++
+  }
 
   try {
     const onDone = () => {}
@@ -1006,10 +1094,10 @@ Modify `src/workflow/panel/WorkflowsPanel.tsx`:
 在 `useWorkflowKeyboard(handlers)` 之后、`const running = ...` 之前，加 useEffect：
 
 ```ts
-  // mount 时触发一次扫盘 hydrate 历史 run（service 内部 persistedLoaded flag 守护幂等）。
-  useEffect(() => {
-    void svc.loadPersistedRuns()
-  }, [svc])
+// mount 时触发一次扫盘 hydrate 历史 run（service 内部 persistedLoaded flag 守护幂等）。
+useEffect(() => {
+  void svc.loadPersistedRuns()
+}, [svc])
 ```
 
 `useEffect` 应已在顶部 import（`import React, { useEffect, useState, useSyncExternalStore } from 'react'`）—— 现状已含。
@@ -1055,6 +1143,7 @@ Expected: 0 errors（typecheck + lint fix + test 全通过）
 - [ ] **Step 5: （可选）手工烟雾验证**
 
 启动 `bun run dev`，跑一个会完成的 workflow（如某个简单命名 workflow），确认：
+
 1. `.claude/workflow-runs/<runId>/state.json` 生成且含 returnValue
 2. 重启 CLI 后打开 `/workflows`，能看到该历史 run
 3. （若面板有详情视图）选中历史 run 能看到 agents/phases
@@ -1092,6 +1181,7 @@ git commit -m "chore(workflow): 持久化特性 precheck 收尾"
 **Placeholder scan:** 无 TBD/TODO；每个 step 含完整代码或精确命令。
 
 **Type consistency:**
+
 - `writeRunState(runsDir, run)` / `readRunState(runsDir, runId)` / `listPersistedRuns(runsDir)` —— 三处签名一致（runsDir 首参）
 - `store.hydrate(run: RunProgress)` —— Task 2 定义、Task 5 使用，签名一致
 - `makeService(ports, store, bus)` —— Task 4 改签名、Task 5 沿用
@@ -1099,6 +1189,7 @@ git commit -m "chore(workflow): 持久化特性 precheck 收尾"
 - `getRunsDir()` —— Task 1 定义、Task 3 ports 引用、Task 4 service 引用，统一来源
 
 **歧义/已知偏离:**
+
 - spec 写"`getRun` fallback"，实现为新增 `getRunAsync`（同步 getRun 保留内存语义）。理由：避免破坏现有同步调用方（WorkflowsPanel 等）；fallback 是低频路径，async 更诚实。Task 5 测试显式断言"不注入内存"。
 
 ---

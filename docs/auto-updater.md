@@ -10,13 +10,13 @@ Claude Code 拥有一套复杂的多策略自动更新系统，支持三种安�
 
 更新策略由安装方式决定，通过 `src/utils/doctorDiagnostic.ts` 检测：
 
-| 安装类型 | 更新策略 | 自动安装？ |
-|---|---|---|
-| `native` | 从 GCS/Artifactory 下载二进制文件，通过符号链接激活 | 是（静默） |
-| `npm-global` | `npm install -g` / `bun install -g` | 是（静默） |
-| `npm-local` | `npm install` 到 `~/.claude/local/` | 是（静默） |
-| `package-manager` | 显示通知，附带对应操作系统的升级命令 | 否（仅通知） |
-| `development` | 不适用 — 执行 `claude update` 时报错 | 不适用 |
+| 安装类型          | 更新策略                                            | 自动安装？   |
+| ----------------- | --------------------------------------------------- | ------------ |
+| `native`          | 从 GCS/Artifactory 下载二进制文件，通过符号链接激活 | 是（静默）   |
+| `npm-global`      | `npm install -g` / `bun install -g`                 | 是（静默）   |
+| `npm-local`       | `npm install` 到 `~/.claude/local/`                 | 是（静默）   |
+| `package-manager` | 显示通知，附带对应操作系统的升级命令                | 否（仅通知） |
+| `development`     | 不适用 — 执行 `claude update` 时报错                | 不适用       |
 
 ### 策略路由
 
@@ -33,7 +33,7 @@ Claude Code 拥有一套复杂的多策略自动更新系统，支持三种安�
 三个更新组件共享相同的轮询模式：
 
 ```typescript
-useInterval(checkForUpdates, 30 * 60 * 1000); // 每 30 分钟
+useInterval(checkForUpdates, 30 * 60 * 1000) // 每 30 分钟
 ```
 
 组件挂载时（即启动时）也会执行一次检查。
@@ -84,7 +84,7 @@ useInterval(checkForUpdates, 30 * 60 * 1000); // 每 30 分钟
 定义于 `src/utils/autoUpdater.ts:70`，设计上在启动时调用（当前未接入启动流程）：
 
 ```typescript
-void assertMinVersion();
+void assertMinVersion()
 ```
 
 1. 从 GrowthBook 动态配置获取 `tengu_version_config`
@@ -100,6 +100,7 @@ void assertMinVersion();
 **文件**: `src/cli/update.ts`
 
 完整流程：
+
 1. 运行 `getDoctorDiagnostic()` 检查系统健康状态
 2. 检查是否存在多个安装及配置不一致
 3. 根据安装类型路由：
@@ -143,13 +144,13 @@ Windows 系统使用文件复制而非符号链接。
 
 ### 核心操作
 
-| 函数 | 说明 |
-|---|---|
-| `updateLatest()` | 核心更新流程：最大版本上限 → 跳过检查 → 加锁 → 下载 → 安装 → 更新符号链接 |
-| `installLatest()` | Singleflight 包装版本，防止重复的进行中安装 |
-| `cleanupOldVersions()` | 保留最近 2 个版本，清理过期的暂存区和临时文件 |
-| `lockCurrentVersion()` | 进程生命周期锁，防止正在运行的版本被删除 |
-| `cleanupNpmInstallations()` | 迁移到原生安装时清理旧的 npm 安装 |
+| 函数                        | 说明                                                                      |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `updateLatest()`            | 核心更新流程：最大版本上限 → 跳过检查 → 加锁 → 下载 → 安装 → 更新符号链接 |
+| `installLatest()`           | Singleflight 包装版本，防止重复的进行中安装                               |
+| `cleanupOldVersions()`      | 保留最近 2 个版本，清理过期的暂存区和临时文件                             |
+| `lockCurrentVersion()`      | 进程生命周期锁，防止正在运行的版本被删除                                  |
+| `cleanupNpmInstallations()` | 迁移到原生安装时清理旧的 npm 安装                                         |
 
 ### 下载与校验
 
@@ -182,19 +183,19 @@ Windows 系统使用文件复制而非符号链接。
 
 **文件**: `src/utils/settings/types.ts`
 
-| 设置项 | 类型 | 说明 |
-|---|---|---|
-| `autoUpdatesChannel` | `'latest' \| 'stable'` | 自动更新的发布频道 |
-| `minimumVersion` | string | 最低版本要求，防止意外的版本降级 |
+| 设置项               | 类型                   | 说明                             |
+| -------------------- | ---------------------- | -------------------------------- |
+| `autoUpdatesChannel` | `'latest' \| 'stable'` | 自动更新的发布频道               |
+| `minimumVersion`     | string                 | 最低版本要求，防止意外的版本降级 |
 
 ### 全局配置
 
 **文件**: `src/utils/config.ts:191-193`
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `autoUpdates` | boolean | 启用/禁用自动更新（旧版） |
-| `autoUpdatesProtectedForNative` | boolean | 原生安装始终自动更新 |
+| 字段                            | 类型    | 说明                      |
+| ------------------------------- | ------- | ------------------------- |
+| `autoUpdates`                   | boolean | 启用/禁用自动更新（旧版） |
+| `autoUpdatesProtectedForNative` | boolean | 原生安装始终自动更新      |
 
 ### 配置迁移
 
@@ -238,41 +239,41 @@ React hook `useUpdateNotification(updatedVersion)` — 确保每次 semver 变�
 
 所有更新相关的遥测数据使用 `tengu_` 前缀的事件：
 
-| 类别 | 事件 |
-|---|---|
-| 版本检查 | `tengu_version_check_success`、`tengu_version_check_failure` |
-| JS 自动更新器 | `tengu_auto_updater_start/success/fail/up_to_date/lock_contention` |
-| 原生自动更新器 | `tengu_native_auto_updater_start/success/fail` |
-| 原生更新 | `tengu_native_update_complete/skipped_max_version/skipped_minimum_version` |
-| 锁机制 | `tengu_version_lock_acquired/failed`、`tengu_native_update_lock_failed` |
-| 二进制下载 | `tengu_binary_download_attempt/success/failure`、`tengu_binary_manifest_fetch_failure` |
-| 清理 | `tengu_native_version_cleanup`、`tengu_native_staging_cleanup`、`tengu_native_stale_locks_cleanup` |
-| 安装 | `tengu_native_install_package_success/failure`、`tengu_native_install_binary_success/failure` |
-| 手动更新 | `tengu_update_check` |
-| 迁移 | `tengu_migrate_autoupdates_to_settings`、`tengu_migrate_autoupdates_error` |
+| 类别           | 事件                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| 版本检查       | `tengu_version_check_success`、`tengu_version_check_failure`                                       |
+| JS 自动更新器  | `tengu_auto_updater_start/success/fail/up_to_date/lock_contention`                                 |
+| 原生自动更新器 | `tengu_native_auto_updater_start/success/fail`                                                     |
+| 原生更新       | `tengu_native_update_complete/skipped_max_version/skipped_minimum_version`                         |
+| 锁机制         | `tengu_version_lock_acquired/failed`、`tengu_native_update_lock_failed`                            |
+| 二进制下载     | `tengu_binary_download_attempt/success/failure`、`tengu_binary_manifest_fetch_failure`             |
+| 清理           | `tengu_native_version_cleanup`、`tengu_native_staging_cleanup`、`tengu_native_stale_locks_cleanup` |
+| 安装           | `tengu_native_install_package_success/failure`、`tengu_native_install_binary_success/failure`      |
+| 手动更新       | `tengu_update_check`                                                                               |
+| 迁移           | `tengu_migrate_autoupdates_to_settings`、`tengu_migrate_autoupdates_error`                         |
 
 ---
 
 ## 关键文件索引
 
-| 文件 | 职责 |
-|---|---|
-| `src/utils/autoUpdater.ts` | 核心逻辑：版本检查、npm 安装、文件锁、最低/最高版本门控 |
-| `src/cli/update.ts` | `claude update` 命令处理 |
-| `src/utils/nativeInstaller/installer.ts` | 原生二进制安装器：下载、版本管理、符号链接、清理 |
-| `src/utils/nativeInstaller/download.ts` | 从 GCS/Artifactory 下载二进制文件并校验 |
-| `src/utils/localInstaller.ts` | 本地安装器（`~/.claude/local/`）基于 npm |
-| `src/components/AutoUpdaterWrapper.tsx` | 基于安装类型的策略路由 |
-| `src/components/AutoUpdater.tsx` | JS/npm 后台自动更新器（30 分钟间隔） |
-| `src/components/NativeAutoUpdater.tsx` | 原生二进制后台自动更新器（30 分钟间隔） |
-| `src/components/PackageManagerAutoUpdater.tsx` | 包管理器通知（30 分钟，仅展示） |
-| `src/hooks/useUpdateNotification.ts` | 按 semver 去重更新通知 |
-| `src/utils/releaseNotes.ts` | Changelog 获取、缓存与展示 |
-| `src/utils/semver.ts` | Semver 版本比较（Bun 原生 + npm 回退） |
-| `src/utils/doctorDiagnostic.ts` | 安装类型检测与健康诊断 |
-| `src/utils/config.ts:1737` | `getAutoUpdaterDisabledReason()` — 禁用检查逻辑 |
-| `src/migrations/migrateAutoUpdatesToSettings.ts` | 旧版配置迁移 |
-| `src/screens/Doctor.tsx` | Doctor 命令 UI，展示自动更新状态 |
+| 文件                                             | 职责                                                    |
+| ------------------------------------------------ | ------------------------------------------------------- |
+| `src/utils/autoUpdater.ts`                       | 核心逻辑：版本检查、npm 安装、文件锁、最低/最高版本门控 |
+| `src/cli/update.ts`                              | `claude update` 命令处理                                |
+| `src/utils/nativeInstaller/installer.ts`         | 原生二进制安装器：下载、版本管理、符号链接、清理        |
+| `src/utils/nativeInstaller/download.ts`          | 从 GCS/Artifactory 下载二进制文件并校验                 |
+| `src/utils/localInstaller.ts`                    | 本地安装器（`~/.claude/local/`）基于 npm                |
+| `src/components/AutoUpdaterWrapper.tsx`          | 基于安装类型的策略路由                                  |
+| `src/components/AutoUpdater.tsx`                 | JS/npm 后台自动更新器（30 分钟间隔）                    |
+| `src/components/NativeAutoUpdater.tsx`           | 原生二进制后台自动更新器（30 分钟间隔）                 |
+| `src/components/PackageManagerAutoUpdater.tsx`   | 包管理器通知（30 分钟，仅展示）                         |
+| `src/hooks/useUpdateNotification.ts`             | 按 semver 去重更新通知                                  |
+| `src/utils/releaseNotes.ts`                      | Changelog 获取、缓存与展示                              |
+| `src/utils/semver.ts`                            | Semver 版本比较（Bun 原生 + npm 回退）                  |
+| `src/utils/doctorDiagnostic.ts`                  | 安装类型检测与健康诊断                                  |
+| `src/utils/config.ts:1737`                       | `getAutoUpdaterDisabledReason()` — 禁用检查逻辑         |
+| `src/migrations/migrateAutoUpdatesToSettings.ts` | 旧版配置迁移                                            |
+| `src/screens/Doctor.tsx`                         | Doctor 命令 UI，展示自动更新状态                        |
 
 ---
 

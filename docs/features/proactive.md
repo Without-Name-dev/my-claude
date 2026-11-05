@@ -11,6 +11,7 @@ PROACTIVE 实现 Tick 驱动的自主代理。CLI 在用户不输入时也能持
 ### 与 KAIROS 的关系
 
 所有代码检查都是 `feature('PROACTIVE') || feature('KAIROS')`，即：
+
 - 单独开 `FEATURE_PROACTIVE=1` → 获得 proactive 能力
 - 单独开 `FEATURE_KAIROS=1` → 自动获得 proactive 能力
 - 两者都开 → 相同效果（不重复）
@@ -19,29 +20,29 @@ PROACTIVE 实现 Tick 驱动的自主代理。CLI 在用户不输入时也能持
 
 ### 2.1 模块状态
 
-| 模块 | 文件 | 状态 | 说明 |
-|------|------|------|------|
-| 核心逻辑 | `src/proactive/index.ts` | **已实现** | `activateProactive()`、`deactivateProactive()`、`pause/resume`、`nextTickAt` 调度状态 |
-| SleepTool 提示 | `src/tools/SleepTool/prompt.ts` | **完整** | 工具提示定义（工具名：`Sleep`） |
-| 命令注册 | `src/commands.ts:62-65` | **布线** | 动态加载 `./commands/proactive.js` |
-| 工具注册 | `src/tools.ts:26-28` | **布线** | SleepTool 动态加载 |
-| REPL 集成 | `src/screens/REPL.tsx` | **已实现** | tick 驱动、standby/sleeping 状态、页脚与 bridge automation metadata 上报 |
-| 系统提示 | `src/constants/prompts.ts:864-918` | **完整** | 自主工作行为指令（~55 行详细 prompt） |
-| 远控状态镜像 | `src/utils/sessionState.ts` | **已实现** | 向 remote-control/CCR 暴露 `automation_state` 元数据 |
+| 模块           | 文件                               | 状态       | 说明                                                                                  |
+| -------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------- |
+| 核心逻辑       | `src/proactive/index.ts`           | **已实现** | `activateProactive()`、`deactivateProactive()`、`pause/resume`、`nextTickAt` 调度状态 |
+| SleepTool 提示 | `src/tools/SleepTool/prompt.ts`    | **完整**   | 工具提示定义（工具名：`Sleep`）                                                       |
+| 命令注册       | `src/commands.ts:62-65`            | **布线**   | 动态加载 `./commands/proactive.js`                                                    |
+| 工具注册       | `src/tools.ts:26-28`               | **布线**   | SleepTool 动态加载                                                                    |
+| REPL 集成      | `src/screens/REPL.tsx`             | **已实现** | tick 驱动、standby/sleeping 状态、页脚与 bridge automation metadata 上报              |
+| 系统提示       | `src/constants/prompts.ts:864-918` | **完整**   | 自主工作行为指令（~55 行详细 prompt）                                                 |
+| 远控状态镜像   | `src/utils/sessionState.ts`        | **已实现** | 向 remote-control/CCR 暴露 `automation_state` 元数据                                  |
 
 ### 2.2 系统提示内容
 
 `getProactiveSection()` 注入的自主工作指令包含：
 
-| 章节 | 内容 |
-|------|------|
-| Tick 驱动 | `<tick_tag>` prompt 保持存活，包含用户本地时间 |
-| 节奏控制 | SleepTool 控制等待间隔，prompt cache 5 分钟过期 |
+| 章节       | 内容                                                   |
+| ---------- | ------------------------------------------------------ |
+| Tick 驱动  | `<tick_tag>` prompt 保持存活，包含用户本地时间         |
+| 节奏控制   | SleepTool 控制等待间隔，prompt cache 5 分钟过期        |
 | 空操作规则 | 无事可做时**必须**调用 Sleep，禁止输出 "still waiting" |
-| 首次唤醒 | 简短问候，等待方向（不主动探索） |
-| 后续唤醒 | 寻找有用工作：调查、验证、检查（不 spam 用户） |
-| 偏向行动 | 读文件、搜索代码、commit — 不需询问 |
-| 终端焦点 | `terminalFocus` 字段调节自主程度 |
+| 首次唤醒   | 简短问候，等待方向（不主动探索）                       |
+| 后续唤醒   | 寻找有用工作：调查、验证、检查（不 spam 用户）         |
+| 偏向行动   | 读文件、搜索代码、commit — 不需询问                    |
+| 终端焦点   | `terminalFocus` 字段调节自主程度                       |
 
 ### 2.3 数据流
 
@@ -101,13 +102,13 @@ FEATURE_PROACTIVE=1 FEATURE_KAIROS=1 FEATURE_KAIROS_BRIEF=1 bun run dev
 
 ## 六、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `src/proactive/index.ts` | 核心逻辑与 next-tick 状态 |
-| `src/tools/SleepTool/prompt.ts` | SleepTool 工具提示 |
-| `src/tools/SleepTool/SleepTool.ts` | 休眠/唤醒执行逻辑 |
-| `src/constants/prompts.ts:864-918` | 自主工作系统提示 |
-| `src/screens/REPL.tsx` | REPL tick 集成与 automation 状态上报 |
-| `src/utils/sessionStorage.ts:4892-4912` | Tick 消息注入 |
-| `src/utils/sessionState.ts` | bridge/CCR metadata 镜像 |
-| `src/components/PromptInput/PromptInputFooterLeftSide.tsx` | 页脚 UI 状态 |
+| 文件                                                       | 职责                                 |
+| ---------------------------------------------------------- | ------------------------------------ |
+| `src/proactive/index.ts`                                   | 核心逻辑与 next-tick 状态            |
+| `src/tools/SleepTool/prompt.ts`                            | SleepTool 工具提示                   |
+| `src/tools/SleepTool/SleepTool.ts`                         | 休眠/唤醒执行逻辑                    |
+| `src/constants/prompts.ts:864-918`                         | 自主工作系统提示                     |
+| `src/screens/REPL.tsx`                                     | REPL tick 集成与 automation 状态上报 |
+| `src/utils/sessionStorage.ts:4892-4912`                    | Tick 消息注入                        |
+| `src/utils/sessionState.ts`                                | bridge/CCR metadata 镜像             |
+| `src/components/PromptInput/PromptInputFooterLeftSide.tsx` | 页脚 UI 状态                         |

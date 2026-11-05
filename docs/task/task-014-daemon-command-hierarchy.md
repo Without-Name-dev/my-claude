@@ -11,6 +11,7 @@
 ## 背景
 
 当前这些命令注册在两个互不关联的位置:
+
 - `cli.tsx:203-212`: `daemon [start|status|stop]` → `daemon/main.ts`
 - `cli.tsx:217-246`: `ps|logs|attach|kill|--bg` → `cli/bg.ts`
 
@@ -20,36 +21,41 @@
 
 ### 新增
 
-| 文件 | 说明 |
-|------|------|
-| `src/commands/daemon/index.ts` | `/daemon` REPL 斜杠命令注册 (type: local-jsx) |
-| `src/commands/daemon/daemon.tsx` | `/daemon` 子命令路由 + status UI 组件 |
+| 文件                             | 说明                                          |
+| -------------------------------- | --------------------------------------------- |
+| `src/commands/daemon/index.ts`   | `/daemon` REPL 斜杠命令注册 (type: local-jsx) |
+| `src/commands/daemon/daemon.tsx` | `/daemon` 子命令路由 + status UI 组件         |
 
 ### 修改
 
-| 文件 | 变更 |
-|------|------|
+| 文件                      | 变更                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `src/entrypoints/cli.tsx` | 统一 daemon 快速路径: `daemon <sub>` 路由到对应 handler。旧命令 `ps/logs/attach/kill` 保留但输出 deprecation 警告后代理 |
-| `src/commands.ts` | 注册 `/daemon` 斜杠命令 (feature-gated: DAEMON \|\| BG_SESSIONS) |
-| `src/daemon/main.ts` | `daemonMain()` 扩展: 支持 `bg/attach/logs/kill/ps` 子命令 (委托给 bg.ts handlers) |
+| `src/commands.ts`         | 注册 `/daemon` 斜杠命令 (feature-gated: DAEMON \|\| BG_SESSIONS)                                                        |
+| `src/daemon/main.ts`      | `daemonMain()` 扩展: 支持 `bg/attach/logs/kill/ps` 子命令 (委托给 bg.ts handlers)                                       |
 
 ## 实现方案
 
 ### 1. CLI 快速路径统一 (`cli.tsx`)
 
 **改前** (两段独立路由):
+
 ```typescript
 // 段 1: daemon
 if (feature('DAEMON') && args[0] === 'daemon') {
   await daemonMain(args.slice(1))
 }
 // 段 2: bg sessions
-if (feature('BG_SESSIONS') && ['ps','logs','attach','kill'].includes(args[0])) {
+if (
+  feature('BG_SESSIONS') &&
+  ['ps', 'logs', 'attach', 'kill'].includes(args[0])
+) {
   // ...switch/case
 }
 ```
 
 **改后** (统一入口):
+
 ```typescript
 // 统一 daemon 入口 — 合并 daemon supervisor + bg sessions
 if (
@@ -112,7 +118,7 @@ export async function daemonMain(args: string[]): Promise<void> {
     // --- 会话管理 (委托给 bg.ts) ---
     case 'status':
     case 'ps':
-      await showUnifiedStatus()  // 新: daemon 状态 + 会话列表
+      await showUnifiedStatus() // 新: daemon 状态 + 会话列表
       break
     case 'bg':
       const bg = await import('../cli/bg.js')
@@ -131,7 +137,9 @@ export async function daemonMain(args: string[]): Promise<void> {
       await bg4.killHandler(args[1])
       break
 
-    case '--help': case '-h': case 'help':
+    case '--help':
+    case '-h':
+    case 'help':
       printHelp()
       break
     default:
@@ -172,6 +180,7 @@ async function showUnifiedStatus(): Promise<void> {
 ### 4. REPL 斜杠命令注册
 
 **`src/commands/daemon/index.ts`**:
+
 ```typescript
 import type { Command } from '../../commands.js'
 import { feature } from 'bun:bundle'
@@ -193,6 +202,7 @@ export default daemon
 ```
 
 **`src/commands/daemon/daemon.tsx`**:
+
 ```typescript
 export async function call(
   onDone: LocalJSXCommandOnDone,
@@ -226,6 +236,7 @@ export async function call(
 ```
 
 **`src/commands.ts`** 添加:
+
 ```typescript
 // 条件导入
 const daemonCmd =

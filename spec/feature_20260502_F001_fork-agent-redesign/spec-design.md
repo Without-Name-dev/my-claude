@@ -40,27 +40,29 @@ flag 关闭时，schema 通过 `.omit({ fork: true })` 裁剪掉该字段（与�
 
 ```ts
 // 旧行为：省略 subagent_type → fork（flag 开启时）
-const effectiveType = subagent_type ?? (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType);
-const isForkPath = effectiveType === undefined;
+const effectiveType =
+  subagent_type ??
+  (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType)
+const isForkPath = effectiveType === undefined
 ```
 
 改为显式参数触发：
 
 ```ts
 // 新行为：显式 fork 参数触发，fork 优先级高于 subagent_type
-const isForkPath = input.fork === true && isForkSubagentEnabled();
-const effectiveType = subagent_type ?? GENERAL_PURPOSE_AGENT.agentType;
+const isForkPath = input.fork === true && isForkSubagentEnabled()
+const effectiveType = subagent_type ?? GENERAL_PURPOSE_AGENT.agentType
 ```
 
 #### 决策表
 
-| `fork` | `subagent_type` | flag 开 | 结果 |
-|--------|----------------|---------|------|
-| `true` | 有值 | 是 | fork 路径，**忽略 subagent_type** |
-| `true` | 省略 | 是 | fork 路径（继承上下文） |
-| `true` | * | 否 | 忽略 fork，走 subagent_type 或 general-purpose |
-| `false`/省略 | 有值 | * | 走指定 agent 类型（原有行为） |
-| `false`/省略 | 省略 | * | 走 general-purpose（原有行为） |
+| `fork`       | `subagent_type` | flag 开 | 结果                                           |
+| ------------ | --------------- | ------- | ---------------------------------------------- |
+| `true`       | 有值            | 是      | fork 路径，**忽略 subagent_type**              |
+| `true`       | 省略            | 是      | fork 路径（继承上下文）                        |
+| `true`       | *               | 否      | 忽略 fork，走 subagent_type 或 general-purpose |
+| `false`/省略 | 有值            | *       | 走指定 agent 类型（原有行为）                  |
+| `false`/省略 | 省略            | *       | 走 general-purpose（原有行为）                 |
 
 核心原则：**`fork: true` 是最高优先级**（当 flag 开启时），但 flag 关闭时静默降级，不影响原有行为。
 
@@ -74,6 +76,7 @@ const forceAsync = /* 其他条件（coordinator, assistant mode 等）*/;
 ```
 
 fork agent 与普通 agent 使用相同的 `run_in_background` 参数判断逻辑：
+
 - `run_in_background: true` → 后台异步运行
 - `run_in_background: false` / 省略 → 同步阻塞运行
 
@@ -89,10 +92,10 @@ fork agent 与普通 agent 使用相同的 `run_in_background` 参数判断逻�
 
 ```ts
 export function isForkSubagentEnabled(): boolean {
-  if (!feature('FORK_SUBAGENT')) return false;
-  if (isCoordinatorMode()) return false;
-  if (getIsNonInteractiveSession()) return false;
-  return true;
+  if (!feature('FORK_SUBAGENT')) return false
+  if (isCoordinatorMode()) return false
+  if (getIsNonInteractiveSession()) return false
+  return true
 }
 ```
 
@@ -115,11 +118,11 @@ export function isForkSubagentEnabled(): boolean {
 
 ### 涉及文件
 
-| 文件 | 改动 |
-|------|------|
+| 文件                                                       | 改动                                                |
+| ---------------------------------------------------------- | --------------------------------------------------- |
 | `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx` | 新增 `fork` 参数解析，路由逻辑重构，forceAsync 解耦 |
-| `packages/builtin-tools/src/tools/AgentTool/prompt.ts` | 移除隐式 fork 引导，新增 `fork: true` 使用场景说明 |
-| `scripts/defines.ts` | 更新 `FORK_SUBAGENT` 注释描述 |
+| `packages/builtin-tools/src/tools/AgentTool/prompt.ts`     | 移除隐式 fork 引导，新增 `fork: true` 使用场景说明  |
+| `scripts/defines.ts`                                       | 更新 `FORK_SUBAGENT` 注释描述                       |
 
 ## 验收标准
 

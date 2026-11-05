@@ -41,18 +41,18 @@
 
 **新建**
 
-| 路径 | 职责 |
-|---|---|
-| `src/workflow/service.ts` | `WorkflowService` 单例门面 |
-| `src/workflow/registry.ts` | 建 `AgentAdapterRegistry`，注册单一 `claude-code` adapter |
-| `src/workflow/backends/claudeCodeBackend.ts` | 深度集成的 `AgentAdapter`（runAgent 委托 + 体系解析） |
-| `src/workflow/backends/types.ts` | 后端/host 解析类型 |
-| `src/workflow/ports.ts` | 组装 `WorkflowPorts`（registry + 任务生命周期 + journal + progress bus） |
-| `src/workflow/progress/bus.ts` | 类型化发布/订阅事件总线 |
-| `src/workflow/progress/store.ts` | reducer：`ProgressEvent` → `RunProgress[]`（按 `agentId` 关联） |
-| `src/workflow/panel/WorkflowsPanel.tsx` | 双栏全屏面板（local-jsx） |
-| `src/workflow/panel/WorkflowList.tsx` / `WorkflowDetail.tsx` / `useWorkflowKeyboard.ts` | 左栏 workflow 扁平列表 / 右栏 phase 条+agent 列表 / 键位 |
-| `src/skills/bundled/ultracode/SKILL.md` | `/ultracode` 知识 skill |
+| 路径                                                                                    | 职责                                                                     |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `src/workflow/service.ts`                                                               | `WorkflowService` 单例门面                                               |
+| `src/workflow/registry.ts`                                                              | 建 `AgentAdapterRegistry`，注册单一 `claude-code` adapter                |
+| `src/workflow/backends/claudeCodeBackend.ts`                                            | 深度集成的 `AgentAdapter`（runAgent 委托 + 体系解析）                    |
+| `src/workflow/backends/types.ts`                                                        | 后端/host 解析类型                                                       |
+| `src/workflow/ports.ts`                                                                 | 组装 `WorkflowPorts`（registry + 任务生命周期 + journal + progress bus） |
+| `src/workflow/progress/bus.ts`                                                          | 类型化发布/订阅事件总线                                                  |
+| `src/workflow/progress/store.ts`                                                        | reducer：`ProgressEvent` → `RunProgress[]`（按 `agentId` 关联）          |
+| `src/workflow/panel/WorkflowsPanel.tsx`                                                 | 双栏全屏面板（local-jsx）                                                |
+| `src/workflow/panel/WorkflowList.tsx` / `WorkflowDetail.tsx` / `useWorkflowKeyboard.ts` | 左栏 workflow 扁平列表 / 右栏 phase 条+agent 列表 / 键位                 |
+| `src/skills/bundled/ultracode/SKILL.md`                                                 | `/ultracode` 知识 skill                                                  |
 
 **重写（整体替换，非打补丁）**
 
@@ -115,22 +115,27 @@ src/workflow/
 ## 6. WorkflowService
 
 ```ts
-type HostContext = { handle: HostHandle; cwd: string; budgetTotal: number | null; toolUseId?: string }
+type HostContext = {
+  handle: HostHandle
+  cwd: string
+  budgetTotal: number | null
+  toolUseId?: string
+}
 
 type WorkflowService = {
   launch(opts: {
     source: { script: string } | { name: string } | { scriptPath: string }
     args?: unknown
-    hostContext: HostContext        // 调用方构造（工具/面板各自）
+    hostContext: HostContext // 调用方构造（工具/面板各自）
     description?: string
     resumeFromRunId?: string
-  }): Promise<{ runId: string }>    // 立即返回，后台 detached
+  }): Promise<{ runId: string }> // 立即返回，后台 detached
   resume(runId: string, hostContext: HostContext): Promise<void>
-  kill(runId: string): void          // AbortController.abort() → WorkflowAbortedError → killed
+  kill(runId: string): void // AbortController.abort() → WorkflowAbortedError → killed
   listRuns(): RunProgress[]
   getRun(runId: string): RunProgress | undefined
-  subscribe(listener: () => void): () => void   // 供 useSyncExternalStore
-  listNamed(): Promise<string[]>                 // 委托 namedWorkflows
+  subscribe(listener: () => void): () => void // 供 useSyncExternalStore
+  listNamed(): Promise<string[]> // 委托 namedWorkflows
 }
 ```
 
@@ -152,18 +157,26 @@ type WorkflowService = {
 export const claudeCodeBackend: AgentAdapter = {
   id: 'claude-code',
   capabilities: { structuredOutput: true, modelOverride: true },
-  async run(params: AgentRunParams, ctx: AgentAdapterContext): Promise<AgentRunResult> {
+  async run(
+    params: AgentRunParams,
+    ctx: AgentAdapterContext,
+  ): Promise<AgentRunResult> {
     const { toolUseContext, canUseTool } = unwrapHostBundle(ctx.host)
     const appState = toolUseContext.getAppState()
 
     // 1) agentType → 真实 agent 注册表（不再硬编码 WORKFLOW_AGENT）
-    const agentDef = resolveAgentDefinition(params.agentType, toolUseContext)  // activeAgents 命中；WORKFLOW_AGENT 兜底
+    const agentDef = resolveAgentDefinition(params.agentType, toolUseContext) // activeAgents 命中；WORKFLOW_AGENT 兜底
 
     // 2) model → provider 模型映射
-    const resolvedModel = params.model ? mapWorkflowModel(params.model, appState) : undefined
+    const resolvedModel = params.model
+      ? mapWorkflowModel(params.model, appState)
+      : undefined
 
     // 3) 工具池（活权限上下文）
-    const tools = assembleToolPool(workerPermissionContext(appState, agentDef), appState.mcp.tools)
+    const tools = assembleToolPool(
+      workerPermissionContext(appState, agentDef),
+      appState.mcp.tools,
+    )
 
     // 4) schema → StructuredOutput 指令；prompt 组装
     // 5) runAgent({ agentDefinition, promptMessages, toolUseContext, canUseTool,

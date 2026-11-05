@@ -13,11 +13,11 @@ TOKEN_BUDGET 让用户在 prompt 中指定一个 output token 预算目标（如
 
 ### 语法
 
-| 格式 | 示例 | 说明 |
-|------|------|------|
-| 简写（开头） | `+500k` | 输入开头直接写 |
-| 简写（结尾） | `帮我重构这个模块 +2m` | 输入末尾追加 |
-| 完整语法 | `spend 2M tokens` 或 `use 1B tokens` | 自然语言嵌入 |
+| 格式         | 示例                                 | 说明           |
+| ------------ | ------------------------------------ | -------------- |
+| 简写（开头） | `+500k`                              | 输入开头直接写 |
+| 简写（结尾） | `帮我重构这个模块 +2m`               | 输入末尾追加   |
+| 完整语法     | `spend 2M tokens` 或 `use 1B tokens` | 自然语言嵌入   |
 
 单位支持：`k`（千）、`m`（百万）、`b`（十亿），大小写不敏感。
 
@@ -93,6 +93,7 @@ budgetContinuationCount   — 本 turn 已自动续接的次数
 ```
 
 关键函数：
+
 - `getTotalOutputTokens()` — 从 `STATE.modelUsage` 汇总所有模型的 output tokens
 - `getTurnOutputTokens()` — `getTotalOutputTokens() - outputTokensAtTurnStart`
 - `snapshotOutputTokensForTurn(budget)` — 重置 turn 起点，设置新预算
@@ -103,12 +104,14 @@ budgetContinuationCount   — 本 turn 已自动续接的次数
 `checkTokenBudget(tracker, agentId, budget, globalTurnTokens)` 做出 continue/stop 决策：
 
 **继续条件**：
+
 - 不在子 agent 中（`agentId` 为空）
 - 预算存在且 > 0
 - 当前 token 未达预算的 **90%**
 - 非收益递减（连续 3 轮 nudge 后，每轮新增 < 500 tokens）
 
 **停止条件**：
+
 - 达到预算 90%
 - 收益递减（模型已经"做不动了"）
 - 子 agent 模式下直接跳过
@@ -132,13 +135,13 @@ query() 函数内：
 
 #### 5. UI 层
 
-| 文件 | 职责 |
-|------|------|
-| `components/PromptInput/PromptInput.tsx:534` | 输入框中高亮预算语法 |
-| `components/Spinner.tsx:319-338` | spinner 显示进度百分比 + ETA |
-| `screens/REPL.tsx:2897` | 提交时解析预算并快照 |
-| `screens/REPL.tsx:2138` | 用户取消时清除预算 |
-| `screens/REPL.tsx:2963` | turn 结束时捕获预算信息用于显示 |
+| 文件                                         | 职责                            |
+| -------------------------------------------- | ------------------------------- |
+| `components/PromptInput/PromptInput.tsx:534` | 输入框中高亮预算语法            |
+| `components/Spinner.tsx:319-338`             | spinner 显示进度百分比 + ETA    |
+| `screens/REPL.tsx:2897`                      | 提交时解析预算并快照            |
+| `screens/REPL.tsx:2138`                      | 用户取消时清除预算              |
+| `screens/REPL.tsx:2963`                      | turn 结束时捕获预算信息用于显示 |
 
 #### 6. 系统提示 — `src/constants/prompts.ts:538-551`
 
@@ -185,14 +188,14 @@ FEATURE_TOKEN_BUDGET=1 bun run dev
 
 ## 六、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/utils/tokenBudget.ts` | 73 | 正则解析 + 位置查找 + 续接消息生成 |
-| `src/query/tokenBudget.ts` | 93 | 预算追踪器 + continue/stop 决策 |
-| `src/bootstrap/state.ts:724-743` | 20 | turn 级 token 快照状态 |
-| `src/constants/prompts.ts:538-551` | 14 | 系统提示注入 |
-| `src/utils/attachments.ts:3830-3844` | 17 | API attachment 附加 |
-| `src/query.ts:280,1311-1358` | 48 | 主循环集成 |
-| `src/screens/REPL.tsx:2897,2963,2138` | 20 | REPL 提交/完成/取消处理 |
-| `src/components/Spinner.tsx:319-338` | 20 | 进度条 UI |
-| `src/components/PromptInput/PromptInput.tsx:534` | 1 | 输入高亮 |
+| 文件                                             | 行数 | 职责                               |
+| ------------------------------------------------ | ---- | ---------------------------------- |
+| `src/utils/tokenBudget.ts`                       | 73   | 正则解析 + 位置查找 + 续接消息生成 |
+| `src/query/tokenBudget.ts`                       | 93   | 预算追踪器 + continue/stop 决策    |
+| `src/bootstrap/state.ts:724-743`                 | 20   | turn 级 token 快照状态             |
+| `src/constants/prompts.ts:538-551`               | 14   | 系统提示注入                       |
+| `src/utils/attachments.ts:3830-3844`             | 17   | API attachment 附加                |
+| `src/query.ts:280,1311-1358`                     | 48   | 主循环集成                         |
+| `src/screens/REPL.tsx:2897,2963,2138`            | 20   | REPL 提交/完成/取消处理            |
+| `src/components/Spinner.tsx:319-338`             | 20   | 进度条 UI                          |
+| `src/components/PromptInput/PromptInput.tsx:534` | 1    | 输入高亮                           |

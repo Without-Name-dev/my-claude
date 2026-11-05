@@ -67,7 +67,7 @@ export async function readRegistry(
     } else if (
       entryAt === existingAt &&
       !existing.bridgeSessionId &&
-      Boolean(entry.bridgeSessionId)
+      entry.bridgeSessionId
     ) {
       byPid.set(entry.pid, entry)
     }

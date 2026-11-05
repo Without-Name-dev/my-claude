@@ -16,38 +16,36 @@
 
 ### 新增
 
-| 文件 | 说明 |
-|------|------|
+| 文件                        | 说明                     |
+| --------------------------- | ------------------------ |
 | `src/commands/job/index.ts` | `/job` REPL 斜杠命令注册 |
-| `src/commands/job/job.tsx` | `/job` 子命令路由 |
+| `src/commands/job/job.tsx`  | `/job` 子命令路由        |
 
 ### 修改
 
-| 文件 | 变更 |
-|------|------|
+| 文件                      | 变更                                                       |
+| ------------------------- | ---------------------------------------------------------- |
 | `src/entrypoints/cli.tsx` | 新增 `job` 快速路径 + 旧 `new/list/reply` deprecation 代理 |
-| `src/commands.ts` | 注册 `/job` 斜杠命令 |
+| `src/commands.ts`         | 注册 `/job` 斜杠命令                                       |
 
 ### 不动
 
-| 文件 | 说明 |
-|------|------|
+| 文件                               | 说明                                  |
+| ---------------------------------- | ------------------------------------- |
 | `src/cli/handlers/templateJobs.ts` | 内部 handler 不变，只是被调用方式变了 |
-| `src/jobs/state.ts` | job 状态管理不变 |
-| `src/jobs/templates.ts` | 模板发现不变 |
-| `src/jobs/classifier.ts` | 任务分类器不变 |
+| `src/jobs/state.ts`                | job 状态管理不变                      |
+| `src/jobs/templates.ts`            | 模板发现不变                          |
+| `src/jobs/classifier.ts`           | 任务分类器不变                        |
 
 ## 实现方案
 
 ### 1. CLI 快速路径 (`cli.tsx`)
 
 **改后**:
+
 ```typescript
 // 新: claude job <subcommand>
-if (
-  feature('TEMPLATES') &&
-  args[0] === 'job'
-) {
+if (feature('TEMPLATES') && args[0] === 'job') {
   profileCheckpoint('cli_templates_path')
   const { templatesMain } = await import('../cli/handlers/templateJobs.js')
   await templatesMain(args.slice(1))
@@ -59,7 +57,9 @@ if (
   feature('TEMPLATES') &&
   (args[0] === 'new' || args[0] === 'list' || args[0] === 'reply')
 ) {
-  console.error(`[deprecated] Use: claude job ${args[0]} ${args.slice(1).join(' ')}`.trim())
+  console.error(
+    `[deprecated] Use: claude job ${args[0]} ${args.slice(1).join(' ')}`.trim(),
+  )
   profileCheckpoint('cli_templates_path')
   const { templatesMain } = await import('../cli/handlers/templateJobs.js')
   await templatesMain(args)
@@ -70,6 +70,7 @@ if (
 ### 2. templateJobs.ts 新增 status 子命令
 
 在现有 `switch` 中增加:
+
 ```typescript
 case 'status':
   handleStatus(args.slice(1))
@@ -101,6 +102,7 @@ function handleStatus(args: string[]): void {
 ### 3. REPL 斜杠命令
 
 **`src/commands/job/index.ts`**:
+
 ```typescript
 import type { Command } from '../../commands.js'
 import { feature } from 'bun:bundle'
@@ -121,6 +123,7 @@ export default job
 ```
 
 **`src/commands/job/job.tsx`**:
+
 ```typescript
 export async function call(
   onDone: LocalJSXCommandOnDone,

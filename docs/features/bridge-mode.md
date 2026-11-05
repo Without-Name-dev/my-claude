@@ -21,10 +21,10 @@ BRIDGE_MODE 将本地 CLI 注册为"bridge 环境"，可从 claude.ai 或其他�
 
 ### 2.1 版本演进
 
-| 版本 | 实现 | 特点 |
-|------|------|------|
-| v1（env-based） | `src/bridge/replBridge.ts` | 基于环境变量的传统 bridge |
-| v2（env-less） | `src/bridge/remoteBridgeCore.ts` | 无需环境变量，更安全的 bridge |
+| 版本            | 实现                             | 特点                          |
+| --------------- | -------------------------------- | ----------------------------- |
+| v1（env-based） | `src/bridge/replBridge.ts`       | 基于环境变量的传统 bridge     |
+| v2（env-less）  | `src/bridge/remoteBridgeCore.ts` | 无需环境变量，更安全的 bridge |
 
 ### 2.2 API 协议
 
@@ -32,17 +32,17 @@ BRIDGE_MODE 将本地 CLI 注册为"bridge 环境"，可从 claude.ai 或其他�
 
 Bridge API Client 提供 9 个核心操作：
 
-| 操作 | HTTP | 说明 |
-|------|------|------|
-| `registerBridgeEnvironment` | POST `/v1/environments/bridge` | 注册本地环境，获取 `environment_id` + `environment_secret` |
-| `pollForWork` | GET `/v1/environments/{id}/work/poll` | 长轮询等待任务（10s 超时） |
-| `acknowledgeWork` | POST `/v1/environments/{id}/work/{workId}/ack` | 确认接收任务 |
-| `stopWork` | POST `/v1/environments/{id}/work/{workId}/stop` | 停止任务 |
-| `heartbeatWork` | POST `/v1/environments/{id}/work/{workId}/heartbeat` | 续约任务租约 |
-| `deregisterEnvironment` | DELETE `/v1/environments/bridge/{id}` | 注销环境 |
-| `archiveSession` | POST `/v1/sessions/{id}/archive` | 归档会话（409 = 已归档，幂等） |
-| `sendPermissionResponseEvent` | POST `/v1/sessions/{id}/events` | 发送权限审批结果 |
-| `reconnectSession` | POST `/v1/environments/{id}/bridge/reconnect` | 重连已存在的会话 |
+| 操作                          | HTTP                                                 | 说明                                                       |
+| ----------------------------- | ---------------------------------------------------- | ---------------------------------------------------------- |
+| `registerBridgeEnvironment`   | POST `/v1/environments/bridge`                       | 注册本地环境，获取 `environment_id` + `environment_secret` |
+| `pollForWork`                 | GET `/v1/environments/{id}/work/poll`                | 长轮询等待任务（10s 超时）                                 |
+| `acknowledgeWork`             | POST `/v1/environments/{id}/work/{workId}/ack`       | 确认接收任务                                               |
+| `stopWork`                    | POST `/v1/environments/{id}/work/{workId}/stop`      | 停止任务                                                   |
+| `heartbeatWork`               | POST `/v1/environments/{id}/work/{workId}/heartbeat` | 续约任务租约                                               |
+| `deregisterEnvironment`       | DELETE `/v1/environments/bridge/{id}`                | 注销环境                                                   |
+| `archiveSession`              | POST `/v1/sessions/{id}/archive`                     | 归档会话（409 = 已归档，幂等）                             |
+| `sendPermissionResponseEvent` | POST `/v1/sessions/{id}/events`                      | 发送权限审批结果                                           |
+| `reconnectSession`            | POST `/v1/environments/{id}/bridge/reconnect`        | 重连已存在的会话                                           |
 
 ### 2.3 认证流程
 
@@ -90,19 +90,19 @@ sessionRunner 创建 REPL session
 
 ### 2.6 模块结构
 
-| 模块 | 文件 | 职责 |
-|------|------|------|
-| API Client | `bridgeApi.ts` | HTTP 通信（注册/轮询/确认/心跳/注销） |
-| Session Runner | `sessionRunner.ts` | 创建/恢复 REPL 会话 |
-| Bridge Config | `bridgeConfig.ts` | 配置管理（machine name、max sessions 等） |
-| Transport | `replBridgeTransport.ts` | Bridge 传输层 |
-| Permission Callbacks | `bridgePermissionCallbacks.ts` | 权限请求处理 |
-| Pointer | `bridgePointer.ts` | 当前活跃 bridge 状态指针 |
-| Flush Gate | `flushGate.ts` | 刷新控制 |
-| JWT Utils | `jwtUtils.ts` | JWT 令牌工具 |
-| Trusted Device | `trustedDevice.ts` | 可信设备管理 |
-| Debug Utils | `debugUtils.ts` | 调试日志 |
-| Types | `types.ts` | 类型定义 |
+| 模块                 | 文件                           | 职责                                      |
+| -------------------- | ------------------------------ | ----------------------------------------- |
+| API Client           | `bridgeApi.ts`                 | HTTP 通信（注册/轮询/确认/心跳/注销）     |
+| Session Runner       | `sessionRunner.ts`             | 创建/恢复 REPL 会话                       |
+| Bridge Config        | `bridgeConfig.ts`              | 配置管理（machine name、max sessions 等） |
+| Transport            | `replBridgeTransport.ts`       | Bridge 传输层                             |
+| Permission Callbacks | `bridgePermissionCallbacks.ts` | 权限请求处理                              |
+| Pointer              | `bridgePointer.ts`             | 当前活跃 bridge 状态指针                  |
+| Flush Gate           | `flushGate.ts`                 | 刷新控制                                  |
+| JWT Utils            | `jwtUtils.ts`                  | JWT 令牌工具                              |
+| Trusted Device       | `trustedDevice.ts`             | 可信设备管理                              |
+| Debug Utils          | `debugUtils.ts`                | 调试日志                                  |
+| Types                | `types.ts`                     | 类型定义                                  |
 
 ## 三、关键设计决策
 
@@ -127,32 +127,32 @@ FEATURE_BRIDGE_MODE=1 FEATURE_DAEMON=1 bun run dev
 
 ## 五、外部依赖
 
-| 依赖 | 说明 |
-|------|------|
-| Anthropic OAuth | claude.ai 订阅登录 |
-| GrowthBook | `tengu_ccr_bridge` 门控 |
-| Bridge API | `/v1/environments/bridge` 系列端点 |
+| 依赖            | 说明                               |
+| --------------- | ---------------------------------- |
+| Anthropic OAuth | claude.ai 订阅登录                 |
+| GrowthBook      | `tengu_ccr_bridge` 门控            |
+| Bridge API      | `/v1/environments/bridge` 系列端点 |
 
 ## 六、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/bridge/bridgeApi.ts` | 541 | API Client（核心） |
-| `src/bridge/sessionRunner.ts` | — | 会话运行器 |
-| `src/bridge/bridgeConfig.ts` | — | 配置管理 |
-| `src/bridge/replBridgeTransport.ts` | — | 传输层 |
-| `src/bridge/bridgePermissionCallbacks.ts` | — | 权限回调 |
-| `src/bridge/bridgePointer.ts` | — | 状态指针 |
-| `src/bridge/flushGate.ts` | — | 刷新控制 |
-| `src/bridge/jwtUtils.ts` | — | JWT 工具 |
-| `src/bridge/trustedDevice.ts` | — | 可信设备 |
-| `src/bridge/remoteBridgeCore.ts` | — | v2 核心实现 |
-| `src/bridge/types.ts` | — | 类型定义 |
-| `src/bridge/debugUtils.ts` | — | 调试工具 |
-| `src/bridge/pollConfigDefaults.ts` | — | 轮询配置默认值 |
-| `src/bridge/bridgeUI.ts` | — | UI 组件 |
-| `src/bridge/codeSessionApi.ts` | — | 代码会话 API |
-| `src/bridge/peerSessions.ts` | — | 对等会话管理 |
-| `src/bridge/sessionIdCompat.ts` | — | Session ID 兼容层 |
-| `src/bridge/createSession.ts` | — | 会话创建 |
-| `src/bridge/replBridgeHandle.ts` | — | Bridge 句柄 |
+| 文件                                      | 行数 | 职责               |
+| ----------------------------------------- | ---- | ------------------ |
+| `src/bridge/bridgeApi.ts`                 | 541  | API Client（核心） |
+| `src/bridge/sessionRunner.ts`             | —    | 会话运行器         |
+| `src/bridge/bridgeConfig.ts`              | —    | 配置管理           |
+| `src/bridge/replBridgeTransport.ts`       | —    | 传输层             |
+| `src/bridge/bridgePermissionCallbacks.ts` | —    | 权限回调           |
+| `src/bridge/bridgePointer.ts`             | —    | 状态指针           |
+| `src/bridge/flushGate.ts`                 | —    | 刷新控制           |
+| `src/bridge/jwtUtils.ts`                  | —    | JWT 工具           |
+| `src/bridge/trustedDevice.ts`             | —    | 可信设备           |
+| `src/bridge/remoteBridgeCore.ts`          | —    | v2 核心实现        |
+| `src/bridge/types.ts`                     | —    | 类型定义           |
+| `src/bridge/debugUtils.ts`                | —    | 调试工具           |
+| `src/bridge/pollConfigDefaults.ts`        | —    | 轮询配置默认值     |
+| `src/bridge/bridgeUI.ts`                  | —    | UI 组件            |
+| `src/bridge/codeSessionApi.ts`            | —    | 代码会话 API       |
+| `src/bridge/peerSessions.ts`              | —    | 对等会话管理       |
+| `src/bridge/sessionIdCompat.ts`           | —    | Session ID 兼容层  |
+| `src/bridge/createSession.ts`             | —    | 会话创建           |
+| `src/bridge/replBridgeHandle.ts`          | —    | Bridge 句柄        |

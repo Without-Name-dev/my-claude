@@ -20,30 +20,31 @@
 
 ## 文件结构
 
-| 文件 | 动作 | 职责 |
-|---|---|---|
-| `src/workflow/progress/store.ts` | 改 | `RunProgress.declaredPhases` + `AgentProgress.outputShape`；reducer 落地 |
-| `src/workflow/panel/status.ts` | 新建 | 状态→字符/颜色映射（`STATUS_DOT` 从 `WorkflowList` 迁入）+ `agentVisual` |
-| `src/workflow/panel/selectors.ts` | 新建 | `mergePhases` / `filterAgentsByPhase` / `tabLabel` 纯函数 |
-| `src/workflow/panel/useWorkflowKeyboard.ts` | 改写 | `routeWorkflowKey` 纯函数 + 焦点模型 handlers |
-| `src/workflow/panel/TabsBar.tsx` | 新建 | 顶部 run tab 行 |
-| `src/workflow/panel/PhaseSidebar.tsx` | 新建 | 左 phase 列表（含 All + pending） |
-| `src/workflow/panel/AgentList.tsx` | 新建 | 右 agent 列表（按 phase 过滤） |
-| `src/workflow/panel/WorkflowsPanel.tsx` | 重写 | 焦点状态机 + 组装；保留导出 `clampSelected` |
-| `src/workflow/panel/WorkflowList.tsx` | 删除 | 职责迁入 `TabsBar` + `status.ts` |
-| `src/workflow/panel/WorkflowDetail.tsx` | 删除 | 职责拆入 `PhaseSidebar` + `AgentList` |
-| `src/workflow/__tests__/WorkflowsPanel.test.tsx` | 改 | `STATUS_DOT` import 改从 `status.js`；保留 `clampSelected` 契约 |
-| `src/workflow/__tests__/progressStore.test.ts` | 改 | 加 `declaredPhases` / `outputShape` 用例 |
-| `src/workflow/__tests__/status.test.ts` | 新建 | 状态映射 + `agentVisual` |
-| `src/workflow/__tests__/selectors.test.ts` | 新建 | `mergePhases` / `filterAgentsByPhase` / `tabLabel` |
-| `src/workflow/__tests__/useWorkflowKeyboard.test.ts` | 新建 | `routeWorkflowKey` |
-| `docs/features/workflow-scripts.md` | 改 | §六 更新三区布局/键位 |
+| 文件                                                 | 动作 | 职责                                                                     |
+| ---------------------------------------------------- | ---- | ------------------------------------------------------------------------ |
+| `src/workflow/progress/store.ts`                     | 改   | `RunProgress.declaredPhases` + `AgentProgress.outputShape`；reducer 落地 |
+| `src/workflow/panel/status.ts`                       | 新建 | 状态→字符/颜色映射（`STATUS_DOT` 从 `WorkflowList` 迁入）+ `agentVisual` |
+| `src/workflow/panel/selectors.ts`                    | 新建 | `mergePhases` / `filterAgentsByPhase` / `tabLabel` 纯函数                |
+| `src/workflow/panel/useWorkflowKeyboard.ts`          | 改写 | `routeWorkflowKey` 纯函数 + 焦点模型 handlers                            |
+| `src/workflow/panel/TabsBar.tsx`                     | 新建 | 顶部 run tab 行                                                          |
+| `src/workflow/panel/PhaseSidebar.tsx`                | 新建 | 左 phase 列表（含 All + pending）                                        |
+| `src/workflow/panel/AgentList.tsx`                   | 新建 | 右 agent 列表（按 phase 过滤）                                           |
+| `src/workflow/panel/WorkflowsPanel.tsx`              | 重写 | 焦点状态机 + 组装；保留导出 `clampSelected`                              |
+| `src/workflow/panel/WorkflowList.tsx`                | 删除 | 职责迁入 `TabsBar` + `status.ts`                                         |
+| `src/workflow/panel/WorkflowDetail.tsx`              | 删除 | 职责拆入 `PhaseSidebar` + `AgentList`                                    |
+| `src/workflow/__tests__/WorkflowsPanel.test.tsx`     | 改   | `STATUS_DOT` import 改从 `status.js`；保留 `clampSelected` 契约          |
+| `src/workflow/__tests__/progressStore.test.ts`       | 改   | 加 `declaredPhases` / `outputShape` 用例                                 |
+| `src/workflow/__tests__/status.test.ts`              | 新建 | 状态映射 + `agentVisual`                                                 |
+| `src/workflow/__tests__/selectors.test.ts`           | 新建 | `mergePhases` / `filterAgentsByPhase` / `tabLabel`                       |
+| `src/workflow/__tests__/useWorkflowKeyboard.test.ts` | 新建 | `routeWorkflowKey`                                                       |
+| `docs/features/workflow-scripts.md`                  | 改   | §六 更新三区布局/键位                                                    |
 
 ---
 
 ## Task 1: store 落地 `declaredPhases` + `outputShape`
 
 **Files:**
+
 - Modify: `src/workflow/progress/store.ts:4-11`（`AgentProgress`）、`store.ts:13-24`（`RunProgress`）、`store.ts:46-62`（`ensure`）、`store.ts:78-83`（`run_started`）、`store.ts:107-123`（`agent_done`）
 - Test: `src/workflow/__tests__/progressStore.test.ts`
 
@@ -78,14 +79,26 @@ test('agent_done 落地 outputShape（ok·object / ok·text / dead 无）', () =
   bus.emit({ type: 'agent_started', runId: 'r1', agentId: 1, phase: 'A' })
   bus.emit({ type: 'agent_started', runId: 'r1', agentId: 2, phase: 'A' })
   bus.emit({
-    type: 'agent_done', runId: 'r1', agentId: 0, phase: 'A',
+    type: 'agent_done',
+    runId: 'r1',
+    agentId: 0,
+    phase: 'A',
     result: { kind: 'ok', output: { x: 1 }, usage: { outputTokens: 1 } },
   })
   bus.emit({
-    type: 'agent_done', runId: 'r1', agentId: 1, phase: 'A',
+    type: 'agent_done',
+    runId: 'r1',
+    agentId: 1,
+    phase: 'A',
     result: { kind: 'ok', output: 'hi', usage: { outputTokens: 1 } },
   })
-  bus.emit({ type: 'agent_done', runId: 'r1', agentId: 2, phase: 'A', result: { kind: 'dead' } })
+  bus.emit({
+    type: 'agent_done',
+    runId: 'r1',
+    agentId: 2,
+    phase: 'A',
+    result: { kind: 'dead' },
+  })
   const agents = store.get('r1')!.agents
   expect(agents.find(a => a.id === 0)?.outputShape).toBe('object')
   expect(agents.find(a => a.id === 1)?.outputShape).toBe('text')
@@ -212,6 +225,7 @@ git commit -m "feat(workflow): store 落地 declaredPhases + agent outputShape"
 ## Task 2: 新建 `status.ts`（状态映射 + `agentVisual`）
 
 **Files:**
+
 - Create: `src/workflow/panel/status.ts`
 - Test: `src/workflow/__tests__/status.test.ts`
 
@@ -229,7 +243,12 @@ import {
 } from '../panel/status.js'
 
 test('STATUS_DOT / RUN_STATUS_COLOR 覆盖四种 run 状态且为非空字符', () => {
-  const statuses: RunProgress['status'][] = ['running', 'completed', 'failed', 'killed']
+  const statuses: RunProgress['status'][] = [
+    'running',
+    'completed',
+    'failed',
+    'killed',
+  ]
   for (const s of statuses) {
     expect(STATUS_DOT[s].length).toBeGreaterThan(0)
     expect(RUN_STATUS_COLOR[s]).toBeTruthy()
@@ -249,17 +268,39 @@ test('PHASE_MARK / PHASE_COLOR 覆盖 running/done/pending', () => {
 
 test('agentVisual：running → ● warning running', () => {
   const a: AgentProgress = { id: 1, status: 'running' }
-  expect(agentVisual(a)).toEqual({ mark: '●', color: 'warning', suffix: 'running' })
+  expect(agentVisual(a)).toEqual({
+    mark: '●',
+    color: 'warning',
+    suffix: 'running',
+  })
 })
 
 test('agentVisual：done·object → ✓ success object', () => {
-  const a: AgentProgress = { id: 1, status: 'done', resultKind: 'ok', outputShape: 'object' }
-  expect(agentVisual(a)).toEqual({ mark: '✓', color: 'success', suffix: 'object' })
+  const a: AgentProgress = {
+    id: 1,
+    status: 'done',
+    resultKind: 'ok',
+    outputShape: 'object',
+  }
+  expect(agentVisual(a)).toEqual({
+    mark: '✓',
+    color: 'success',
+    suffix: 'object',
+  })
 })
 
 test('agentVisual：done·text → ✓ success text', () => {
-  const a: AgentProgress = { id: 1, status: 'done', resultKind: 'ok', outputShape: 'text' }
-  expect(agentVisual(a)).toEqual({ mark: '✓', color: 'success', suffix: 'text' })
+  const a: AgentProgress = {
+    id: 1,
+    status: 'done',
+    resultKind: 'ok',
+    outputShape: 'text',
+  }
+  expect(agentVisual(a)).toEqual({
+    mark: '✓',
+    color: 'success',
+    suffix: 'text',
+  })
 })
 
 test('agentVisual：dead → ✗ error dead', () => {
@@ -319,8 +360,10 @@ export type AgentVisual = { mark: string; color: string; suffix: string }
  * - done·ok：outputShape='object' → object；否则 text
  */
 export function agentVisual(a: AgentProgress): AgentVisual {
-  if (a.status === 'running') return { mark: '●', color: 'warning', suffix: 'running' }
-  if (a.resultKind === 'dead') return { mark: '✗', color: 'error', suffix: 'dead' }
+  if (a.status === 'running')
+    return { mark: '●', color: 'warning', suffix: 'running' }
+  if (a.resultKind === 'dead')
+    return { mark: '✗', color: 'error', suffix: 'dead' }
   return {
     mark: '✓',
     color: 'success',
@@ -351,6 +394,7 @@ git commit -m "feat(workflow): 抽 panel status.ts 状态映射 + agentVisual"
 ## Task 3: 新建 `selectors.ts`（`mergePhases` / `filterAgentsByPhase` / `tabLabel`）
 
 **Files:**
+
 - Create: `src/workflow/panel/selectors.ts`
 - Test: `src/workflow/__tests__/selectors.test.ts`
 
@@ -359,7 +403,12 @@ git commit -m "feat(workflow): 抽 panel status.ts 状态映射 + agentVisual"
 ```ts
 import { expect, test } from 'bun:test'
 import type { AgentProgress, RunProgress } from '../progress/store.js'
-import { ALL_PHASE, mergePhases, filterAgentsByPhase, tabLabel } from '../panel/selectors.js'
+import {
+  ALL_PHASE,
+  mergePhases,
+  filterAgentsByPhase,
+  tabLabel,
+} from '../panel/selectors.js'
 
 function run(partial: Partial<RunProgress>): RunProgress {
   return {
@@ -384,7 +433,13 @@ test('mergePhases：声明顺序优先，实际 phase 追加未声明的，计�
       { title: 'Review', status: 'running' },
     ],
     agents: [
-      { id: 1, phase: 'Find', status: 'done', resultKind: 'ok', outputShape: 'text' },
+      {
+        id: 1,
+        phase: 'Find',
+        status: 'done',
+        resultKind: 'ok',
+        outputShape: 'text',
+      },
       { id: 2, phase: 'Find', status: 'done', resultKind: 'dead' },
       { id: 3, phase: 'Review', status: 'running' },
     ],
@@ -411,7 +466,13 @@ test('mergePhases：实际出现但未声明的 phase 追加到末尾', () => {
 test('filterAgentsByPhase：All / undefined → 全部；指定 → 仅该 phase', () => {
   const agents: AgentProgress[] = [
     { id: 1, phase: 'A', status: 'running' },
-    { id: 2, phase: 'B', status: 'done', resultKind: 'ok', outputShape: 'text' },
+    {
+      id: 2,
+      phase: 'B',
+      status: 'done',
+      resultKind: 'ok',
+      outputShape: 'text',
+    },
   ]
   expect(filterAgentsByPhase(agents, undefined)).toHaveLength(2)
   expect(filterAgentsByPhase(agents, ALL_PHASE)).toHaveLength(2)
@@ -451,7 +512,9 @@ export type MergedPhase = {
  * - 实际无记录 → pending；否则取实际 status。
  * - done/total = 该 phase 下 done / 全部 agent 数。
  */
-export function mergePhases(run: Pick<RunProgress, 'declaredPhases' | 'phases' | 'agents'>): MergedPhase[] {
+export function mergePhases(
+  run: Pick<RunProgress, 'declaredPhases' | 'phases' | 'agents'>,
+): MergedPhase[] {
   const actualByTitle = new Map(run.phases.map(p => [p.title, p]))
   const seen = new Set<string>()
   const out: MergedPhase[] = []
@@ -510,6 +573,7 @@ Expected: 零错误
 ## Task 4: `useWorkflowKeyboard` 改焦点模型（抽 `routeWorkflowKey` 纯函数）
 
 **Files:**
+
 - Modify: `src/workflow/panel/useWorkflowKeyboard.ts`（整体改写）
 - Test: `src/workflow/__tests__/useWorkflowKeyboard.test.ts`
 
@@ -585,7 +649,10 @@ export type WorkflowKeyAction =
   | 'newRun'
   | 'quit'
 
-export function routeWorkflowKey(input: string, key: KeyEvent): WorkflowKeyAction | null {
+export function routeWorkflowKey(
+  input: string,
+  key: KeyEvent,
+): WorkflowKeyAction | null {
   // @anthropic/ink 的 key.tab 对 Tab 键置 true；个别环境回落到 '\t'
   if (key.tab || input === '\t') return key.shift ? 'prevTab' : 'nextTab'
   if (key.escape || input === 'q') return 'quit'
@@ -684,6 +751,7 @@ git commit -m "refactor(workflow): 键位改焦点轮转模型 + 抽 routeWorkfl
 > 这三个是无状态展示组件（props 驱动），不写渲染测试（项目无 ink-testing-library）。靠 `tsc` + `biome` 保证类型/格式。
 
 **Files:**
+
 - Create: `src/workflow/panel/TabsBar.tsx`
 - Create: `src/workflow/panel/PhaseSidebar.tsx`
 - Create: `src/workflow/panel/AgentList.tsx`
@@ -691,11 +759,11 @@ git commit -m "refactor(workflow): 键位改焦点轮转模型 + 抽 routeWorkfl
 - [ ] **Step 1: 创建 `src/workflow/panel/TabsBar.tsx`**
 
 ```tsx
-import React from 'react';
-import { Box, Text } from '@anthropic/ink';
-import type { RunProgress } from '../progress/store.js';
-import { RUN_STATUS_COLOR, STATUS_DOT } from './status.js';
-import { tabLabel } from './selectors.js';
+import React from 'react'
+import { Box, Text } from '@anthropic/ink'
+import type { RunProgress } from '../progress/store.js'
+import { RUN_STATUS_COLOR, STATUS_DOT } from './status.js'
+import { tabLabel } from './selectors.js'
 
 /**
  * 顶部 run tab 行：每个 run 一个 tab（状态点 + 名 + #短码）。
@@ -705,44 +773,48 @@ export function TabsBar({
   runs,
   activeRunId,
 }: {
-  runs: RunProgress[];
-  activeRunId: string | null;
+  runs: RunProgress[]
+  activeRunId: string | null
 }): React.ReactNode {
   if (runs.length === 0) {
-    return <Text color="subtle">(no runs)</Text>;
+    return <Text color="subtle">(no runs)</Text>
   }
   return (
     <Box>
       {runs.map(r => {
-        const active = r.runId === activeRunId;
-        const label = tabLabel(r.workflowName, r.runId);
-        const underline = '═'.repeat(label.length + 2);
+        const active = r.runId === activeRunId
+        const label = tabLabel(r.workflowName, r.runId)
+        const underline = '═'.repeat(label.length + 2)
         return (
           <Box key={r.runId} flexDirection="column" marginRight={2}>
             <Box>
-              <Text color={RUN_STATUS_COLOR[r.status]}>{STATUS_DOT[r.status]}</Text>
+              <Text color={RUN_STATUS_COLOR[r.status]}>
+                {STATUS_DOT[r.status]}
+              </Text>
               <Text> </Text>
               <Text color={active ? 'claude' : undefined} bold={active}>
                 {label}
               </Text>
             </Box>
-            <Text color={active ? 'claude' : undefined}>{active ? underline : ''}</Text>
+            <Text color={active ? 'claude' : undefined}>
+              {active ? underline : ''}
+            </Text>
           </Box>
-        );
+        )
       })}
     </Box>
-  );
+  )
 }
 ```
 
 - [ ] **Step 2: 创建 `src/workflow/panel/PhaseSidebar.tsx`**
 
 ```tsx
-import React from 'react';
-import { Box, Text } from '@anthropic/ink';
-import type { AgentProgress } from '../progress/store.js';
-import { PHASE_COLOR, PHASE_MARK } from './status.js';
-import { ALL_PHASE, type MergedPhase } from './selectors.js';
+import React from 'react'
+import { Box, Text } from '@anthropic/ink'
+import type { AgentProgress } from '../progress/store.js'
+import { PHASE_COLOR, PHASE_MARK } from './status.js'
+import { ALL_PHASE, type MergedPhase } from './selectors.js'
 
 /**
  * 左 phase 侧栏：第一行 All（汇总 done/total），其后 merged phases（含 pending ○）。
@@ -753,23 +825,23 @@ export function PhaseSidebar({
   agents,
   selectedIndex,
 }: {
-  phases: MergedPhase[];
-  agents: AgentProgress[];
-  selectedIndex: number;
+  phases: MergedPhase[]
+  agents: AgentProgress[]
+  selectedIndex: number
 }): React.ReactNode {
-  const totalAgents = agents.length;
-  const doneAgents = agents.filter(a => a.status === 'done').length;
-  const allRow = { title: ALL_PHASE, done: doneAgents, total: totalAgents };
-  const rows = [allRow, ...phases];
+  const totalAgents = agents.length
+  const doneAgents = agents.filter(a => a.status === 'done').length
+  const allRow = { title: ALL_PHASE, done: doneAgents, total: totalAgents }
+  const rows = [allRow, ...phases]
 
   return (
     <Box flexDirection="column">
       {rows.map((row, i) => {
-        const selected = i === selectedIndex;
-        const isAll = i === 0;
-        const mark = isAll ? ' ' : PHASE_MARK[row.status];
-        const color = isAll ? undefined : PHASE_COLOR[row.status];
-        const prefix = selected ? '▶' : ' ';
+        const selected = i === selectedIndex
+        const isAll = i === 0
+        const mark = isAll ? ' ' : PHASE_MARK[row.status]
+        const color = isAll ? undefined : PHASE_COLOR[row.status]
+        const prefix = selected ? '▶' : ' '
         return (
           <Box key={row.title}>
             <Text backgroundColor={selected ? 'claude' : undefined}>
@@ -777,22 +849,22 @@ export function PhaseSidebar({
               {mark} {row.title.padEnd(10)} {row.done}/{row.total}
             </Text>
           </Box>
-        );
+        )
       })}
     </Box>
-  );
+  )
 }
 ```
 
 - [ ] **Step 3: 创建 `src/workflow/panel/AgentList.tsx`**
 
 ```tsx
-import React from 'react';
-import { Box, Text } from '@anthropic/ink';
-import type { AgentProgress } from '../progress/store.js';
-import { agentVisual } from './status.js';
+import React from 'react'
+import { Box, Text } from '@anthropic/ink'
+import type { AgentProgress } from '../progress/store.js'
+import { agentVisual } from './status.js'
 
-const LABEL_WIDTH = 18;
+const LABEL_WIDTH = 18
 
 /**
  * 右 agent 列表（已按选中 phase 过滤）。
@@ -802,28 +874,31 @@ export function AgentList({
   agents,
   selectedIndex,
 }: {
-  agents: AgentProgress[];
-  selectedIndex: number;
+  agents: AgentProgress[]
+  selectedIndex: number
 }): React.ReactNode {
   if (agents.length === 0) {
-    return <Text color="subtle">(no agents in this phase)</Text>;
+    return <Text color="subtle">(no agents in this phase)</Text>
   }
   return (
     <Box flexDirection="column">
       {agents.map((a, i) => {
-        const v = agentVisual(a);
-        const selected = i === selectedIndex;
-        const label = (a.label ?? `agent-${a.id}`).slice(0, LABEL_WIDTH).padEnd(LABEL_WIDTH);
+        const v = agentVisual(a)
+        const selected = i === selectedIndex
+        const label = (a.label ?? `agent-${a.id}`)
+          .slice(0, LABEL_WIDTH)
+          .padEnd(LABEL_WIDTH)
         return (
           <Box key={a.id}>
             <Text backgroundColor={selected ? 'claude' : undefined}>
-              <Text color={v.color}>{v.mark}</Text> {label} <Text color="subtle">{v.suffix}</Text>
+              <Text color={v.color}>{v.mark}</Text> {label}{' '}
+              <Text color="subtle">{v.suffix}</Text>
             </Text>
           </Box>
-        );
+        )
       })}
     </Box>
-  );
+  )
 }
 ```
 
@@ -844,6 +919,7 @@ git commit -m "feat(workflow): 新增 TabsBar/PhaseSidebar/AgentList 展示组�
 ## Task 6: 重写 `WorkflowsPanel` + 删旧组件 + 修测试 import
 
 **Files:**
+
 - Modify: `src/workflow/panel/WorkflowsPanel.tsx`（整体重写）
 - Delete: `src/workflow/panel/WorkflowList.tsx`
 - Delete: `src/workflow/panel/WorkflowDetail.tsx`
@@ -852,30 +928,33 @@ git commit -m "feat(workflow): 新增 TabsBar/PhaseSidebar/AgentList 展示组�
 - [ ] **Step 1: 重写 `src/workflow/panel/WorkflowsPanel.tsx`**
 
 ```tsx
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
-import { Box, Text } from '@anthropic/ink';
-import type { LocalJSXCommandContext, LocalJSXCommandOnDone } from '../../types/command.js';
-import { getWorkflowService } from '../service.js';
-import type { RunProgress } from '../progress/store.js';
-import { AgentList } from './AgentList.js';
-import { PhaseSidebar } from './PhaseSidebar.js';
-import { TabsBar } from './TabsBar.js';
+import React, { useEffect, useState, useSyncExternalStore } from 'react'
+import { Box, Text } from '@anthropic/ink'
+import type {
+  LocalJSXCommandContext,
+  LocalJSXCommandOnDone,
+} from '../../types/command.js'
+import { getWorkflowService } from '../service.js'
+import type { RunProgress } from '../progress/store.js'
+import { AgentList } from './AgentList.js'
+import { PhaseSidebar } from './PhaseSidebar.js'
+import { TabsBar } from './TabsBar.js'
 import {
   type FocusColumn,
   type WorkflowKeyboardHandlers,
   useWorkflowKeyboard,
-} from './useWorkflowKeyboard.js';
-import { ALL_PHASE, filterAgentsByPhase, mergePhases } from './selectors.js';
+} from './useWorkflowKeyboard.js'
+import { ALL_PHASE, filterAgentsByPhase, mergePhases } from './selectors.js'
 
 /**
  * 夹紧选中索引到有效区间（空列表→0；越界→末位；负/NaN→0）。
  * 抽成模块级纯函数：面板内调用 + 单测覆盖同一逻辑，避免行为漂移。
  */
 export function clampSelected(selected: number, len: number): number {
-  if (len === 0) return 0;
-  const n = Math.trunc(selected);
-  if (Number.isNaN(n) || n < 0) return 0;
-  return Math.min(n, len - 1);
+  if (len === 0) return 0
+  const n = Math.trunc(selected)
+  if (Number.isNaN(n) || n < 0) return 0
+  return Math.min(n, len - 1)
 }
 
 /**
@@ -889,66 +968,68 @@ export function WorkflowsPanel({
   onDone,
   context,
 }: {
-  onDone: LocalJSXCommandOnDone;
-  context: LocalJSXCommandContext;
+  onDone: LocalJSXCommandOnDone
+  context: LocalJSXCommandContext
 }): React.ReactNode {
-  const svc = getWorkflowService();
+  const svc = getWorkflowService()
   const runs = useSyncExternalStore(
     svc.subscribe,
     () => svc.listRuns(),
     () => [],
-  );
+  )
 
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [focusColumn, setFocusColumn] = useState<FocusColumn>('phases');
-  const [selectedPhaseIndex, setSelectedPhaseIndex] = useState(0);
-  const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null)
+  const [focusColumn, setFocusColumn] = useState<FocusColumn>('phases')
+  const [selectedPhaseIndex, setSelectedPhaseIndex] = useState(0)
+  const [selectedAgentIndex, setSelectedAgentIndex] = useState(0)
 
   // runs 变化时：activeRunId 失效（被 kill / 首次）→ 夹紧到首个
   useEffect(() => {
     if (runs.length === 0) {
-      if (activeRunId !== null) setActiveRunId(null);
-      return;
+      if (activeRunId !== null) setActiveRunId(null)
+      return
     }
     if (!runs.some(r => r.runId === activeRunId)) {
-      setActiveRunId(runs[0]!.runId);
+      setActiveRunId(runs[0]!.runId)
     }
-  }, [runs, activeRunId]);
+  }, [runs, activeRunId])
 
-  const focused: RunProgress | undefined = runs.find(r => r.runId === activeRunId);
-  const phases = focused ? mergePhases(focused) : [];
+  const focused: RunProgress | undefined = runs.find(
+    r => r.runId === activeRunId,
+  )
+  const phases = focused ? mergePhases(focused) : []
   // 侧栏含 All 行：phases 数组前补一项 → 总行数 = phases.length + 1
-  const phaseRowCount = phases.length + 1;
-  const clampedPhase = clampSelected(selectedPhaseIndex, phaseRowCount);
+  const phaseRowCount = phases.length + 1
+  const clampedPhase = clampSelected(selectedPhaseIndex, phaseRowCount)
 
   // 选中 phase title（0 = All = undefined）
   const selectedPhaseTitle =
-    clampedPhase === 0 ? undefined : phases[clampedPhase - 1]?.title;
+    clampedPhase === 0 ? undefined : phases[clampedPhase - 1]?.title
 
   const visibleAgents = focused
     ? filterAgentsByPhase(focused.agents, selectedPhaseTitle)
-    : [];
-  const clampedAgent = clampSelected(selectedAgentIndex, visibleAgents.length);
+    : []
+  const clampedAgent = clampSelected(selectedAgentIndex, visibleAgents.length)
 
   const switchTab = (runId: string): void => {
-    setActiveRunId(runId);
-    setFocusColumn('phases');
-    setSelectedPhaseIndex(0);
-    setSelectedAgentIndex(0);
-  };
+    setActiveRunId(runId)
+    setFocusColumn('phases')
+    setSelectedPhaseIndex(0)
+    setSelectedAgentIndex(0)
+  }
 
   const nextTab = (): void => {
-    if (runs.length === 0) return;
-    const idx = runs.findIndex(r => r.runId === activeRunId);
-    const next = runs[(idx + 1) % runs.length]!;
-    switchTab(next.runId);
-  };
+    if (runs.length === 0) return
+    const idx = runs.findIndex(r => r.runId === activeRunId)
+    const next = runs[(idx + 1) % runs.length]!
+    switchTab(next.runId)
+  }
   const prevTab = (): void => {
-    if (runs.length === 0) return;
-    const idx = runs.findIndex(r => r.runId === activeRunId);
-    const next = runs[(idx - 1 + runs.length) % runs.length]!;
-    switchTab(next.runId);
-  };
+    if (runs.length === 0) return
+    const idx = runs.findIndex(r => r.runId === activeRunId)
+    const next = runs[(idx - 1 + runs.length) % runs.length]!
+    switchTab(next.runId)
+  }
 
   const handlers: WorkflowKeyboardHandlers = {
     nextTab,
@@ -957,23 +1038,27 @@ export function WorkflowsPanel({
     focusRight: () => setFocusColumn('agents'),
     moveUp: () => {
       if (focusColumn === 'phases')
-        setSelectedPhaseIndex(s => clampSelected(s - 1, phaseRowCount));
-      else setSelectedAgentIndex(s => clampSelected(s - 1, visibleAgents.length));
+        setSelectedPhaseIndex(s => clampSelected(s - 1, phaseRowCount))
+      else
+        setSelectedAgentIndex(s => clampSelected(s - 1, visibleAgents.length))
     },
     moveDown: () => {
       if (focusColumn === 'phases')
-        setSelectedPhaseIndex(s => clampSelected(s + 1, phaseRowCount));
-      else setSelectedAgentIndex(s => clampSelected(s + 1, visibleAgents.length));
+        setSelectedPhaseIndex(s => clampSelected(s + 1, phaseRowCount))
+      else
+        setSelectedAgentIndex(s => clampSelected(s + 1, visibleAgents.length))
     },
     killFocused: () => {
-      if (focused) svc.kill(focused.runId);
+      if (focused) svc.kill(focused.runId)
     },
     resumeFocused: () => {
-      if (!focused) return;
-      const canUseTool = context.canUseTool;
+      if (!focused) return
+      const canUseTool = context.canUseTool
       if (!canUseTool) {
-        onDone('resume 需要 canUseTool 上下文，请在主会话中用 /<name> resume 重试。');
-        return;
+        onDone(
+          'resume 需要 canUseTool 上下文，请在主会话中用 /<name> resume 重试。',
+        )
+        return
       }
       void svc
         .launch(
@@ -981,20 +1066,27 @@ export function WorkflowsPanel({
           context,
           canUseTool,
         )
-        .catch(e => onDone(`resume 失败：${(e as Error).message}`));
+        .catch(e => onDone(`resume 失败：${(e as Error).message}`))
     },
     newRun: () =>
-      onDone('Tip: 用 /<name> 启动命名 workflow，或通过 Workflow 工具带 name 参数。'),
+      onDone(
+        'Tip: 用 /<name> 启动命名 workflow，或通过 Workflow 工具带 name 参数。',
+      ),
     quit: () => onDone(),
-  };
-  useWorkflowKeyboard(handlers);
+  }
+  useWorkflowKeyboard(handlers)
 
-  const running = runs.filter(r => r.status === 'running').length;
-  const done = runs.length - running;
-  const phaseHeader = selectedPhaseTitle ?? ALL_PHASE;
+  const running = runs.filter(r => r.status === 'running').length
+  const done = runs.length - running
+  const phaseHeader = selectedPhaseTitle ?? ALL_PHASE
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="claude"
+      paddingX={1}
+    >
       <Box justifyContent="space-between">
         <Text bold>Workflows</Text>
         <Text color="subtle">
@@ -1032,13 +1124,14 @@ export function WorkflowsPanel({
         </Text>
       </Box>
     </Box>
-  );
+  )
 }
 ```
 
 - [ ] **Step 2: 删除旧组件**
 
 Run:
+
 ```bash
 rm src/workflow/panel/WorkflowList.tsx src/workflow/panel/WorkflowDetail.tsx
 ```
@@ -1046,16 +1139,18 @@ rm src/workflow/panel/WorkflowList.tsx src/workflow/panel/WorkflowDetail.tsx
 - [ ] **Step 3: 修 `WorkflowsPanel.test.tsx` 的 import（第 2-4 行）**
 
 把：
+
 ```ts
-import type { RunProgress } from '../progress/store.js';
-import { clampSelected } from '../panel/WorkflowsPanel.js';
-import { STATUS_DOT } from '../panel/WorkflowList.js';
+import type { RunProgress } from '../progress/store.js'
+import { clampSelected } from '../panel/WorkflowsPanel.js'
+import { STATUS_DOT } from '../panel/WorkflowList.js'
 ```
 改为：
+
 ```ts
-import type { RunProgress } from '../progress/store.js';
-import { clampSelected } from '../panel/WorkflowsPanel.js';
-import { STATUS_DOT } from '../panel/status.js';
+import type { RunProgress } from '../progress/store.js'
+import { clampSelected } from '../panel/WorkflowsPanel.js'
+import { STATUS_DOT } from '../panel/status.js'
 ```
 
 - [ ] **Step 4: 更新 `WorkflowsPanel.test.tsx` 的 `RunProgress` 字段契约用例（第 28-47 行）**
@@ -1063,18 +1158,19 @@ import { STATUS_DOT } from '../panel/status.js';
 旧用例构造 `RunProgress` 时缺 `declaredPhases`，tsc 会报错。补字段：
 
 把第 29-38 行的 `const run: RunProgress = { ... }` 改为：
+
 ```ts
-  const run: RunProgress = {
-    runId: 'r1',
-    workflowName: 'review',
-    status: 'running',
-    phases: [{ title: 'Find', status: 'done' }],
-    declaredPhases: ['Find', 'Review'],
-    currentPhase: 'Review',
-    agents: [{ id: 1, label: 'review:api', phase: 'Review', status: 'running' }],
-    agentCount: 1,
-    updatedAt: 1,
-  };
+const run: RunProgress = {
+  runId: 'r1',
+  workflowName: 'review',
+  status: 'running',
+  phases: [{ title: 'Find', status: 'done' }],
+  declaredPhases: ['Find', 'Review'],
+  currentPhase: 'Review',
+  agents: [{ id: 1, label: 'review:api', phase: 'Review', status: 'running' }],
+  agentCount: 1,
+  updatedAt: 1,
+}
 ```
 
 同样补第 51-61 行（completed）和第 62-72 行（failed）的 `declaredPhases: []`。
@@ -1083,6 +1179,7 @@ import { STATUS_DOT } from '../panel/status.js';
 
 Run: `bun run precheck`
 Expected: 零错误。重点核对：
+
 - `STATUS_DOT` import 已切到 `status.js`，无悬空引用。
 - `WorkflowList.tsx` / `WorkflowDetail.tsx` 删除后无残留 import（grep 已确认仅 WorkflowsPanel 与 test 引用，均已处理）。
 - `clampSelected` 契约测试仍绿。
@@ -1099,6 +1196,7 @@ git commit -m "refactor(workflow): WorkflowsPanel 重写为三区焦点模型 + 
 ## Task 7: 文档更新 + 全量 precheck
 
 **Files:**
+
 - Modify: `docs/features/workflow-scripts.md:138-148`（§六）
 
 - [ ] **Step 1: 更新 `docs/features/workflow-scripts.md` §六**
@@ -1135,6 +1233,7 @@ Expected: 零错误（typecheck + lint:fix + 全量 test）
 ## Self-Review（计划作者已完成）
 
 **1. Spec coverage** — 对照 spec 各节：
+
 - §4 数据模型（declaredPhases）→ Task 1 ✓
 - §4 gap 补充（outputShape，为 §8 object 标记服务）→ Task 1 ✓
 - §5/§8 视觉（tab/phase/agent 状态映射 + agentVisual）→ Task 2 ✓
@@ -1148,6 +1247,7 @@ Expected: 零错误（typecheck + lint:fix + 全量 test）
 **2. Placeholder scan** — 无 TBD/TODO/"add error handling"/"similar to"。每个代码步给完整代码。
 
 **3. Type consistency** —
+
 - `MergedPhase`（selectors.ts 定义）在 PhaseSidebar.tsx 引用一致 ✓
 - `AgentVisual` / `agentVisual`（status.ts）在 AgentList.tsx 引用一致 ✓
 - `FocusColumn` / `WorkflowKeyboardHandlers`（useWorkflowKeyboard.ts）在 WorkflowsPanel.tsx 引用一致 ✓

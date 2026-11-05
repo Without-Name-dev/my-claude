@@ -28,16 +28,18 @@
 
 **修改文件:**
 
-| 文件 | 改动 |
-|------|------|
-| `src/main.tsx` | 确保 attach 分支可用 |
+| 文件                              | 改动                        |
+| --------------------------------- | --------------------------- |
+| `src/main.tsx`                    | 确保 attach 分支可用        |
 | `src/commands/assistant/index.ts` | 实现显式 sessionId 参数入口 |
 
 **行为:**
+
 - `claude assistant <sessionId>` — 进入 remote viewer
 - `claude assistant` (无参数) — 返回明确提示: 当前版本需要显式 sessionId，discovery 尚未启用
 
 **验证:**
+
 - [ ] `claude assistant <sessionId>` 能进入 remote viewer
 - [ ] 历史懒加载工作正常
 - [ ] 无参数模式给出明确提示
@@ -46,15 +48,17 @@
 
 **修改文件:**
 
-| 文件 | 改动 |
-|------|------|
+| 文件                                | 改动                               |
+| ----------------------------------- | ---------------------------------- |
 | `src/assistant/sessionDiscovery.ts` | 恢复 `discoverAssistantSessions()` |
 
 **行为:**
+
 - 数据来源优先复用现有 sessions / bridge / teleport API，不新增协议
 - `claude assistant` 无参数时能拿到候选 session 列表
 
 **验证:**
+
 - [ ] 无参数调用能列出可用 sessions
 - [ ] 数据来源复用现有通道
 
@@ -62,14 +66,16 @@
 
 **修改文件:**
 
-| 文件 | 改动 |
-|------|------|
+| 文件                                       | 改动             |
+| ------------------------------------------ | ---------------- |
 | `src/assistant/AssistantSessionChooser.ts` | 恢复交互式选择器 |
 
 **行为:**
+
 - 多 session 时可交互选择
 
 **验证:**
+
 - [ ] 多个 session 时弹出选择器
 - [ ] 选择后正确 attach
 
@@ -77,14 +83,16 @@
 
 **修改文件:**
 
-| 文件 | 改动 |
-|------|------|
+| 文件                                  | 改动                         |
+| ------------------------------------- | ---------------------------- |
 | `src/commands/assistant/assistant.ts` | 恢复 install wizard 辅助函数 |
 
 **行为:**
+
 - 没有 session 时如何引导用户
 
 **验证:**
+
 - [ ] 无可用 session 时引导用户创建/连接
 
 ## 为什么拆分

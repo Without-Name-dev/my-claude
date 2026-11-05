@@ -119,34 +119,34 @@ LSP 服务器会异步推送 `textDocument/publishDiagnostics` 通知，经去�
 
 ## 核心模块
 
-| 文件 | 职责 |
-|------|------|
-| `src/services/lsp/manager.ts` | 全局单例，初始化/重初始化/关闭生命周期管理 |
-| `src/services/lsp/LSPServerManager.ts` | 多服务器管理，按文件扩展名路由，文件同步 |
-| `src/services/lsp/LSPServerInstance.ts` | 单个 LSP 服务器实例生命周期（启动/停止/重启/健康检查） |
-| `src/services/lsp/LSPClient.ts` | JSON-RPC 通信层（基于 `vscode-jsonrpc`），子进程管理 |
-| `src/services/lsp/config.ts` | 从插件加载 LSP 服务器配置 |
-| `src/services/lsp/LSPDiagnosticRegistry.ts` | 诊断信息注册、去重、容量限制 |
-| `src/services/lsp/passiveFeedback.ts` | 注册 `publishDiagnostics` 通知处理器 |
-| `packages/builtin-tools/src/tools/LSPTool/LSPTool.ts` | LSP Tool 实现（暴露给 Claude） |
-| `packages/builtin-tools/src/tools/LSPTool/schemas.ts` | 输入 schema（9 种操作的 discriminated union） |
-| `packages/builtin-tools/src/tools/LSPTool/formatters.ts` | 各操作结果的格式化 |
-| `packages/builtin-tools/src/tools/LSPTool/prompt.ts` | Tool 描述文本 |
-| `src/utils/plugins/lspPluginIntegration.ts` | 从插件加载、验证、环境变量解析、作用域管理 |
+| 文件                                                     | 职责                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------ |
+| `src/services/lsp/manager.ts`                            | 全局单例，初始化/重初始化/关闭生命周期管理             |
+| `src/services/lsp/LSPServerManager.ts`                   | 多服务器管理，按文件扩展名路由，文件同步               |
+| `src/services/lsp/LSPServerInstance.ts`                  | 单个 LSP 服务器实例生命周期（启动/停止/重启/健康检查） |
+| `src/services/lsp/LSPClient.ts`                          | JSON-RPC 通信层（基于 `vscode-jsonrpc`），子进程管理   |
+| `src/services/lsp/config.ts`                             | 从插件加载 LSP 服务器配置                              |
+| `src/services/lsp/LSPDiagnosticRegistry.ts`              | 诊断信息注册、去重、容量限制                           |
+| `src/services/lsp/passiveFeedback.ts`                    | 注册 `publishDiagnostics` 通知处理器                   |
+| `packages/builtin-tools/src/tools/LSPTool/LSPTool.ts`    | LSP Tool 实现（暴露给 Claude）                         |
+| `packages/builtin-tools/src/tools/LSPTool/schemas.ts`    | 输入 schema（9 种操作的 discriminated union）          |
+| `packages/builtin-tools/src/tools/LSPTool/formatters.ts` | 各操作结果的格式化                                     |
+| `packages/builtin-tools/src/tools/LSPTool/prompt.ts`     | Tool 描述文本                                          |
+| `src/utils/plugins/lspPluginIntegration.ts`              | 从插件加载、验证、环境变量解析、作用域管理             |
 
 ## LSP Tool 支持的操作
 
-| 操作 | LSP Method | 说明 |
-|------|-----------|------|
-| `goToDefinition` | `textDocument/definition` | 跳转到符号定义 |
-| `findReferences` | `textDocument/references` | 查找所有引用 |
-| `hover` | `textDocument/hover` | 获取悬停信息（文档、类型） |
-| `documentSymbol` | `textDocument/documentSymbol` | 获取文档内所有符号 |
-| `workspaceSymbol` | `workspace/symbol` | 全工作区符号搜索 |
-| `goToImplementation` | `textDocument/implementation` | 查找接口/抽象方法的实现 |
-| `prepareCallHierarchy` | `textDocument/prepareCallHierarchy` | 获取位置处的调用层级项 |
-| `incomingCalls` | `callHierarchy/incomingCalls` | 查找调用此函数的所有函数 |
-| `outgoingCalls` | `callHierarchy/outgoingCalls` | 查找此函数调用的所有函数 |
+| 操作                   | LSP Method                          | 说明                       |
+| ---------------------- | ----------------------------------- | -------------------------- |
+| `goToDefinition`       | `textDocument/definition`           | 跳转到符号定义             |
+| `findReferences`       | `textDocument/references`           | 查找所有引用               |
+| `hover`                | `textDocument/hover`                | 获取悬停信息（文档、类型） |
+| `documentSymbol`       | `textDocument/documentSymbol`       | 获取文档内所有符号         |
+| `workspaceSymbol`      | `workspace/symbol`                  | 全工作区符号搜索           |
+| `goToImplementation`   | `textDocument/implementation`       | 查找接口/抽象方法的实现    |
+| `prepareCallHierarchy` | `textDocument/prepareCallHierarchy` | 获取位置处的调用层级项     |
+| `incomingCalls`        | `callHierarchy/incomingCalls`       | 查找调用此函数的所有函数   |
+| `outgoingCalls`        | `callHierarchy/outgoingCalls`       | 查找此函数调用的所有函数   |
 
 所有操作需要 `filePath`、`line`（1-based）和 `character`（1-based）参数。
 
@@ -186,7 +186,10 @@ LSP 服务器通过插件提供。插件的 `manifest.json` 中可以声明 LSP 
   "lspServers": [
     "path/to/.lsp.json",
     {
-      "another-server": { "command": "...", "extensionToLanguage": { "...": "..." } }
+      "another-server": {
+        "command": "...",
+        "extensionToLanguage": { "...": "..." }
+      }
     }
   ]
 }
@@ -196,18 +199,18 @@ LSP 服务器通过插件提供。插件的 `manifest.json` 中可以声明 LSP 
 
 ### LSP 服务器配置 Schema
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `command` | string | 是 | LSP 服务器可执行命令（不含空格） |
-| `args` | string[] | 否 | 命令行参数 |
-| `extensionToLanguage` | `Record<string, string>` | 是 | 文件扩展名到语言 ID 的映射（至少一个） |
-| `transport` | `"stdio"` \| `"socket"` | 否 | 通信方式，默认 `stdio` |
-| `env` | `Record<string, string>` | 否 | 启动服务器时设置的环境变量 |
-| `initializationOptions` | unknown | 否 | 传给服务器的初始化选项 |
-| `settings` | unknown | 否 | 通过 `workspace/didChangeConfiguration` 传递的设置 |
-| `workspaceFolder` | string | 否 | 工作区目录路径 |
-| `startupTimeout` | number | 否 | 启动超时时间（毫秒） |
-| `maxRestarts` | number | 否 | 最大重启次数（默认 3） |
+| 字段                    | 类型                     | 必填 | 说明                                               |
+| ----------------------- | ------------------------ | ---- | -------------------------------------------------- |
+| `command`               | string                   | 是   | LSP 服务器可执行命令（不含空格）                   |
+| `args`                  | string[]                 | 否   | 命令行参数                                         |
+| `extensionToLanguage`   | `Record<string, string>` | 是   | 文件扩展名到语言 ID 的映射（至少一个）             |
+| `transport`             | `"stdio"` \| `"socket"`  | 否   | 通信方式，默认 `stdio`                             |
+| `env`                   | `Record<string, string>` | 否   | 启动服务器时设置的环境变量                         |
+| `initializationOptions` | unknown                  | 否   | 传给服务器的初始化选项                             |
+| `settings`              | unknown                  | 否   | 通过 `workspace/didChangeConfiguration` 传递的设置 |
+| `workspaceFolder`       | string                   | 否   | 工作区目录路径                                     |
+| `startupTimeout`        | number                   | 否   | 启动超时时间（毫秒）                               |
+| `maxRestarts`           | number                   | 否   | 最大重启次数（默认 3）                             |
 
 ### 环境变量替换
 
@@ -252,6 +255,7 @@ error   → starting (重试时)
 ### 插件刷新
 
 安装/卸载插件后使用 `/reload-plugins`，会调用 `reinitializeLspServerManager()`：
+
 1. 异步关闭旧服务器实例
 2. 重置状态为 `not-started`
 3. 调用 `initializeLspServerManager()` 重新加载插件配置

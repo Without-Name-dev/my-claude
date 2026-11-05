@@ -30,11 +30,11 @@ function MessageList({ messages }) {
 
 ScrollBox accepts all Box layout props except `textWrap`, `overflow`, `overflowX`, `overflowY` (these are managed internally):
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `ref` | `Ref<ScrollBoxHandle>` | - | Imperative handle |
-| `stickyScroll` | `boolean` | `false` | Auto-follow new content |
-| *(layout props)* | `Styles` | - | Width, height, padding, etc. |
+| Prop             | Type                   | Default | Description                  |
+| ---------------- | ---------------------- | ------- | ---------------------------- |
+| `ref`            | `Ref<ScrollBoxHandle>` | -       | Imperative handle            |
+| `stickyScroll`   | `boolean`              | `false` | Auto-follow new content      |
+| _(layout props)_ | `Styles`               | -       | Width, height, padding, etc. |
 
 ### ScrollBoxHandle (Imperative API)
 
@@ -72,7 +72,7 @@ interface ScrollBoxHandle {
 Jump to an absolute position. Breaks sticky scroll.
 
 ```tsx
-scrollRef.current?.scrollTo(0)  // Scroll to top
+scrollRef.current?.scrollTo(0) // Scroll to top
 ```
 
 #### `scrollBy(dy)`
@@ -80,8 +80,8 @@ scrollRef.current?.scrollTo(0)  // Scroll to top
 Scroll by a relative amount. Accumulates deltas for smooth scrolling.
 
 ```tsx
-scrollRef.current?.scrollBy(3)   // Scroll down 3 rows
-scrollRef.current?.scrollBy(-5)  // Scroll up 5 rows
+scrollRef.current?.scrollBy(3) // Scroll down 3 rows
+scrollRef.current?.scrollBy(-5) // Scroll up 5 rows
 ```
 
 #### `scrollToElement(el, offset?)`
@@ -133,7 +133,7 @@ When `stickyScroll` is enabled:
 4. Content growth at the bottom is detected and followed automatically
 
 ```tsx
-<ScrollBox stickyScroll height={20}>
+;<ScrollBox stickyScroll height={20}>
   {/* New items auto-scroll to bottom */}
   {items.map(renderItem)}
 </ScrollBox>
@@ -159,6 +159,7 @@ This prevents burst `scrollTo` calls from showing blank space beyond mounted con
 ### Scroll Events
 
 ScrollBox bypasses React state for scroll operations. Instead:
+
 1. `scrollTo`/`scrollBy` mutate `scrollTop` directly on the DOM node
 2. The node is marked dirty
 3. A microtask-deferred render fires to coalesce multiple scroll events

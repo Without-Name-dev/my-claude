@@ -35,7 +35,7 @@ function MyComponent() {
 ```ts
 function useInput(
   handler: (input: string, key: Key, event: InputEvent) => void,
-  options?: { isActive?: boolean }
+  options?: { isActive?: boolean },
 ): void
 ```
 
@@ -47,9 +47,9 @@ function useInput(
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `isActive` | `boolean` | `true` | Enable/disable input handling |
+| Option     | Type      | Default | Description                   |
+| ---------- | --------- | ------- | ----------------------------- |
+| `isActive` | `boolean` | `true`  | Enable/disable input handling |
 
 ### Key Object
 
@@ -61,8 +61,8 @@ type Key = {
   rightArrow: boolean
   pageDown: boolean
   pageUp: boolean
-  wheelUp: boolean       // Mouse wheel in alt-screen
-  wheelDown: boolean      // Mouse wheel in alt-screen
+  wheelUp: boolean // Mouse wheel in alt-screen
+  wheelDown: boolean // Mouse wheel in alt-screen
   home: boolean
   end: boolean
   return: boolean
@@ -73,8 +73,8 @@ type Key = {
   tab: boolean
   backspace: boolean
   delete: boolean
-  meta: boolean           // Alt / Option
-  super: boolean          // Cmd (macOS) / Win key
+  meta: boolean // Alt / Option
+  super: boolean // Cmd (macOS) / Win key
 }
 ```
 
@@ -101,6 +101,7 @@ useInput((input, key) => {
 `useInput` automatically enables raw mode on stdin when active. Raw mode is reference-counted -- it stays enabled as long as any hook has `isActive: true`.
 
 In raw mode:
+
 - Keystrokes don't echo
 - Ctrl+C is not sent as signal (app must handle it)
 - Line buffering is disabled
@@ -111,7 +112,7 @@ In raw mode:
 class InputEvent extends Event {
   readonly input: string
   readonly key: Key
-  readonly keypress: ParsedKey  // Raw parsed keypress data
+  readonly keypress: ParsedKey // Raw parsed keypress data
 }
 ```
 
@@ -128,10 +129,10 @@ class KeyboardEvent extends Event {
 Used with `Box`'s `onKeyDown` and `onKeyDownCapture` props:
 
 ```tsx
-<Box
+;<Box
   tabIndex={0}
   autoFocus
-  onKeyDown={(event) => {
+  onKeyDown={event => {
     if (event.key.return) {
       handleSubmit()
     }
@@ -146,20 +147,25 @@ Used with `Box`'s `onKeyDown` and `onKeyDownCapture` props:
 Ink supports multiple keyboard protocols:
 
 ### Standard Escape Sequences
+
 - Arrow keys, function keys, Home/End, Page Up/Down
 - Ctrl+letter combinations
 - Shift, Alt, Meta modifiers
 
 ### Kitty Keyboard Protocol (CSI u)
+
 Extended key reporting with full modifier support:
+
 - Distinguishes Ctrl+Shift+A from Ctrl+A
 - Reports Super (Cmd/Win) key
 - Sends key release events
 
 ### xterm modifyOtherKeys
+
 Alternative extended key reporting for xterm-compatible terminals.
 
 ### Application Keypad Mode
+
 Numpad keys mapped to their digit characters.
 
 ## Paste Detection
@@ -185,8 +191,8 @@ In alternate screen mode, mouse events are parsed and dispatched:
 ### Click Events
 
 ```tsx
-<Box
-  onClick={(event) => {
+;<Box
+  onClick={event => {
     console.log(`Clicked at (${event.x}, ${event.y})`)
     event.stopImmediatePropagation()
   }}
@@ -198,7 +204,7 @@ In alternate screen mode, mouse events are parsed and dispatched:
 ### Hover Events
 
 ```tsx
-<Box
+;<Box
   onMouseEnter={() => setHovered(true)}
   onMouseLeave={() => setHovered(false)}
 >
@@ -227,12 +233,12 @@ Lower-level access to the stdin stream.
 import { useStdin } from '@anthropic/ink'
 
 const {
-  stdin,                    // Raw stdin stream
-  setRawMode,               // (enabled: boolean) => void
-  isRawModeSupported,       // boolean
-  internal_exitOnCtrlC,     // boolean
-  internal_eventEmitter,    // EventEmitter | undefined
-  internal_querier,         // Terminal querier
+  stdin, // Raw stdin stream
+  setRawMode, // (enabled: boolean) => void
+  isRawModeSupported, // boolean
+  internal_exitOnCtrlC, // boolean
+  internal_eventEmitter, // EventEmitter | undefined
+  internal_querier, // Terminal querier
 } = useStdin()
 ```
 
@@ -245,8 +251,8 @@ Interactive button that responds to keyboard and mouse:
 ```tsx
 import { Button } from '@anthropic/ink'
 
-<Button onAction={() => handleClick()} tabIndex={0} autoFocus>
-  {(state) => (
+;<Button onAction={() => handleClick()} tabIndex={0} autoFocus>
+  {state => (
     <Text bold={state.focused} color={state.focused ? 'claude' : 'text'}>
       {state.focused ? '> Click Me' : '  Click Me'}
     </Text>
@@ -258,9 +264,9 @@ Button receives a render prop with state:
 
 ```ts
 type ButtonState = {
-  focused: boolean    // Has keyboard focus
-  hovered: boolean    // Mouse is over it (alt-screen)
-  active: boolean     // True for 100ms after activation (flash effect)
+  focused: boolean // Has keyboard focus
+  hovered: boolean // Mouse is over it (alt-screen)
+  active: boolean // True for 100ms after activation (flash effect)
 }
 ```
 

@@ -10,19 +10,20 @@
 
 当前后台进程相关的命令分布在三个不同的位置，没有统一的命名空间：
 
-| 命令 | 注册位置 | 入口 |
-|------|---------|------|
-| `claude daemon start/status/stop` | `cli.tsx` 快速路径 L203 | `daemon/main.ts` |
-| `claude ps` | `cli.tsx` 快速路径 L220 | `cli/bg.ts` |
-| `claude logs <x>` | `cli.tsx` 快速路径 L232 | `cli/bg.ts` |
-| `claude attach <x>` | `cli.tsx` 快速路径 L236 | `cli/bg.ts` |
-| `claude kill <x>` | `cli.tsx` 快速路径 L238 | `cli/bg.ts` |
-| `claude --bg` | `cli.tsx` 快速路径 L244 | `cli/bg.ts` |
-| `claude new/list/reply` | `cli.tsx` 快速路径 L250 | `cli/handlers/templateJobs.ts` |
-| `claude rollback` | `main.tsx` Commander.js L6525 | `cli/rollback.ts` |
-| `claude up` | `main.tsx` Commander.js L6511 | `cli/up.ts` |
+| 命令                              | 注册位置                      | 入口                           |
+| --------------------------------- | ----------------------------- | ------------------------------ |
+| `claude daemon start/status/stop` | `cli.tsx` 快速路径 L203       | `daemon/main.ts`               |
+| `claude ps`                       | `cli.tsx` 快速路径 L220       | `cli/bg.ts`                    |
+| `claude logs <x>`                 | `cli.tsx` 快速路径 L232       | `cli/bg.ts`                    |
+| `claude attach <x>`               | `cli.tsx` 快速路径 L236       | `cli/bg.ts`                    |
+| `claude kill <x>`                 | `cli.tsx` 快速路径 L238       | `cli/bg.ts`                    |
+| `claude --bg`                     | `cli.tsx` 快速路径 L244       | `cli/bg.ts`                    |
+| `claude new/list/reply`           | `cli.tsx` 快速路径 L250       | `cli/handlers/templateJobs.ts` |
+| `claude rollback`                 | `main.tsx` Commander.js L6525 | `cli/rollback.ts`              |
+| `claude up`                       | `main.tsx` Commander.js L6511 | `cli/up.ts`                    |
 
 **问题**:
+
 - `ps/logs/attach/kill` 与 `daemon` 逻辑上都是后台进程管理，但互不关联
 - 这些命令都**只有 CLI 入口**，REPL 里输入 `/daemon` 或 `/ps` 不存在
 - `new/list/reply` 是模板任务系统的顶级命令，容易与其他命令冲突（特别是 `list`）
@@ -30,6 +31,7 @@
 ### 1.2 Windows 不支持
 
 `--bg` 和 `attach` 硬依赖 tmux：
+
 - `bg.ts:handleBgFlag()` 第一步就检查 tmux，不可用直接报错退出
 - `bg.ts:attachHandler()` 用 `tmux attach-session`，无 tmux 替代方案
 - Windows (包括 VS Code 终端) 完全无法使用后台会话功能
@@ -37,6 +39,7 @@
 ### 1.3 无 REPL 入口
 
 对比 `/mcp` 的双注册模式：
+
 - **CLI**: `claude mcp serve/add/remove/list` (Commander.js, `main.tsx:5760`)
 - **REPL**: `/mcp enable/disable/reconnect` (slash command, `commands/mcp/index.ts`)
 
@@ -71,31 +74,42 @@ claude daemon <subcommand>     ← CLI 入口 (cli.tsx 快速路径)
 ```
 
 **CLI 快速路径路由** (`cli.tsx`):
+
 ```typescript
 // 新: 统一入口
 if (feature('DAEMON') && args[0] === 'daemon') {
   const sub = args[1] || 'status'
   switch (sub) {
-    case 'start': case 'stop': case 'status':
+    case 'start':
+    case 'stop':
+    case 'status':
       await daemonMain([sub, ...args.slice(2)])
       break
     case 'bg':
       await bg.handleBgStart(args.slice(2))
       break
-    case 'attach': case 'logs': case 'kill':
+    case 'attach':
+    case 'logs':
+    case 'kill':
       await bg[`${sub}Handler`](args[2])
       break
   }
 }
 
 // 向后兼容 (deprecated)
-if (feature('BG_SESSIONS') && ['ps','logs','attach','kill'].includes(args[0])) {
-  console.warn(`[deprecated] Use: claude daemon ${args[0] === 'ps' ? 'status' : args[0]}`)
+if (
+  feature('BG_SESSIONS') &&
+  ['ps', 'logs', 'attach', 'kill'].includes(args[0])
+) {
+  console.warn(
+    `[deprecated] Use: claude daemon ${args[0] === 'ps' ? 'status' : args[0]}`,
+  )
   // ... delegate to daemon subcommand
 }
 ```
 
 **REPL 斜杠命令** (`commands/daemon/index.ts`):
+
 ```typescript
 const daemon = {
   type: 'local-jsx',
@@ -165,14 +179,15 @@ export interface BgStartResult {
 
 ### 4.2 三种引擎实现
 
-| 引擎 | 平台 | 启动方式 | attach 方式 |
-|------|------|---------|------------|
-| TmuxEngine | macOS/Linux (有 tmux) | `tmux new-session -d` | `tmux attach-session` |
-| DetachedEngine | Windows / 无 tmux 的 macOS/Linux | `spawn({ detached, stdio→logFile })` | `tail -f` 日志文件 |
+| 引擎           | 平台                             | 启动方式                             | attach 方式           |
+| -------------- | -------------------------------- | ------------------------------------ | --------------------- |
+| TmuxEngine     | macOS/Linux (有 tmux)            | `tmux new-session -d`                | `tmux attach-session` |
+| DetachedEngine | Windows / 无 tmux 的 macOS/Linux | `spawn({ detached, stdio→logFile })` | `tail -f` 日志文件    |
 
 #### DetachedEngine 详细设计
 
 **启动 (`start`)**:
+
 ```typescript
 // 1. 打开日志文件 fd
 const logFd = fs.openSync(logPath, 'a')
@@ -189,6 +204,7 @@ fs.closeSync(logFd)
 ```
 
 **附着 (`attach`)**:
+
 ```typescript
 // 跨平台 tail -f 实现
 // 1. 读取已有日志内容输出到 stdout
@@ -220,9 +236,9 @@ export async function selectEngine(): Promise<BgEngine> {
 ```typescript
 interface SessionEntry {
   // ... 现有字段
-  engine: 'tmux' | 'detached'   // 新增: 记录使用的引擎
-  tmuxSessionName?: string       // tmux 引擎才有
-  logPath?: string               // 两种引擎都有
+  engine: 'tmux' | 'detached' // 新增: 记录使用的引擎
+  tmuxSessionName?: string // tmux 引擎才有
+  logPath?: string // 两种引擎都有
 }
 ```
 
@@ -271,22 +287,22 @@ src/cli/up.ts                          保持顶级命令 (无需改)
 
 ### 6.1 风险评估
 
-| 风险 | 级别 | 缓解措施 |
-|------|------|---------|
-| cli.tsx 快速路径修改影响启动性能 | 低 | 仅改路由逻辑，import 仍然 lazy |
-| DetachedEngine 的 attach 在 Windows 上 fs.watch 不可靠 | 中 | 使用轮询 fallback (setInterval + fs.stat) |
-| 向后兼容的 deprecation 可能破坏脚本 | 低 | 旧命令保持可用，仅输出 stderr 警告 |
-| REPL 中 /daemon bg 需要 spawn 子进程 | 中 | 参考 /assistant 的 NewInstallWizard (已有 spawn 先例) |
-| tsc 类型兼容 | 低 | 接口定义清晰，不引入 any |
+| 风险                                                   | 级别 | 缓解措施                                              |
+| ------------------------------------------------------ | ---- | ----------------------------------------------------- |
+| cli.tsx 快速路径修改影响启动性能                       | 低   | 仅改路由逻辑，import 仍然 lazy                        |
+| DetachedEngine 的 attach 在 Windows 上 fs.watch 不可靠 | 中   | 使用轮询 fallback (setInterval + fs.stat)             |
+| 向后兼容的 deprecation 可能破坏脚本                    | 低   | 旧命令保持可用，仅输出 stderr 警告                    |
+| REPL 中 /daemon bg 需要 spawn 子进程                   | 中   | 参考 /assistant 的 NewInstallWizard (已有 spawn 先例) |
+| tsc 类型兼容                                           | 低   | 接口定义清晰，不引入 any                              |
 
 ### 6.2 工作量估计
 
-| Task | 文件数 | 复杂度 |
-|------|--------|--------|
-| Task 013: BgEngine 抽象 + 引擎实现 | 5 新增 + 1 修改 | 中 |
-| Task 014: /daemon 命令层级化 | 3 新增 + 3 修改 | 中 |
-| Task 015: /job 命令层级化 | 2 新增 + 2 修改 | 低 |
-| Task 016: 向后兼容 + 测试 | 0 新增 + 2 修改 | 低 |
+| Task                               | 文件数          | 复杂度 |
+| ---------------------------------- | --------------- | ------ |
+| Task 013: BgEngine 抽象 + 引擎实现 | 5 新增 + 1 修改 | 中     |
+| Task 014: /daemon 命令层级化       | 3 新增 + 3 修改 | 中     |
+| Task 015: /job 命令层级化          | 2 新增 + 2 修改 | 低     |
+| Task 016: 向后兼容 + 测试          | 0 新增 + 2 修改 | 低     |
 
 ### 6.3 依赖关系
 

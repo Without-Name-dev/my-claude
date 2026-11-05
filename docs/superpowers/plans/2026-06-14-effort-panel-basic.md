@@ -16,16 +16,16 @@
 
 ## 文件结构
 
-| 文件 | 状态 | 责任 |
-|---|---|---|
-| `src/components/EffortPanel/effortPanelState.ts` | 新增 | `PanelPosition` 类型 + 纯函数（`moveLeft`/`moveRight`/`home`/`end`/`getInitialCursor`/`PANEL_POSITIONS`），可独立单测 |
-| `src/components/EffortPanel/EffortPanel.tsx` | 新增 | 面板 React 组件：渲染布局 + `useKeybindings` + Enter/Esc 分支 + 调 `executeEffort` |
-| `src/components/EffortPanel/__tests__/effortPanelState.test.ts` | 新增 | 纯函数单测 |
-| `src/components/EffortPanel/__tests__/EffortPanel.test.tsx` | 新增 | 组件渲染 + 分支测试 |
-| `src/keybindings/schema.ts` | 修改 | 在 `KeybindingAction` 联合类型里追加 4 个 `effortPanel:*` action |
-| `src/keybindings/defaultBindings.ts` | 修改 | 追加 `EffortPanel` context 绑定（`←/→/enter/escape/home/end`）|
-| `src/keybindings/__tests__/`（如已有 schema/defaultBindings 测试）| 修改（如有） | 追加新 context 的回归断言 |
-| `src/commands/effort/effort.tsx` | 修改 | `call()` 在 `args === ''` 时返回 `<EffortPanel>`；其他路径不变 |
+| 文件                                                               | 状态         | 责任                                                                                                                  |
+| ------------------------------------------------------------------ | ------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `src/components/EffortPanel/effortPanelState.ts`                   | 新增         | `PanelPosition` 类型 + 纯函数（`moveLeft`/`moveRight`/`home`/`end`/`getInitialCursor`/`PANEL_POSITIONS`），可独立单测 |
+| `src/components/EffortPanel/EffortPanel.tsx`                       | 新增         | 面板 React 组件：渲染布局 + `useKeybindings` + Enter/Esc 分支 + 调 `executeEffort`                                    |
+| `src/components/EffortPanel/__tests__/effortPanelState.test.ts`    | 新增         | 纯函数单测                                                                                                            |
+| `src/components/EffortPanel/__tests__/EffortPanel.test.tsx`        | 新增         | 组件渲染 + 分支测试                                                                                                   |
+| `src/keybindings/schema.ts`                                        | 修改         | 在 `KeybindingAction` 联合类型里追加 4 个 `effortPanel:*` action                                                      |
+| `src/keybindings/defaultBindings.ts`                               | 修改         | 追加 `EffortPanel` context 绑定（`←/→/enter/escape/home/end`）                                                        |
+| `src/keybindings/__tests__/`（如已有 schema/defaultBindings 测试） | 修改（如有） | 追加新 context 的回归断言                                                                                             |
+| `src/commands/effort/effort.tsx`                                   | 修改         | `call()` 在 `args === ''` 时返回 `<EffortPanel>`；其他路径不变                                                        |
 
 **不修改的文件：** `src/utils/effort.ts`、`src/commands/effort/index.ts`、`src/state/AppState.tsx`。
 
@@ -34,6 +34,7 @@
 ## Task 1：纯函数状态模块（TDD）
 
 **Files:**
+
 - Create: `src/components/EffortPanel/effortPanelState.ts`
 - Test: `src/components/EffortPanel/__tests__/effortPanelState.test.ts`
 
@@ -98,20 +99,44 @@ describe('effortPanelState', () => {
   })
 
   test('getInitialCursor：env override 存在时返回 env 值（若是合法档位）', () => {
-    expect(getInitialCursor({ envOverride: 'high', appStateEffort: 'medium', displayed: 'high' })).toBe('high')
+    expect(
+      getInitialCursor({
+        envOverride: 'high',
+        appStateEffort: 'medium',
+        displayed: 'high',
+      }),
+    ).toBe('high')
   })
 
   test('getInitialCursor：env 为 null（unset）时用 displayed', () => {
-    expect(getInitialCursor({ envOverride: null, appStateEffort: undefined, displayed: 'medium' })).toBe('medium')
+    expect(
+      getInitialCursor({
+        envOverride: null,
+        appStateEffort: undefined,
+        displayed: 'medium',
+      }),
+    ).toBe('medium')
   })
 
   test('getInitialCursor：env undefined 时用 displayed', () => {
-    expect(getInitialCursor({ envOverride: undefined, appStateEffort: 'high', displayed: 'high' })).toBe('high')
+    expect(
+      getInitialCursor({
+        envOverride: undefined,
+        appStateEffort: 'high',
+        displayed: 'high',
+      }),
+    ).toBe('high')
   })
 
   test('getInitialCursor：env 是数值（ant-only）时落回 displayed', () => {
     // 数值不是合法 PanelPosition，回退
-    expect(getInitialCursor({ envOverride: 75, appStateEffort: 'medium', displayed: 'medium' })).toBe('medium')
+    expect(
+      getInitialCursor({
+        envOverride: 75,
+        appStateEffort: 'medium',
+        displayed: 'medium',
+      }),
+    ).toBe('medium')
   })
 
   test('PanelPosition 类型编译期检查（隐式）', () => {
@@ -157,23 +182,27 @@ export const PANEL_POSITIONS: readonly PanelPosition[] = [
 export const HOME_POSITION: PanelPosition = 'low'
 export const END_POSITION: PanelPosition = 'ultracode'
 
-const NON_ULTRACODE_POSITIONS: readonly PanelPosition[] = PANEL_POSITIONS.filter(
-  p => p !== 'ultracode',
-)
+const NON_ULTRACODE_POSITIONS: readonly PanelPosition[] =
+  PANEL_POSITIONS.filter(p => p !== 'ultracode')
 
 /**
  * 判断一个 EffortValue 是否可作为面板光标位置。
  * 数值（ant-only）和 ultracode 都不是合法 PanelPosition（ultracode 由面板内部产生）。
  */
 function isPanelPosition(value: unknown): value is PanelPosition {
-  return typeof value === 'string' && (PANEL_POSITIONS as readonly string[]).includes(value)
+  return (
+    typeof value === 'string' &&
+    (PANEL_POSITIONS as readonly string[]).includes(value)
+  )
 }
 
 /**
  * 把非 ultracode 的 string EffortValue 收窄为 PanelPosition 的前 5 档。
  * 用于 env override 与 appState 的归一化。
  */
-function normalizeToPanelPosition(value: EffortValue | null | undefined): PanelPosition | undefined {
+function normalizeToPanelPosition(
+  value: EffortValue | null | undefined,
+): PanelPosition | undefined {
   if (value === null || value === undefined) return undefined
   if (typeof value === 'number') return undefined
   if (isPanelPosition(value) && value !== 'ultracode') {
@@ -255,6 +284,7 @@ EOF
 ## Task 2：注册 EffortPanel keybinding context
 
 **Files:**
+
 - Modify: `src/keybindings/schema.ts`（在 `KeybindingAction` 联合类型追加 6 个 action）
 - Modify: `src/keybindings/defaultBindings.ts`（追加 `EffortPanel` context 块）
 
@@ -304,6 +334,7 @@ Expected: 查看是否有 schema/defaultBindings 的回归测试文件（决定�
 ```
 
 注意：
+
 - `q` 与 `escape` / `ctrl+c` 都映射到 `effortPanel:cancel`，与 spec §5 状态机一致。
 - Ink 的 useInput 默认在 ctrl+c 时退出进程；但项目 useKeybindings 系统会先拦截 ctrl+c（参考 `useInput` 源码中 `if (!(input === 'c' && key.ctrl) || !internal_exitOnCtrlC)` 分支）。若实施时发现 ctrl+c 仍直接退出进程，**降级为只绑 q + escape**，并在 commit message 里注明。
 - Step 2.2 的 6 个 action（含 `home/end`）与此处的 8 个绑定一一对应。
@@ -336,6 +367,7 @@ EOF
 ## Task 3：实现 EffortPanel React 组件
 
 **Files:**
+
 - Create: `src/components/EffortPanel/EffortPanel.tsx`
 - Create: `src/components/EffortPanel/__tests__/EffortPanel.test.tsx`
 
@@ -363,7 +395,9 @@ const baseProps = {
 
 describe('EffortPanel 渲染', () => {
   test('显示标题 Effort、两极 Faster/Smarter、6 个档位、底栏提示', () => {
-    const { stdout } = render(<EffortPanel {...baseProps} appStateEffort={undefined} />)
+    const { stdout } = render(
+      <EffortPanel {...baseProps} appStateEffort={undefined} />,
+    )
     const out = stdout.join('')
     expect(out).toContain('Effort')
     expect(out).toContain('Faster')
@@ -381,7 +415,9 @@ describe('EffortPanel 渲染', () => {
   })
 
   test('光标 ▲ 初始指向当前生效档（high）', () => {
-    const { stdout } = render(<EffortPanel {...baseProps} appStateEffort="high" />)
+    const { stdout } = render(
+      <EffortPanel {...baseProps} appStateEffort="high" />,
+    )
     // 找到 high 那一行上方有 ▲
     expect(stdout.join('')).toContain('▲')
   })
@@ -393,6 +429,7 @@ describe('EffortPanel 渲染', () => {
 - [ ] **Step 3.2: 探查 Ink 测试 helper**
 
 Run:
+
 ```bash
 find src packages -name "*.ts*" -path "*test*" -exec grep -l "render.*Ink\|@anthropic/ink" {} \; 2>/dev/null | head -5
 grep -rn "render(" src/components/**/__tests__/*.tsx 2>/dev/null | head -10
@@ -446,13 +483,20 @@ function renderPaddedLine(cursor: PanelPosition): string {
   return `${'─'.repeat(col)}▲${'─'.repeat(Math.max(0, PANEL_WIDTH - col - 1))}`
 }
 
-export function EffortPanel({ appStateEffort, onDone }: Props): React.ReactNode {
+export function EffortPanel({
+  appStateEffort,
+  onDone,
+}: Props): React.ReactNode {
   const setAppState = useSetAppState()
   const model = useMainLoopModel()
 
   const envOverride = getEffortEnvOverride()
   const displayed = getDisplayedEffortLevel(model, appStateEffort)
-  const initialCursor = getInitialCursor({ envOverride, appStateEffort, displayed })
+  const initialCursor = getInitialCursor({
+    envOverride,
+    appStateEffort,
+    displayed,
+  })
 
   const [cursor, setCursor] = React.useState<PanelPosition>(initialCursor)
   const [done, setDone] = React.useState(false)
@@ -518,7 +562,9 @@ export function EffortPanel({ appStateEffort, onDone }: Props): React.ReactNode 
       </Box>
       <Text>{renderPaddedLine(cursor)}</Text>
       <Text>
-        {PANEL_POSITIONS.map(p => (p as string).padEnd(11)).join('').trimEnd()}
+        {PANEL_POSITIONS.map(p => (p as string).padEnd(11))
+          .join('')
+          .trimEnd()}
       </Text>
       <Text dimColor>
         {' '.repeat(Math.max(0, PANEL_WIDTH - 'xhigh + workflows'.length))}
@@ -572,6 +618,7 @@ EOF
 ## Task 4：改造 `/effort` 命令挂载面板
 
 **Files:**
+
 - Modify: `src/commands/effort/effort.tsx`
 
 - [ ] **Step 4.1: 阅读现状**
@@ -642,6 +689,7 @@ Expected: 0 errors
 - [ ] **Step 4.4: 手动验证（pipe mode 快速跑）**
 
 Run:
+
 ```bash
 echo "/effort" | bun run src/entrypoints/cli.tsx -p 2>&1 | head -30
 ```
@@ -653,6 +701,7 @@ Expected：看到面板渲染输出（标题 Effort、6 档、底栏提示）。
 - [ ] **Step 4.5: 跑相关测试**
 
 Run:
+
 ```bash
 bun test src/commands/effort/ 2>/dev/null
 bun test tests/integration/message-pipeline* 2>/dev/null
@@ -682,6 +731,7 @@ EOF
 ## Task 5：补集成测试（键盘交互 + 分支）
 
 **Files:**
+
 - Modify/Create: `src/components/EffortPanel/__tests__/EffortPanel.test.tsx`（在 Task 3 基础上追加）
 
 - [ ] **Step 5.1: 决定测试路径（二选一）**
@@ -703,16 +753,20 @@ export type ConfirmOutcome =
     }
   | { kind: 'ultracode-hint'; message: string }
 
-export type ApplyFn = (
-  cursor: PanelPosition,
-) => { message: string; effortUpdate?: { value: EffortValue | undefined } }
+export type ApplyFn = (cursor: PanelPosition) => {
+  message: string
+  effortUpdate?: { value: EffortValue | undefined }
+}
 
 export const ULTRACODE_HINT =
   'ultracode 不是 effort 档位。请使用 /ultracode <context> 启动多 agent workflow。'
 
 export const CANCEL_MESSAGE = 'Effort unchanged.'
 
-export function computeConfirmOutcome(cursor: PanelPosition, applyFn: ApplyFn): ConfirmOutcome {
+export function computeConfirmOutcome(
+  cursor: PanelPosition,
+  applyFn: ApplyFn,
+): ConfirmOutcome {
   if (isUltracode(cursor)) {
     return { kind: 'ultracode-hint', message: ULTRACODE_HINT }
   }
@@ -733,7 +787,7 @@ import {
   type PanelPosition,
   computeConfirmOutcome,
   getInitialCursor,
-  isUltracode,    // 不再需要，computeConfirmOutcome 内部已用
+  isUltracode, // 不再需要，computeConfirmOutcome 内部已用
   moveLeft,
   moveRight,
   PANEL_POSITIONS,
@@ -850,6 +904,7 @@ Expected: typecheck + lint fix + test 全绿，零错误
 
 Run: `bun run dev`
 输入 `/effort`，确认：
+
 - 面板出现，光标 `▲` 停在当前生效档
 - `←` / `→` 移动光标，到边界（low / ultracode）不再继续
 - Enter 在 high 时输出 `Set effort level to high: ...`

@@ -32,18 +32,18 @@ WebSearchTool.call()
 
 ### 2.2 模块结构
 
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| 工具入口 | `packages/builtin-tools/src/tools/WebSearchTool/WebSearchTool.ts` | `buildTool()` 定义：schema、权限、执行、输出格式化 |
-| 工具 prompt | `packages/builtin-tools/src/tools/WebSearchTool/prompt.ts` | 搜索工具的系统提示词 |
-| UI 渲染 | `packages/builtin-tools/src/tools/WebSearchTool/UI.tsx` | 搜索结果的终端渲染组件 |
-| 适配器接口 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/types.ts` | `WebSearchAdapter` 接口、`SearchResult`/`SearchOptions`/`SearchProgress` 类型 |
-| 适配器工厂 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/index.ts` | `createAdapter()` 工厂函数，选择后端 |
-| API 适配器 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/apiAdapter.ts` | 封装原有 `queryModelWithStreaming` 逻辑，使用 server tool |
-| Bing 适配器 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/bingAdapter.ts` | Bing HTML 抓取 + 正则解析 |
-| Brave 适配器 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/braveAdapter.ts` | Brave LLM Context API 适配与结果映射 |
-| 单元测试 | `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.test.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/braveAdapter*.test.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/adapterFactory.test.ts` | Bing / Brave 解析与工厂逻辑测试 |
-| 集成测试 | `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/braveAdapter.integration.ts` | 真实网络请求验证 |
+| 模块         | 文件                                                                                                                                                                                                                                                | 说明                                                                          |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 工具入口     | `packages/builtin-tools/src/tools/WebSearchTool/WebSearchTool.ts`                                                                                                                                                                                   | `buildTool()` 定义：schema、权限、执行、输出格式化                            |
+| 工具 prompt  | `packages/builtin-tools/src/tools/WebSearchTool/prompt.ts`                                                                                                                                                                                          | 搜索工具的系统提示词                                                          |
+| UI 渲染      | `packages/builtin-tools/src/tools/WebSearchTool/UI.tsx`                                                                                                                                                                                             | 搜索结果的终端渲染组件                                                        |
+| 适配器接口   | `packages/builtin-tools/src/tools/WebSearchTool/adapters/types.ts`                                                                                                                                                                                  | `WebSearchAdapter` 接口、`SearchResult`/`SearchOptions`/`SearchProgress` 类型 |
+| 适配器工厂   | `packages/builtin-tools/src/tools/WebSearchTool/adapters/index.ts`                                                                                                                                                                                  | `createAdapter()` 工厂函数，选择后端                                          |
+| API 适配器   | `packages/builtin-tools/src/tools/WebSearchTool/adapters/apiAdapter.ts`                                                                                                                                                                             | 封装原有 `queryModelWithStreaming` 逻辑，使用 server tool                     |
+| Bing 适配器  | `packages/builtin-tools/src/tools/WebSearchTool/adapters/bingAdapter.ts`                                                                                                                                                                            | Bing HTML 抓取 + 正则解析                                                     |
+| Brave 适配器 | `packages/builtin-tools/src/tools/WebSearchTool/adapters/braveAdapter.ts`                                                                                                                                                                           | Brave LLM Context API 适配与结果映射                                          |
+| 单元测试     | `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.test.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/braveAdapter*.test.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/adapterFactory.test.ts` | Bing / Brave 解析与工厂逻辑测试                                               |
+| 集成测试     | `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts`, `packages/builtin-tools/src/tools/WebSearchTool/__tests__/braveAdapter.integration.ts`                                                                       | 真实网络请求验证                                                              |
 
 ### 2.3 数据流
 
@@ -114,6 +114,7 @@ Bing 返回的重定向 URL 格式：`bing.com/ck/a?...&u=a1aHR0cHM6Ly9...`
 ### 3.4 域名过滤
 
 客户端侧实现，支持子域名匹配：
+
 - `allowedDomains`：白名单，结果域名必须匹配列表中的某项（含子域名）
 - `blockedDomains`：黑名单，匹配的结果被过滤
 - 两者不可同时使用（`validateInput` 校验）
@@ -174,15 +175,15 @@ interface SearchProgress {
 
 ## 六、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `packages/builtin-tools/src/tools/WebSearchTool/WebSearchTool.ts` | 工具定义入口 |
-| `packages/builtin-tools/src/tools/WebSearchTool/prompt.ts` | 搜索工具 prompt |
-| `packages/builtin-tools/src/tools/WebSearchTool/UI.tsx` | 终端 UI 渲染 |
-| `packages/builtin-tools/src/tools/WebSearchTool/adapters/types.ts` | 适配器接口 |
-| `packages/builtin-tools/src/tools/WebSearchTool/adapters/index.ts` | 适配器工厂 |
-| `packages/builtin-tools/src/tools/WebSearchTool/adapters/apiAdapter.ts` | API 服务端搜索适配器 |
-| `packages/builtin-tools/src/tools/WebSearchTool/adapters/bingAdapter.ts` | Bing HTML 解析适配器 |
-| `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.test.ts` | 单元测试 (32 cases) |
-| `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts` | 集成测试 |
-| `src/tools.ts` | 工具注册 |
+| 文件                                                                                  | 职责                 |
+| ------------------------------------------------------------------------------------- | -------------------- |
+| `packages/builtin-tools/src/tools/WebSearchTool/WebSearchTool.ts`                     | 工具定义入口         |
+| `packages/builtin-tools/src/tools/WebSearchTool/prompt.ts`                            | 搜索工具 prompt      |
+| `packages/builtin-tools/src/tools/WebSearchTool/UI.tsx`                               | 终端 UI 渲染         |
+| `packages/builtin-tools/src/tools/WebSearchTool/adapters/types.ts`                    | 适配器接口           |
+| `packages/builtin-tools/src/tools/WebSearchTool/adapters/index.ts`                    | 适配器工厂           |
+| `packages/builtin-tools/src/tools/WebSearchTool/adapters/apiAdapter.ts`               | API 服务端搜索适配器 |
+| `packages/builtin-tools/src/tools/WebSearchTool/adapters/bingAdapter.ts`              | Bing HTML 解析适配器 |
+| `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.test.ts`        | 单元测试 (32 cases)  |
+| `packages/builtin-tools/src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts` | 集成测试             |
+| `src/tools.ts`                                                                        | 工具注册             |

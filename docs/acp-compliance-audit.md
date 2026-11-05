@@ -20,19 +20,19 @@
 
 ## 修复优先级矩阵
 
-| 优先级 | 维度 | 发现数 | 修复成本 | 是否阻断 |
-|---|---|---|---|---|
-| P0 | acp-link 传输层违反 JSON-RPC 2.0（维度 8） | 4 (2 critical + 2 major) | 高 | 是 |
-| P0 | promptCapabilities.image 声明与实现脱节（维度 1/3/7） | 3 (3 major, 重复根因) | 低 | 是 |
-| P0 | session/resume 重放历史违反 MUST NOT（维度 2） | 1 (1 critical) | 中 | 是 |
-| P0 | session/update usage_update 非稳定 v1 判别器（维度 4） | 1 (1 critical) | 低 | ⚠️ **撤销**（interop 优先,见 §4.1） |
-| P1 | PromptResponse.usage 非规范根字段（维度 3） | 1 (1 major) | 低 | ⚠️ **撤销**（同 §4.1 决策,根部 usage 与 _meta 镜像并存） |
-| P1 | refusal stop_reason 丢失（维度 3） | 1 (1 major) | 低 | 否 |
-| P1 | terminal 能力误用 `_meta` + 缺失标准生命周期（维度 5） | 2 (2 major) | 高 | 否 |
-| P1 | 权限 `cancelled` 未传播为 StopReason::Cancelled（维度 5） | 1 (1 major) | 中 | 否 |
-| P1 | setSessionMode 未发 current_mode_update（维度 6） | 1 (1 major) | 低 | 否 |
-| P1 | session/load 跨项目 cwd 校验缺失（维度 2） | 1 (1 major) | 中 | 否 |
-| P2 | 其他 minor / nit | 25 | 低-中 | 否 |
+| 优先级 | 维度                                                      | 发现数                   | 修复成本 | 是否阻断                                                 |
+| ------ | --------------------------------------------------------- | ------------------------ | -------- | -------------------------------------------------------- |
+| P0     | acp-link 传输层违反 JSON-RPC 2.0（维度 8）                | 4 (2 critical + 2 major) | 高       | 是                                                       |
+| P0     | promptCapabilities.image 声明与实现脱节（维度 1/3/7）     | 3 (3 major, 重复根因)    | 低       | 是                                                       |
+| P0     | session/resume 重放历史违反 MUST NOT（维度 2）            | 1 (1 critical)           | 中       | 是                                                       |
+| P0     | session/update usage_update 非稳定 v1 判别器（维度 4）    | 1 (1 critical)           | 低       | ⚠️ **撤销**（interop 优先,见 §4.1）                      |
+| P1     | PromptResponse.usage 非规范根字段（维度 3）               | 1 (1 major)              | 低       | ⚠️ **撤销**（同 §4.1 决策,根部 usage 与 _meta 镜像并存） |
+| P1     | refusal stop_reason 丢失（维度 3）                        | 1 (1 major)              | 低       | 否                                                       |
+| P1     | terminal 能力误用 `_meta` + 缺失标准生命周期（维度 5）    | 2 (2 major)              | 高       | 否                                                       |
+| P1     | 权限 `cancelled` 未传播为 StopReason::Cancelled（维度 5） | 1 (1 major)              | 中       | 否                                                       |
+| P1     | setSessionMode 未发 current_mode_update（维度 6）         | 1 (1 major)              | 低       | 否                                                       |
+| P1     | session/load 跨项目 cwd 校验缺失（维度 2）                | 1 (1 major)              | 中       | 否                                                       |
+| P2     | 其他 minor / nit                                          | 25                       | 低-中    | 否                                                       |
 
 ---
 
@@ -47,21 +47,21 @@
 
   (A) 若确实不处理图片,把 `promptCapabilities.image` 改为 false（或删除该键,默认 false）:
 
-  ~~~diff
+  ```diff
    promptCapabilities: {
   -  image: true,
      embeddedContext: true,
    },
-  ~~~
+  ```
 
   (B) 若要保留图片能力,在 promptToQueryInput 中处理 image block,将其作为 image content block 注入 query input（需 QueryEngine.submitMessage 支持多模态输入）:
 
-  ~~~diff
+  ```diff
    } else if (b.type === 'image') {
   +  const img = b as { source?: { data?: string; media_type?: string } }
   +  images.push({ data: img.source?.data, mediaType: img.source?.media_type })
    }
-  ~~~
+  ```
 
   然后扩展 submitMessage 接受 images 数组。在多模态 query input 支持完成前,推荐先采用 (A)。
 
@@ -72,7 +72,7 @@
 - 当前实现: sessionCapabilities 中包含 `fork: {}` 以配合已实现的 `unstable_forkSession()` (agent.ts:235)。但稳定 v1 schema 的 SessionCapabilities 不认识此键。由于 schema 未设 `additionalProperties:false`,字段不会导致 schema 校验硬失败,但严格 Client 会把它当作未知扩展忽略,无法据此发现 session/fork 支持。
 - 修复建议: 将 unstable fork 能力迁移到 AgentCapabilities._meta 下的自定义扩展命名空间（与现有 `_meta.claudeCode.promptQueueing` 同模式）,符合 extensibility.mdx:111-134 "Advertising Custom Capabilities":
 
-  ~~~diff
+  ```diff
    agentCapabilities: {
      _meta: {
   -    claudeCode: { promptQueueing: true },
@@ -88,7 +88,7 @@
        close: {},
      },
    },
-  ~~~
+  ```
 
 ### 1.3 [nit] 缺失 authMethods 字段
 
@@ -97,14 +97,14 @@
 - 当前实现: initialize 返回值不含 authMethods 字段。authenticate() (agent.ts:176-181) 忽略 params.methodId 直接返回 `{}`,意味着即使 Client 用任意 methodId 调 authenticate 也会成功——但因 authMethods 缺失,规范上 Client 不应调用 authenticate。
 - 修复建议: 显式返回 `authMethods: []` 以明示无认证方法,与 authenticate() 的 no-op 语义一致:
 
-  ~~~diff
+  ```diff
    return {
      protocolVersion: 1,
   +  authMethods: [],
      agentInfo: { ... },
      agentCapabilities: { ... },
    }
-  ~~~
+  ```
 
   同时建议在 authenticate() 中校验:因未声明任何 method,若被调用应返回 method-not-found 错误（code -32601）,而非无条件成功。
 
@@ -119,7 +119,7 @@
 - 当前实现: unstable_resumeSession 委托给 getOrCreateSession,这是 loadSession 使用的相同代码路径。对于在内存中找到的会话,它会调用 replaySessionHistory() (第 713 行)；对于从磁盘加载的会话,它会调用 replayHistoryMessages() (第 757-769 行)。无论哪种方式,完整的对话历史都会在返回 ResumeSessionResponse 之前通过 session/update 通知流式传输回客户端。因此 session/resume 的行为与 session/load 完全一致,违反了 MUST NOT 重放规则。
 - 修复建议: 将恢复路径与加载路径分离。添加一个不执行重放的 resumeSession() 实现:
 
-  ~~~diff
+  ```diff
    async unstable_resumeSession(
      params: ResumeSessionRequest,
    ): Promise<ResumeSessionResponse> {
@@ -128,7 +128,7 @@
      this.scheduleAvailableCommandsUpdate(result.sessionId)
      return result
    }
-  ~~~
+  ```
 
   在 getOrCreateSession 中,根据 `replay` 标志控制两个 replayHistoryMessages/replaySessionHistory 调用,让 resume 传递 `replay:false`（恢复时仅恢复上下文 + MCP 连接,然后立即返回 `{ modes, models, configOptions }`）。保留 loadSession 的默认 `replay:true`。
 
@@ -139,7 +139,7 @@
 - 当前实现: createSession() 从 {cwd, mcpServers} 计算 sessionFingerprint (agent.ts:665-670),而 getOrCreateSession() 仅在请求的会话已驻留在 this.sessions (第 696-721 行) 时才将指纹与该内存中的会话进行比较。当会话不在内存中时（正常的恢复/加载情况）,代码会调用 resolveSessionFilePath(sessionId, cwd),该方法会搜索请求的目录、其 git 工作树,最后扫描所有项目目录 (sessionStoragePortable.ts:410-463)。没有任何检查验证会话原始的 cwd 是否与请求的 cwd 匹配。客户端可以传入项目 A 的 cwd 并成功加载项目 B 下持久化的会话,然后运行一个上下文错误的会话。在基于磁盘的路径上从未计算或比较过指纹。
 - 修复建议: 在解析文件路径后,从磁盘上的会话中读取原始的 cwd（第一条消息的 'cwd' 字段）,并将其与请求的 cwd 进行比较。如果不匹配,返回错误（JSON-RPC 错误代码 -32602 无效参数）:
 
-  ~~~ts
+  ```ts
   const resolved = await resolveSessionFilePath(params.sessionId, params.cwd)
   if (resolved) {
     const lite = await readSessionLite(resolved.filePath)
@@ -148,7 +148,7 @@
       throw new RpcError(-32602, `Session cwd mismatch: session belongs to ${originalCwd}, requested ${params.cwd}`)
     }
   }
-  ~~~
+  ```
 
   或者,在加载会话的 cwd 不同时跳过工作树/全目录回退搜索,以便跨项目加载自然失败。
 
@@ -160,7 +160,7 @@
 - 备注: 尽管 fork 是 UNSTABLE 且超出了严格的 v1 合规范围,但 Agent 声明了该能力并注册了处理程序,因此客户端调用 `session/fork` 将获得语义错误的结果。
 - 修复建议: 将源会话的消息加载到内存中（通过 getLastSessionLog(params.sessionId)）,并将它们作为 initialMessages 传递给 createSession,同时转发 additionalDirectories:
 
-  ~~~ts
+  ```ts
   async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
     let initialMessages: Message[] | undefined
     try {
@@ -174,7 +174,7 @@
     this.scheduleAvailableCommandsUpdate(response.sessionId)
     return response
   }
-  ~~~
+  ```
 
   （扩展 createSession 签名以接受并持久化 additionalDirectories。）
 
@@ -185,7 +185,7 @@
 - 当前实现: listSessions 完全忽略了 params.cursor。它调用 `listSessionsImpl({ dir: params.cwd ?? undefined, limit: 100 })`——一个硬编码的 100 条目上限,没有偏移量,也没有消费 cursor。响应从不返回 nextCursor,因此跨大历史记录的分页静默失败:拥有超过 100 个会话的客户端只能看到最近的 100 个,无法获取其余的。无效的 cursor 被静默接受（规范指出 Agent 应该报错）。虽然返回不带 nextCursor 的所有结果是允许的,但静默截断为 100 违反了 "Clients MUST treat a missing nextCursor as the end" 的契约,因为 Agent 实际上有更多结果却隐瞒了。
 - 修复建议: 要么 (a) 完全去掉硬编码的 100 限制（如果没有更多结果,返回所有会话且不带 nextCursor 是合规的）,或者 (b) 实现 cursor→offset 解码:
 
-  ~~~ts
+  ```ts
   const decoded = params.cursor
     ? JSON.parse(Buffer.from(params.cursor, 'base64').toString())
     : { offset: 0 }
@@ -194,7 +194,7 @@
     ? Buffer.from(JSON.stringify({ offset: decoded.offset + PAGE_SIZE })).toString('base64')
     : undefined
   return { sessions: [...], nextCursor }
-  ~~~
+  ```
 
   至少,当客户端发送 params.cursor 时（因为分页未实现）,返回一个错误,这样客户端就不会得到静默错误的结果。
 
@@ -205,7 +205,7 @@
 - 当前实现: 对于每个候选者,代码无条件地发出 `title: sanitizeTitle(candidate.summary ?? '')`。当会话没有可提取的摘要/标题时（边缘情况下 candidate.summary 为空字符串）,Agent 发出 `title: ""`。空字符串技术上是有效的,但没有信息量；根据 schema,省略 title 会更清晰。这是一个表面问题,因为基于磁盘的候选者很少幸存于空摘要。
 - 修复建议: 仅在非空时包含 title:
 
-  ~~~diff
+  ```diff
   + const title = sanitizeTitle(candidate.summary ?? '')
    sessions.push({
      sessionId: candidate.sessionId,
@@ -214,7 +214,7 @@
   +  ...(title ? { title } : {}),
      updatedAt: new Date(candidate.lastModified).toISOString(),
    })
-  ~~~
+  ```
 
   updatedAt 的 ISO 8601 格式（new Date(ms).toISOString() → 例如 '2025-10-29T14:22:15.123Z') 已经合规。
 
@@ -236,13 +236,13 @@
 - 当前实现: initialize() 声明 `promptCapabilities: { image: true, embeddedContext: true }`,但 promptToQueryInput() 只处理 block types `'text'`、`'resource_link'`、`'resource'`。任何 `type: 'image'` block（以及任何非文本/非资源 block）被静默丢弃——只产生字符串连接的文本,所以 image 输入无警告消失。没有通过文件系统或错误暴露 image 的回退。
 - 修复建议: 要么停止宣告 image 支持直到它被接通,要么扩展 promptToQueryInput 以暴露 image block。最小正确修复:
 
-  ~~~diff
+  ```diff
    promptCapabilities: {
   -  image: true,
   +  image: false,
      embeddedContext: true,
    },
-  ~~~
+  ```
 
   如果打算 image passthrough,query input 必须携带 image 数据——例如返回一个结构化输入,携带 `{ type: 'image', source: {...} }` block 而不是 flat string。在此之前,能力声明是协议谎言,使客户端发送 agent 永远看不到的 image。此问题与维度 1 的 §1.1 同根因。
 
@@ -253,16 +253,16 @@
 - 当前实现: prompt() 返回 `{ stopReason, usage: { inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens, totalTokens } }`。`usage` 是非规范根字段。它碰巧匹配 bundled SDK schema (schema.json:4656-4665 marked **UNSTABLE**) 中的 UNSTABLE 形状,但那超出了 v1 合规范围。
 - 修复建议: 停止为 v1 合规性在 PromptResponse 上发出 `usage`,或将其置于能力协商之后。最干净的修复:
 
-  ~~~diff
+  ```diff
   -return { stopReason, usage }
   +return { stopReason }
-  ~~~
+  ```
 
   如果需要 token 报告,通过现有的 `usage_update` SessionUpdate 发送（已在 bridge.ts:843-854 完成,见维度 4 的 critical finding——但 usage_update 本身也是非稳定的）和/或将其移至 `_meta`——但根据 extensibility.mdx:39,即使是未知的根键也被保留,因此唯一规范一致的位置是 `_meta.usage`。推荐:
 
-  ~~~ts
+  ```ts
   return { stopReason, _meta: usage ? { claudeCode: { usage } } : undefined }
-  ~~~
+  ```
 
 ### 3.3 [major] Anthropic refusal stop_reason 被误报为 end_turn
 
@@ -271,7 +271,7 @@
 - 当前实现: 在 `success` 情况下只映射了 `'max_tokens'`；其他所有 Anthropic stop_reason（包括 `'refusal'`、`'end_turn'`、`'stop_sequence'`、`'tool_use'`）都落入默认 `stopReason = 'end_turn'`。没有分支将 `'refusal'` 映射到 ACP `refusal` stop reason,因此真正的拒绝被误报为成功的 end_turn,破坏了规范契约——refusal 应被反映（根据 refusal 语义,prompt 不应包含在下一轮）。
 - 修复建议: 添加显式映射:
 
-  ~~~diff
+  ```diff
    case 'success': {
   -  const stopReasonStr = msg.stop_reason
   -  if (stopReasonStr === 'max_tokens') {
@@ -288,7 +288,7 @@
   +  if (isError) stopReason = 'end_turn'
      break
    }
-  ~~~
+  ```
 
 ### 3.4 [minor] max_tokens 与 isError 检查相互覆盖
 
@@ -304,10 +304,10 @@
 - 当前实现: prompt() 从不读取 `params._meta`。两个后果: (1) prompt 中客户端提供的 W3C trace context (`traceparent`/`tracestate`/`baggage`) 被静默丢弃,破坏了 tracing interop；(2) prompt-queueing 扩展已宣告,但没有 per-request opt-out 机制——客户端无法通过 `_meta` 信号 skip-queue。能力宣告本身是合规的。
 - 修复建议: 将 `params._meta` 传递给 query 层,以便 trace context 可以附加到下游 API 调用,并可选地遵守 `_meta.claudeCode.skipQueue` flag。至少,转发 traceparent:
 
-  ~~~ts
+  ```ts
   const traceparent = params._meta?.traceparent
   // thread it into the API client request headers
-  ~~~
+  ```
 
 ### 3.6 [minor] prompt catch 块对 abort 信号竞态返回错误而非 cancelled
 
@@ -316,7 +316,7 @@
 - 当前实现: catch 块确实检查 `if (session.cancelled) return { stopReason: 'cancelled' }` (343-345)——对于进程内 cancelled flag 是正确的。然而,守卫使用 `session.cancelled`,只由 cancel() 设置。如果 QueryEngine 的 abort signal 通过 interrupt() 触发,但 session.cancelled 尚未设置（interrupt() 完成和 cancel() 到达第 379 行之间的竞态窗口）,或从嵌套路径传播取消派生的 AbortError,条件为 false,错误被重新抛出为 JSON-RPC 错误而不是 cancelled stop reason。更稳健的信号是 abort signal 本身。
 - 修复建议: 在 flag 之外检查 abort signal,并将 AbortError/abort 形状错误视为取消:
 
-  ~~~ts
+  ```ts
   } catch (err) {
     const isAbort = err instanceof Error && (
       err.name === 'AbortError' || /abort|cancelled|interrupt/i.test(err.message)
@@ -326,7 +326,7 @@
     }
     // ...existing process-death + rethrow
   }
-  ~~~
+  ```
 
 ### 3.7 [minor] 空 prompt 提前返回 end_turn 语义错误
 
@@ -335,10 +335,10 @@
 - 当前实现: `if (!promptInput.trim()) return { stopReason: 'end_turn' }` 在不调用模型的情况下返回 end_turn。语义上,这为 no-op 输入报告成功的 turn,这是误导性的:模型从未运行。也没有路径区分 "空 prompt 无效" 和 "turn 完成"。
 - 修复建议: 要么拒绝空 prompt 与 JSON-RPC 错误（invalid_params, -32602）,因为 `prompt` 是必需的 ContentBlock[] 而有效空消息可能是畸形的,或至少文档说明 end_turn 在这里意味着 "nothing to do"。优先抛出:
 
-  ~~~diff
+  ```diff
   -if (!promptInput.trim()) return { stopReason: 'end_turn' }
   +if (!promptInput.trim()) throw new RpcError(-32602, 'Prompt content is empty')
-  ~~~
+  ```
 
 ### 3.8 [nit] usage 对象缺少 thoughtTokens
 
@@ -347,9 +347,9 @@
 - 当前实现: 构造的 usage 对象省略 `thoughtTokens`（reasoning/thinking tokens）。对于发出 reasoning tokens 的模型,报告的 totalTokens (input+output+cachedRead+cachedWrite) 将低估实际计费 tokens,因为 thinking tokens 被排除在总和之外。
 - 修复建议: 如果报告 usage（见 §3.2 extra-field finding）,包括可用的 thinking tokens:
 
-  ~~~ts
+  ```ts
   totalTokens: inputTokens + outputTokens + cachedReadTokens + cachedWriteTokens + thoughtTokens
-  ~~~
+  ```
 
   注意,这只在 unstable contract 下重要；对于严格的 v1 合规性,整个 usage 字段应被移除。
 
@@ -380,9 +380,9 @@
 - 修复: 当同一 tool_use 块被第二次遇到时(streaming `content_block_start` 首次 + assistant 完整消息回放第二次),发 `tool_call_update` with `status: 'in_progress'`。此时语义为"input 已收齐,即将执行"。完整 ToolCallStatus 生命周期现在是 pending → in_progress → completed|failed。
 - 修复建议: 当 Claude Code 知道工具开始执行时,发出一个中间的 tool_call_update:
 
-  ~~~ts
+  ```ts
   { sessionUpdate: 'tool_call_update', toolCallId, status: 'in_progress' }
-  ~~~
+  ```
 
   如果无法获得执行挂钩,请记录此差距；规范将其定义为 SHOULD 级别的生命周期信号,因此省略它仅属于轻微的合规性缺失。
 
@@ -393,12 +393,12 @@
 - 当前实现: agent.ts 计算了一个会话标题（`title: sanitizeTitle(candidate.summary ?? '')` 和 `updatedAt: new Date(candidate.lastModified).toISOString()`)——但这仅用于 session/list 响应负载。从不通过 `session/update` 通知向客户端发出 session_info_update,因此当前会话的标题/更新时间永远不会流式传输给客户端。
 - 修复建议: 当派生出或更改会话标题时（例如,在第一次助手回复或摘要提取后）,发出:
 
-  ~~~ts
+  ```ts
   await this.conn.sessionUpdate({
     sessionId,
     update: { sessionUpdate: 'session_info_update', title: derivedTitle, updatedAt: new Date().toISOString() },
   })
-  ~~~
+  ```
 
   这通过 v1 稳定版规范中记录的通道,为客户端提供了规范的会话显示名称。
 
@@ -419,7 +419,7 @@
 - 当前实现: checkTerminalOutput 读取 `clientCapabilities._meta.terminal_output === true` 来决定 terminal 支持。从未咨询标准 `clientCapabilities.terminal` 布尔值,因此宣告 `terminal: true`（没有 Claude-Code 特定 `_meta.terminal_output` flag）的合规 ACP 客户端被视为不支持 terminals,而保留的 `_meta` 字段被视为真正的能力。
 - 修复建议: 将标准能力作为主要,仅对较旧的 Claude-Code 客户端的遗留 `_meta` flag 进行回退:
 
-  ~~~ts
+  ```ts
   function checkTerminalOutput(clientCapabilities?: ClientCapabilities): boolean {
     if (!clientCapabilities) return false
     if (clientCapabilities.terminal === true) return true
@@ -427,7 +427,7 @@
     const meta = (clientCapabilities as unknown as Record<string, unknown>)._meta
     return !!meta && typeof meta === 'object' && (meta as Record<string, unknown>)['terminal_output'] === true
   }
-  ~~~
+  ```
 
 ### 5.2 [major] terminal 生命周期未实现,伪造 terminalId 且 _meta 注入非标准键 — 🔶 简化版已修复 (2026-06-19),完整版待办
 
@@ -443,13 +443,13 @@
 - 当前实现: 在 `outcome === 'cancelled'` 时,canUseTool 返回一个通用的 `PermissionDenyDecision`（`behavior:'deny'`、decisionReason mode default / plan）。这作为普通拒绝反馈到工具执行器,因此 turn 继续（或失败与普通的 end_turn / tool-error）而不是用 `cancelled` 中止 turn。agent.cancel() flag 从不响应 cancelled 权限结果设置,因此 prompt 循环不返回 stopReason 'cancelled' 仅因为用户/客户端取消了权限 prompt。
 - 修复建议: 将 `cancelled` 结果视为 turn-cancellation 信号。从 canUseTool 抛出一个类型化的 sentinel（或通过闭包传递一个 session-level cancelled flag）并让 forwardSessionUpdates / agent.prompt() 检测它以返回 `{stopReason:'cancelled'}`:
 
-  ~~~ts
+  ```ts
   if (response.outcome.outcome === 'cancelled') {
     cancelledRef.cancelled = true   // shared with agent.cancel()
     session.queryEngine.interrupt()
     return { behavior:'deny', message:'Permission request cancelled by client', decisionReason:{type:'mode', mode:'default'}, toolUseID }
   }
-  ~~~
+  ```
 
   并在 agent.prompt(): `if (session.cancelled) return { stopReason: 'cancelled' }`。
 
@@ -460,14 +460,14 @@
 - 当前实现: 提供的标准权限选项只有三个: `allow_always`、`allow_once`、`reject_once`。`reject_always`（"Reject this operation and remember the choice"）从不提供,因此用户无法通过协议的预期机制持久化拒绝（客户端依赖此 hint 显示 "remember" 复选框以供拒绝）。
 - 修复建议: 添加一个 reject_always 选项,以便四个规范选择可用:
 
-  ~~~ts
+  ```ts
   const options: PermissionOption[] = [
     { kind:'allow_always', name:'Always Allow', optionId:'allow_always' },
     { kind:'allow_once',  name:'Allow',        optionId:'allow' },
     { kind:'reject_once', name:'Reject',        optionId:'reject' },
     { kind:'reject_always', name:'Always Reject', optionId:'reject_always' },
   ]
-  ~~~
+  ```
 
   并在 selected 分支中处理 `optionId === 'reject' || optionId === 'reject_always'`。
 
@@ -478,12 +478,12 @@
 - 当前实现: Locations 和 diff paths 直接从 tool input（`input.file_path`、`input.path`、`response.filePath`）填充,不归一化为绝对路径。如果模型（或重放）提供相对路径或具有未解析的 `~`/`.` 段的路径,则发出的 ToolCallLocation.path / Diff.path 将是相对的,违反绝对路径要求。cwd 参数可用,但仅用于通过 toDisplayPath 格式化显示路径,不用于绝对化存储路径。
 - 修复建议: 在发送前对每个发出的路径针对会话 cwd 进行解析:
 
-  ~~~ts
+  ```ts
   import { isAbsolute, resolve } from 'node:path'
   const abs = (p?: string) => p && cwd ? (isAbsolute(p) ? p : resolve(cwd, p)) : p
   // then: locations: filePath ? [{ path: abs(filePath), line: offset ?? 1 }] : []
   // and for diff content: path: abs(filePath)
-  ~~~
+  ```
 
   应用于 Read/Write/Edit/Glob 和 toolUpdateFromEditToolResponse。
 
@@ -520,7 +520,7 @@
 - 当前实现: setSessionMode 调用 applySessionMode（更新内部 session.modes.currentModeId）然后 updateConfigOption('mode', ...) 只发送 config_option_update 通知（agent.ts:862-868）。从不发送 current_mode_update 通知。仅支持 modes 的 Client 将永远收不到 setSessionMode 之后的 mode 变更通知。
 - 修复建议: 在 setSessionMode 中,在 applySessionMode 之后追加发送 current_mode_update:
 
-  ~~~diff
+  ```diff
    async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
      const session = this.sessions.get(params.sessionId)
      if (!session) throw new Error('Session not found')
@@ -532,7 +532,7 @@
      await this.updateConfigOption(params.sessionId, 'mode', params.modeId)
      return {}
    }
-  ~~~
+  ```
 
   参照 setSessionConfigOption 中 `configId==='mode'` 分支（agent.ts:447-455）已有的 current_mode_update 发送逻辑保持一致。
 
@@ -543,10 +543,10 @@
 - 当前实现: createSession 返回 `{ sessionId, models, modes, configOptions }`,getOrCreateSession 返回值同样包含 models。models 字段在 v1 稳定 schema 中未定义,严格 Client 会忽略它。该字段由 @agentclientprotocol/sdk@0.19.0 的 draft 类型（SessionModelState/ModelInfo）驱动。
 - 修复建议: 由于 model 选择为 draft 特性且不在 v1 合规范围,建议: (1) 若仅面向 v1 Client,从 NewSessionResponse/LoadSessionResponse/ResumeSessionResponse 返回值中移除 models 字段,仅保留 sessionId/modes/configOptions；或 (2) 若需保留向后兼容,在响应中保留 models 但明确文档标注为非稳定扩展。最小合规改动:
 
-  ~~~diff
+  ```diff
   -return { sessionId, models, modes, configOptions }
   +return { sessionId, modes, configOptions }
-  ~~~
+  ```
 
 ### 6.3 [minor] setSessionConfigOption 未校验 value 是否在 options 列表内
 
@@ -555,7 +555,7 @@
 - 当前实现: setSessionConfigOption 通过 id 查找 option（agent.ts:440-443）,但从不校验 params.value 是否存在于 option.options 中。任何字符串（即使不在 options 列表）都会被接受并写入 currentValue,违反 "Must be one of the values listed" 要求。
 - 修复建议: 在 option 查找后追加 options 校验:
 
-  ~~~ts
+  ```ts
   const option = session.configOptions.find(o => o.id === params.configId)
   if (!option) throw new Error(`Unknown config option: ${params.configId}`)
   const validValues = flattenOptions(option.options).map(o => o.value)
@@ -564,7 +564,7 @@
       `Invalid value '${params.value}' for config option ${params.configId}; must be one of: ${validValues.join(', ')}`,
     )
   }
-  ~~~
+  ```
 
   注意 options 可能为 grouped（SessionConfigSelectGroup）或 flat（SessionConfigSelectOption）,需 flatten 处理。
 
@@ -593,7 +593,7 @@
 - 当前实现: 声明 `embeddedContext=true`,但 promptToQueryInput 的 'resource' 分支仅提取 `resource.text`。当客户端发送 BlobResource（如 PDF/二进制文件,字段为 `resource.blob + resource.mimeType + resource.uri`）时,text 为 undefined,内容被完全丢弃,模型只收到空字符串。也未传递 uri/mimeType 上下文。
 - 修复建议: 扩展 resource 分支:
 
-  ~~~ts
+  ```ts
   } else if (b.type === 'resource') {
     const r = b.resource as Record<string, unknown> | undefined
     if (r && typeof r.text === 'string') {
@@ -603,7 +603,7 @@
       parts.push(`Embedded resource: ${r.uri ?? '(unknown uri)'} (${mt}, base64 blob)`)
     }
   }
-  ~~~
+  ```
 
   （理想做法是将 blob 解码并作为 Claude SDK 二进制 content 传入 query；若 query input 不支持则至少以可读占位形式保留上下文,不能静默丢弃。）
 
@@ -614,14 +614,14 @@
 - 当前实现: toAcpContentBlock（输出渲染）只显式处理 text/image 及若干 Claude 私有 content 类型；'resource' 和 'resource_link' 类型的 SDK content 落入 default 分支（line 644-648）被序列化为 `{type:'text', text: JSON.stringify(content)}`,产生非规范输出,客户端无法识别为可点击资源。
 - 修复建议: 在 toAcpContentBlock switch 中增加 case:
 
-  ~~~ts
+  ```ts
   case 'resource_link':
     return { type: 'resource_link', uri: content.uri as string, name: (content.name as string) ?? (content.uri as string), mimeType: content.mimeType as string | undefined }
   case 'resource': {
     const r = content.resource as Record<string, unknown> | undefined
     return { type: 'resource', resource: { uri: r?.uri, mimeType: r?.mimeType, text: r?.text, blob: r?.blob } }
   }
-  ~~~
+  ```
 
   注意 ImageContent 与 ResourceLink 字段差异: ImageContent 必填 data+mimeType（base64）,uri 为可选；ResourceLink 必填 name+uri,没有 data 字段。
 
@@ -656,7 +656,7 @@
 - 当前实现: acp-link 在 client↔proxy WS 之间使用自有的包装格式 `{ type: string, payload?: unknown }`,而不是 JSON-RPC。ws-message.ts:decodeJsonWsMessage 强制要求每个传入消息包含 'type' 字符串；server.ts:decodeClientMessage 随后切换此 type。客户端发送的任何标准 JSON-RPC 消息（`{ jsonrpc:'2.0', id, method, params }`）均会被拒绝,错误提示为 "Invalid WebSocket message payload" (ws-message.ts:60)。stdout↔stdio 部分使用了正确的 SDK ndJsonStream,但面向客户端的 WS 传输（即实际上暴露给客户端的自定义传输）并非 JSON-RPC。
 - 修复建议: 使面向客户端的 WS 传输成为透明的 JSON-RPC 转发器。通过 JSON-RPC method 名而非专有的 `type` 进行路由,并完整透传消息。最小改造方案:
 
-  ~~~ts
+  ```ts
   // onMessage: 解析一次 JSON-RPC,然后路由到处理程序
   const msg = JSON.parse(text) as JsonRpcMessage
   if ('method' in msg) {
@@ -666,7 +666,7 @@
   } else {
     // 响应 — 关联到待处理的出站请求 id
   }
-  ~~~
+  ```
 
 ### 8.2 [critical] 代理响应丢弃 JSON-RPC id,无法关联请求
 
@@ -675,9 +675,9 @@
 - 当前实现: 代理针对客户端请求的响应（例如 `session_created`、`prompt_complete`、`session_list`、`session_loaded`、`model_changed`）使用带有自选 `type` 字符串的 `send(ws, type, payload)`,且从不携带 JSON-RPC `id`。客户端无法将响应与原始请求相关联,因为代理丢弃了请求 id。整个链路中没有任何 `id` 保留。
 - 修复建议: 在 ClientState 上保留一个挂起的 id 映射,并在 JSON-RPC 响应中回显请求的 `id`:
 
-  ~~~ts
+  ```ts
   send(ws, { jsonrpc:'2.0', id: pendingId, result })
-  ~~~
+  ```
 
 ### 8.3 [major] 错误响应使用专有 ProxyError 而非 JSON-RPC 错误对象
 
@@ -686,16 +686,16 @@
 - 当前实现: 所有错误均以专有的 ProxyError `{ type: 'error', message: string, code?: string }` 发出,且没有 JSON-RPC 错误对象,也没有数值类型的 JSON-RPC 代码。例如 server.ts:358 发送 `{ message: 'Failed to connect: ...' }`。`code` 字段是一个自由格式字符串,从未使用过 -326xx 代码。不相关的客户端无法区分解析错误、方法未找到错误和内部错误。
 - 修复建议: 发出标准的 JSON-RPC 错误响应,关联到请求 id:
 
-  ~~~ts
+  ```ts
   send(ws, { jsonrpc:'2.0', id: reqId, error: { code: -32601, message: 'Not connected to agent' } })
-  ~~~
+  ```
 
   将已知故障映射到代码: -32700 (decodeJsonWsMessage 解析失败)、-32602 (payloadRecord/optionalStringField 验证)、-32601 (代理不支持该功能或 SDK 调用抛出"不支持")、-32603 (内部异常)。
 
 ### 8.4 [major] decodeClientMessage 白名单狭窄,多个 v1 方法无传输路径
 
 - 位置: `packages/acp-link/src/server.ts:800-878` (decodeClientMessage switch), 871 `default: throw new Error('Unknown message type')`
-- 规范要求: schema/meta.json 列出了 12 个 agent 方法（authenticate、initialize、logout、session/close、session/set_mode、session/set_config_option 等）和 9 个 client 方法（terminal/*、fs/*）。overview.mdx L52 (自定义传输): 必须保留 JSON-RPC 格式和生命周期。未知方法必须产生 JSON-RPC -32601 method-not-found 错误,而不是断开客户端连接。
+- 规范要求: schema/meta.json 列出了 12 个 agent 方法（authenticate、initialize、logout、session/close、session/set_mode、session/set_config_option 等）和 9 个 client 方法（terminal/_、fs/_）。overview.mdx L52 (自定义传输): 必须保留 JSON-RPC 格式和生命周期。未知方法必须产生 JSON-RPC -32601 method-not-found 错误,而不是断开客户端连接。
 - 当前实现: decodeClientMessage 在遇到未知 `type` 时抛出异常,这会导致 onMessage 捕获程序发出通用的 `{ type:'error', message:'Unknown message type: ...' }` (server.ts:1166),但不会发出 -32601 响应。更糟糕的是,代理仅识别固定的方法白名单（connect、disconnect、new_session、prompt、permission_response、cancel、set_session_model、list/load/resume_session、ping）。客户端发起的 `authenticate`、`logout`、`session/close`、`session/set_mode`、`session/set_config_option`、`session/list`（与 list_sessions 不同——注意 meta.json 中的方法名是 `session/list`）以及所有 terminal/* 方法在传输中均无路径。这些方法在协议层被悄悄丢弃。
 - 修复建议: 用通用的 JSON-RPC 方法路由器替换专有的 type 切换。对于任何识别出但代理未实现的方法,返回 -32601。至少要透传 `session/set_mode` 和 `session/close`（这些是 v1 的基准/常用方法）。
 
@@ -713,10 +713,10 @@
 - 当前实现: server.ts:321-330 通过列出白名单字段（_meta、loadSession、mcpCapabilities、promptCapabilities、sessionCapabilities）来重构 `state.agentCapabilities`。任何 SDK 的 AgentCapabilities 携带但此处硬编码接口 (server.ts:65-79) 中未列出的字段（例如 `auth`、`terminal`、未来的能力）都会被静默丢弃,不会向客户端通告。
 - 修复建议: 直接透传原始的 `initResult.agentCapabilities` 对象,而不是重构它:
 
-  ~~~diff
+  ```diff
   -state.agentCapabilities = { /* whitelisted fields */ }
   +state.agentCapabilities = agentCaps ?? null
-  ~~~
+  ```
 
   仅在需要本地 TS 类型时进行收窄——但在传输中发送未收窄的值。
 
@@ -741,9 +741,9 @@
 - 当前实现: ProxyStatus 类型将 `agentInfo` 收窄为 `{ name?: string; version?: string }` (types.ts:66-69)。实际发送的对象 (server.ts:346) 是原始的 `initResult.agentInfo`,所以运行时没问题,但声明的类型会丢弃 TS 认为客户端收到的任何附加字段,且阅读此类型的客户端无法依赖扩展的 agentInfo。types.ts:87-108 中类似地过时的 InitializeParams/InitializeResult 与 SDK 的实际形状不匹配。
 - 修复建议: 加宽类型:
 
-  ~~~ts
+  ```ts
   agentInfo?: { name: string; version: string; [k: string]: unknown }
-  ~~~
+  ```
 
   或者通过 SDK 重新导出真实的 InitializeResult 类型。
 
@@ -786,23 +786,23 @@
 
 ## 附录 A: SDK 方法命名对照
 
-| SDK 方法 | 当前命名 | stable? | 修复动作 |
-|---|---|---|---|
-| initialize | initialize | stable | 保留（但需修 authMethods 缺失） |
-| authenticate | authenticate | stable | 保留（建议显式返回 authMethods:[]） |
-| logout | 未实现 | stable | 保留不实现（也未宣告 auth.logout 能力） |
-| newSession | newSession | stable | 保留 |
-| loadSession | loadSession | stable | 保留（需补 cwd 校验） |
-| unstable_resumeSession | unstable_resumeSession | stable (resumed) | 建议在 SDK 升级后改名为 `resumeSession`,同时去除重放历史 |
-| unstable_forkSession | unstable_forkSession | UNSTABLE | 保留 unstable 命名；但应从 sessionCapabilities.fork 迁移到 _meta.claudeCode.forkSession |
-| listSessions | listSessions | stable | 保留（需实现 cursor 分页） |
-| unstable_closeSession | unstable_closeSession | UNSTABLE | 保留 |
-| prompt | prompt | stable | 保留（需修 usage 字段、refusal 映射） |
-| cancel | cancel (notification) | stable | 保留 |
-| setSessionMode | setSessionMode | stable | 保留（需补 current_mode_update 通知） |
-| setSessionConfigOption | setSessionConfigOption | stable | 保留（需补 value 校验） |
-| unstable_setSessionModel | unstable_setSessionModel | UNSTABLE | 保留 |
-| session/update | sessionUpdate (notification) | stable | 保留（usage_update 为 UNSTABLE 但为 interop 保留,见 §4.1） |
+| SDK 方法                 | 当前命名                     | stable?          | 修复动作                                                                                |
+| ------------------------ | ---------------------------- | ---------------- | --------------------------------------------------------------------------------------- |
+| initialize               | initialize                   | stable           | 保留（但需修 authMethods 缺失）                                                         |
+| authenticate             | authenticate                 | stable           | 保留（建议显式返回 authMethods:[]）                                                     |
+| logout                   | 未实现                       | stable           | 保留不实现（也未宣告 auth.logout 能力）                                                 |
+| newSession               | newSession                   | stable           | 保留                                                                                    |
+| loadSession              | loadSession                  | stable           | 保留（需补 cwd 校验）                                                                   |
+| unstable_resumeSession   | unstable_resumeSession       | stable (resumed) | 建议在 SDK 升级后改名为 `resumeSession`,同时去除重放历史                                |
+| unstable_forkSession     | unstable_forkSession         | UNSTABLE         | 保留 unstable 命名；但应从 sessionCapabilities.fork 迁移到 _meta.claudeCode.forkSession |
+| listSessions             | listSessions                 | stable           | 保留（需实现 cursor 分页）                                                              |
+| unstable_closeSession    | unstable_closeSession        | UNSTABLE         | 保留                                                                                    |
+| prompt                   | prompt                       | stable           | 保留（需修 usage 字段、refusal 映射）                                                   |
+| cancel                   | cancel (notification)        | stable           | 保留                                                                                    |
+| setSessionMode           | setSessionMode               | stable           | 保留（需补 current_mode_update 通知）                                                   |
+| setSessionConfigOption   | setSessionConfigOption       | stable           | 保留（需补 value 校验）                                                                 |
+| unstable_setSessionModel | unstable_setSessionModel     | UNSTABLE         | 保留                                                                                    |
+| session/update           | sessionUpdate (notification) | stable           | 保留（usage_update 为 UNSTABLE 但为 interop 保留,见 §4.1）                              |
 
 ## 附录 A.2: UNSTABLE RFD 实现记录（2026-06-19）
 
@@ -833,26 +833,26 @@
 
 以下 finding 出于技术权衡或非合规范围,暂不修复:
 
-| Finding | 理由 |
-|---|---|
+| Finding                                                             | 理由                                                                                                                                                 |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | §1.2 sessionCapabilities.fork 仅作"迁移到 _meta"建议,未标记 P0 阻断 | fork 为 UNSTABLE,严格 v1 合规范围外；当前 schema 未设 `additionalProperties:false`,不会导致硬失败。优先用 _meta.claudeCode.forkSession 重构,不阻断。 |
-| §2.5 listSessions 空字符串 title | SessionInfo.title schema 允许 null；空字符串技术有效。基于磁盘的候选者很少幸存于空摘要。属表面问题。 |
-| §2.6 NewSessionResponse 不含 cwd | 规范本身不要求返回 cwd；记录是为了纠正审计检查清单的错误前提。 |
-| §3.5 prompt _meta 透传（W3C traceparent） | extensibility.mdx 用词为 SHOULD,非 MUST。OpenTelemetry interop 非当前部署场景的必需功能。列为 P2。 |
-| §3.7 空 prompt 提前返回 end_turn | 行为可接受（虽语义不严谨）；若改为抛出 -32602 需协调 Client 错误处理。列为 P2。 |
-| §3.8 usage 缺 thoughtTokens | 仅在保留 unstable usage 字段时才有意义；若按 §3.2 整体移除 usage,此项自动消失。 |
-| §4.4 Bash _meta 键未命名空间化 | 非规范违规（_meta 允许任意附加键）；仅命名风格不一致。 |
-| §5.4 reject_always 未提供 | PermissionOptionKind 四变体为推荐而非 MUST；REPL 现有交互流不支持持久的拒绝记忆。列为 P2。 |
-| §5.7 ExitPlanMode optionId 与 session-mode 碰撞 | optionId 是 free-form 字符串,使用模式 id 作为值是合法扩展；ExitPlanMode 映射为 switch_mode,语义可辨。 |
-| §5.8 rawInput 浅克隆 | Schema-valid,仅在嵌套对象被后续突变时才有问题；Claude Code 工具 input 通常不可变。低风险。 |
-| §6.2 响应中携带 models 字段 | 为 SDK draft 类型驱动,严格 v1 Client 会忽略；若客户端使用 SDK 同版本,则 models 是有用的扩展字段。优先移除但非阻断。 |
-| §6.4 value 类型守卫冗余 | 不影响合规性,仅代码质量问题。 |
-| §7.4 image url 占位字段命名 | 实现合规,仅为字段映射文档。 |
-| §7.5 audio 不支持 | 声明与实现均不支持,完全合规。 |
-| §7.6 thought / tool_result 映射 | 实现正确,无需修改。 |
-| §8.10 session/update 通知方向 | 行为正确,为完整性记录。 |
-| §8.11 应用层 ping/pong | 冗余但无害；仅在客户端用 JSON-RPC `ping` 时混淆。低优先级。 |
-| §8.14 JsonRpc 死类型 | 不影响运行时；仅在 §8.1 修复时一并清理。 |
+| §2.5 listSessions 空字符串 title                                    | SessionInfo.title schema 允许 null；空字符串技术有效。基于磁盘的候选者很少幸存于空摘要。属表面问题。                                                 |
+| §2.6 NewSessionResponse 不含 cwd                                    | 规范本身不要求返回 cwd；记录是为了纠正审计检查清单的错误前提。                                                                                       |
+| §3.5 prompt _meta 透传（W3C traceparent）                           | extensibility.mdx 用词为 SHOULD,非 MUST。OpenTelemetry interop 非当前部署场景的必需功能。列为 P2。                                                   |
+| §3.7 空 prompt 提前返回 end_turn                                    | 行为可接受（虽语义不严谨）；若改为抛出 -32602 需协调 Client 错误处理。列为 P2。                                                                      |
+| §3.8 usage 缺 thoughtTokens                                         | 仅在保留 unstable usage 字段时才有意义；若按 §3.2 整体移除 usage,此项自动消失。                                                                      |
+| §4.4 Bash _meta 键未命名空间化                                      | 非规范违规（_meta 允许任意附加键）；仅命名风格不一致。                                                                                               |
+| §5.4 reject_always 未提供                                           | PermissionOptionKind 四变体为推荐而非 MUST；REPL 现有交互流不支持持久的拒绝记忆。列为 P2。                                                           |
+| §5.7 ExitPlanMode optionId 与 session-mode 碰撞                     | optionId 是 free-form 字符串,使用模式 id 作为值是合法扩展；ExitPlanMode 映射为 switch_mode,语义可辨。                                                |
+| §5.8 rawInput 浅克隆                                                | Schema-valid,仅在嵌套对象被后续突变时才有问题；Claude Code 工具 input 通常不可变。低风险。                                                           |
+| §6.2 响应中携带 models 字段                                         | 为 SDK draft 类型驱动,严格 v1 Client 会忽略；若客户端使用 SDK 同版本,则 models 是有用的扩展字段。优先移除但非阻断。                                  |
+| §6.4 value 类型守卫冗余                                             | 不影响合规性,仅代码质量问题。                                                                                                                        |
+| §7.4 image url 占位字段命名                                         | 实现合规,仅为字段映射文档。                                                                                                                          |
+| §7.5 audio 不支持                                                   | 声明与实现均不支持,完全合规。                                                                                                                        |
+| §7.6 thought / tool_result 映射                                     | 实现正确,无需修改。                                                                                                                                  |
+| §8.10 session/update 通知方向                                       | 行为正确,为完整性记录。                                                                                                                              |
+| §8.11 应用层 ping/pong                                              | 冗余但无害；仅在客户端用 JSON-RPC `ping` 时混淆。低优先级。                                                                                          |
+| §8.14 JsonRpc 死类型                                                | 不影响运行时；仅在 §8.1 修复时一并清理。                                                                                                             |
 
 ## 附录 C: 修复路径建议
 

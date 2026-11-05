@@ -41,20 +41,20 @@ runner 内置了几项让真实 API 跑得稳的处理：
 
 排错速查：
 
-| 现象 | 原因 / 处理 |
-|------|------|
-| `HTTP 429 ...` 频繁 | 降 `WORKFLOW_API_CONCURRENCY=1`（或 2） |
-| agent `✗ [dead]` 多 | 模型未按 schema 返回 JSON；换更强模型或放宽 schema |
+| 现象                             | 原因 / 处理                                                  |
+| -------------------------------- | ------------------------------------------------------------ |
+| `HTTP 429 ...` 频繁              | 降 `WORKFLOW_API_CONCURRENCY=1`（或 2）                      |
+| agent `✗ [dead]` 多              | 模型未按 schema 返回 JSON；换更强模型或放宽 schema           |
 | `[log_xxx] sending request` 刷屏 | 不应再出现（已 `logLevel:'off'`）；若仍出现检查 env 是否覆盖 |
-| 报告被截断 | synthesize 已 `maxTokens:8192`；仍不够可改 workflow 脚本 |
+| 报告被截断                       | synthesize 已 `maxTokens:8192`；仍不够可改 workflow 脚本     |
 
 ## 文件
 
-| 文件 | 作用 |
-|------|------|
+| 文件                           | 作用                                           |
+| ------------------------------ | ---------------------------------------------- |
 | `research-report.workflow.mjs` | workflow 脚本（编排逻辑，纯 JS，引擎沙箱执行） |
-| `run.ts` | runner：组装端口 + 直连 SDK + 运行 + 终端进度 |
-| （同级 `../smoke.ts`） | 最小冒烟入口（3 次调用，秒级验证通路） |
+| `run.ts`                       | runner：组装端口 + 直连 SDK + 运行 + 终端进度  |
+| （同级 `../smoke.ts`）         | 最小冒烟入口（3 次调用，秒级验证通路）         |
 
 ## 扩展点
 

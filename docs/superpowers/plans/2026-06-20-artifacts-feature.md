@@ -12,30 +12,31 @@
 
 ## File Structure
 
-| File | Responsibility |
-|------|----------------|
-| `packages/builtin-tools/src/tools/ArtifactTool/config.ts` | Token/URL constants + env var override helpers |
-| `packages/builtin-tools/src/tools/ArtifactTool/client.ts` | `uploadArtifact()` — HTTP POST to cloud-artifacts, body error parsing |
-| `packages/builtin-tools/src/tools/ArtifactTool/prompt.ts` | `ARTIFACT_TOOL_NAME`, async `description()` / `prompt()` |
-| `packages/builtin-tools/src/tools/ArtifactTool/ArtifactTool.ts` | `buildTool()` definition: schema, `call`, render, map |
-| `packages/builtin-tools/src/tools/ArtifactTool/__tests__/client.test.ts` | client unit tests (mock fetch) |
-| `packages/builtin-tools/src/tools/ArtifactTool/__tests__/ArtifactTool.test.ts` | Tool end-to-end tests (real temp file + mock fetch) |
-| `packages/builtin-tools/src/index.ts` | Barrel export for `ArtifactTool` (modify) |
-| `src/tools.ts` | Register `ArtifactTool` in the tools array (modify) |
-| `src/skills/bundled/useArtifacts.ts` | Bundled skill body + `registerUseArtifactsSkill()` |
-| `src/skills/bundled/index.ts` | Call `registerUseArtifactsSkill()` in `initBundledSkills()` (modify) |
-| `src/commands/artifacts/scanner.ts` | Pure `extractArtifacts(messages)` — scan tool_use/tool_result pairs |
-| `src/commands/artifacts/__tests__/scanner.test.ts` | scanner unit tests |
-| `src/commands/artifacts/ArtifactsMenu.tsx` | React/Ink list component with Enter/c/Esc |
-| `src/commands/artifacts/artifacts.tsx` | `call(onDone, context)` entry — calls scanner, renders menu |
-| `src/commands/artifacts/index.ts` | `satisfies Command` definition with lazy `load` |
-| `src/commands.ts` | Register `artifacts` command (modify) |
+| File                                                                           | Responsibility                                                        |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `packages/builtin-tools/src/tools/ArtifactTool/config.ts`                      | Token/URL constants + env var override helpers                        |
+| `packages/builtin-tools/src/tools/ArtifactTool/client.ts`                      | `uploadArtifact()` — HTTP POST to cloud-artifacts, body error parsing |
+| `packages/builtin-tools/src/tools/ArtifactTool/prompt.ts`                      | `ARTIFACT_TOOL_NAME`, async `description()` / `prompt()`              |
+| `packages/builtin-tools/src/tools/ArtifactTool/ArtifactTool.ts`                | `buildTool()` definition: schema, `call`, render, map                 |
+| `packages/builtin-tools/src/tools/ArtifactTool/__tests__/client.test.ts`       | client unit tests (mock fetch)                                        |
+| `packages/builtin-tools/src/tools/ArtifactTool/__tests__/ArtifactTool.test.ts` | Tool end-to-end tests (real temp file + mock fetch)                   |
+| `packages/builtin-tools/src/index.ts`                                          | Barrel export for `ArtifactTool` (modify)                             |
+| `src/tools.ts`                                                                 | Register `ArtifactTool` in the tools array (modify)                   |
+| `src/skills/bundled/useArtifacts.ts`                                           | Bundled skill body + `registerUseArtifactsSkill()`                    |
+| `src/skills/bundled/index.ts`                                                  | Call `registerUseArtifactsSkill()` in `initBundledSkills()` (modify)  |
+| `src/commands/artifacts/scanner.ts`                                            | Pure `extractArtifacts(messages)` — scan tool_use/tool_result pairs   |
+| `src/commands/artifacts/__tests__/scanner.test.ts`                             | scanner unit tests                                                    |
+| `src/commands/artifacts/ArtifactsMenu.tsx`                                     | React/Ink list component with Enter/c/Esc                             |
+| `src/commands/artifacts/artifacts.tsx`                                         | `call(onDone, context)` entry — calls scanner, renders menu           |
+| `src/commands/artifacts/index.ts`                                              | `satisfies Command` definition with lazy `load`                       |
+| `src/commands.ts`                                                              | Register `artifacts` command (modify)                                 |
 
 ---
 
 ## Task 1: ArtifactTool config (token/URL defaults)
 
 **Files:**
+
 - Create: `packages/builtin-tools/src/tools/ArtifactTool/config.ts`
 
 - [ ] **Step 1: Write config file**
@@ -47,7 +48,8 @@
  * Token/URL have hardcoded production defaults; env vars override for self-hosted deployments.
  */
 export const ARTIFACTS_DEFAULT_TOKEN = 'claude-code-best'
-export const ARTIFACTS_DEFAULT_URL = 'https://cloud-artifacts.claude-code-best.win'
+export const ARTIFACTS_DEFAULT_URL =
+  'https://cloud-artifacts.claude-code-best.win'
 
 export function getArtifactsToken(): string {
   return process.env.CLAUDE_ARTIFACTS_TOKEN ?? ARTIFACTS_DEFAULT_TOKEN
@@ -76,6 +78,7 @@ git commit -m "feat(artifact): add cloud-artifacts config with token/URL default
 ## Task 2: ArtifactTool client (TDD — uploadArtifact)
 
 **Files:**
+
 - Create: `packages/builtin-tools/src/tools/ArtifactTool/client.ts`
 - Test: `packages/builtin-tools/src/tools/ArtifactTool/__tests__/client.test.ts`
 
@@ -125,7 +128,11 @@ describe('uploadArtifact', () => {
   })
 
   test('passes hash as query param when provided', async () => {
-    const fetchMock = mockFetch({ id: 'my-id', url: 'https://x/y.html', expiresAt: '2026-06-27T00:00:00.000Z' })
+    const fetchMock = mockFetch({
+      id: 'my-id',
+      url: 'https://x/y.html',
+      expiresAt: '2026-06-27T00:00:00.000Z',
+    })
     globalThis.fetch = fetchMock
 
     await uploadArtifact({
@@ -135,12 +142,18 @@ describe('uploadArtifact', () => {
       hash: 'my-id',
     })
 
-    const calledUrl = (fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }).mock.calls[0][0]
+    const calledUrl = (
+      fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }
+    ).mock.calls[0][0]
     expect(calledUrl.toString()).toContain('hash=my-id')
   })
 
   test('passes ttl=30 query param when provided', async () => {
-    const fetchMock = mockFetch({ id: 'x', url: 'https://x', expiresAt: '2026-07-20T00:00:00.000Z' })
+    const fetchMock = mockFetch({
+      id: 'x',
+      url: 'https://x',
+      expiresAt: '2026-07-20T00:00:00.000Z',
+    })
     globalThis.fetch = fetchMock
 
     await uploadArtifact({
@@ -150,7 +163,9 @@ describe('uploadArtifact', () => {
       ttl: 30,
     })
 
-    const calledUrl = (fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }).mock.calls[0][0]
+    const calledUrl = (
+      fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }
+    ).mock.calls[0][0]
     expect(calledUrl.toString()).toContain('ttl=30')
   })
 
@@ -172,7 +187,11 @@ describe('uploadArtifact', () => {
     ) as unknown as typeof fetch
 
     await expect(
-      uploadArtifact({ html: '<p/>', token: 't', uploadUrl: 'https://example.test/upload' }),
+      uploadArtifact({
+        html: '<p/>',
+        token: 't',
+        uploadUrl: 'https://example.test/upload',
+      }),
     ).rejects.toThrow()
   })
 })
@@ -204,7 +223,9 @@ export type UploadParams = {
   ttl?: 7 | 30
 }
 
-export async function uploadArtifact(params: UploadParams): Promise<UploadResult> {
+export async function uploadArtifact(
+  params: UploadParams,
+): Promise<UploadResult> {
   const url = new URL(params.uploadUrl)
   if (params.hash) url.searchParams.set('hash', params.hash)
   if (params.ttl) url.searchParams.set('ttl', String(params.ttl))
@@ -225,7 +246,9 @@ export async function uploadArtifact(params: UploadParams): Promise<UploadResult
   try {
     parsed = JSON.parse(text)
   } catch {
-    throw new Error(`Artifact upload failed: HTTP ${response.status} (non-JSON body)`)
+    throw new Error(
+      `Artifact upload failed: HTTP ${response.status} (non-JSON body)`,
+    )
   }
 
   if (parsed && typeof parsed === 'object' && 'error' in parsed) {
@@ -234,8 +257,14 @@ export async function uploadArtifact(params: UploadParams): Promise<UploadResult
   }
 
   const data = parsed as Partial<UploadResult>
-  if (typeof data.id !== 'string' || typeof data.url !== 'string' || typeof data.expiresAt !== 'string') {
-    throw new Error(`Artifact upload returned malformed body: ${text.slice(0, 200)}`)
+  if (
+    typeof data.id !== 'string' ||
+    typeof data.url !== 'string' ||
+    typeof data.expiresAt !== 'string'
+  ) {
+    throw new Error(
+      `Artifact upload returned malformed body: ${text.slice(0, 200)}`,
+    )
   }
   return { id: data.id, url: data.url, expiresAt: data.expiresAt }
 }
@@ -261,6 +290,7 @@ git commit -m "feat(artifact): add HTTP client with body-error parsing"
 ## Task 3: ArtifactTool prompt (name + description)
 
 **Files:**
+
 - Create: `packages/builtin-tools/src/tools/ArtifactTool/prompt.ts`
 
 - [ ] **Step 1: Write prompt file**
@@ -306,6 +336,7 @@ git commit -m "feat(artifact): add tool name, description, and prompt"
 ## Task 4: ArtifactTool definition (schema + call + render + map)
 
 **Files:**
+
 - Create: `packages/builtin-tools/src/tools/ArtifactTool/ArtifactTool.ts`
 
 - [ ] **Step 1: Write the tool definition**
@@ -317,19 +348,30 @@ import { z } from 'zod/v4'
 import type { ToolResultBlockParam } from 'src/Tool.js'
 import { buildTool } from 'src/Tool.js'
 import { lazySchema } from 'src/utils/lazySchema.js'
-import { ARTIFACT_TOOL_NAME, describeArtifactTool, getArtifactToolPrompt } from './prompt.js'
+import {
+  ARTIFACT_TOOL_NAME,
+  describeArtifactTool,
+  getArtifactToolPrompt,
+} from './prompt.js'
 import { getArtifactsToken, getUploadUrl } from './config.js'
 import { uploadArtifact } from './client.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
-    file_path: z.string().describe('Absolute path to a local HTML file to upload.'),
+    file_path: z
+      .string()
+      .describe('Absolute path to a local HTML file to upload.'),
     hash: z
       .string()
       .regex(/^[A-Za-z0-9_-]{1,128}$/, 'must match ^[A-Za-z0-9_-]{1,128}$')
       .optional()
-      .describe('If provided, overwrites the existing artifact with this hash (URL stays stable). If omitted, a new random id is generated.'),
-    ttl: z.union([z.literal(7), z.literal(30)]).default(7).describe('Lifetime in days. Must be 7 or 30. Default 7.'),
+      .describe(
+        'If provided, overwrites the existing artifact with this hash (URL stays stable). If omitted, a new random id is generated.',
+      ),
+    ttl: z
+      .union([z.literal(7), z.literal(30)])
+      .default(7)
+      .describe('Lifetime in days. Must be 7 or 30. Default 7.'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -348,7 +390,8 @@ type ArtifactErrorOutput = ArtifactOutput & { error?: string }
 
 export const ArtifactTool = buildTool({
   name: ARTIFACT_TOOL_NAME,
-  searchHint: 'upload html artifact share url cloud publish progress report public link',
+  searchHint:
+    'upload html artifact share url cloud publish progress report public link',
   maxResultSizeChars: 2_000,
   shouldDefer: true,
   strict: true,
@@ -388,7 +431,10 @@ export const ArtifactTool = buildTool({
     return `Upload artifact: ${input.file_path ?? '...'}${hashPart}`
   },
 
-  mapToolResultToToolResultBlockParam(content: ArtifactErrorOutput, toolUseID: string): ToolResultBlockParam {
+  mapToolResultToToolResultBlockParam(
+    content: ArtifactErrorOutput,
+    toolUseID: string,
+  ): ToolResultBlockParam {
     if (content.error) {
       return {
         tool_use_id: toolUseID,
@@ -411,22 +457,50 @@ export const ArtifactTool = buildTool({
     try {
       const fileStat = await stat(file_path)
       if (!fileStat.isFile()) {
-        return { data: { id: '', url: '', expiresAt: '', error: `Path is not a regular file: ${file_path}` } }
+        return {
+          data: {
+            id: '',
+            url: '',
+            expiresAt: '',
+            error: `Path is not a regular file: ${file_path}`,
+          },
+        }
       }
       size = fileStat.size
     } catch {
-      return { data: { id: '', url: '', expiresAt: '', error: `File does not exist or is not readable: ${file_path}` } }
+      return {
+        data: {
+          id: '',
+          url: '',
+          expiresAt: '',
+          error: `File does not exist or is not readable: ${file_path}`,
+        },
+      }
     }
 
     if (size > 10 * 1024 * 1024) {
-      return { data: { id: '', url: '', expiresAt: '', error: `File is ${size} bytes; backend limit is 10MB.` } }
+      return {
+        data: {
+          id: '',
+          url: '',
+          expiresAt: '',
+          error: `File is ${size} bytes; backend limit is 10MB.`,
+        },
+      }
     }
 
     let html: string
     try {
       html = await readFile(file_path, 'utf8')
     } catch {
-      return { data: { id: '', url: '', expiresAt: '', error: `Failed to read file: ${file_path}` } }
+      return {
+        data: {
+          id: '',
+          url: '',
+          expiresAt: '',
+          error: `Failed to read file: ${file_path}`,
+        },
+      }
     }
 
     try {
@@ -458,6 +532,7 @@ git commit -m "feat(artifact): add buildTool definition with file validation"
 ## Task 5: Tool end-to-end tests
 
 **Files:**
+
 - Test: `packages/builtin-tools/src/tools/ArtifactTool/__tests__/ArtifactTool.test.ts`
 
 - [ ] **Step 1: Write the e2e tool test**
@@ -510,7 +585,12 @@ describe('ArtifactTool.call', () => {
       expiresAt: '2026-06-27T10:00:00.000Z',
     })
 
-    const result = await ArtifactTool.call({ file_path: TEST_FILE, ttl: 7 }, {} as never, {} as never, {} as never)
+    const result = await ArtifactTool.call(
+      { file_path: TEST_FILE, ttl: 7 },
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
     expect(result.data).toMatchObject({
       id: 'abc123',
@@ -528,9 +608,16 @@ describe('ArtifactTool.call', () => {
     })
     globalThis.fetch = fetchMock
 
-    await ArtifactTool.call({ file_path: TEST_FILE, hash: 'stable-id', ttl: 7 }, {} as never, {} as never, {} as never)
+    await ArtifactTool.call(
+      { file_path: TEST_FILE, hash: 'stable-id', ttl: 7 },
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
-    const calledUrl = (fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }).mock.calls[0][0]
+    const calledUrl = (
+      fetchMock as unknown as { mock: { calls: [string | URL | Request][] } }
+    ).mock.calls[0][0]
     expect(calledUrl.toString()).toContain('hash=stable-id')
   })
 
@@ -541,27 +628,52 @@ describe('ArtifactTool.call', () => {
       return Promise.resolve(new Response('{}'))
     }) as unknown as typeof fetch
 
-    const result = await ArtifactTool.call({ file_path: MISSING_FILE, ttl: 7 }, {} as never, {} as never, {} as never)
+    const result = await ArtifactTool.call(
+      { file_path: MISSING_FILE, ttl: 7 },
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
     expect(fetchCalled).toBe(false)
-    expect((result.data as { error?: string }).error).toContain('does not exist')
+    expect((result.data as { error?: string }).error).toContain(
+      'does not exist',
+    )
   })
 
   test('returns error when path is a directory', async () => {
-    const result = await ArtifactTool.call({ file_path: DIR_AS_FILE, ttl: 7 }, {} as never, {} as never, {} as never)
+    const result = await ArtifactTool.call(
+      { file_path: DIR_AS_FILE, ttl: 7 },
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
-    expect((result.data as { error?: string }).error).toContain('not a regular file')
+    expect((result.data as { error?: string }).error).toContain(
+      'not a regular file',
+    )
   })
 
   test('returns error verbatim when backend rejects', async () => {
     globalThis.fetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ error: 'payload_too_large' }), { status: 200 })),
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'payload_too_large' }), {
+          status: 200,
+        }),
+      ),
     ) as unknown as typeof fetch
 
     // Force the size guard to pass by writing a small file but having backend complain.
-    const result = await ArtifactTool.call({ file_path: TEST_FILE, ttl: 7 }, {} as never, {} as never, {} as never)
+    const result = await ArtifactTool.call(
+      { file_path: TEST_FILE, ttl: 7 },
+      {} as never,
+      {} as never,
+      {} as never,
+    )
 
-    expect((result.data as { error?: string }).error).toContain('payload_too_large')
+    expect((result.data as { error?: string }).error).toContain(
+      'payload_too_large',
+    )
   })
 })
 ```
@@ -586,6 +698,7 @@ git commit -m "test(artifact): add end-to-end tool tests for upload/error paths"
 ## Task 6: Export ArtifactTool from builtin-tools barrel
 
 **Files:**
+
 - Modify: `packages/builtin-tools/src/index.ts`
 
 - [ ] **Step 1: Read barrel to find an insertion point**
@@ -622,6 +735,7 @@ git commit -m "feat(artifact): export ArtifactTool from builtin-tools barrel"
 ## Task 7: Register ArtifactTool in src/tools.ts
 
 **Files:**
+
 - Modify: `src/tools.ts`
 
 - [ ] **Step 1: Add the require import (place near other non-feature-gated tools)**
@@ -629,7 +743,8 @@ git commit -m "feat(artifact): export ArtifactTool from builtin-tools barrel"
 Find a clean spot in the top section (near other `const X = require(...)` declarations) and add:
 
 ```typescript
-const ArtifactTool = require('@claude-code-best/builtin-tools/tools/ArtifactTool/ArtifactTool.js').ArtifactTool
+const ArtifactTool =
+  require('@claude-code-best/builtin-tools/tools/ArtifactTool/ArtifactTool.js').ArtifactTool
 ```
 
 - [ ] **Step 2: Spread into the tools array (find the main returned array and add ArtifactTool unconditionally)**
@@ -662,6 +777,7 @@ git commit -m "feat(artifact): register ArtifactTool in tools list"
 ## Task 8: /use-artifacts bundled skill
 
 **Files:**
+
 - Create: `src/skills/bundled/useArtifacts.ts`
 - Modify: `src/skills/bundled/index.ts`
 
@@ -812,6 +928,7 @@ git commit -m "feat(artifact): add /use-artifacts bundled skill"
 ## Task 9: /artifacts scanner (TDD — extractArtifacts)
 
 **Files:**
+
 - Create: `src/commands/artifacts/scanner.ts`
 - Test: `src/commands/artifacts/__tests__/scanner.test.ts`
 
@@ -833,20 +950,32 @@ function assistantToolUse(id: string, input: Record<string, unknown>): Message {
 function userToolResult(id: string, content: string, isError = false): Message {
   return {
     role: 'user',
-    content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }],
+    content: [
+      { type: 'tool_result', tool_use_id: id, content, is_error: isError },
+    ],
   } as unknown as Message
 }
 
 describe('extractArtifacts', () => {
   test('returns empty list when no artifact tool_use messages', () => {
     expect(extractArtifacts([])).toEqual([])
-    expect(extractArtifacts([{ role: 'user', content: [{ type: 'text', text: 'hi' }] } as unknown as Message])).toEqual([])
+    expect(
+      extractArtifacts([
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'hi' }],
+        } as unknown as Message,
+      ]),
+    ).toEqual([])
   })
 
   test('pairs a successful tool_use with its tool_result and returns parsed fields', () => {
     const messages: Message[] = [
       assistantToolUse('tu1', { file_path: '/tmp/report.html', ttl: 7 }),
-      userToolResult('tu1', 'Artifact uploaded: https://x.test/7d/abc.html (id: abc, expires: 2026-06-27T10:00:00.000Z)'),
+      userToolResult(
+        'tu1',
+        'Artifact uploaded: https://x.test/7d/abc.html (id: abc, expires: 2026-06-27T10:00:00.000Z)',
+      ),
     ]
 
     const result = extractArtifacts(messages)
@@ -863,7 +992,9 @@ describe('extractArtifacts', () => {
   })
 
   test('skips artifact tool_use without a matching tool_result', () => {
-    const messages: Message[] = [assistantToolUse('tu1', { file_path: '/tmp/report.html', ttl: 7 })]
+    const messages: Message[] = [
+      assistantToolUse('tu1', { file_path: '/tmp/report.html', ttl: 7 }),
+    ]
 
     expect(extractArtifacts(messages)).toEqual([])
   })
@@ -871,7 +1002,11 @@ describe('extractArtifacts', () => {
   test('keeps error results with isError=true and no parsed fields', () => {
     const messages: Message[] = [
       assistantToolUse('tu1', { file_path: '/tmp/missing.html', ttl: 7 }),
-      userToolResult('tu1', 'File does not exist or is not readable: /tmp/missing.html', true),
+      userToolResult(
+        'tu1',
+        'File does not exist or is not readable: /tmp/missing.html',
+        true,
+      ),
     ]
 
     const result = extractArtifacts(messages)
@@ -888,14 +1023,20 @@ describe('extractArtifacts', () => {
   test('orders newest first (last in conversation appears at top)', () => {
     const messages: Message[] = [
       assistantToolUse('tu1', { file_path: '/tmp/a.html', ttl: 7 }),
-      userToolResult('tu1', 'Artifact uploaded: https://x.test/7d/a.html (id: a, expires: 2026-06-27T10:00:00.000Z)'),
+      userToolResult(
+        'tu1',
+        'Artifact uploaded: https://x.test/7d/a.html (id: a, expires: 2026-06-27T10:00:00.000Z)',
+      ),
       assistantToolUse('tu2', { file_path: '/tmp/b.html', ttl: 7 }),
-      userToolResult('tu2', 'Artifact uploaded: https://x.test/7d/b.html (id: b, expires: 2026-06-27T10:00:00.000Z)'),
+      userToolResult(
+        'tu2',
+        'Artifact uploaded: https://x.test/7d/b.html (id: b, expires: 2026-06-27T10:00:00.000Z)',
+      ),
     ]
 
     const result = extractArtifacts(messages)
 
-    expect(result.map((r) => r.basename)).toEqual(['b.html', 'a.html'])
+    expect(result.map(r => r.basename)).toEqual(['b.html', 'a.html'])
   })
 })
 ```
@@ -954,7 +1095,11 @@ export function extractArtifacts(messages: Message[]): ArtifactInfo[] {
         typeof resultBlock.content === 'string'
           ? resultBlock.content
           : Array.isArray(resultBlock.content)
-            ? resultBlock.content.map((c) => (typeof c === 'string' ? c : 'text' in c ? c.text : '')).join('')
+            ? resultBlock.content
+                .map(c =>
+                  typeof c === 'string' ? c : 'text' in c ? c.text : '',
+                )
+                .join('')
             : ''
 
       const isError = resultBlock.is_error === true
@@ -1018,6 +1163,7 @@ git commit -m "feat(artifact): add extractArtifacts message scanner"
 ## Task 10: /artifacts ArtifactsMenu component
 
 **Files:**
+
 - Create: `src/commands/artifacts/ArtifactsMenu.tsx`
 
 - [ ] **Step 1: Inspect an existing Ink list component for style**
@@ -1042,7 +1188,10 @@ type Props = {
   onExit: () => void
 }
 
-export function ArtifactsMenu({ artifacts, onExit }: Props): React.ReactElement {
+export function ArtifactsMenu({
+  artifacts,
+  onExit,
+}: Props): React.ReactElement {
   const [selected, setSelected] = React.useState(0)
 
   useInput((input, key) => {
@@ -1052,11 +1201,11 @@ export function ArtifactsMenu({ artifacts, onExit }: Props): React.ReactElement 
     }
     if (artifacts.length === 0) return
     if (key.upArrow) {
-      setSelected((s) => (s - 1 + artifacts.length) % artifacts.length)
+      setSelected(s => (s - 1 + artifacts.length) % artifacts.length)
       return
     }
     if (key.downArrow) {
-      setSelected((s) => (s + 1) % artifacts.length)
+      setSelected(s => (s + 1) % artifacts.length)
       return
     }
     if (key.return) {
@@ -1081,14 +1230,22 @@ export function ArtifactsMenu({ artifacts, onExit }: Props): React.ReactElement 
       </Box>
 
       {artifacts.length === 0 ? (
-        <Text color="gray">No artifacts uploaded this session. Run /use-artifacts to learn how.</Text>
+        <Text color="gray">
+          No artifacts uploaded this session. Run /use-artifacts to learn how.
+        </Text>
       ) : (
         <Box flexDirection="column">
           {artifacts.map((a, idx) => (
-            <ArtifactRow key={a.toolUseId} artifact={a} isSelected={idx === selected} />
+            <ArtifactRow
+              key={a.toolUseId}
+              artifact={a}
+              isSelected={idx === selected}
+            />
           ))}
           <Box marginTop={1}>
-            <Text color="gray">↑/↓ select · Enter open · c copy URL · Esc exit</Text>
+            <Text color="gray">
+              ↑/↓ select · Enter open · c copy URL · Esc exit
+            </Text>
           </Box>
         </Box>
       )}
@@ -1096,7 +1253,13 @@ export function ArtifactsMenu({ artifacts, onExit }: Props): React.ReactElement 
   )
 }
 
-function ArtifactRow({ artifact, isSelected }: { artifact: ArtifactInfo; isSelected: boolean }): React.ReactElement {
+function ArtifactRow({
+  artifact,
+  isSelected,
+}: {
+  artifact: ArtifactInfo
+  isSelected: boolean
+}): React.ReactElement {
   const marker = isSelected ? '›' : ' '
   return (
     <Box flexDirection="column">
@@ -1130,7 +1293,8 @@ function ArtifactRow({ artifact, isSelected }: { artifact: ArtifactInfo; isSelec
 // to select and copy manually).
 function copyToClipboard(text: string): void {
   try {
-    const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+    const { spawnSync } =
+      require('node:child_process') as typeof import('node:child_process')
     spawnSync('pbcopy', [], { input: text })
   } catch {
     // best-effort
@@ -1150,6 +1314,7 @@ git commit -m "feat(artifact): add ArtifactsMenu Ink component"
 ## Task 11: /artifacts command entry (artifacts.tsx + index.ts)
 
 **Files:**
+
 - Create: `src/commands/artifacts/artifacts.tsx`
 - Create: `src/commands/artifacts/index.ts`
 
@@ -1182,7 +1347,8 @@ import type { Command } from '../../commands.js'
 const artifacts = {
   type: 'local-jsx',
   name: 'artifacts',
-  description: 'List HTML artifacts uploaded to cloud-artifacts in this session',
+  description:
+    'List HTML artifacts uploaded to cloud-artifacts in this session',
   isEnabled: () => true,
   userFacingName: () => 'Artifacts',
   load: () => import('./artifacts.js'),
@@ -1203,6 +1369,7 @@ git commit -m "feat(artifact): add /artifacts slash command entry"
 ## Task 12: Register /artifacts in src/commands.ts
 
 **Files:**
+
 - Modify: `src/commands.ts`
 
 - [ ] **Step 1: Add import near other command imports**
@@ -1300,6 +1467,7 @@ If anything in steps 2-6 fails, file a follow-up. Otherwise no commit needed.
 ## Self-Review
 
 **Spec coverage check:**
+
 - ✅ ArtifactTool (deferred, filepath input, returns url + hash) — Tasks 1-5
 - ✅ Overwrite mechanism via hash param — Task 4 (schema + call), Task 2 (client passes hash)
 - ✅ /artifacts panel shows uploaded files — Tasks 9-12
@@ -1313,6 +1481,7 @@ If anything in steps 2-6 fails, file a follow-up. Otherwise no commit needed.
 **Placeholder scan:** No TBD/TODO/"implement later". All code blocks contain complete, runnable code. No "similar to Task N" references.
 
 **Type consistency:**
+
 - `ArtifactInput` / `ArtifactOutput` defined in Task 4, used consistently.
 - `UploadParams` / `UploadResult` defined in Task 2, used in Task 4's `call()`.
 - `ArtifactInfo` defined in Task 9 (scanner), imported by Task 10 (ArtifactsMenu) and Task 11 (artifacts.tsx). Field names (`filePath`, `basename`, `hash`, `url`, `expiresAt`, `rawContent`, `isError`) match across all consumers.
@@ -1321,5 +1490,6 @@ If anything in steps 2-6 fails, file a follow-up. Otherwise no commit needed.
 - Command name `'artifacts'` defined in Task 11.
 
 **Gaps:**
+
 - React component testing is intentionally omitted (the codebase has minimal React/Ink component tests; the pure scanner logic in Task 9 carries the testable burden).
 - Cross-platform clipboard in Task 10 is macOS-only (pbcopy) — documented as a best-effort no-op on other platforms.

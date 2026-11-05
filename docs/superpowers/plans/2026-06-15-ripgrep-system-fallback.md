@@ -27,6 +27,7 @@ Each file has a single clear responsibility and changes stay inside that file's 
 ## Task 1: Extend types with optional `note` field (no behavior change)
 
 **Files:**
+
 - Modify: `src/utils/ripgrep.ts:22-27` (type), `:29-63` (function — minimal shape only), `:523-527` (singleton), `:533-544` (public getter)
 
 This task only adds the optional field everywhere it's needed and populates it with `undefined` for existing branches. Behavior stays identical. Task 2 fills in the real values.
@@ -101,6 +102,7 @@ git commit -m "refactor: add optional note field to RipgrepConfig and getRipgrep
 ## Task 2: Implement fallback decision in `getRipgrepConfig()` (TDD)
 
 **Files:**
+
 - Modify: `src/utils/ripgrep.ts:1-20` (imports), `:56-63` (builtin branch)
 - Test: `src/utils/__tests__/ripgrepConfig.test.ts`
 
@@ -295,6 +297,7 @@ git commit -m "feat: ripgrep falls back to system rg when builtin binary missing
 ## Task 3: Sync `note` into the singleton inside `testRipgrepOnFirstUse`
 
 **Files:**
+
 - Modify: `src/utils/ripgrep.ts:549-615`
 
 Currently `testRipgrepOnFirstUse` writes `ripgrepStatus = { working, lastTested, config }` without `note`. The new `getRipgrepStatus()` in Task 1 already falls back to `config.note` if the singleton has none, so this task is mostly belt-and-suspenders: persist the note explicitly so consumers reading the singleton directly also see it.
@@ -304,12 +307,12 @@ Currently `testRipgrepOnFirstUse` writes `ripgrepStatus = { working, lastTested,
 File: `src/utils/ripgrep.ts`, replace lines 592-596.
 
 ```ts
-    ripgrepStatus = {
-      working,
-      lastTested: Date.now(),
-      config,
-      note: config.note,
-    }
+ripgrepStatus = {
+  working,
+  lastTested: Date.now(),
+  config,
+  note: config.note,
+}
 ```
 
 - [ ] **Step 2: Update the catch-path assignment**
@@ -317,12 +320,12 @@ File: `src/utils/ripgrep.ts`, replace lines 592-596.
 File: `src/utils/ripgrep.ts`, replace lines 608-612.
 
 ```ts
-    ripgrepStatus = {
-      working: false,
-      lastTested: Date.now(),
-      config,
-      note: config.note,
-    }
+ripgrepStatus = {
+  working: false,
+  lastTested: Date.now(),
+  config,
+  note: config.note,
+}
 ```
 
 - [ ] **Step 3: Run precheck**
@@ -342,6 +345,7 @@ git commit -m "refactor: persist ripgrep config.note in testRipgrepOnFirstUse si
 ## Task 4: Propagate `note` through `/doctor`
 
 **Files:**
+
 - Modify: `src/utils/doctorDiagnostic.ts:588-597`
 - Modify: `src/screens/Doctor.tsx:224-232`
 
@@ -350,17 +354,16 @@ git commit -m "refactor: persist ripgrep config.note in testRipgrepOnFirstUse si
 File: `src/utils/doctorDiagnostic.ts`, replace lines 588-597.
 
 ```ts
-  // Get ripgrep status and configuration info
-  const ripgrepStatusRaw = getRipgrepStatus()
+// Get ripgrep status and configuration info
+const ripgrepStatusRaw = getRipgrepStatus()
 
-  // Provide simple ripgrep status info
-  const ripgrepStatus = {
-    working: ripgrepStatusRaw.working ?? true, // Assume working if not yet tested
-    mode: ripgrepStatusRaw.mode,
-    systemPath:
-      ripgrepStatusRaw.mode === 'system' ? ripgrepStatusRaw.path : null,
-    note: ripgrepStatusRaw.note ?? null,
-  }
+// Provide simple ripgrep status info
+const ripgrepStatus = {
+  working: ripgrepStatusRaw.working ?? true, // Assume working if not yet tested
+  mode: ripgrepStatusRaw.mode,
+  systemPath: ripgrepStatusRaw.mode === 'system' ? ripgrepStatusRaw.path : null,
+  note: ripgrepStatusRaw.note ?? null,
+}
 ```
 
 - [ ] **Step 2: Render `note` in Doctor.tsx**
@@ -368,20 +371,20 @@ File: `src/utils/doctorDiagnostic.ts`, replace lines 588-597.
 File: `src/screens/Doctor.tsx`, replace lines 224-232.
 
 ```tsx
-        <Text>
-          └ Search: {diagnostic.ripgrepStatus.working ? 'OK' : 'Not working'} (
-          {diagnostic.ripgrepStatus.mode === 'embedded'
-            ? 'bundled'
-            : diagnostic.ripgrepStatus.mode === 'builtin'
-              ? 'vendor'
-              : diagnostic.ripgrepStatus.systemPath || 'system'}
-          )
-        </Text>
-        {diagnostic.ripgrepStatus.note && (
-          <Text color="warning">
-            └ Note: {diagnostic.ripgrepStatus.note}
-          </Text>
-        )}
+;<Text>
+  └ Search: {diagnostic.ripgrepStatus.working ? 'OK' : 'Not working'} (
+  {diagnostic.ripgrepStatus.mode === 'embedded'
+    ? 'bundled'
+    : diagnostic.ripgrepStatus.mode === 'builtin'
+      ? 'vendor'
+      : diagnostic.ripgrepStatus.systemPath || 'system'}
+  )
+</Text>
+{
+  diagnostic.ripgrepStatus.note && (
+    <Text color="warning">└ Note: {diagnostic.ripgrepStatus.note}</Text>
+  )
+}
 ```
 
 - [ ] **Step 3: Run precheck (lint + typecheck)**
@@ -406,6 +409,7 @@ git commit -m "feat: /doctor shows ripgrep fallback note"
 ## Task 5: Emit one-time startup warning from `init.ts`
 
 **Files:**
+
 - Modify: `src/entrypoints/init.ts:240-243`
 
 - [ ] **Step 1: Add the warning right before `profileCheckpoint('init_function_end')`**
@@ -413,22 +417,22 @@ git commit -m "feat: /doctor shows ripgrep fallback note"
 File: `src/entrypoints/init.ts`, replace lines 240-243.
 
 ```ts
-    // Surface ripgrep fallback (e.g. Android/Termux) once per session.
-    // Goes to stderr so it doesn't corrupt pipe-mode (`-p`) stdout.
-    try {
-      const { getRipgrepStatus } = await import('../utils/ripgrep.js')
-      const status = getRipgrepStatus()
-      if (status.note) {
-        process.stderr.write(`[ripgrep] ${status.note}\n`)
-      }
-    } catch {
-      // Ripgrep status is best-effort; never block init.
-    }
+// Surface ripgrep fallback (e.g. Android/Termux) once per session.
+// Goes to stderr so it doesn't corrupt pipe-mode (`-p`) stdout.
+try {
+  const { getRipgrepStatus } = await import('../utils/ripgrep.js')
+  const status = getRipgrepStatus()
+  if (status.note) {
+    process.stderr.write(`[ripgrep] ${status.note}\n`)
+  }
+} catch {
+  // Ripgrep status is best-effort; never block init.
+}
 
-    logForDiagnosticsNoPII('info', 'init_completed', {
-      duration_ms: Date.now() - initStartTime,
-    })
-    profileCheckpoint('init_function_end')
+logForDiagnosticsNoPII('info', 'init_completed', {
+  duration_ms: Date.now() - initStartTime,
+})
+profileCheckpoint('init_function_end')
 ```
 
 - [ ] **Step 2: Run precheck**
@@ -468,6 +472,7 @@ Expected: PASS (5/5).
 - [ ] **Step 3: Verify decision logic via REPL sanity (optional)**
 
 Run:
+
 ```bash
 bun -e "import('./src/utils/ripgrep.ts').then(m => console.log(JSON.stringify(m.getRipgrepStatus(), null, 2)))"
 ```
@@ -478,6 +483,7 @@ Expected on macOS dev machine: `mode: "builtin"`, `note: undefined`.
 ## Self-Review Notes
 
 **Spec coverage:**
+
 - Decision chain with 5 branches → Task 2 ✓
 - `note` field on `RipgrepConfig` / singleton / `getRipgrepStatus()` → Tasks 1, 3 ✓
 - `/doctor` rendering → Task 4 ✓

@@ -14,11 +14,11 @@ Spawner 是每台受控电脑上的常驻进程：主动连 Remote Control Serve
 
 三层身份：
 
-| 身份 | 示例 | 谁生成 | 说明 |
-|---|---|---|---|
-| deviceId | `dev_ab12…` | Spawner 首次运行 | 一台电脑 |
-| localSessionId | UUID | CLI | 本机历史会话，磁盘上的 transcript 名 |
-| bridgeSessionId | `session_<hex>` | CLI Bridge | 每次连接 RCS 时生成，重启会变 |
+| 身份            | 示例            | 谁生成           | 说明                                 |
+| --------------- | --------------- | ---------------- | ------------------------------------ |
+| deviceId        | `dev_ab12…`     | Spawner 首次运行 | 一台电脑                             |
+| localSessionId  | UUID            | CLI              | 本机历史会话，磁盘上的 transcript 名 |
+| bridgeSessionId | `session_<hex>` | CLI Bridge       | 每次连接 RCS 时生成，重启会变        |
 
 Web 的稳定 URL 是 `/code/d/<deviceId>/s/<localSessionId>`，**不包含** bridgeSessionId；服务端维护 `(device, local)` → 当前 bridge 的映射，终端重启只更新映射。
 
@@ -33,13 +33,13 @@ Web 的稳定 URL 是 `/code/d/<deviceId>/s/<localSessionId>`，**不包含** br
 
 方法（封闭枚举，绝不接受网页传来的命令行）：
 
-| 方法 | 作用 |
-|---|---|
-| `list_projects` | 按 cwd 聚合本机项目 |
-| `list_sessions` | 项目/全局历史会话列表（limit/offset） |
-| `read_session` | 流式读取 transcript，`before` 游标向前分页 |
-| `open_session` | **仅确认**请求；进度用 `operation` 事件上报 |
-| `verify_state` | 核实某会话的进程/Bridge 证据 |
+| 方法            | 作用                                        |
+| --------------- | ------------------------------------------- |
+| `list_projects` | 按 cwd 聚合本机项目                         |
+| `list_sessions` | 项目/全局历史会话列表（limit/offset）       |
+| `read_session`  | 流式读取 transcript，`before` 游标向前分页  |
+| `open_session`  | **仅确认**请求；进度用 `operation` 事件上报 |
+| `verify_state`  | 核实某会话的进程/Bridge 证据                |
 
 `open_session` 事件序列：
 
@@ -87,16 +87,16 @@ Spawner 写一个临时 `.cmd` 启动器，再由 `cmd.exe /c` 执行 `start "" 
 
 ## Web API（uuidAuth，与现有无登录模式一致）
 
-| 方法 | 路径 |
-|---|---|
-| GET | `/web/devices` |
-| GET | `/web/devices/:id/projects` |
-| GET | `/web/devices/:id/sessions?projectId=&limit=` |
-| GET | `/web/devices/:id/sessions/:local` |
-| GET | `/web/devices/:id/sessions/:local/history?before=&limit=` |
-| POST | `/web/devices/:id/sessions/:local/open` |
-| POST | `/web/devices/:id/sessions/:local/messages` |
-| GET | `/web/operations/:id` |
+| 方法 | 路径                                                      |
+| ---- | --------------------------------------------------------- |
+| GET  | `/web/devices`                                            |
+| GET  | `/web/devices/:id/projects`                               |
+| GET  | `/web/devices/:id/sessions?projectId=&limit=`             |
+| GET  | `/web/devices/:id/sessions/:local`                        |
+| GET  | `/web/devices/:id/sessions/:local/history?before=&limit=` |
+| POST | `/web/devices/:id/sessions/:local/open`                   |
+| POST | `/web/devices/:id/sessions/:local/messages`               |
+| GET  | `/web/operations/:id`                                     |
 
 `cached: true` / `updatedAt` 表示设备不可达、返回的是上次目录快照。
 

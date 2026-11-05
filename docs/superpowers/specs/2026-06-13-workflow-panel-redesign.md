@@ -64,6 +64,7 @@
 - 其余 reducer 分支、`AgentProgress`、快照排序逻辑不变。
 
 **测试**（`progress/store.test.ts` 或对应测试文件）：
+
 - `run_started` 带 `meta.phases` → `declaredPhases` 落地且顺序保留。
 - `run_started` 的 `meta` 为 `null` → `declaredPhases === []`。
 - 已有 `agentId` 关联、phase 切换、`run_done` 终态用例保持绿。
@@ -105,23 +106,23 @@
 
 **面板状态**（`WorkflowsPanel` 内 `useState`）：
 
-| 状态 | 含义 | 默认 |
-|---|---|---|
-| `activeRunId` | 当前 tab 的 runId | 首个 run（无则 null） |
-| `focusColumn` | `'phases'` \| `'agents'` | `'phases'`（该 run 无任何 phase 则 `'agents'`） |
-| `selectedPhaseIndex` | phase 侧栏选中项（`0` = `All`） | `0` |
-| `selectedAgentIndex` | agent 列表光标行 | `0` |
+| 状态                 | 含义                            | 默认                                            |
+| -------------------- | ------------------------------- | ----------------------------------------------- |
+| `activeRunId`        | 当前 tab 的 runId               | 首个 run（无则 null）                           |
+| `focusColumn`        | `'phases'` \| `'agents'`        | `'phases'`（该 run 无任何 phase 则 `'agents'`） |
+| `selectedPhaseIndex` | phase 侧栏选中项（`0` = `All`） | `0`                                             |
+| `selectedAgentIndex` | agent 列表光标行                | `0`                                             |
 
 **键位**：
 
-| 键 | 作用 |
-|---|---|
+| 键                  | 作用                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `Tab` / `Shift+Tab` | 切顶部 run tab（正/反）；切 tab 时重置 `selectedPhaseIndex=0`、`selectedAgentIndex=0`、`focusColumn` 回默认 |
-| `←` / `→` | `phases` ↔ `agents` 焦点切换（tabs 不参与左右，由 `Tab` 管） |
-| `↑` / `↓` | 当前焦点列内移动选中（phase 改筛选；agent 滚光标） |
-| `x` | kill 当前 tab 的 run |
-| `r` | resume 当前 tab 的 run（缺 `canUseTool` 时 `onDone` 提示用 `/<name> resume`） |
-| `q` / `Esc` | 退出面板 |
+| `←` / `→`           | `phases` ↔ `agents` 焦点切换（tabs 不参与左右，由 `Tab` 管）                                                |
+| `↑` / `↓`           | 当前焦点列内移动选中（phase 改筛选；agent 滚光标）                                                          |
+| `x`                 | kill 当前 tab 的 run                                                                                        |
+| `r`                 | resume 当前 tab 的 run（缺 `canUseTool` 时 `onDone` 提示用 `/<name> resume`）                               |
+| `q` / `Esc`         | 退出面板                                                                                                    |
 
 **夹紧**：复用 `WorkflowsPanel` 已导出的 `clampSelected`——切 tab / 列表变动后把 `selectedPhaseIndex`、`selectedAgentIndex` 夹到有效区间。
 
@@ -129,17 +130,17 @@
 
 ## 7. 组件拆分（`src/workflow/panel/`）
 
-| 文件 | 动作 | 职责 |
-|---|---|---|
-| `WorkflowsPanel.tsx` | 重写 | 订阅 store、持焦点状态、渲染 `TabsBar` + 左右双栏、绑 `useWorkflowKeyboard`；保留导出 `clampSelected` |
-| `TabsBar.tsx` | 新建 | 顶部 run tab 行（状态点 + 名 + runId 短码；当前 tab 橙色 `═══` 下划线） |
-| `PhaseSidebar.tsx` | 新建 | 左 phase 列表：`All` + 合并 `declaredPhases`（pending `○`）与 `run.phases`（`●`/`✓`），每行附 `done/total` agent 计数 |
-| `AgentList.tsx` | 新建 | 右 agent 列表：按选中 phase 过滤；状态色 + 行尾 `object`/`text`/`dead` 文字标记 |
-| `status.ts` | 新建 | 共享状态→字符/颜色映射（`STATUS_DOT`、phase/agent mark 函数），三组件复用 |
-| `useWorkflowKeyboard.ts` | 改写 | 焦点模型键位（见 §6） |
-| `WorkflowList.tsx` | 删除 | run 列表职责迁入 `TabsBar` |
-| `WorkflowDetail.tsx` | 删除 | phase+agent 职责拆入 `PhaseSidebar`+`AgentList` |
-| `panelCall.ts` | 不变 | local-jsx 入口仍渲染 `WorkflowsPanel` |
+| 文件                     | 动作 | 职责                                                                                                                  |
+| ------------------------ | ---- | --------------------------------------------------------------------------------------------------------------------- |
+| `WorkflowsPanel.tsx`     | 重写 | 订阅 store、持焦点状态、渲染 `TabsBar` + 左右双栏、绑 `useWorkflowKeyboard`；保留导出 `clampSelected`                 |
+| `TabsBar.tsx`            | 新建 | 顶部 run tab 行（状态点 + 名 + runId 短码；当前 tab 橙色 `═══` 下划线）                                               |
+| `PhaseSidebar.tsx`       | 新建 | 左 phase 列表：`All` + 合并 `declaredPhases`（pending `○`）与 `run.phases`（`●`/`✓`），每行附 `done/total` agent 计数 |
+| `AgentList.tsx`          | 新建 | 右 agent 列表：按选中 phase 过滤；状态色 + 行尾 `object`/`text`/`dead` 文字标记                                       |
+| `status.ts`              | 新建 | 共享状态→字符/颜色映射（`STATUS_DOT`、phase/agent mark 函数），三组件复用                                             |
+| `useWorkflowKeyboard.ts` | 改写 | 焦点模型键位（见 §6）                                                                                                 |
+| `WorkflowList.tsx`       | 删除 | run 列表职责迁入 `TabsBar`                                                                                            |
+| `WorkflowDetail.tsx`     | 删除 | phase+agent 职责拆入 `PhaseSidebar`+`AgentList`                                                                       |
+| `panelCall.ts`           | 不变 | local-jsx 入口仍渲染 `WorkflowsPanel`                                                                                 |
 
 **外部接口不变**：`/workflows` 命令注册、`panelCall`、`getWorkflowService()` 订阅协议、`BackgroundTasksDialog` 跳转均不动。
 
@@ -150,21 +151,21 @@
 - **选中/光标行**：整行铺 `backgroundColor="claude"` 橙底（ASCII 用 `▓` 示意），**文字色不变**，状态点保留各自颜色。
 - **状态色**（沿用现有 Ink theme token，无新增）：
 
-  | 元素 | 状态 | 字符 | 颜色 |
-  |---|---|---|---|
-  | Tab (run) | running | `●` | `warning` |
-  | | completed | `✓` | `success` |
-  | | failed | `✗` | `error` |
-  | | killed | `■` | `subtle` |
-  | | 当前 | `═══` | `claude` 下划线 |
-  | Phase | running | `●` | `warning` |
-  | | done | `✓` | `success` |
-  | | pending | `○` | `subtle` |
-  | | 选中 | `▶` | `claude` + 底色 |
-  | Agent | running | `●` | `warning` |
-  | | done·text | `✓` | `success` + 行尾 `text` |
-  | | done·object | `✓` | `success` + 行尾 `object` |
-  | | dead | `✗` | `error` + 行尾 `dead` |
+  | 元素      | 状态        | 字符  | 颜色                      |
+  | --------- | ----------- | ----- | ------------------------- |
+  | Tab (run) | running     | `●`   | `warning`                 |
+  |           | completed   | `✓`   | `success`                 |
+  |           | failed      | `✗`   | `error`                   |
+  |           | killed      | `■`   | `subtle`                  |
+  |           | 当前        | `═══` | `claude` 下划线           |
+  | Phase     | running     | `●`   | `warning`                 |
+  |           | done        | `✓`   | `success`                 |
+  |           | pending     | `○`   | `subtle`                  |
+  |           | 选中        | `▶`   | `claude` + 底色           |
+  | Agent     | running     | `●`   | `warning`                 |
+  |           | done·text   | `✓`   | `success` + 行尾 `text`   |
+  |           | done·object | `✓`   | `success` + 行尾 `object` |
+  |           | dead        | `✗`   | `error` + 行尾 `dead`     |
 
 - **object 标记**：行尾纯文字 `object`（不用 `◆` 符号）。
 - **左窄右宽**：phase 栏约 20%、agent 栏约 80%（或固定 phase 栏 ~20 字符，agent 栏吃剩余宽度）。

@@ -28,12 +28,14 @@
 ## 文件结构
 
 **引擎包改动（M1）**
+
 - Modify `packages/workflow-engine/src/types.ts` — `agent_started`/`agent_done` 加 `agentId`。
 - Modify `packages/workflow-engine/src/engine/context.ts` — `SharedResources` 加 `agentIdSeq`。
 - Modify `packages/workflow-engine/src/engine/hooks.ts` — 盖戳 `agentId`。
 - Test `packages/workflow-engine/src/__tests__/agentId.test.ts`。
 
 **src/workflow 集成层（M2–M5）**
+
 - Create `src/workflow/progress/bus.ts` — 类型化发布/订阅。
 - Create `src/workflow/progress/store.ts` — `RunProgress`/`AgentProgress` 类型 + reducer（按 agentId）。
 - Create `src/workflow/backends/claudeCodeBackend.ts` — `AgentAdapter` + 体系解析 helpers。
@@ -45,12 +47,14 @@
 - Keep `src/workflow/hostHandle.ts`、`namedWorkflowCommands.ts`、`WorkflowPermissionRequest.tsx`。
 
 **面板（M6）**
+
 - Create `src/workflow/panel/WorkflowList.tsx`、`WorkflowDetail.tsx`、`useWorkflowKeyboard.ts`、`WorkflowsPanel.tsx`。
 - Rewrite `src/commands/workflows/index.ts`（local-jsx）。
 - Modify `src/components/tasks/BackgroundTasksDialog.tsx` — 去 `WorkflowDetailDialog`。
 - Delete `src/components/tasks/WorkflowDetailDialog.tsx`。
 
 **skill + 文档（M7–M8）**
+
 - Create `src/skills/bundled/ultracode/SKILL.md`。
 - Update `docs/features/workflow-scripts.md`。
 
@@ -61,6 +65,7 @@
 ### Task 1：`ProgressEvent` 加 `agentId` 字段
 
 **Files:**
+
 - Modify: `packages/workflow-engine/src/types.ts:69-76`
 
 - [ ] **Step 1：改 `agent_started`/`agent_done` 变体加 `agentId: number`**
@@ -106,6 +111,7 @@ Expected: 报错指向 `engine/hooks.ts` 的 `emit({ type: 'agent_started'/'agen
 ### Task 2：`SharedResources` 加 `agentIdSeq`
 
 **Files:**
+
 - Modify: `packages/workflow-engine/src/engine/context.ts:10-15, 32-41`
 
 - [ ] **Step 1：类型加字段 + 初始化**
@@ -160,6 +166,7 @@ export type SharedResources = {
 ### Task 3：hooks 盖戳 `agentId`
 
 **Files:**
+
 - Modify: `packages/workflow-engine/src/engine/hooks.ts:21-31, 45-108`
 
 - [ ] **Step 1：`HookProgressInit` 的 agent 变体加 `agentId`**
@@ -247,27 +254,27 @@ type HookProgressInit =
 把 live 分支两处 emit：
 
 ```ts
-      ctx.resources.agentCountBox.value++
-      emit({ type: 'agent_started', label, phase })
+ctx.resources.agentCountBox.value++
+emit({ type: 'agent_started', label, phase })
 ```
 
 替换为：
 
 ```ts
-      ctx.resources.agentCountBox.value++
-      emit({ type: 'agent_started', agentId, label, phase })
+ctx.resources.agentCountBox.value++
+emit({ type: 'agent_started', agentId, label, phase })
 ```
 
 把：
 
 ```ts
-      emit({ type: 'agent_done', label, phase, result })
+emit({ type: 'agent_done', label, phase, result })
 ```
 
 替换为：
 
 ```ts
-      emit({ type: 'agent_done', agentId, label, phase, result })
+emit({ type: 'agent_done', agentId, label, phase, result })
 ```
 
 - [ ] **Step 3：类型检查 + 全包测试**
@@ -291,31 +298,55 @@ function build(results: Map<string, AgentRunResult>) {
   const { emitter, events } = createBufferingEmitter()
   const ports: WorkflowPorts = {
     agentRunner: {
-      runAgentToResult: async (p: AgentRunParams) => results.get(p.prompt) ?? { kind: 'dead' },
+      runAgentToResult: async (p: AgentRunParams) =>
+        results.get(p.prompt) ?? { kind: 'dead' },
     },
     progressEmitter: emitter,
     taskRegistrar: {
       register: () => ({ runId: 'r', signal: new AbortController().signal }),
-      complete: () => {}, fail: () => {}, kill: () => {}, pendingAction: () => null,
+      complete: () => {},
+      fail: () => {},
+      kill: () => {},
+      pendingAction: () => null,
     },
-    journalStore: { read: async () => [], append: async () => {}, truncate: async () => {} },
+    journalStore: {
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
+    },
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
     hostFactory: () => ({
       handle: createHostHandle(null),
-      signal: new AbortController().signal, cwd: '/tmp', budgetTotal: null,
+      signal: new AbortController().signal,
+      cwd: '/tmp',
+      budgetTotal: null,
     }),
   }
   const ctx = createEngineContext({
-    ports, host: createHostHandle(null), signal: new AbortController().signal,
-    runId: 'r', workflowName: 'w', cwd: '/tmp', budgetTotal: null,
+    ports,
+    host: createHostHandle(null),
+    signal: new AbortController().signal,
+    runId: 'r',
+    workflowName: 'w',
+    cwd: '/tmp',
+    budgetTotal: null,
   })
   return { ctx, events, hooks: makeHooks(ctx, async () => null) }
 }
 
 test('并发 agent 各自拿到唯一 agentId，started/done 配对', async () => {
-  const ok = (out: string): AgentRunResult => ({ kind: 'ok', output: out, usage: { outputTokens: 1 } })
-  const { ctx, events, hooks } = build(new Map([['a', ok('1')], ['b', ok('2')]]))
+  const ok = (out: string): AgentRunResult => ({
+    kind: 'ok',
+    output: out,
+    usage: { outputTokens: 1 },
+  })
+  const { ctx, events, hooks } = build(
+    new Map([
+      ['a', ok('1')],
+      ['b', ok('2')],
+    ]),
+  )
   // 并发跑两个 agent
   await hooks.parallel([() => hooks.agent('a'), () => hooks.agent('b')])
   const started = events.filter(e => e.type === 'agent_started')
@@ -334,9 +365,21 @@ test('并发 agent 各自拿到唯一 agentId，started/done 配对', async () =
 })
 
 test('agentId 单调递增', async () => {
-  const ok = (out: string): AgentRunResult => ({ kind: 'ok', output: out, usage: { outputTokens: 1 } })
-  const { events, hooks } = build(new Map([['a', ok('1')], ['b', ok('2')], ['c', ok('3')]]))
-  await hooks.agent('a'); await hooks.agent('b'); await hooks.agent('c')
+  const ok = (out: string): AgentRunResult => ({
+    kind: 'ok',
+    output: out,
+    usage: { outputTokens: 1 },
+  })
+  const { events, hooks } = build(
+    new Map([
+      ['a', ok('1')],
+      ['b', ok('2')],
+      ['c', ok('3')],
+    ]),
+  )
+  await hooks.agent('a')
+  await hooks.agent('b')
+  await hooks.agent('c')
   const ids = events
     .filter(e => e.type === 'agent_started')
     .map(e => (e as { agentId: number }).agentId)
@@ -363,6 +406,7 @@ git commit -m "feat(workflow-engine): stamp agentId on agent_started/agent_done 
 ### Task 4：进度事件总线 `progress/bus.ts`
 
 **Files:**
+
 - Create: `src/workflow/progress/bus.ts`
 - Test: `src/workflow/__tests__/progressBus.test.ts`
 
@@ -443,6 +487,7 @@ git commit -m "feat(workflow): add typed progress event bus"
 ### Task 5：进度 reducer `progress/store.ts`（按 agentId 关联）
 
 **Files:**
+
 - Create: `src/workflow/progress/store.ts`
 - Test: `src/workflow/__tests__/progressStore.test.ts`
 
@@ -454,9 +499,16 @@ Create `src/workflow/__tests__/progressStore.test.ts`:
 import { expect, test } from 'bun:test'
 import { createProgressBus, type ProgressBus } from '../progress/bus.js'
 import { createProgressStoreFromBus } from '../progress/store.js'
-import type { ProgressEvent, AgentRunResult } from '@claude-code-best/workflow-engine'
+import type {
+  ProgressEvent,
+  AgentRunResult,
+} from '@claude-code-best/workflow-engine'
 
-const ok = (o: string): AgentRunResult => ({ kind: 'ok', output: o, usage: { outputTokens: 1 } })
+const ok = (o: string): AgentRunResult => ({
+  kind: 'ok',
+  output: o,
+  usage: { outputTokens: 1 },
+})
 
 function newStore() {
   const bus: ProgressBus = createProgressBus()
@@ -469,23 +521,64 @@ function ev(e: Omit<ProgressEvent, never>): ProgressEvent {
 
 test('run_started 建条目；phase_started/done 更新 phases', () => {
   const { bus, store } = newStore()
-  bus.emit(ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }))
+  bus.emit(
+    ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }),
+  )
   bus.emit(ev({ type: 'phase_started', runId: 'r1', phase: 'A' }))
   bus.emit(ev({ type: 'phase_started', runId: 'r1', phase: 'B' }))
   bus.emit(ev({ type: 'phase_done', runId: 'r1', phase: 'A' }))
   const r = store.get('r1')!
-  expect(r.phases.map(p => [p.title, p.status])).toEqual([['A', 'done'], ['B', 'running']])
+  expect(r.phases.map(p => [p.title, p.status])).toEqual([
+    ['A', 'done'],
+    ['B', 'running'],
+  ])
   expect(r.currentPhase).toBe('B')
 })
 
 test('并发 agent_done 按 agentId 精确关联（回归旧 LIFO 竞态）', () => {
   const { bus, store } = newStore()
-  bus.emit(ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }))
+  bus.emit(
+    ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }),
+  )
   // 两个并发 agent，started 顺序 0,1，但 done 顺序 1,0（颠倒）
-  bus.emit(ev({ type: 'agent_started', runId: 'r1', agentId: 0, label: 'a', phase: 'A' }))
-  bus.emit(ev({ type: 'agent_started', runId: 'r1', agentId: 1, label: 'b', phase: 'A' }))
-  bus.emit(ev({ type: 'agent_done', runId: 'r1', agentId: 1, label: 'b', phase: 'A', result: ok('b-out') }))
-  bus.emit(ev({ type: 'agent_done', runId: 'r1', agentId: 0, label: 'a', phase: 'A', result: ok('a-out') }))
+  bus.emit(
+    ev({
+      type: 'agent_started',
+      runId: 'r1',
+      agentId: 0,
+      label: 'a',
+      phase: 'A',
+    }),
+  )
+  bus.emit(
+    ev({
+      type: 'agent_started',
+      runId: 'r1',
+      agentId: 1,
+      label: 'b',
+      phase: 'A',
+    }),
+  )
+  bus.emit(
+    ev({
+      type: 'agent_done',
+      runId: 'r1',
+      agentId: 1,
+      label: 'b',
+      phase: 'A',
+      result: ok('b-out'),
+    }),
+  )
+  bus.emit(
+    ev({
+      type: 'agent_done',
+      runId: 'r1',
+      agentId: 0,
+      label: 'a',
+      phase: 'A',
+      result: ok('a-out'),
+    }),
+  )
   const agents = store.get('r1')!.agents
   // 各自按 id 落位，不串
   expect(agents.find(x => x.id === 0)?.status).toBe('done')
@@ -496,8 +589,19 @@ test('并发 agent_done 按 agentId 精确关联（回归旧 LIFO 竞态）', ()
 
 test('journal 命中（仅 agent_done 无 started）按 id 补建 done 条目', () => {
   const { bus, store } = newStore()
-  bus.emit(ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }))
-  bus.emit(ev({ type: 'agent_done', runId: 'r1', agentId: 7, label: 'c', phase: 'A', result: ok('c') }))
+  bus.emit(
+    ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }),
+  )
+  bus.emit(
+    ev({
+      type: 'agent_done',
+      runId: 'r1',
+      agentId: 7,
+      label: 'c',
+      phase: 'A',
+      result: ok('c'),
+    }),
+  )
   const a = store.get('r1')!.agents.find(x => x.id === 7)!
   expect(a.status).toBe('done')
 })
@@ -506,8 +610,12 @@ test('run_done 终态 + list 排序 + subscribe 通知', () => {
   const { bus, store } = newStore()
   let calls = 0
   store.subscribe(() => calls++)
-  bus.emit(ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }))
-  bus.emit(ev({ type: 'run_done', runId: 'r1', status: 'completed', returnValue: 42 }))
+  bus.emit(
+    ev({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null }),
+  )
+  bus.emit(
+    ev({ type: 'run_done', runId: 'r1', status: 'completed', returnValue: 42 }),
+  )
   const r = store.get('r1')!
   expect(r.status).toBe('completed')
   expect(r.returnValue).toBe(42)
@@ -575,8 +683,14 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
     let p = byId.get(runId)
     if (!p) {
       p = {
-        runId, workflowName, status: 'running', phases: [], currentPhase: null,
-        agents: [], agentCount: 0, updatedAt: Date.now(),
+        runId,
+        workflowName,
+        status: 'running',
+        phases: [],
+        currentPhase: null,
+        agents: [],
+        agentCount: 0,
+        updatedAt: Date.now(),
       }
       byId.set(runId, p)
     }
@@ -585,7 +699,10 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
 
   const apply = (event: ProgressEvent): void => {
     const runId = event.runId
-    const p = ensure(runId, 'workflowName' in event ? event.workflowName : 'workflow')
+    const p = ensure(
+      runId,
+      'workflowName' in event ? event.workflowName : 'workflow',
+    )
     p.updatedAt = Date.now()
     switch (event.type) {
       case 'run_started':
@@ -599,18 +716,26 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
         p.currentPhase = event.phase
         break
       case 'phase_done':
-        for (const ph of p.phases) if (ph.title === event.phase) ph.status = 'done'
+        for (const ph of p.phases)
+          if (ph.title === event.phase) ph.status = 'done'
         if (p.currentPhase === event.phase) p.currentPhase = null
         break
       case 'agent_started': {
         // 按 id upsert（幂等）
         let a = p.agents.find(x => x.id === event.agentId)
         if (!a) {
-          a = { id: event.agentId, label: event.label, phase: event.phase, status: 'running' }
+          a = {
+            id: event.agentId,
+            label: event.label,
+            phase: event.phase,
+            status: 'running',
+          }
           p.agents.push(a)
           p.agentCount++
         } else {
-          a.status = 'running'; a.label = event.label; a.phase = event.phase
+          a.status = 'running'
+          a.label = event.label
+          a.phase = event.phase
         }
         break
       }
@@ -618,10 +743,16 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
         // 按 id 精确落位；无 started（journal 命中）则补建 done 条目
         let a = p.agents.find(x => x.id === event.agentId)
         if (!a) {
-          a = { id: event.agentId, label: event.label, phase: event.phase, status: 'done' }
+          a = {
+            id: event.agentId,
+            label: event.label,
+            phase: event.phase,
+            status: 'done',
+          }
           p.agents.push(a)
         } else {
-          a.status = 'done'; a.resultKind = event.result.kind
+          a.status = 'done'
+          a.resultKind = event.result.kind
         }
         break
       }
@@ -669,6 +800,7 @@ git commit -m "feat(workflow): progress store keyed by agentId (fixes concurrent
 ### Task 6：深度后端 `backends/claudeCodeBackend.ts`
 
 **Files:**
+
 - Create: `src/workflow/backends/claudeCodeBackend.ts`
 - Test: `src/workflow/__tests__/claudeCodeBackend.test.ts`
 
@@ -682,27 +814,42 @@ Create `src/workflow/__tests__/claudeCodeBackend.test.ts`:
 import { expect, test, mock } from 'bun:test'
 
 // mock 底层依赖（不 mock 被测业务模块）
-mock.module('@claude-code-best/builtin-tools/tools/AgentTool/runAgent.js', () => ({
-  runAgent: async function* () {
-    yield { type: 'assistant', message: { content: [{ type: 'text', text: 'agent-text' }] } }
-  },
-}))
-mock.module('@claude-code-best/builtin-tools/tools/AgentTool/agentToolUtils.js', () => ({
-  finalizeAgentTool: () => ({
-    content: [{ type: 'text', text: 'agent-text' }],
-    usage: { output_tokens: 42 },
-    totalTokens: 42,
+mock.module(
+  '@claude-code-best/builtin-tools/tools/AgentTool/runAgent.js',
+  () => ({
+    runAgent: async function* () {
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'agent-text' }] },
+      }
+    },
   }),
-  isBuiltInAgent: () => true,
-}))
-mock.module('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js', () => ({
-  isBuiltInAgent: () => true,
-}))
+)
+mock.module(
+  '@claude-code-best/builtin-tools/tools/AgentTool/agentToolUtils.js',
+  () => ({
+    finalizeAgentTool: () => ({
+      content: [{ type: 'text', text: 'agent-text' }],
+      usage: { output_tokens: 42 },
+      totalTokens: 42,
+    }),
+    isBuiltInAgent: () => true,
+  }),
+)
+mock.module(
+  '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js',
+  () => ({
+    isBuiltInAgent: () => true,
+  }),
+)
 mock.module('../tools.js', () => ({
   assembleToolPool: () => ({ tools: [] }),
 }))
 mock.module('../utils/messages.js', () => ({
-  createUserMessage: (o: { content: string }) => ({ role: 'user', content: o.content }),
+  createUserMessage: (o: { content: string }) => ({
+    role: 'user',
+    content: o.content,
+  }),
   extractTextContent: (_c: unknown, sep: string) => 'agent-text',
 }))
 mock.module('../utils/uuid.js', () => ({ createAgentId: () => 'agent-1' }))
@@ -713,14 +860,25 @@ import { claudeCodeBackend } from '../backends/claudeCodeBackend.js'
 import { makeHostHandle } from '../hostHandle.js'
 
 function ctx() {
-  return { host: makeHostHandle({
-    toolUseContext: {
-      options: { agentDefinitions: { activeAgents: [] }, querySource: 'workflow', mainLoopModel: 'm' },
-      getAppState: () => ({ toolPermissionContext: { mode: 'acceptEdits', alwaysAllowRules: {} }, mcp: { tools: [] } }),
-    } as never,
-    canUseTool: (() => Promise.resolve({ behavior: 'allow' })) as never,
-    parentMessage: undefined,
-  }), signal: new AbortController().signal, runId: 'r1' }
+  return {
+    host: makeHostHandle({
+      toolUseContext: {
+        options: {
+          agentDefinitions: { activeAgents: [] },
+          querySource: 'workflow',
+          mainLoopModel: 'm',
+        },
+        getAppState: () => ({
+          toolPermissionContext: { mode: 'acceptEdits', alwaysAllowRules: {} },
+          mcp: { tools: [] },
+        }),
+      } as never,
+      canUseTool: (() => Promise.resolve({ behavior: 'allow' })) as never,
+      parentMessage: undefined,
+    }),
+    signal: new AbortController().signal,
+    runId: 'r1',
+  }
 }
 
 test('文本 agent → ok + token 计量', async () => {
@@ -733,9 +891,14 @@ test('文本 agent → ok + token 计量', async () => {
 })
 
 test('runAgent 抛错 → dead', async () => {
-  mock.module('@claude-code-best/builtin-tools/tools/AgentTool/runAgent.js', () => ({
-    runAgent: async function* () { throw new Error('boom') },
-  }))
+  mock.module(
+    '@claude-code-best/builtin-tools/tools/AgentTool/runAgent.js',
+    () => ({
+      runAgent: async function* () {
+        throw new Error('boom')
+      },
+    }),
+  )
   const res = await claudeCodeBackend.run({ prompt: 'fail' }, ctx())
   expect(res.kind).toBe('dead')
 })
@@ -832,7 +995,10 @@ export const claudeCodeBackend: AgentAdapter = {
   id: 'claude-code',
   capabilities: { structuredOutput: true, tools: true },
 
-  async run(params: AgentRunParams, ctx: AgentAdapterContext): Promise<AgentRunResult> {
+  async run(
+    params: AgentRunParams,
+    ctx: AgentAdapterContext,
+  ): Promise<AgentRunResult> {
     const { toolUseContext, canUseTool } = readHostBundle(ctx.host)
     const appState = toolUseContext.getAppState()
     const agentDef = resolveAgentDefinition(params.agentType, toolUseContext)
@@ -843,7 +1009,10 @@ export const claudeCodeBackend: AgentAdapter = {
       ...appState.toolPermissionContext,
       mode: agentDef.permissionMode ?? 'acceptEdits',
     }
-    const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools)
+    const workerTools = assembleToolPool(
+      workerPermissionContext,
+      appState.mcp.tools,
+    )
 
     const promptText = params.schema
       ? `${params.prompt}\n\nYou MUST return your final answer by calling the StructuredOutput tool with a value matching this JSON Schema:\n${JSON.stringify(params.schema)}`
@@ -879,15 +1048,22 @@ export const claudeCodeBackend: AgentAdapter = {
       agentType: agentDef.agentType,
       isAsync: true,
     })
-    const outputTokens = finalized.usage?.output_tokens ?? finalized.totalTokens ?? 0
+    const outputTokens =
+      finalized.usage?.output_tokens ?? finalized.totalTokens ?? 0
     logEvent('tengu_workflow_agent', {
-      agentType: agentDef.agentType, ok: true, outputTokens,
+      agentType: agentDef.agentType,
+      ok: true,
+      outputTokens,
     })
 
     if (params.schema) {
       const structured = extractStructuredOutput(finalized.content)
       if (structured === null) return { kind: 'dead' }
-      return { kind: 'ok', output: structured as object, usage: { outputTokens } }
+      return {
+        kind: 'ok',
+        output: structured as object,
+        usage: { outputTokens },
+      }
     }
     const text = extractTextContent(finalized.content, '\n')
     return { kind: 'ok', output: text, usage: { outputTokens } }
@@ -910,6 +1086,7 @@ git commit -m "feat(workflow): claude-code AgentAdapter (deep AppState/provider/
 ### Task 7：Registry + ports 组装
 
 **Files:**
+
 - Create: `src/workflow/registry.ts`
 - Create: `src/workflow/ports.ts`
 - Test: `src/workflow/__tests__/ports.test.ts`
@@ -929,7 +1106,9 @@ test('buildRegistry 注册 claude-code 为默认且 resolve 命中', () => {
   const reg = buildRegistry()
   expect(reg.has('claude-code')).toBe(true)
   expect(reg.resolve({ prompt: 'x' }).id).toBe('claude-code')
-  expect(reg.resolve({ prompt: 'x', agentType: 'whatever' }).id).toBe('claude-code')
+  expect(reg.resolve({ prompt: 'x', agentType: 'whatever' }).id).toBe(
+    'claude-code',
+  )
 })
 
 test('createWorkflowPorts 组装完整端口（含 agentAdapterRegistry 与 progressEmitter→bus）', () => {
@@ -937,7 +1116,9 @@ test('createWorkflowPorts 组装完整端口（含 agentAdapterRegistry 与 prog
   const store = createProgressStoreFromBus(bus)
   const ports = createWorkflowPorts({ bus, store })
   expect(ports.agentAdapterRegistry).toBeDefined()
-  expect(ports.agentAdapterRegistry!.resolve({ prompt: 'x' }).id).toBe('claude-code')
+  expect(ports.agentAdapterRegistry!.resolve({ prompt: 'x' }).id).toBe(
+    'claude-code',
+  )
   expect(typeof ports.taskRegistrar.register).toBe('function')
   expect(typeof ports.hostFactory).toBe('function')
 })
@@ -989,7 +1170,11 @@ import {
   failWorkflowTask,
   killWorkflowTask,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { makeHostHandle, readHostBundle, type WorkflowHostBundle } from './hostHandle.js'
+import {
+  makeHostHandle,
+  readHostBundle,
+  type WorkflowHostBundle,
+} from './hostHandle.js'
 import { buildRegistry } from './registry.js'
 import type { ProgressBus } from './progress/bus.js'
 import type { ProgressStore } from './progress/store.js'
@@ -1054,7 +1239,8 @@ export function createWorkflowPorts(opts: {
       register(regOpts, host) {
         const bundle = readHostBundle(host)
         const setAppState =
-          bundle.toolUseContext.setAppStateForTasks ?? bundle.toolUseContext.setAppState
+          bundle.toolUseContext.setAppStateForTasks ??
+          bundle.toolUseContext.setAppState
         const abortController = new AbortController()
         const taskId = registerLocalWorkflowTask(setAppState, {
           description: regOpts.summary ?? regOpts.workflowName,
@@ -1066,7 +1252,11 @@ export function createWorkflowPorts(opts: {
         })
         const runId = regOpts.runId ?? taskId
         bindings.set(runId, {
-          runId, taskId, setAppState, abortController, workflowName: regOpts.workflowName,
+          runId,
+          taskId,
+          setAppState,
+          abortController,
+          workflowName: regOpts.workflowName,
         })
         logEvent('tengu_workflow_started', { runId })
         return { runId, signal: abortController.signal }
@@ -1127,6 +1317,7 @@ git commit -m "feat(workflow): AgentAdapterRegistry + WorkflowPorts assembly"
 ### Task 8：`WorkflowService` 单例
 
 **Files:**
+
 - Create: `src/workflow/service.ts`
 - Test: `src/workflow/__tests__/service.test.ts`
 
@@ -1156,7 +1347,9 @@ mock.module('../services/analytics/index.js', () => ({ logEvent: () => {} }))
 mock.module('../utils/debug.js', () => ({ logForDebugging: () => {} }))
 mock.module('../tasks/LocalWorkflowTask/LocalWorkflowTask.js', () => ({
   registerLocalWorkflowTask: () => 'task-1',
-  completeWorkflowTask: () => {}, failWorkflowTask: () => {}, killWorkflowTask: () => {},
+  completeWorkflowTask: () => {},
+  failWorkflowTask: () => {},
+  killWorkflowTask: () => {},
 }))
 mock.module('../tools.js', () => ({ assembleToolPool: () => ({ tools: [] }) }))
 
@@ -1173,7 +1366,9 @@ test('launch → completed，store 出现该 run；kill 走 taskRegistrar', asyn
     const svc = getWorkflowService()
     const { runId } = await svc.launch(
       { script: `return agent('compute')` },
-      { /* toolUseContext stub */ } as never,
+      {
+        /* toolUseContext stub */
+      } as never,
       (() => Promise.resolve({ behavior: 'allow' })) as never,
     )
     // 等待 detached run
@@ -1233,7 +1428,10 @@ import { getProjectRoot } from '../bootstrap/state.js'
 import { logEvent } from '../services/analytics/index.js'
 import { makeHostHandle, type WorkflowHostBundle } from './hostHandle.js'
 import { createProgressBus } from './progress/bus.js'
-import { createProgressStoreFromBus, type ProgressStore } from './progress/store.js'
+import {
+  createProgressStoreFromBus,
+  type ProgressStore,
+} from './progress/store.js'
 import { createWorkflowPorts } from './ports.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import type { ToolUseContext } from '../Tool.js'
@@ -1244,7 +1442,16 @@ export type WorkflowService = {
   ports: WorkflowPorts
   /** 面板/工具启动 workflow：解析脚本 → register → detached runWorkflow。 */
   launch(
-    input: Pick<WorkflowInput, 'script' | 'name' | 'scriptPath' | 'args' | 'description' | 'resumeFromRunId' | 'title'>,
+    input: Pick<
+      WorkflowInput,
+      | 'script'
+      | 'name'
+      | 'scriptPath'
+      | 'args'
+      | 'description'
+      | 'resumeFromRunId'
+      | 'title'
+    >,
     toolUseContext: ToolUseContext,
     canUseTool: CanUseToolFn,
   ): Promise<{ runId: string }>
@@ -1268,7 +1475,10 @@ export function getWorkflowService(): WorkflowService {
 }
 
 /** 测试用：注入 ports。 */
-export function makeService(ports: WorkflowPorts, store: ProgressStore): WorkflowService {
+export function makeService(
+  ports: WorkflowPorts,
+  store: ProgressStore,
+): WorkflowService {
   const runsDir = () =>
     process.env.WORKFLOW_RUNS_DIR ?? `${getProjectRoot()}/.claude/workflow-runs`
 
@@ -1288,9 +1498,12 @@ export function makeService(ports: WorkflowPorts, store: ProgressStore): Workflo
   })
 
   async function resolveSource(input: {
-    script?: string; name?: string; scriptPath?: string
+    script?: string
+    name?: string
+    scriptPath?: string
   }): Promise<{ script: string; workflowFile?: string; workflowName: string }> {
-    if (input.script) return { script: input.script, workflowName: input.name ?? 'workflow' }
+    if (input.script)
+      return { script: input.script, workflowName: input.name ?? 'workflow' }
     if (input.scriptPath) {
       const { readFile } = await import('node:fs/promises')
       return {
@@ -1300,9 +1513,19 @@ export function makeService(ports: WorkflowPorts, store: ProgressStore): Workflo
       }
     }
     if (input.name) {
-      const found = await resolveNamedWorkflow(join(getCwd(), WORKFLOW_DIR_NAME), input.name)
-      if (!found) throw new Error(`命名 workflow "${input.name}" 未找到（查找 ${WORKFLOW_DIR_NAME}/）`)
-      return { script: found.content, workflowFile: found.path, workflowName: input.name }
+      const found = await resolveNamedWorkflow(
+        join(getCwd(), WORKFLOW_DIR_NAME),
+        input.name,
+      )
+      if (!found)
+        throw new Error(
+          `命名 workflow "${input.name}" 未找到（查找 ${WORKFLOW_DIR_NAME}/）`,
+        )
+      return {
+        script: found.content,
+        workflowFile: found.path,
+        workflowName: input.name,
+      }
     }
     throw new Error('必须提供 script、name 或 scriptPath 之一')
   }
@@ -1340,11 +1563,14 @@ export function makeService(ports: WorkflowPorts, store: ProgressStore): Workflo
         cwd: host.cwd,
         budgetTotal: host.budgetTotal,
         ...(input.resumeFromRunId ? { resume: true } : {}),
-      }).then(result => {
-        if (result.status === 'completed') ports.taskRegistrar.complete(runId)
-        else if (result.status === 'failed') ports.taskRegistrar.fail(runId, result.error ?? 'failed')
-        else ports.taskRegistrar.kill(runId)
-      }).catch(e => ports.taskRegistrar.fail(runId, (e as Error).message))
+      })
+        .then(result => {
+          if (result.status === 'completed') ports.taskRegistrar.complete(runId)
+          else if (result.status === 'failed')
+            ports.taskRegistrar.fail(runId, result.error ?? 'failed')
+          else ports.taskRegistrar.kill(runId)
+        })
+        .catch(e => ports.taskRegistrar.fail(runId, (e as Error).message))
       logForDebugging(`workflow launched: ${runId} (${workflowName})`)
       return { runId }
     },
@@ -1356,7 +1582,9 @@ export function makeService(ports: WorkflowPorts, store: ProgressStore): Workflo
     getRun: id => store.get(id),
     subscribe: fn => store.subscribe(fn),
     async listNamed(workflowDir) {
-      return listNamedWorkflows(workflowDir ?? join(getCwd(), WORKFLOW_DIR_NAME))
+      return listNamedWorkflows(
+        workflowDir ?? join(getCwd(), WORKFLOW_DIR_NAME),
+      )
     },
   }
 }
@@ -1387,6 +1615,7 @@ git commit -m "feat(workflow): WorkflowService facade (launch/kill/subscribe/lis
 ### Task 9：重写 `wiring.ts`（走 service）
 
 **Files:**
+
 - Rewrite: `src/workflow/wiring.ts`
 
 - [ ] **Step 1：整体替换 `wiring.ts`**
@@ -1423,7 +1652,11 @@ function buildWorkflowTool(): Tool {
     },
     async call(input, context, canUseTool, parentMessage, onProgress) {
       const result = await descriptor.call(
-        input, context, canUseTool, parentMessage, onProgress,
+        input,
+        context,
+        canUseTool,
+        parentMessage,
+        onProgress,
       )
       return { data: result.data }
     },
@@ -1465,6 +1698,7 @@ git commit -m "refactor(workflow): wiring via WorkflowService singleton; drop le
 ### Task 10：`BackgroundTasksDialog` 去 `WorkflowDetailDialog`
 
 **Files:**
+
 - Modify: `src/components/tasks/BackgroundTasksDialog.tsx:110-112, 443-463`
 
 - [ ] **Step 1：读当前 local_workflow 渲染分支**
@@ -1478,8 +1712,10 @@ Run: `sed -n '108,120p;440,465p' src/components/tasks/BackgroundTasksDialog.tsx`
 
 ```ts
 const WorkflowDetailDialog = feature('WORKFLOW_SCRIPTS')
-  ? (require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')).WorkflowDetailDialog
-  : null;
+  ? (
+      require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')
+    ).WorkflowDetailDialog
+  : null
 ```
 
 替换为：
@@ -1547,6 +1783,7 @@ git commit --allow-empty -m "chore(workflow): M5 integration switch — precheck
 ### Task 11：`WorkflowList`（左栏）
 
 **Files:**
+
 - Create: `src/workflow/panel/WorkflowList.tsx`
 
 - [ ] **Step 1：实现左栏扁平列表**
@@ -1559,7 +1796,10 @@ import { Box, Text } from '@anthropic/ink'
 import type { RunProgress } from '../progress/store.js'
 
 const STATUS_DOT: Record<RunProgress['status'], string> = {
-  running: '●', completed: '✓', failed: '✗', killed: '■',
+  running: '●',
+  completed: '✓',
+  failed: '✗',
+  killed: '■',
 }
 
 type Props = {
@@ -1569,7 +1809,11 @@ type Props = {
 }
 
 /** 左栏：扁平 workflow 列表（状态点+名+当前 phase+计数）+ NAMED 区。 */
-export function WorkflowList({ runs, named, selected }: Props): React.ReactNode {
+export function WorkflowList({
+  runs,
+  named,
+  selected,
+}: Props): React.ReactNode {
   const rows = runs
   return (
     <Box flexDirection="column">
@@ -1581,7 +1825,17 @@ export function WorkflowList({ runs, named, selected }: Props): React.ReactNode 
             <Text color={i === selected ? 'claude' : undefined}>
               {i === selected ? '▸ ' : '  '}
             </Text>
-            <Text color={r.status === 'running' ? 'warning' : r.status === 'failed' ? 'error' : r.status === 'completed' ? 'success' : 'subtle'}>
+            <Text
+              color={
+                r.status === 'running'
+                  ? 'warning'
+                  : r.status === 'failed'
+                    ? 'error'
+                    : r.status === 'completed'
+                      ? 'success'
+                      : 'subtle'
+              }
+            >
               {STATUS_DOT[r.status]}
             </Text>
             <Text> {r.workflowName.padEnd(20).slice(0, 20)}</Text>
@@ -1607,6 +1861,7 @@ export function WorkflowList({ runs, named, selected }: Props): React.ReactNode 
 ### Task 12：`WorkflowDetail`（右栏）
 
 **Files:**
+
 - Create: `src/workflow/panel/WorkflowDetail.tsx`
 
 - [ ] **Step 1：实现右栏 phase 横条 + 扁平 agent 列表**
@@ -1623,7 +1878,8 @@ function phaseMark(status: 'running' | 'done'): string {
 }
 
 function agentMark(a: AgentProgress): string {
-  if (a.status === 'done') return a.resultKind === 'ok' ? '✓' : a.resultKind === 'dead' ? '✗' : '✓'
+  if (a.status === 'done')
+    return a.resultKind === 'ok' ? '✓' : a.resultKind === 'dead' ? '✗' : '✓'
   return '●'
 }
 
@@ -1633,7 +1889,9 @@ type Props = { run: RunProgress | undefined }
 export function WorkflowDetail({ run }: Props): React.ReactNode {
   if (!run) {
     return (
-      <Text color="subtle">选择左侧一个 workflow，或按 n 启动命名 workflow。</Text>
+      <Text color="subtle">
+        选择左侧一个 workflow，或按 n 启动命名 workflow。
+      </Text>
     )
   }
   return (
@@ -1646,7 +1904,7 @@ export function WorkflowDetail({ run }: Props): React.ReactNode {
       </Box>
       {run.phases.length > 0 && (
         <Box marginTop={1}>
-          <Text color="subtle">Phases  </Text>
+          <Text color="subtle">Phases </Text>
           <Text>
             {run.phases.map(p => `${phaseMark(p.status)}${p.title}`).join(' ')}
           </Text>
@@ -1657,7 +1915,9 @@ export function WorkflowDetail({ run }: Props): React.ReactNode {
           {run.agents.map(a => (
             <Box key={a.id}>
               <Text>{agentMark(a)} </Text>
-              <Text>{(a.label ?? `agent-${a.id}`).padEnd(16).slice(0, 16)}</Text>
+              <Text>
+                {(a.label ?? `agent-${a.id}`).padEnd(16).slice(0, 16)}
+              </Text>
               <Text color="subtle"> {a.phase ?? ''}</Text>
             </Box>
           ))}
@@ -1681,6 +1941,7 @@ export function WorkflowDetail({ run }: Props): React.ReactNode {
 ### Task 13：键位 hook `useWorkflowKeyboard`
 
 **Files:**
+
 - Create: `src/workflow/panel/useWorkflowKeyboard.ts`
 
 - [ ] **Step 1：实现键位（j/k/r/x/n/q）**
@@ -1707,17 +1968,31 @@ export function useWorkflowKeyboard(
   useEffect(() => {
     const handler = (key: string): void => {
       switch (key) {
-        case 'j': actions.move(1); break
-        case 'k': actions.move(-1); break
-        case 'r': actions.resume(); break
-        case 'x': actions.kill(); break
-        case 'n': actions.newNamed(); break
+        case 'j':
+          actions.move(1)
+          break
+        case 'k':
+          actions.move(-1)
+          break
+        case 'r':
+          actions.resume()
+          break
+        case 'x':
+          actions.kill()
+          break
+        case 'n':
+          actions.newNamed()
+          break
         case 'q':
-        case 'escape': actions.quit(); break
+        case 'escape':
+          actions.quit()
+          break
       }
     }
     const off = input(handler)
-    return () => { off?.() }
+    return () => {
+      off?.()
+    }
   }, [input, actions])
 }
 ```
@@ -1727,6 +2002,7 @@ export function useWorkflowKeyboard(
 ### Task 14：`WorkflowsPanel` + local-jsx 命令
 
 **Files:**
+
 - Create: `src/workflow/panel/WorkflowsPanel.tsx`
 - Rewrite: `src/commands/workflows/index.ts`
 - Test: `src/workflow/__tests__/WorkflowsPanel.test.tsx`
@@ -1744,7 +2020,9 @@ import { getWorkflowService } from '../service.js'
 import { WorkflowList } from './WorkflowList.js'
 import { WorkflowDetail } from './WorkflowDetail.js'
 
-type Ctx = ToolUseContext & { /* LocalJSXCommandContext 扩展，按需 */ }
+type Ctx = ToolUseContext & {
+  /* LocalJSXCommandContext 扩展，按需 */
+}
 
 export function WorkflowsPanel({
   onDone,
@@ -1756,13 +2034,20 @@ export function WorkflowsPanel({
   args: string
 }): React.ReactNode {
   const svc = getWorkflowService()
-  const runs = useSyncExternalStore(svc.subscribe, () => svc.listRuns(), () => [])
+  const runs = useSyncExternalStore(
+    svc.subscribe,
+    () => svc.listRuns(),
+    () => [],
+  )
   const [named, setNamed] = useState<string[]>([])
   const [selected, setSelected] = useState(0)
 
   // 初次加载命名 workflow 列表
   if (named.length === 0 && runs.length === 0) {
-    void svc.listNamed().then(setNamed).catch(() => {})
+    void svc
+      .listNamed()
+      .then(setNamed)
+      .catch(() => {})
   }
 
   const focused = runs[Math.min(selected, Math.max(0, runs.length - 1))]
@@ -1773,24 +2058,47 @@ export function WorkflowsPanel({
     else if (input === 'x' && focused) svc.kill(focused.runId)
     else if (input === 'r' && focused) {
       // resume：用当前会话上下文重跑（读 journal）
-      void svc.launch({ resumeFromRunId: focused.runId, name: focused.workflowName }, context, context.options.canUseTool ?? (() => Promise.resolve({ behavior: 'allow' })) as never)
+      void svc.launch(
+        { resumeFromRunId: focused.runId, name: focused.workflowName },
+        context,
+        context.options.canUseTool ??
+          ((() => Promise.resolve({ behavior: 'allow' })) as never),
+      )
     } else if (input === 'n') {
       // 简化：提示用户输入命名 workflow；完整选择器留作后续
-      onDone('Tip: 用 /<name> 启动命名 workflow，或通过 Workflow 工具带 name 参数。')
+      onDone(
+        'Tip: 用 /<name> 启动命名 workflow，或通过 Workflow 工具带 name 参数。',
+      )
     } else if (input === 'q' || key.escape) {
       onDone()
     }
   })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="claude"
+      paddingX={1}
+    >
       <Box justifyContent="space-between">
         <Text bold>Workflows</Text>
-        <Text color="subtle">{runs.filter(r => r.status === 'running').length} running · {runs.filter(r => r.status !== 'running').length} done</Text>
+        <Text color="subtle">
+          {runs.filter(r => r.status === 'running').length} running ·{' '}
+          {runs.filter(r => r.status !== 'running').length} done
+        </Text>
       </Box>
       <Box flexDirection="row" marginTop={1}>
-        <Box width="40%"><WorkflowList runs={runs} named={named} selected={Math.min(selected, Math.max(0, runs.length - 1))} /></Box>
-        <Box width="60%"><WorkflowDetail run={focused} /></Box>
+        <Box width="40%">
+          <WorkflowList
+            runs={runs}
+            named={named}
+            selected={Math.min(selected, Math.max(0, runs.length - 1))}
+          />
+        </Box>
+        <Box width="60%">
+          <WorkflowDetail run={focused} />
+        </Box>
       </Box>
       <Box marginTop={1}>
         <Text color="subtle">j/k run · r resume · x kill · n new · q quit</Text>
@@ -1887,6 +2195,7 @@ git commit -m "feat(workflow): /workflows dual-pane monitoring + control panel (
 ### Task 15：`SKILL.md` playbook
 
 **Files:**
+
 - Create: `src/skills/bundled/ultracode/SKILL.md`
 
 - [ ] **Step 1：写 skill 内容**
@@ -1895,6 +2204,7 @@ Create `src/skills/bundled/ultracode/SKILL.md`:
 
 ```markdown
 ---
+
 name: ultracode
 description: 进入多 agent workflow 编排模式——何时用 workflow、编排原语、质量模式、确定性约束、后端路由、resume/budget、文件与命令。调用即把这套工作法注入上下文。
 user-invocable: true
@@ -1905,6 +2215,7 @@ user-invocable: true
 ## 何时用 Workflow 工具
 
 用，当任务满足任一：
+
 - 可**分解/并行**（多文件、多维度、可独立推进的子任务）。
 - 需要**多视角置信**（如审查：先生成再对抗式验证）。
 - **规模超单上下文**（大迁移、广度审计）。
@@ -1972,6 +2283,7 @@ git commit -m "feat(workflow): /ultracode knowledge skill (orchestration playboo
 ### Task 16：更新 workflow-scripts 文档
 
 **Files:**
+
 - Modify: `docs/features/workflow-scripts.md`
 
 - [ ] **Step 1：补面板与 skill 说明**
@@ -2007,6 +2319,7 @@ Expected: typecheck + lint fix + test 全绿。
 - [ ] **（可选）端到端冒烟**
 
 Run: `FEATURE_WORKFLOW_SCRIPTS=1 bun run dev`，REPL 内：
+
 1. `/ultracode` → 注入 playbook。
 2. 通过 Workflow 工具 `name: <某命名 workflow>` 启动。
 3. `/workflows` → 看到该 run，j/k 选中，右栏显示 phase/agent 实时刷新。

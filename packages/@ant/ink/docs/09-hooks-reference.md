@@ -17,6 +17,7 @@ function useApp(): {
 ```
 
 Example:
+
 ```tsx
 const { exit } = useApp()
 // Gracefully unmount and exit
@@ -51,7 +52,7 @@ Handle keyboard input. See [Chapter 7](./07-user-input.md) for full details.
 ```ts
 function useInput(
   handler: (input: string, key: Key, event: InputEvent) => void,
-  options?: { isActive?: boolean }
+  options?: { isActive?: boolean },
 ): void
 ```
 
@@ -99,11 +100,12 @@ Track element visibility in the terminal viewport.
 ```ts
 function useTerminalViewport(): [
   ref: (element: DOMElement | null) => void,
-  entry: { isVisible: boolean }
+  entry: { isVisible: boolean },
 ]
 ```
 
 Example:
+
 ```tsx
 const [viewportRef, { isVisible }] = useTerminalViewport()
 
@@ -169,7 +171,7 @@ Synchronized animation hook that pauses when offscreen.
 
 ```ts
 function useAnimationFrame(
-  intervalMs?: number | null,  // default 16
+  intervalMs?: number | null, // default 16
 ): [ref: (element: DOMElement | null) => void, time: number]
 ```
 
@@ -202,6 +204,7 @@ function useMinDisplayTime<T>(value: T, minMs: number): T
 Holds the previous value until `minMs` has elapsed, then switches to the new value.
 
 Example:
+
 ```tsx
 // Keep showing "Loading" for at least 300ms to prevent flash
 const displayValue = useMinDisplayTime(isLoading ? 'loading' : 'done', 300)
@@ -221,17 +224,18 @@ export const DOUBLE_PRESS_TIMEOUT_MS = 800
 function useDoublePress(
   setPending: (pending: boolean) => void,
   onDoublePress: () => void,
-  onFirstPress?: () => void
-): () => void  // Returns the press handler
+  onFirstPress?: () => void,
+): () => void // Returns the press handler
 ```
 
 Example:
+
 ```tsx
 const [pendingExit, setPendingExit] = useState(false)
 const handlePress = useDoublePress(
   setPendingExit,
-  () => exit(),       // Double press
-  () => {},           // First press
+  () => exit(), // Double press
+  () => {}, // First press
 )
 
 useInput((input, key) => {
@@ -252,11 +256,12 @@ type ExitState = {
 function useExitOnCtrlCDWithKeybindings(
   onExit?: () => void,
   onInterrupt?: () => boolean,
-  isActive?: boolean
+  isActive?: boolean,
 ): ExitState
 ```
 
 Example:
+
 ```tsx
 const exitState = useExitOnCtrlCDWithKeybindings(
   () => exit(),
@@ -287,7 +292,11 @@ function useSelection(): {
   shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
   shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
   moveFocus: (move: FocusMove) => void
-  captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
+  captureScrolledRows: (
+    firstRow: number,
+    lastRow: number,
+    side: 'above' | 'below',
+  ) => void
   setSelectionBgColor: (color: string) => void
 }
 ```
@@ -314,7 +323,13 @@ Set and manage search highlighting.
 function useSearchHighlight(): {
   setQuery: (query: string) => void
   scanElement: (el: DOMElement) => MatchPosition[]
-  setPositions: (state: { positions: MatchPosition[]; rowOffset: number; currentIdx: number } | null) => void
+  setPositions: (
+    state: {
+      positions: MatchPosition[]
+      rowOffset: number
+      currentIdx: number
+    } | null,
+  ) => void
 }
 ```
 
@@ -356,13 +371,14 @@ Park the terminal cursor at a specific position for IME and accessibility.
 function useDeclaredCursor({
   line: number,
   column: number,
-  active: boolean
+  active: boolean,
 }): (element: DOMElement | null) => void
 ```
 
 Returns a ref callback. Position is relative to the ref'd element.
 
 Example:
+
 ```tsx
 const cursorRef = useDeclaredCursor({
   line: 0,
@@ -400,7 +416,7 @@ Track element visibility within the terminal viewport.
 ```ts
 function useTerminalViewport(): [
   ref: (element: DOMElement | null) => void,
-  entry: { isVisible: boolean }
+  entry: { isVisible: boolean },
 ]
 ```
 

@@ -27,22 +27,22 @@ docker run -d \
 
 ### 服务器配置
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RCS_PORT` | `3000` | 监听端口 |
-| `RCS_HOST` | `0.0.0.0` | 监听地址 |
-| `RCS_API_KEYS` | _(空)_ | API 密钥列表，逗号分隔。客户端和 Worker 连接时需要提供 |
-| `RCS_BASE_URL` | _(自动)_ | 外部访问地址，例如 `https://rcs.example.com`。用于生成 WebSocket 连接 URL |
-| `RCS_VERSION` | `0.1.0` | 服务版本号，显示在 `/health` 响应中 |
+| 变量           | 默认值    | 说明                                                                      |
+| -------------- | --------- | ------------------------------------------------------------------------- |
+| `RCS_PORT`     | `3000`    | 监听端口                                                                  |
+| `RCS_HOST`     | `0.0.0.0` | 监听地址                                                                  |
+| `RCS_API_KEYS` | _(空)_    | API 密钥列表，逗号分隔。客户端和 Worker 连接时需要提供                    |
+| `RCS_BASE_URL` | _(自动)_  | 外部访问地址，例如 `https://rcs.example.com`。用于生成 WebSocket 连接 URL |
+| `RCS_VERSION`  | `0.1.0`   | 服务版本号，显示在 `/health` 响应中                                       |
 
 ### 超时与心跳
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RCS_POLL_TIMEOUT` | `8` | V1 轮询超时（秒） |
-| `RCS_HEARTBEAT_INTERVAL` | `20` | 心跳间隔（秒） |
-| `RCS_JWT_EXPIRES_IN` | `3600` | JWT 令牌有效期（秒） |
-| `RCS_DISCONNECT_TIMEOUT` | `300` | 断线判定超时（秒） |
+| 变量                     | 默认值 | 说明                 |
+| ------------------------ | ------ | -------------------- |
+| `RCS_POLL_TIMEOUT`       | `8`    | V1 轮询超时（秒）    |
+| `RCS_HEARTBEAT_INTERVAL` | `20`   | 心跳间隔（秒）       |
+| `RCS_JWT_EXPIRES_IN`     | `3600` | JWT 令牌有效期（秒） |
+| `RCS_DISCONNECT_TIMEOUT` | `300`  | 断线判定超时（秒）   |
 
 ## Claude Code 客户端配置
 
@@ -68,12 +68,12 @@ ccb --remote-control
 
 ### 环境变量参考
 
-| 变量 | 说明 |
-|------|------|
-| `CLAUDE_BRIDGE_BASE_URL` | RCS 服务器地址，覆盖默认的 Anthropic 云端地址 |
-| `CLAUDE_BRIDGE_OAUTH_TOKEN` | 认证令牌，用于连接 RCS 服务器 |
-| `CLAUDE_BRIDGE_SESSION_INGRESS_URL` | WebSocket 入口地址（默认与 BASE_URL 相同） |
-| `CLAUDE_CODE_REMOTE` | 设为 `1` 时标记为远程执行模式 |
+| 变量                                | 说明                                          |
+| ----------------------------------- | --------------------------------------------- |
+| `CLAUDE_BRIDGE_BASE_URL`            | RCS 服务器地址，覆盖默认的 Anthropic 云端地址 |
+| `CLAUDE_BRIDGE_OAUTH_TOKEN`         | 认证令牌，用于连接 RCS 服务器                 |
+| `CLAUDE_BRIDGE_SESSION_INGRESS_URL` | WebSocket 入口地址（默认与 BASE_URL 相同）    |
+| `CLAUDE_CODE_REMOTE`                | 设为 `1` 时标记为远程执行模式                 |
 
 ## Docker Compose 示例
 

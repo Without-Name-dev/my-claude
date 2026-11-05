@@ -12,13 +12,13 @@ DAEMON 将 Claude Code 变为后台守护进程。主进程（supervisor）管�
 
 ### 2.1 模块状态
 
-| 模块 | 文件 | 状态 |
-|------|------|------|
-| 守护主进程 | `src/daemon/main.ts` | **已实现** — Supervisor 含子命令、Worker 生命周期管理、指数退避重启 |
-| Worker 注册 | `src/daemon/workerRegistry.ts` | **已实现** — remoteControl Worker（headless bridge） |
-| Daemon 状态 | `src/daemon/state.ts` | **已实现** — PID/状态文件的读写与查询 |
-| CLI 路由 | `src/entrypoints/cli.tsx` | **布线** — `--daemon-worker` 和 `daemon` 子命令 |
-| 命令注册 | `src/commands.ts` | **布线** — DAEMON + BRIDGE_MODE 门控 |
+| 模块        | 文件                           | 状态                                                                |
+| ----------- | ------------------------------ | ------------------------------------------------------------------- |
+| 守护主进程  | `src/daemon/main.ts`           | **已实现** — Supervisor 含子命令、Worker 生命周期管理、指数退避重启 |
+| Worker 注册 | `src/daemon/workerRegistry.ts` | **已实现** — remoteControl Worker（headless bridge）                |
+| Daemon 状态 | `src/daemon/state.ts`          | **已实现** — PID/状态文件的读写与查询                               |
+| CLI 路由    | `src/entrypoints/cli.tsx`      | **布线** — `--daemon-worker` 和 `daemon` 子命令                     |
+| 命令注册    | `src/commands.ts`              | **布线** — DAEMON + BRIDGE_MODE 门控                                |
 
 ### 2.2 CLI 入口
 
@@ -61,6 +61,7 @@ Supervisor (daemonMain)
 ### 2.4 Worker 生命周期管理
 
 Supervisor 为每个 worker 实现：
+
 - **指数退避重启**：初始 2s，上限 120s，倍数 ×2
 - **快速失败检测**：10s 内连续崩溃 5 次则 parking（不再重启）
 - **永久错误退出码**：78 (EXIT_CODE_PERMANENT) 导致直接 parking
@@ -108,10 +109,10 @@ claude --daemon-worker=remoteControl
 
 ## 五、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `src/daemon/main.ts` | Supervisor 主进程：子命令分发、Worker 生命周期管理、退避重启 |
-| `src/daemon/workerRegistry.ts` | Worker 入口：remoteControl worker 实现 |
-| `src/daemon/state.ts` | Daemon 状态管理：PID 文件读写、状态查询 |
-| `src/entrypoints/cli.tsx` | CLI 路由 |
-| `src/commands.ts` | 命令注册（双重门控） |
+| 文件                           | 职责                                                         |
+| ------------------------------ | ------------------------------------------------------------ |
+| `src/daemon/main.ts`           | Supervisor 主进程：子命令分发、Worker 生命周期管理、退避重启 |
+| `src/daemon/workerRegistry.ts` | Worker 入口：remoteControl worker 实现                       |
+| `src/daemon/state.ts`          | Daemon 状态管理：PID 文件读写、状态查询                      |
+| `src/entrypoints/cli.tsx`      | CLI 路由                                                     |
+| `src/commands.ts`              | 命令注册（双重门控）                                         |

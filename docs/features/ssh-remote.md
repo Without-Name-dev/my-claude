@@ -71,14 +71,14 @@ SSH Remote 提供两种方式在远程 Linux 主机上运行 Claude Code：
 
 ### 适用场景对比
 
-| | SSH Remote 模块 | 直接 SSH 运行 |
-|---|---|---|
-| 远端需要安装 ccb | 不需要（自动部署） | 需要 |
-| 远端需要 API 凭据 | 不需要（本地隧道） | 需要 |
-| 本地需要安装 ccb | 需要 | 不需要（任何终端） |
-| 斜杠命令 | 本地处理 | 远端处理 |
-| 网络延迟敏感 | 高（NDJSON 双向） | 低（仅 TTY） |
-| 推荐场景 | 远端无凭据/无安装 | 远端已配置完整 |
+|                   | SSH Remote 模块    | 直接 SSH 运行      |
+| ----------------- | ------------------ | ------------------ |
+| 远端需要安装 ccb  | 不需要（自动部署） | 需要               |
+| 远端需要 API 凭据 | 不需要（本地隧道） | 需要               |
+| 本地需要安装 ccb  | 需要               | 不需要（任何终端） |
+| 斜杠命令          | 本地处理           | 远端处理           |
+| 网络延迟敏感      | 高（NDJSON 双向）  | 低（仅 TTY）       |
+| 推荐场景          | 远端无凭据/无安装  | 远端已配置完整     |
 
 ---
 
@@ -97,6 +97,7 @@ ssh-keygen -t rsa -b 4096 -C "your-email@example.com" -f ~/.ssh/id_remote
 ```
 
 生成两个文件：
+
 - `~/.ssh/id_remote` — 私钥（不可泄露）
 - `~/.ssh/id_remote.pub` — 公钥（部署到远端）
 
@@ -225,12 +226,12 @@ bun run build
 
 产物说明：
 
-| 文件 | 说明 |
-|------|------|
-| `dist/cli.js` | Bun 入口（`#!/usr/bin/env bun`） |
+| 文件               | 说明                                                      |
+| ------------------ | --------------------------------------------------------- |
+| `dist/cli.js`      | Bun 入口（`#!/usr/bin/env bun`）                          |
 | `dist/cli-node.js` | Node.js 入口（`#!/usr/bin/env node` → `import ./cli.js`） |
-| `dist/cli-bun.js` | Bun 专用入口 |
-| `dist/chunk-*.js` | 代码分割 chunk 文件（约 668 个） |
+| `dist/cli-bun.js`  | Bun 专用入口                                              |
+| `dist/chunk-*.js`  | 代码分割 chunk 文件（约 668 个）                          |
 
 ### 运行方式
 
@@ -410,6 +411,7 @@ ssh: connect to host x.x.x.x port 22: Connection timed out
 ### 403 Forbidden（SSH Remote 模块）
 
 AuthProxy 的 nonce 验证失败。确认：
+
 1. 远端 CLI 版本包含 nonce header 注入修复
 2. `ANTHROPIC_AUTH_NONCE` 环境变量正确传递到远端
 3. `src/services/api/client.ts` 中 `x-auth-nonce` header 已启用

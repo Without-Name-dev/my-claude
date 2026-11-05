@@ -20,6 +20,7 @@
 确保构建和测试工具链在当前开发环境中可用，避免后续 Task 因环境问题阻塞。
 
 **执行步骤:**
+
 - [x] 验证 Bun 运行时可用
   - `bun --version`
   - 预期: 输出 Bun 版本号
@@ -31,6 +32,7 @@
   - 预期: 输出 bun test 帮助信息
 
 **检查步骤:**
+
 - [x] 构建命令执行成功
   - `bun run build 2>&1 | tail -10`
   - 预期: 构建成功，输出 dist/cli.js
@@ -46,6 +48,7 @@
 当前 `isDeferredTool` 使用一组分散的特判规则（`shouldDefer`、MCP 检测、feature flag 特判）来决定工具是否延迟加载，缺少统一的"核心工具"概念。设计文档要求引入 `CORE_TOOLS` 白名单常量，将始终加载的核心工具（31 个）显式列出，并将 `isDeferredTool` 改为白名单制判定：核心工具 + alwaysLoad 工具 + ToolSearchTool/ExecuteTool 不延迟，其余全部延迟。本 Task 的输出（`CORE_TOOLS` 常量和重构后的 `isDeferredTool`）被 Task 2（TF-IDF 工具索引）、Task 3（ExecuteTool）、Task 4（ToolSearchTool 搜索增强）直接依赖。
 
 **涉及文件:**
+
 - 修改: `src/constants/tools.ts`
 - 修改: `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts`
 - 新建: `src/constants/__tests__/tools.test.ts`
@@ -55,6 +58,7 @@
 - [x] 在 `src/constants/tools.ts` 中新增 `CORE_TOOLS` 常量集合
   - 位置: `src/constants/tools.ts` 文件末尾（`COORDINATOR_MODE_ALLOWED_TOOLS` 之后，~L113）
   - 新增以下 import（文件顶部 import 区域，与现有 import 风格一致）:
+
     ```typescript
     import { SLEEP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SleepTool/prompt.js'
     import { LSP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/LSPTool/prompt.js'
@@ -63,6 +67,7 @@
     import { TEAM_DELETE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/TeamDeleteTool/constants.js'
     ```
   - 在文件末尾新增 `CORE_TOOLS` 导出常量:
+
     ```typescript
     /**
      * Core tools that are always loaded with full schema at initialization.
@@ -118,10 +123,12 @@
 - [x] 重构 `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts` 中的 `isDeferredTool` 函数
   - 位置: `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts` 的 `isDeferredTool` 函数体（L62-L108）
   - 新增 import（文件顶部）:
+
     ```typescript
     import { CORE_TOOLS } from 'src/constants/tools.js'
     ```
   - 替换整个 `isDeferredTool` 函数体为白名单制逻辑:
+
     ```typescript
     export function isDeferredTool(tool: Tool): boolean {
       // Explicit opt-out via _meta['anthropic/alwaysLoad']
@@ -189,6 +196,7 @@
 [上下游影响] — 本 Task 输出 `toolIndex.ts` 被 Task 4（ToolSearchTool 搜索增强）和 Task 3（ExecuteTool 工具查找）依赖。本 Task 依赖 Task 1（`CORE_TOOLS` 常量和 `isDeferredTool` 判定）。
 
 **涉及文件:**
+
 - 修改: `src/services/skillSearch/localSearch.ts`（导出三个私有函数）
 - 新建: `src/services/toolSearch/toolIndex.ts`
 - 新建: `src/services/toolSearch/__tests__/toolIndex.test.ts`
@@ -204,6 +212,7 @@
 - [x] 新建 `src/services/toolSearch/toolIndex.ts`，定义 `ToolIndexEntry` 接口和工具字段权重常量
   - 位置: 文件开头
   - 定义 `ToolIndexEntry` 接口，包含以下字段：
+
     ```typescript
     export interface ToolIndexEntry {
       name: string
@@ -218,6 +227,7 @@
     }
     ```
   - 定义字段权重常量（参照 `localSearch.ts` 的 `FIELD_WEIGHT` 模式）：
+
     ```typescript
     const TOOL_FIELD_WEIGHT = {
       name: 3.0,
@@ -231,6 +241,7 @@
 - [x] 实现 `parseToolName` 工具名解析函数 — 将工具名拆分为可搜索的 token 列表
   - 位置: `src/services/toolSearch/toolIndex.ts`，在接口定义之后
   - 从 `ToolSearchTool.ts:132-161` 的 `parseToolName` 逻辑提取并适配为独立函数：
+
     ```typescript
     export function parseToolName(name: string): { parts: string[]; full: string; isMcp: boolean }
     ```
@@ -258,6 +269,7 @@
   - 位置: `src/services/toolSearch/toolIndex.ts`，在 `buildToolIndex` 之后
   - 函数签名：`export function searchTools(query: string, index: ToolIndexEntry[], limit?: number): ToolSearchResult[]`
   - 定义返回类型：
+
     ```typescript
     export interface ToolSearchResult {
       name: string
@@ -282,6 +294,7 @@
 - [x] 实现模块级索引缓存和增量更新 — 避免每次搜索都全量重建索引
   - 位置: `src/services/toolSearch/toolIndex.ts`，在 `searchTools` 之后
   - 定义模块级缓存变量：
+
     ```typescript
     let cachedIndex: ToolIndexEntry[] | null = null
     let cachedToolNames: string | null = null
@@ -311,6 +324,7 @@
   - 预期: 所有测试通过
 
 **检查步骤:**
+
 - [x] 验证 `localSearch.ts` 三个函数已导出
   - `grep -c "export function computeWeightedTf\|export function computeIdf\|export function cosineSimilarity" src/services/skillSearch/localSearch.ts`
   - 预期: 输出 3
@@ -332,8 +346,11 @@
   - 预期: 所有测试通过，无回归
 
 **认知变更:**
+
 - [x] [CLAUDE.md] `src/services/skillSearch/localSearch.ts` 中的 `computeWeightedTf`、`computeIdf`、`cosineSimilarity` 已导出，供 `toolIndex.ts` 复用。修改这些函数时需同步检查工具索引的测试
+
 ---
+
 ### Task 3: ExecuteTool 执行工具
 
 **背景:**
@@ -342,6 +359,7 @@
 [上下游影响] — 本 Task 依赖 Task 1（`EXECUTE_TOOL_NAME` 常量、`CORE_TOOLS` 集合、`isDeferredTool` 判定）。本 Task 的输出（ExecuteTool 工具实例）被 Task 4（ToolSearchTool 搜索增强）和 `src/tools.ts`（工具注册）依赖。
 
 **涉及文件:**
+
 - 新建: `packages/builtin-tools/src/tools/ExecuteTool/constants.ts`
 - 新建: `packages/builtin-tools/src/tools/ExecuteTool/prompt.ts`
 - 新建: `packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts`
@@ -353,6 +371,7 @@
 - [x] 创建 ExecuteTool 常量文件
   - 位置: 新建 `packages/builtin-tools/src/tools/ExecuteTool/constants.ts`
   - 内容:
+
     ```typescript
     export const EXECUTE_TOOL_NAME = 'ExecuteTool'
     ```
@@ -421,6 +440,7 @@
   - 预期: 所有测试通过
 
 **检查步骤:**
+
 - [x] 验证常量文件正确导出 EXECUTE_TOOL_NAME
   - `grep -n 'EXECUTE_TOOL_NAME' packages/builtin-tools/src/tools/ExecuteTool/constants.ts`
   - 预期: 输出包含 `export const EXECUTE_TOOL_NAME = 'ExecuteTool'`
@@ -447,6 +467,7 @@
 [上下游影响] — 本 Task 依赖 Task 1（`isDeferredTool` 白名单制判定）和 Task 2（`buildToolIndex`、`searchTools`、`getToolIndex`）。本 Task 的输出（增强后的 ToolSearchTool）被 Task 5（预取管道）和 Task 6（UI 推荐）间接依赖。
 
 **涉及文件:**
+
 - 修改: `packages/builtin-tools/src/tools/ToolSearchTool/ToolSearchTool.ts`
 - 修改: `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts`
 - 新建: `packages/builtin-tools/src/tools/ToolSearchTool/__tests__/ToolSearchTool.test.ts`
@@ -456,12 +477,14 @@
 - [x] 在 `ToolSearchTool.ts` 中新增 TF-IDF 搜索相关 import — 为并行搜索和结果合并做准备
   - 位置: `packages/builtin-tools/src/tools/ToolSearchTool/ToolSearchTool.ts` 文件顶部 import 区域（L18 之前，现有 import 块之后）
   - 新增 import:
+
     ```typescript
     import { getToolIndex, searchTools } from 'src/services/toolSearch/toolIndex.js'
     import type { ToolSearchResult } from 'src/services/toolSearch/toolIndex.js'
     import { modelSupportsToolReference } from 'src/utils/toolSearch.js'
     ```
   - 新增权重常量（import 区域之后、`inputSchema` 定义之前）:
+
     ```typescript
     const KEYWORD_WEIGHT = Number(process.env.TOOL_SEARCH_WEIGHT_KEYWORD ?? '0.4')
     const TFIDF_WEIGHT = Number(process.env.TOOL_SEARCH_WEIGHT_TFIDF ?? '0.6')
@@ -471,6 +494,7 @@
 - [x] 在 `ToolSearchTool.ts` 的 `call` 方法中增加 `discover:` 查询模式分支 — 纯发现搜索，不触发延迟加载
   - 位置: `ToolSearchTool.ts` 的 `call` 方法内，在 `selectMatch` 正则匹配之后（~L363）、关键词搜索之前（~L408）
   - 在 `selectMatch` 分支之后插入 `discover:` 分支:
+
     ```typescript
     // Check for discover: prefix — pure discovery search.
     // Returns tool info (name + description + schema) as text,
@@ -501,6 +525,7 @@
 - [x] 在 `ToolSearchTool.ts` 的 `call` 方法中实现关键词搜索与 TF-IDF 搜索的并行执行和结果合并
   - 位置: `ToolSearchTool.ts` 的 `call` 方法内，替换当前关键词搜索逻辑（L408-L433）
   - 替换原有关键词搜索段为并行搜索 + 合并逻辑:
+
     ```typescript
     // Keyword search + TF-IDF search in parallel
     const [keywordMatches, index] = await Promise.all([
@@ -535,6 +560,7 @@
   - 新增方法参数 `context` 用于获取当前模型信息: 将 `mapToolResultToToolResultBlockParam(content, toolUseID)` 签名改为 `mapToolResultToToolResultBlockParam(content, toolUseID, context?)`，其中 `context` 类型为 `{ mainLoopModel?: string } | undefined`
   - 在方法体中，`content.matches.length === 0` 分支保持不变
   - 在返回 `tool_reference` 块之前，插入 `tool_reference` 支持检查:
+
     ```typescript
     const supportsToolRef = context?.mainLoopModel
       ? modelSupportsToolReference(context.mainLoopModel)
@@ -554,10 +580,13 @@
 - [x] 更新 `ToolSearchTool/prompt.ts` 的 PROMPT 文本，增加 `discover:` 模式和 TF-IDF 搜索说明
   - 位置: `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts` 的 `PROMPT_TAIL` 常量（L44-L51）
   - 在 `Query forms:` 部分追加 `discover:` 模式说明:
+
     ```typescript
     const PROMPT_TAIL = ` ... (保留现有内容) ...
 
+    ```
 Query forms:
+
 - "select:Read,Edit,Grep" — fetch these exact tools by name
 - "discover:schedule cron job" — pure discovery, returns tool info (name, description, schema) without loading. Use when you want to understand available tools before deciding which to invoke.
 - "notebook jupyter" — keyword search, up to max_results best matches
@@ -614,11 +643,13 @@ Query forms:
   - 预期: 所有测试通过
 
 **认知变更:**
+
 - [x] [CLAUDE.md] `ToolSearchTool.mapToolResultToToolResultBlockParam` 新增可选第三个参数 `context?: { mainLoopModel?: string }`，用于判断当前模型是否支持 `tool_reference`。不支持时回退到文本输出，引导模型使用 ExecuteTool。调用方（`src/services/api/claude.ts` 的 tool_result 处理逻辑）需传入 context 参数。
 
 ### Task 5: 基础设施层验收
 
 **前置条件:**
+
 - Task 1-4 全部完成
 - 构建环境: `bun run build` 可用
 

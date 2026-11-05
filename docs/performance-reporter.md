@@ -13,11 +13,11 @@
 
 ### 已确认
 
-| 问题 | 位置 | 说明 |
-|------|------|------|
-| **根因: Vite 单文件构建 + Bun 解析大文件内存效率低** | `vite.config.ts:97` | `codeSplitting: false` 产出 17MB 单文件，Bun/JSC 解析时 RSS 暴涨至 966MB |
-| Node.js 对同等 17MB 文件仅需 223MB | 实测 | V8 对大文件解析的内存效率远优于 JSC |
-| Bun.build 代码分割可解决问题 | 实测 | `bun run build`（代码分割 → 627 chunk）Bun RSS 仅 30MB（`--version`）/ 318MB（完整加载） |
+| 问题                                                 | 位置                | 说明                                                                                     |
+| ---------------------------------------------------- | ------------------- | ---------------------------------------------------------------------------------------- |
+| **根因: Vite 单文件构建 + Bun 解析大文件内存效率低** | `vite.config.ts:97` | `codeSplitting: false` 产出 17MB 单文件，Bun/JSC 解析时 RSS 暴涨至 966MB                 |
+| Node.js 对同等 17MB 文件仅需 223MB                   | 实测                | V8 对大文件解析的内存效率远优于 JSC                                                      |
+| Bun.build 代码分割可解决问题                         | 实测                | `bun run build`（代码分割 → 627 chunk）Bun RSS 仅 30MB（`--version`）/ 318MB（完整加载） |
 
 ### 已否认
 
@@ -32,16 +32,17 @@
 
 实测对比矩阵：
 
-| 构建方式 | 产物结构 | Bun RSS | Node RSS | Bun/Node |
-|----------|----------|---------|----------|----------|
-| `build:vite` | 17MB 单文件 | **966 MB** | 223 MB | 4.3x |
-| `build:vite` pipe mode | 同上 | **1,088 MB** | 340 MB | 3.2x |
-| `build` (Bun) | 627 chunk | 30 MB | 42 MB | 0.7x |
-| `build` (Bun) pipe mode | 同上 | 318 MB | 253 MB | 1.3x |
-| `bun run dev` TS 源码 | 动态加载 | 42 MB | — | — |
-| `bun run dev` pipe mode | 动态加载 | 345 MB | — | — |
+| 构建方式                | 产物结构    | Bun RSS      | Node RSS | Bun/Node |
+| ----------------------- | ----------- | ------------ | -------- | -------- |
+| `build:vite`            | 17MB 单文件 | **966 MB**   | 223 MB   | 4.3x     |
+| `build:vite` pipe mode  | 同上        | **1,088 MB** | 340 MB   | 3.2x     |
+| `build` (Bun)           | 627 chunk   | 30 MB        | 42 MB    | 0.7x     |
+| `build` (Bun) pipe mode | 同上        | 318 MB       | 253 MB   | 1.3x     |
+| `bun run dev` TS 源码   | 动态加载    | 42 MB        | —        | —        |
+| `bun run dev` pipe mode | 动态加载    | 345 MB       | —        | —        |
 
 核心差异：
+
 - **Node/V8** 解析 17MB 文件只需 223MB — V8 的懒解析（lazy parsing）只编译入口需要的部分
 - **Bun/JSC** 解析 17MB 文件需要 966MB — JSC 对单文件做全量编译，bytecode + JIT 占用大量原生内存
 - 代码分割后（627 个小 chunk），Bun 按需加载，内存回到正常水平

@@ -20,6 +20,7 @@
 确保构建和测试工具链在当前开发环境中可用，避免后续 Task 因环境问题阻塞。
 
 **执行步骤:**
+
 - [x] 验证构建工具可用
   - `bun --version`
   - 确认输出 Bun 版本号
@@ -28,6 +29,7 @@
   - 确认输出包含 test 相关帮助信息
 
 **检查步骤:**
+
 - [x] 构建命令执行成功
   - `bun run build 2>&1 | tail -5`
   - 预期: 构建成功，输出包含 dist/cli.js
@@ -45,13 +47,16 @@
 [上下游影响] — 本 Task 的输出（`fork` 参数、新路由逻辑）被 Task 2（prompt 文本调整）依赖。本 Task 无前置依赖。
 
 **涉及文件:**
+
 - 修改: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx`
 - 修改: `scripts/defines.ts`
 
 **执行步骤:**
+
 - [x] 在 baseInputSchema 中新增 `fork` 字段
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx:baseInputSchema()` (~L136-152)，在 `run_in_background` 字段之后
   - 在 `run_in_background` 字段的闭合 `),` 之后，闭合 `})` 之前，新增：
+
     ```ts
     fork: z
       .boolean()
@@ -65,6 +70,7 @@
 - [x] 重构 inputSchema memo 的裁剪逻辑
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx:inputSchema()` (~L193-204)
   - 将 L194-203 替换为：
+
     ```ts
     let schema = feature('KAIROS') ? fullInputSchema() : fullInputSchema().omit({ cwd: true });
     if (isBackgroundTasksDisabled) {
@@ -86,11 +92,13 @@
 - [x] 更新 inputSchema 附近的 fork gate 注释
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx` (~L207-210)，`AgentToolInput` 上方的注释
   - 将 L209-210 的注释：
+
     ```ts
     // subagent_type is optional; call() defaults it to general-purpose when the
     // fork gate is off, or routes to the fork path when the gate is on.
     ```
   - 替换为：
+
     ```ts
     // subagent_type is optional; call() defaults it to general-purpose.
     // fork is gated by FORK_SUBAGENT flag; when omitted or flag is off, no fork.
@@ -105,6 +113,7 @@
 - [x] 重构路由逻辑为显式 fork 触发
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx:call()` (~L409-414)
   - 将 L409-414 替换为：
+
     ```ts
     // Fork routing: explicit `fork: true` parameter triggers the fork path
     // (inherits parent context and model). Requires FORK_SUBAGENT flag.
@@ -122,6 +131,7 @@
 - [x] 从 shouldRunAsync 中移除 forceAsync 条件
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx:call()` (~L708-715)
   - 将 L708-715 的 `shouldRunAsync` 计算中的 `forceAsync ||` 移除：
+
     ```ts
     const shouldRunAsync =
       (run_in_background === true ||
@@ -136,10 +146,12 @@
 - [x] 更新 enableSummarization 使用 isForkPath 替代 isForkSubagentEnabled()
   - 位置: `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx:call()` (~L892)
   - 将：
+
     ```ts
     enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
     ```
   - 替换为：
+
     ```ts
     enableSummarization: isCoordinator || isForkPath || getSdkAgentProgressSummariesEnabled(),
     ```
@@ -148,10 +160,12 @@
 - [x] 更新 defines.ts 中 FORK_SUBAGENT 的注释
   - 位置: `scripts/defines.ts` (~L55)
   - 将：
+
     ```ts
     // 'FORK_SUBAGENT',            // 已禁用：启用后 prompt 引导模型用 fork（继承父模型）替代 Explore（haiku），导致探索任务使用同等级模型
     ```
   - 替换为：
+
     ```ts
     // 'FORK_SUBAGENT',            // 已禁用：显式 `fork: true` 参数触发 fork 路径（继承父级上下文和模型），不影响 forceAsync 和探索任务模型选择
     ```
@@ -167,6 +181,7 @@
   - 预期: 所有测试通过
 
 **检查步骤:**
+
 - [x] 验证 `fork` 字段已添加到 baseInputSchema
   - `grep -n 'fork:' packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx | head -5`
   - 预期: 输出至少包含 1 行 schema 定义中的 `fork:` 和 1 行类型中的 `fork?:`
@@ -197,6 +212,7 @@
 [上下游影响] — 本 Task 依赖 Task 1 完成（Task 1 重构了路由逻辑，本 Task 更新对应的 prompt 文本）。本 Task 仅修改 prompt 文本，不影响运行时逻辑。
 
 **涉及文件:**
+
 - 修改: `packages/builtin-tools/src/tools/AgentTool/prompt.ts`
 
 **执行步骤:**
@@ -204,6 +220,7 @@
 - [x] 替换 `whenToForkSection` 中的 fork 触发说明
   - 位置: `packages/builtin-tools/src/tools/AgentTool/prompt.ts` `getPrompt()` 函数内 `whenToForkSection` 模板字面量（~L80-97）
   - 将 `## When to fork` 标题下的第一段文本（从 "Fork yourself (omit..." 到 "...Do research before jumping to implementation."）替换为:
+
     ```
     When you need to delegate work that benefits from full conversation context (e.g., continuing a multi-file refactor where the child needs the same system prompt and history), use `fork: true`. For most tasks, prefer specialized agent types (Explore, Plan, general-purpose).
     ```
@@ -219,6 +236,7 @@
 - [x] 替换 `shared` section 中的 fork 使用说明
   - 位置: `packages/builtin-tools/src/tools/AgentTool/prompt.ts` `getPrompt()` 函数内 `shared` 模板字面量（~L208-212）
   - 将整个条件分支（`forkEnabled ? ... : ...`）替换为统一文本:
+
     ```
     When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.${forkEnabled ? ` Set \`fork: true\` to fork from the parent conversation context, inheriting full history and model.` : ''}
     ```
@@ -254,6 +272,7 @@
   - 预期: 所有测试通过
 
 **检查步骤:**
+
 - [x] 验证 prompt 中不再包含 "omit `subagent_type`" 引导文本
   - `grep -n "omit" packages/builtin-tools/src/tools/AgentTool/prompt.ts`
   - 预期: 无输出
@@ -279,6 +298,7 @@
 ### Task 3: Fork Agent 显式参数触发 验收
 
 **前置条件:**
+
 - 启动命令: `bun run dev`（开发模式）
 - 环境变量: `FEATURE_FORK_SUBAGENT=1` 启用 fork 功能
 

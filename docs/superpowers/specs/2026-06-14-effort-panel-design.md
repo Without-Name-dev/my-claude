@@ -61,7 +61,7 @@ src/
 不动 `EffortValue` / `EffortLevel`。面板内部用一个新类型 `PanelPosition` 表示光标位置：
 
 ```ts
-type PanelPosition = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+type PanelPosition = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode'
 ```
 
 它仅在面板内部使用，不进入 AppState、不进入 settings.json、不参与 API 调用。
@@ -145,14 +145,14 @@ Effort
 
 ### 视觉规则
 
-| 元素 | 规则 |
-|---|---|
-| `▲` 光标 | 跟随 cursor 状态移动，永远指向当前 cursor 位置 |
-| 当前生效档位（active） | 当 cursor ≠ active 时，active 档渲染为加粗 + 旁标 `(active)`；当 cursor === active 时只显示 `▲`，避免双标记 |
-| ultracode 副标签 | 固定字符串 `xhigh + workflows`，dim 色 |
-| 两极文字 `Faster` / `Smarter` | 与面板等宽左右对齐；中间用一行 `─` 填充 |
-| 底栏提示 | `←/→ adjust · Enter confirm · Esc cancel`，dim 色 |
-| 标题 `Effort` | 加粗，居中或左对齐 |
+| 元素                          | 规则                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `▲` 光标                      | 跟随 cursor 状态移动，永远指向当前 cursor 位置                                                              |
+| 当前生效档位（active）        | 当 cursor ≠ active 时，active 档渲染为加粗 + 旁标 `(active)`；当 cursor === active 时只显示 `▲`，避免双标记 |
+| ultracode 副标签              | 固定字符串 `xhigh + workflows`，dim 色                                                                      |
+| 两极文字 `Faster` / `Smarter` | 与面板等宽左右对齐；中间用一行 `─` 填充                                                                     |
+| 底栏提示                      | `←/→ adjust · Enter confirm · Esc cancel`，dim 色                                                           |
+| 标题 `Effort`                 | 加粗，居中或左对齐                                                                                          |
 
 ### 双标记渲染（cursor ≠ active）
 
@@ -207,14 +207,14 @@ ultracode 是面板的"能量溢出口"。波纹从 ultracode 字符位置（右
 
 ### 字符集（强度 → 字符）
 
-| 强度 | 字符 |
-|---|---|
-| 0.0 | ` ` (空格) |
-| 0.1 | `·` |
-| 0.3 | `∙` |
-| 0.5 | `░` |
-| 0.7 | `▒` |
-| 0.9 | `▓` |
+| 强度 | 字符                             |
+| ---- | -------------------------------- |
+| 0.0  | ` ` (空格)                       |
+| 0.1  | `·`                              |
+| 0.3  | `∙`                              |
+| 0.5  | `░`                              |
+| 0.7  | `▒`                              |
+| 0.9  | `▓`                              |
 | 波峰 | `~` → `◌` → `○` → `◑` → `●` 循环 |
 
 ### 波纹数学
@@ -249,6 +249,7 @@ Ink 不支持真正的 z-index 层叠，用**字符替换**模拟：
 ### 实现位置
 
 新增（第二阶段）：
+
 - `src/components/EffortPanel/rippleAnimation.ts` — `pickChar` / `computeRippleLine` / `mergeLayers` 纯函数
 - `src/components/EffortPanel/useRippleFrame.ts` — hook，内部调 `useAnimationFrame(60)` 返回当前帧矩阵
 - 在 `EffortPanel.tsx` 的 render 中叠加（仅 cursor === 'ultracode' 时启用）
@@ -261,12 +262,12 @@ Ink 不支持真正的 z-index 层叠，用**字符替换**模拟：
 
 ### 风险与对策
 
-| 风险 | 对策 |
-|---|---|
+| 风险               | 对策                                                            |
+| ------------------ | --------------------------------------------------------------- |
 | 波纹干扰文字可读性 | 文字字符覆盖背景字符，永远胜出；波纹颜色用 `theme.textDisabled` |
-| 终端窄屏 < 60 cols | sourceX 跟随 ultracode 实际位置；窄屏时降级为单行波纹 |
-| 性能（旧机器） | `useAnimationFrame` 已自带暂停/减速 |
-| 测试稳定性 | 字符选择是纯函数，可固定 `time` 注入做帧快照测试 |
+| 终端窄屏 < 60 cols | sourceX 跟随 ultracode 实际位置；窄屏时降级为单行波纹           |
+| 性能（旧机器）     | `useAnimationFrame` 已自带暂停/减速                             |
+| 测试稳定性         | 字符选择是纯函数，可固定 `time` 注入做帧快照测试                |
 
 ## 8. 数据流
 
@@ -313,14 +314,14 @@ env CLAUDE_CODE_EFFORT_LEVEL  >  AppState.effortValue  >  model default
 
 ## 9. 边界与错误处理
 
-| 场景 | 行为 |
-|---|---|
-| 模型不支持 effort | 面板挂载但禁用，文字提示 + 仅允许 Esc（详见 §6） |
-| env override 设定 | 顶部加黄色警告行 `⚠ CLAUDE_CODE_EFFORT_LEVEL=<value> overrides this session`；光标可移动；Enter 仍写 settings 但顶部警告解释生效值不变 |
-| cursor === 'ultracode' 时 Enter | 走分支 B，输出引导文案，不调 executeEffort |
-| settings 写入失败（磁盘满/权限） | `executeEffort` 现有错误路径会返回 `result.error`，面板沿用，onDone 输出错误消息 |
-| 终端窄屏 < 60 cols | 退化为垂直列表，不阻塞首版 |
-| 用户按 Ctrl+C 之外的中断信号 | 视同 Esc，`onDone("Effort unchanged.")` |
+| 场景                                               | 行为                                                                                                                                     |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 模型不支持 effort                                  | 面板挂载但禁用，文字提示 + 仅允许 Esc（详见 §6）                                                                                         |
+| env override 设定                                  | 顶部加黄色警告行 `⚠ CLAUDE_CODE_EFFORT_LEVEL=<value> overrides this session`；光标可移动；Enter 仍写 settings 但顶部警告解释生效值不变   |
+| cursor === 'ultracode' 时 Enter                    | 走分支 B，输出引导文案，不调 executeEffort                                                                                               |
+| settings 写入失败（磁盘满/权限）                   | `executeEffort` 现有错误路径会返回 `result.error`，面板沿用，onDone 输出错误消息                                                         |
+| 终端窄屏 < 60 cols                                 | 退化为垂直列表，不阻塞首版                                                                                                               |
+| 用户按 Ctrl+C 之外的中断信号                       | 视同 Esc，`onDone("Effort unchanged.")`                                                                                                  |
 | 面板挂载后 AppState 被外部改变（如 `/model` 切换） | cursor **不订阅** active 变化，挂载时计算一次初始值后只跟随用户操作。若用户切了 model 想看新档位，关掉面板重开即可。简化实现，行为可预测 |
 
 ## 10. 测试计划
@@ -336,18 +337,21 @@ env CLAUDE_CODE_EFFORT_LEVEL  >  AppState.effortValue  >  model default
 ### 组件（`EffortPanel.test.tsx`）
 
 渲染：
+
 - 无 env 时显示基本形态
 - env override 时顶部警告 + 双标记
 - 模型不支持时禁用面板
 - ultracode 副标签 `xhigh + workflows` 出现
 
 键盘：
+
 - `←` 移动光标、`→` 移动光标、`Home/End` 跳转
 - Enter 在普通档位 → 调用 executeEffort、onDone 收到正确 message
 - Enter 在 ultracode → 不调 executeEffort、onDone 收到引导文案
 - Esc → 不调 executeEffort、onDone 收到 `"Effort unchanged."`
 
 集成（`effort.tsx` 的 call 函数）：
+
 - 无参 → 返回 `<EffortPanel>` JSX
 - 有参 → 不渲染面板，走 executeEffort
 

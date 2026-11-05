@@ -239,21 +239,37 @@ export function resetProfileCounters(): void {
 // --- END ---
 
 const reconciler = createReconciler<
-  ElementNames,
-  Props,
-  DOMElement,
-  DOMElement,
-  TextNode,
-  DOMElement,
-  unknown,
-  unknown,
-  DOMElement,
-  HostContext,
-  null, // UpdatePayload - not used in React 19
-  NodeJS.Timeout,
-  -1,
-  null
+  ElementNames, // Type
+  Props, // Props
+  DOMElement, // Container
+  DOMElement, // Instance
+  TextNode, // TextInstance
+  DOMElement, // ActivityInstance
+  unknown, // SuspenseInstance
+  unknown, // HydratableInstance
+  unknown, // FormInstance
+  DOMElement, // PublicInstance
+  HostContext, // HostContext
+  null, // ChildSet - not used in React 19
+  NodeJS.Timeout, // TimeoutHandle
+  -1, // NoTimeout
+  unknown, // TransitionStatus
+  unknown, // SuspendedState
+  unknown, // RendererInspectionConfig
+  unknown, // FormStateMarkerInstance
+  unknown, // HoistableRoot
+  unknown // Resource
 >({
+  // Fields required by @types/react-reconciler 0.33 even for minimal renderers.
+  rendererVersion: '19.2.0',
+  rendererPackageName: 'ink',
+  extraDevToolsConfig: null,
+  bindToConsole: () => () => {},
+  // Ink never suspends a commit; the reconciler types still require the hooks.
+  maySuspendCommitOnUpdate: () => false,
+  maySuspendCommitInSyncRender: () => false,
+  suspendOnActiveViewTransition: () => {},
+  getSuspendedCommitReason: () => null,
   getRootHostContext: () => ({ isInsideText: false }),
   prepareForCommit: () => {
     if (COMMIT_LOG) _prepareAt = performance.now()
@@ -471,9 +487,9 @@ const reconciler = createReconciler<
   commitTextUpdate(node: TextNode, _oldText: string, newText: string): void {
     setTextNodeValue(node, newText)
   },
-  removeChild(node, removeNode) {
+  removeChild(node: DOMElement, removeNode: DOMElement | TextNode) {
     removeChildNode(node, removeNode)
-    cleanupYogaNode(removeNode)
+    cleanupYogaNode(removeNode as DOMElement)
     if (removeNode.nodeName !== '#text') {
       const root = getRootNode(node)
       root.focusManager!.handleNodeRemoved(removeNode, root)

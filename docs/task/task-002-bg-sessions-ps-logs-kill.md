@@ -22,11 +22,11 @@
 
 ### 修改文件
 
-| 文件 | 改动 |
-|------|------|
-| `src/cli/bg.ts` | 实现 `ps` / `logs` / `kill` handler |
-| `src/utils/concurrentSessions.ts` | 扩展以便后续 attach/--bg 使用 |
-| `src/utils/taskSummary.ts` | 补充基础实现 |
+| 文件                              | 改动                                |
+| --------------------------------- | ----------------------------------- |
+| `src/cli/bg.ts`                   | 实现 `ps` / `logs` / `kill` handler |
+| `src/utils/concurrentSessions.ts` | 扩展以便后续 attach/--bg 使用       |
+| `src/utils/taskSummary.ts`        | 补充基础实现                        |
 
 ### 复用模块
 

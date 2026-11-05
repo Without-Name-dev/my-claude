@@ -33,6 +33,7 @@
 - 新增类型：`PipeTransportMode`、`TcpEndpoint`、`PipeServerOptions`
 
 PipeClient 对应扩展：
+
 - 构造函数新增可选 `TcpEndpoint` 参数
 - `connect()` 根据是否有 TCP endpoint 分派到 `connectTcp()` 或 `connectUds()`
 - TCP 连接不需要文件存在轮询，直接建立连接
@@ -49,6 +50,7 @@ PipeClient 对应扩展：
 - **存储**：module-level singleton `getLanBeacon()`/`setLanBeacon()`，不挂在 Zustand state 上
 
 关键修复：
+
 - `addMembership(group, localIp)` + `setMulticastInterface(localIp)` 指定 LAN 网卡，解决 Windows 上 WSL/Docker 虚拟网卡劫持 multicast 的问题
 - announce/cleanup 定时器移入 `bind()` 回调内，修复 socket 未就绪时发送的竞态
 
@@ -69,6 +71,7 @@ PipeClient 对应扩展：
 **Bootstrap**：`createPipeServer()` 时根据 `feature('LAN_PIPES')` 传入 TCP 选项 → 启动 `LanBeacon` → 注册 entry 携带 tcpPort
 
 **Heartbeat**（每 5 秒）：
+
 - `refreshDiscoveredPipes()` 同时包含本地 subs 和 LAN beacon peers，防止 LAN peer 状态被覆盖
 - auto-attach 循环统一遍历本地 subs + LAN peers，LAN peers 通过 TCP endpoint 连接
 - cleanup 检查 LAN beacon peers 列表，避免误删存活的 LAN 连接
@@ -114,12 +117,12 @@ PipeClient 对应扩展：
 
 从 REPL.tsx 提取 ~830 行 Pipe IPC 内联代码为 4 个独立 hook：
 
-| Hook | 行数 | 职责 |
-|------|------|------|
-| `usePipeIpc` | 623 | 生命周期：bootstrap、handlers、heartbeat、cleanup |
-| `usePipeRelay` | 38 | slave→master 消息回传（通过 `setPipeRelay` singleton） |
-| `usePipePermissionForward` | 159 | 权限请求转发 + 流式通知显示 |
-| `usePipeRouter` | 130 | selected pipe 输入路由 + role/IP 标签显示 |
+| Hook                       | 行数 | 职责                                                   |
+| -------------------------- | ---- | ------------------------------------------------------ |
+| `usePipeIpc`               | 623  | 生命周期：bootstrap、handlers、heartbeat、cleanup      |
+| `usePipeRelay`             | 38   | slave→master 消息回传（通过 `setPipeRelay` singleton） |
+| `usePipePermissionForward` | 159  | 权限请求转发 + 流式通知显示                            |
+| `usePipeRouter`            | 130  | selected pipe 输入路由 + role/IP 标签显示              |
 
 共享工具：`ndjsonFramer.ts` 替换 3 份重复的 NDJSON 解析。
 
@@ -157,6 +160,7 @@ UDS_INBOX、LAN_PIPES、MONITOR_TOOL、FORK_SUBAGENT、KAIROS、COORDINATOR_MODE
 ### 防火墙配置
 
 **Windows**（管理员 PowerShell）：
+
 ```powershell
 New-NetFirewallRule -DisplayName "Claude Code LAN Beacon (UDP)" -Direction Inbound -Protocol UDP -LocalPort 7101 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "Claude Code LAN Pipes (TCP)" -Direction Inbound -Protocol TCP -LocalPort 1024-65535 -Program (Get-Command bun).Source -Action Allow -Profile Private
@@ -164,6 +168,7 @@ New-NetFirewallRule -DisplayName "Claude Code LAN Beacon Out (UDP)" -Direction O
 ```
 
 **macOS**（首次运行时系统会弹出"允许接受传入连接"对话框，点击允许即可。手动放行）：
+
 ```bash
 # 如果使用 pf ���火墙，添加规则：
 echo "pass in proto udp from any to any port 7101" | sudo pfctl -ef -
@@ -171,6 +176,7 @@ echo "pass in proto udp from any to any port 7101" | sudo pfctl -ef -
 ```
 
 **Linux**（firewalld）：
+
 ```bash
 sudo firewall-cmd --zone=trusted --add-port=7101/udp --permanent
 sudo firewall-cmd --zone=trusted --add-port=1024-65535/tcp --permanent
@@ -178,6 +184,7 @@ sudo firewall-cmd --reload
 ```
 
 **Linux**（iptables）：
+
 ```bash
 sudo iptables -A INPUT -p udp --dport 7101 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 1024:65535 -m owner --uid-owner $(id -u) -j ACCEPT
@@ -188,7 +195,6 @@ sudo iptables-save | sudo tee /etc/iptables/rules.v4
 
 ---
 
-
 ## Daemon + Remote Control Server 还原 (2026-04-07)
 
 **分支**: `feat/daemon-remote-control-server`
@@ -198,6 +204,7 @@ sudo iptables-save | sudo tee /etc/iptables/rules.v4
 `src/commands.ts` 注册了 `remoteControlServer` 命令（双重门控 `feature('DAEMON') && feature('BRIDGE_MODE')`），但 `src/commands/remoteControlServer/` 目录缺失，`src/daemon/main.ts` 和 `src/daemon/workerRegistry.ts` 均为 stub。官方 CLI 2.1.92 中情况一致——Anthropic 已预留注册点和底层 `runBridgeHeadless()` 实现，但中间层（daemon supervisor + command 入口）未发布。
 
 通过逐级反向追踪调用链还原完整实现：
+
 ```
 /remote-control-server (slash command)
   → spawn: claude daemon start
@@ -213,6 +220,7 @@ sudo iptables-save | sudo tee /etc/iptables/rules.v4
 #### 1. Worker Registry（`src/daemon/workerRegistry.ts`）
 
 从 stub 还原为 worker 分发器：
+
 - `runDaemonWorker(kind)` 按 `kind` 分发到不同 worker 实现
 - `runRemoteControlWorker()` 从环境变量（`DAEMON_WORKER_*`）读取配置，构造 `HeadlessBridgeOpts`，调用 `runBridgeHeadless()`
 - 区分 permanent（`EXIT_CODE_PERMANENT = 78`）和 transient 错误，supervisor 据此决定重试或 park
@@ -221,6 +229,7 @@ sudo iptables-save | sudo tee /etc/iptables/rules.v4
 #### 2. Daemon Supervisor（`src/daemon/main.ts`）
 
 从 stub 还原为完整 supervisor 进程：
+
 - `daemonMain(args)` 支持子命令：`start`（启动）、`status`、`stop`、`--help`
 - `runSupervisor()` spawn `remoteControl` worker 子进程，通过环境变量传递配置
 - 指数退避重启（2s → 120s），10s 内连续崩溃 5 次则 park worker
@@ -231,11 +240,13 @@ sudo iptables-save | sudo tee /etc/iptables/rules.v4
 #### 3. Remote Control Server 命令（`src/commands/remoteControlServer/`）
 
 **`index.ts`** — Command 注册：
+
 - 类型 `local-jsx`，名称 `/remote-control-server`，别名 `/rcs`
 - 双 feature 门控：`feature('DAEMON') && feature('BRIDGE_MODE')` + `isBridgeEnabled()`
 - lazy load `remoteControlServer.tsx`
 
 **`remoteControlServer.tsx`** — REPL 内 UI：
+
 - 首次调用：前置检查（bridge 可用性 + OAuth token）→ spawn daemon 子进程
 - 再次调用：弹出管理对话框（停止/重启/继续），显示 PID 和最近 5 行日志
 - 模块级 state 跨调用保持 daemon 进程引用
@@ -249,31 +260,31 @@ DAEMON 仅有编译时 feature flag 门控，无 GrowthBook gate。
 
 ### 与 `/remote-control` 的区别
 
-| | `/remote-control` | `/remote-control-server` (daemon) |
-|---|---|---|
-| 模式 | 单会话，REPL 内交互式 bridge | 多会话，daemon 持久化服务器 |
-| 生命周期 | 跟 REPL 会话绑定 | 独立后台进程，崩溃自动重启 |
-| 并发 | 1 个远程连接 | 默认 4 个，可配置 `--capacity` |
-| 隔离 | 共享当前目录 | 支持 `worktree` 模式隔离 |
-| 底层 | `initReplBridge()` | `runBridgeHeadless()` → `runBridgeLoop()` |
+|          | `/remote-control`            | `/remote-control-server` (daemon)         |
+| -------- | ---------------------------- | ----------------------------------------- |
+| 模式     | 单会话，REPL 内交互式 bridge | 多会话，daemon 持久化服务器               |
+| 生命周期 | 跟 REPL 会话绑定             | 独立后台进程，崩溃自动重启                |
+| 并发     | 1 个远程连接                 | 默认 4 个，可配置 `--capacity`            |
+| 隔离     | 共享当前目录                 | 支持 `worktree` 模式隔离                  |
+| 底层     | `initReplBridge()`           | `runBridgeHeadless()` → `runBridgeLoop()` |
 
 ### 修改文件
 
-| 文件 | 变更 |
-|------|------|
-| `build.ts` | `DEFAULT_BUILD_FEATURES` 新增 `DAEMON` |
-| `scripts/dev.ts` | `DEFAULT_FEATURES` 新增 `DAEMON` |
-| `src/daemon/main.ts` | 从 stub 还原为 supervisor 实现 |
-| `src/daemon/workerRegistry.ts` | 从 stub 还原为 worker 分发器 |
-| `src/commands/remoteControlServer/index.ts` | **新增** command 注册 |
-| `src/commands/remoteControlServer/remoteControlServer.tsx` | **新增** REPL UI |
+| 文件                                                       | 变更                                   |
+| ---------------------------------------------------------- | -------------------------------------- |
+| `build.ts`                                                 | `DEFAULT_BUILD_FEATURES` 新增 `DAEMON` |
+| `scripts/dev.ts`                                           | `DEFAULT_FEATURES` 新增 `DAEMON`       |
+| `src/daemon/main.ts`                                       | 从 stub 还原为 supervisor 实现         |
+| `src/daemon/workerRegistry.ts`                             | 从 stub 还原为 worker 分发器           |
+| `src/commands/remoteControlServer/index.ts`                | **新增** command 注册                  |
+| `src/commands/remoteControlServer/remoteControlServer.tsx` | **新增** REPL UI                       |
 
 ### 验证
 
-| 项目 | 结果 |
-|------|------|
+| 项目            | 结果                |
+| --------------- | ------------------- |
 | `bun run build` | ✅ 成功 (490 files) |
-| tsc 新文件检查 | ✅ 无新增类型错误 |
+| tsc 新文件检查  | ✅ 无新增类型错误   |
 
 ### 使用方式
 
@@ -315,11 +326,13 @@ bun run dev daemon start --spawn-mode=worktree --capacity=8
 REPL.tsx 引用这两个组件但代码库中不存在。从官方 CLI 2.1.92 的 `cli.js` 中定位 minified 函数 `M15`（UltraplanChoiceDialog）和 `P15`（UltraplanLaunchDialog），通过符号映射表反编译为可读 TSX。
 
 **`src/components/ultraplan/UltraplanChoiceDialog.tsx`** — 远程计划批准后的选择对话框：
+
 - 3 个选项：Implement here（注入当前会话）/ Start new session（清空会话重开）/ Cancel（保存到 .md 文件）
 - 可滚动计划预览（ctrl+u/d 翻页，鼠标滚轮），自适应终端高度
 - 选择后标记远程 task 完成、清除 `ultraplanPendingChoice` 状态、归档远程 CCR session
 
 **`src/components/ultraplan/UltraplanLaunchDialog.tsx`** — 启动确认对话框：
+
 - 显示功能说明、时间估计（~10–30 min）、服务条款链接
 - 处理 Remote Control bridge 冲突（选择 run 时自动断开 bridge）
 - 首次使用时持久化 `hasSeenUltraplanTerms` 到全局配置
@@ -329,6 +342,7 @@ REPL.tsx 引用这两个组件但代码库中不存在。从官方 CLI 2.1.92 �
 #### 3. GrowthBook Fallback 加固
 
 `src/services/analytics/growthbook.ts`:
+
 - `getFeatureValue_CACHED_MAY_BE_STALE`: 将 `getLocalGateDefault()` 查找移到 try/catch 外层
 - `checkStatsigFeatureGate_CACHED_MAY_BE_STALE`: 同上，config 读取包裹在 try/catch 中
 
@@ -356,10 +370,10 @@ REPL.tsx 引用这两个组件但代码库中不存在。从官方 CLI 2.1.92 �
 
 KAIROS 定时任务系统（`tengu_kairos_cron` gate，已在上一轮 GrowthBook 启用中开启）提供了 `ScheduleCronTool` 来创建定时任务，但缺少用户可调用的 list/delete 技能。新增两个 bundled skill 补全管理闭环：
 
-| 技能 | 用法 | 功能 |
-|------|------|------|
-| `/cron-list` | `/cron-list` | 调用 `CronListTool` 列出所有定时任务，表格显示 ID、Schedule、Prompt、Recurring、Durable |
-| `/cron-delete` | `/cron-delete <job-id>` | 调用 `CronDeleteTool` 按 ID 取消指定定时任务 |
+| 技能           | 用法                    | 功能                                                                                    |
+| -------------- | ----------------------- | --------------------------------------------------------------------------------------- |
+| `/cron-list`   | `/cron-list`            | 调用 `CronListTool` 列出所有定时任务，表格显示 ID、Schedule、Prompt、Recurring、Durable |
+| `/cron-delete` | `/cron-delete <job-id>` | 调用 `CronDeleteTool` 按 ID 取消指定定时任务                                            |
 
 两个技能均受 `isKairosCronEnabled()` 门控（`feature('AGENT_TRIGGERS') && tengu_kairos_cron` gate），与 `ScheduleCronTool` 保持一致。
 
@@ -369,27 +383,27 @@ KAIROS 定时任务系统（`tengu_kairos_cron` gate，已在上一轮 GrowthBoo
 
 ### 修改文件
 
-| 文件 | 变更 |
-|------|------|
-| `build.ts` | `DEFAULT_BUILD_FEATURES` 新增 `ULTRAPLAN` |
-| `scripts/dev.ts` | `DEFAULT_FEATURES` 新增 `ULTRAPLAN` |
-| `src/commands.ts` | ultraplan 移入公开命令列表 |
-| `src/commands/ultraplan.tsx` | `isEnabled` 移除 ant-only 限制 |
-| `src/components/ultraplan/UltraplanChoiceDialog.tsx` | **新增** 从 2.1.92 反编译 |
-| `src/components/ultraplan/UltraplanLaunchDialog.tsx` | **新增** 从 2.1.92 反编译 |
-| `src/screens/REPL.tsx` | 添加 3 个 import |
-| `src/services/analytics/growthbook.ts` | fallback 链加固 |
-| `src/hooks/useAwaySummary.ts` | idle-based 离开检测 |
-| `src/skills/bundled/index.ts` | 注册 cron 技能 |
-| `src/skills/bundled/cronManage.ts` | **新增** cron list/delete 技能 |
-| `src/utils/fullscreen.ts` | fullscreen 门控修复 |
+| 文件                                                 | 变更                                      |
+| ---------------------------------------------------- | ----------------------------------------- |
+| `build.ts`                                           | `DEFAULT_BUILD_FEATURES` 新增 `ULTRAPLAN` |
+| `scripts/dev.ts`                                     | `DEFAULT_FEATURES` 新增 `ULTRAPLAN`       |
+| `src/commands.ts`                                    | ultraplan 移入公开命令列表                |
+| `src/commands/ultraplan.tsx`                         | `isEnabled` 移除 ant-only 限制            |
+| `src/components/ultraplan/UltraplanChoiceDialog.tsx` | **新增** 从 2.1.92 反编译                 |
+| `src/components/ultraplan/UltraplanLaunchDialog.tsx` | **新增** 从 2.1.92 反编译                 |
+| `src/screens/REPL.tsx`                               | 添加 3 个 import                          |
+| `src/services/analytics/growthbook.ts`               | fallback 链加固                           |
+| `src/hooks/useAwaySummary.ts`                        | idle-based 离开检测                       |
+| `src/skills/bundled/index.ts`                        | 注册 cron 技能                            |
+| `src/skills/bundled/cronManage.ts`                   | **新增** cron list/delete 技能            |
+| `src/utils/fullscreen.ts`                            | fullscreen 门控修复                       |
 
 ### 验证
 
-| 项目 | 结果 |
-|------|------|
-| `bun run build` | ✅ 成功 (480 files) |
-| `bun run lint` | ✅ 仅已有 biome-ignore 警告 |
+| 项目                  | 结果                                                               |
+| --------------------- | ------------------------------------------------------------------ |
+| `bun run build`       | ✅ 成功 (480 files)                                                |
+| `bun run lint`        | ✅ 仅已有 biome-ignore 警告                                        |
 | `/ultraplan` 手动测试 | ✅ 命令注册可见、能启动远程会话、能接收回传计划并显示 ChoiceDialog |
 
 ### Ultraplan 工作流
@@ -425,6 +439,7 @@ Claude Code 使用 GrowthBook（Anthropic 自建 proxy at api.anthropic.com）�
 **Commit 2** (`fix`): 发现 `LOCAL_GATE_DEFAULTS` 在有 API key 的用户环境下无效——因为 `isGrowthBookEnabled()` 返回 `true`（analytics 未禁用），代码走 GrowthBook 路径但缓存为空，直接返回 `defaultValue` 跳过了本地默认值。修复：在 3 个 getter 函数的缓存 miss 路径中插入 `LOCAL_GATE_DEFAULTS` 查找。同时修复 `tengu_onyx_plover` 值类型（`JSON.stringify` → 直接对象）和新增 `tengu_kairos_brief_config` 对象型 gate。
 
 修复后的 fallback 链：
+
 ```
 env overrides → config overrides → [GrowthBook 启用?]
   → 内存缓存 → 磁盘缓存 → LOCAL_GATE_DEFAULTS → defaultValue
@@ -436,28 +451,28 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 **P0 — 纯本地功能（7 个 gate）：**
 
-| Gate | 功能 |
-|------|------|
+| Gate                                     | 功能                                       |
+| ---------------------------------------- | ------------------------------------------ |
 | `tengu_keybinding_customization_release` | 自定义快捷键（~/.claude/keybindings.json） |
-| `tengu_streaming_tool_execution2` | 流式工具执行（边收边执行） |
-| `tengu_kairos_cron` | 定时任务系统 |
-| `tengu_amber_json_tools` | Token 高效 JSON 工具格式（省 ~4.5%） |
-| `tengu_immediate_model_command` | 运行中即时切换模型 |
-| `tengu_basalt_3kr` | MCP 指令增量传输 |
-| `tengu_pebble_leaf_prune` | 会话存储叶剪枝优化 |
+| `tengu_streaming_tool_execution2`        | 流式工具执行（边收边执行）                 |
+| `tengu_kairos_cron`                      | 定时任务系统                               |
+| `tengu_amber_json_tools`                 | Token 高效 JSON 工具格式（省 ~4.5%）       |
+| `tengu_immediate_model_command`          | 运行中即时切换模型                         |
+| `tengu_basalt_3kr`                       | MCP 指令增量传输                           |
+| `tengu_pebble_leaf_prune`                | 会话存储叶剪枝优化                         |
 
 **P1 — API 依赖功能（8 个 gate）：**
 
-| Gate | 功能 |
-|------|------|
-| `tengu_session_memory` | 会话记忆（跨会话上下文持久化） |
-| `tengu_passport_quail` | 自动记忆提取 |
-| `tengu_chomp_inflection` | 提示建议 |
-| `tengu_hive_evidence` | 验证代理（对抗性验证） |
-| `tengu_kairos_brief` | Brief 精简输出模式 |
-| `tengu_sedge_lantern` | 离开摘要 |
-| `tengu_onyx_plover` | 自动梦境（记忆巩固） |
-| `tengu_willow_mode` | 空闲返回提示 |
+| Gate                     | 功能                           |
+| ------------------------ | ------------------------------ |
+| `tengu_session_memory`   | 会话记忆（跨会话上下文持久化） |
+| `tengu_passport_quail`   | 自动记忆提取                   |
+| `tengu_chomp_inflection` | 提示建议                       |
+| `tengu_hive_evidence`    | 验证代理（对抗性验证）         |
+| `tengu_kairos_brief`     | Brief 精简输出模式             |
+| `tengu_sedge_lantern`    | 离开摘要                       |
+| `tengu_onyx_plover`      | 自动梦境（记忆巩固）           |
+| `tengu_willow_mode`      | 空闲返回提示                   |
 
 **Kill Switch（10 个 gate 保持 true）：**
 
@@ -465,18 +480,19 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 **新增编译 flag：**
 
-| Flag | build.ts | dev.ts | 用途 |
-|------|:--------:|:------:|------|
-| `AGENT_TRIGGERS` | ON | ON | 定时任务系统 |
-| `EXTRACT_MEMORIES` | ON | ON | 自动记忆提取 |
-| `VERIFICATION_AGENT` | ON | ON | 对抗性验证代理 |
-| `KAIROS_BRIEF` | ON | ON | Brief 精简模式 |
-| `AWAY_SUMMARY` | ON | ON | 离开摘要 |
-| `ULTRATHINK` | ON | ON | Ultrathink 扩展思考（双重门控修复） |
-| `BUILTIN_EXPLORE_PLAN_AGENTS` | ON | ON | 内置 Explore/Plan agents（双重门控修复） |
-| `LODESTONE` | ON | ON | Deep link 协议注册（双重门控修复） |
+| Flag                          | build.ts | dev.ts | 用途                                     |
+| ----------------------------- | :------: | :----: | ---------------------------------------- |
+| `AGENT_TRIGGERS`              |    ON    |   ON   | 定时任务系统                             |
+| `EXTRACT_MEMORIES`            |    ON    |   ON   | 自动记忆提取                             |
+| `VERIFICATION_AGENT`          |    ON    |   ON   | 对抗性验证代理                           |
+| `KAIROS_BRIEF`                |    ON    |   ON   | Brief 精简模式                           |
+| `AWAY_SUMMARY`                |    ON    |   ON   | 离开摘要                                 |
+| `ULTRATHINK`                  |    ON    |   ON   | Ultrathink 扩展思考（双重门控修复）      |
+| `BUILTIN_EXPLORE_PLAN_AGENTS` |    ON    |   ON   | 内置 Explore/Plan agents（双重门控修复） |
+| `LODESTONE`                   |    ON    |   ON   | Deep link 协议注册（双重门控修复）       |
 
 **排除的编译 flag：**
+
 - `KAIROS` — 拉入 `useProactive.js`（缺失文件），`KAIROS_BRIEF` 足够
 - `TERMINAL_PANEL` — 拉入 `TerminalCaptureTool`（缺失文件）
 
@@ -486,23 +502,23 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 ### 修改文件
 
-| 文件 | 变更 |
-|------|------|
-| `build.ts` | `DEFAULT_BUILD_FEATURES` 新增 8 个编译 flag |
-| `scripts/dev.ts` | `DEFAULT_FEATURES` 新增 8 个编译 flag |
-| `src/services/analytics/growthbook.ts` | 新增 `LOCAL_GATE_DEFAULTS` 映射（27 gates）+ `getLocalGateDefault()` + 修改 4 个 getter 的 fallback 链 |
-| `scripts/verify-gates.ts` | 新增 gate 验证脚本（30 gates） |
-| `docs/features/growthbook-enablement-plan.md` | 完整研究报告和启用计划 |
-| `docs/features/feature-flags-audit-complete.md` | 更新启用状态表 |
+| 文件                                            | 变更                                                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `build.ts`                                      | `DEFAULT_BUILD_FEATURES` 新增 8 个编译 flag                                                            |
+| `scripts/dev.ts`                                | `DEFAULT_FEATURES` 新增 8 个编译 flag                                                                  |
+| `src/services/analytics/growthbook.ts`          | 新增 `LOCAL_GATE_DEFAULTS` 映射（27 gates）+ `getLocalGateDefault()` + 修改 4 个 getter 的 fallback 链 |
+| `scripts/verify-gates.ts`                       | 新增 gate 验证脚本（30 gates）                                                                         |
+| `docs/features/growthbook-enablement-plan.md`   | 完整研究报告和启用计划                                                                                 |
+| `docs/features/feature-flags-audit-complete.md` | 更新启用状态表                                                                                         |
 
 ### 验证
 
-| 项目 | 结果 |
-|------|------|
-| `bun run build` | ✅ 成功 (481 files) |
-| `bun test` | ✅ 2106 pass / 23 fail（均为已有问题）/ 0 新增失败 |
-| `verify-gates.ts` | ✅ 30/30 PASS |
-| `/brief` 手动测试 | ✅ 可用（fallback 修复后） |
+| 项目              | 结果                                               |
+| ----------------- | -------------------------------------------------- |
+| `bun run build`   | ✅ 成功 (481 files)                                |
+| `bun test`        | ✅ 2106 pass / 23 fail（均为已有问题）/ 0 新增失败 |
+| `verify-gates.ts` | ✅ 30/30 PASS                                      |
+| `/brief` 手动测试 | ✅ 可用（fallback 修复后）                         |
 
 ---
 
@@ -521,26 +537,26 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 **新启用的 3 个 flag：**
 
-| Flag | 功能 | 用户可感知效果 |
-|------|------|---------------|
-| `SHOT_STATS` | shot 分布统计 | `/stats` 面板显示 shot 分布和 one-shot rate |
-| `TOKEN_BUDGET` | token 预算目标 | 支持 `+500k` / `spend 2M tokens` 语法，自动续写直到达标，带进度条 |
-| `PROMPT_CACHE_BREAK_DETECTION` | cache key 变化检测 | 内部诊断，`--debug` 模式可见，写 diff 到临时目录 |
+| Flag                           | 功能               | 用户可感知效果                                                    |
+| ------------------------------ | ------------------ | ----------------------------------------------------------------- |
+| `SHOT_STATS`                   | shot 分布统计      | `/stats` 面板显示 shot 分布和 one-shot rate                       |
+| `TOKEN_BUDGET`                 | token 预算目标     | 支持 `+500k` / `spend 2M tokens` 语法，自动续写直到达标，带进度条 |
+| `PROMPT_CACHE_BREAK_DETECTION` | cache key 变化检测 | 内部诊断，`--debug` 模式可见，写 diff 到临时目录                  |
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `build.ts` | `DEFAULT_BUILD_FEATURES` 新增 3 个 flag |
-| `scripts/dev.ts` | `DEFAULT_FEATURES` 新增 3 个 flag |
+| 文件                        | 变更                                    |
+| --------------------------- | --------------------------------------- |
+| `build.ts`                  | `DEFAULT_BUILD_FEATURES` 新增 3 个 flag |
+| `scripts/dev.ts`            | `DEFAULT_FEATURES` 新增 3 个 flag       |
 | `package.json` / `bun.lock` | 新增 `openai` 依赖（OpenAI 兼容层需要） |
 
 **新增文档：**
 
-| 文件 | 说明 |
-|------|------|
-| `docs/features/feature-flags-codex-review.md` | Codex 独立复核报告：修正后的 5 类分类、恢复优先级、三轴分类标准建议 |
-| `docs/features/feature-flags-audit-complete.md` | 标记所有已启用 flag 的状态（`[build: ON]` / `[dev: ON]`） |
+| 文件                                            | 说明                                                                |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| `docs/features/feature-flags-codex-review.md`   | Codex 独立复核报告：修正后的 5 类分类、恢复优先级、三轴分类标准建议 |
+| `docs/features/feature-flags-audit-complete.md` | 标记所有已启用 flag 的状态（`[build: ON]` / `[dev: ON]`）           |
 
 **Codex 复核关键发现：**
 
@@ -563,21 +579,21 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 **新增文件：**
 
-| 文件 | 说明 |
-|------|------|
+| 文件                          | 说明                                                                  |
+| ----------------------------- | --------------------------------------------------------------------- |
 | `src/skills/bundled/dream.ts` | `/dream` skill 注册，调用 `buildConsolidationPrompt()` 生成整理提示词 |
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `src/skills/bundled/index.ts` | 导入并注册 `registerDreamSkill()` |
+| 文件                                                    | 变更                                                                |
+| ------------------------------------------------------- | ------------------------------------------------------------------- |
+| `src/skills/bundled/index.ts`                           | 导入并注册 `registerDreamSkill()`                                   |
 | `src/components/tasks/src/tasks/DreamTask/DreamTask.ts` | `any` 存根 → 从 `src/tasks/DreamTask/DreamTask.js` 重新导出完整类型 |
 
 **新增文档：**
 
-| 文件 | 说明 |
-|------|------|
+| 文件                          | 说明                                        |
+| ----------------------------- | ------------------------------------------- |
 | `docs/features/auto-dream.md` | Auto Dream 原理、触发机制、使用场景完整说明 |
 
 ---
@@ -596,25 +612,25 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 ## Computer Use Windows 增强：窗口绑定截图 + UI Automation + OCR (2026-04-03)
 
-
 在三平台基础实现之上，利用 Windows 原生 API 增强 Computer Use 的 Windows 专属能力。
 
 **新增文件：**
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `src/utils/computerUse/win32/windowCapture.ts` | — | `PrintWindow` 窗口绑定截图，支持被遮挡/后台窗口 |
-| `src/utils/computerUse/win32/windowEnum.ts` | — | `EnumWindows` 精确窗口枚举（HWND + PID + 标题） |
-| `src/utils/computerUse/win32/uiAutomation.ts` | — | `IUIAutomation` UI 元素树读取、按钮点击、文本写入、坐标识别 |
-| `src/utils/computerUse/win32/ocr.ts` | — | `Windows.Media.Ocr` 截图+文字识别（英语+中文） |
+| 文件                                           | 行数 | 说明                                                        |
+| ---------------------------------------------- | ---- | ----------------------------------------------------------- |
+| `src/utils/computerUse/win32/windowCapture.ts` | —    | `PrintWindow` 窗口绑定截图，支持被遮挡/后台窗口             |
+| `src/utils/computerUse/win32/windowEnum.ts`    | —    | `EnumWindows` 精确窗口枚举（HWND + PID + 标题）             |
+| `src/utils/computerUse/win32/uiAutomation.ts`  | —    | `IUIAutomation` UI 元素树读取、按钮点击、文本写入、坐标识别 |
+| `src/utils/computerUse/win32/ocr.ts`           | —    | `Windows.Media.Ocr` 截图+文字识别（英语+中文）              |
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
+| 文件                                                     | 变更                                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------------------- |
 | `packages/@ant/computer-use-swift/src/backends/win32.ts` | `listRunning` 改用 EnumWindows；新增 `captureWindowTarget` 窗口级截图 |
 
 **验证结果（Windows x64）：**
+
 - 窗口枚举：38 个可见窗口 ✅
 - 窗口截图：VS Code 2575x1415, 444KB ✅（PrintWindow, 即使被遮挡）
 - UI Automation：坐标元素识别 ✅
@@ -631,16 +647,16 @@ env overrides → config overrides → [GrowthBook 启用?]
 
 **Phase 2 — 移除 src/ 中 8 处 macOS 硬编码：**
 
-| 文件 | 改动 |
-|------|------|
-| `src/main.tsx:1605` | 去掉 `getPlatform() === 'macos'` |
-| `src/utils/computerUse/swiftLoader.ts` | 移除 darwin-only throw |
-| `src/utils/computerUse/executor.ts` | 平台守卫扩展为 darwin+win32+linux；剪贴板按平台分发（pbcopy→PowerShell→xclip）；paste 快捷键 command→ctrl |
-| `src/utils/computerUse/drainRunLoop.ts` | 非 darwin 直接执行 fn() |
-| `src/utils/computerUse/escHotkey.ts` | 非 darwin 返回 false（Ctrl+C fallback） |
-| `src/utils/computerUse/hostAdapter.ts` | 非 darwin 权限检查返回 granted |
-| `src/utils/computerUse/common.ts` | platform + screenshotFiltering 动态化 |
-| `src/utils/computerUse/gates.ts` | enabled:true + hasRequiredSubscription→true |
+| 文件                                    | 改动                                                                                                      |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `src/main.tsx:1605`                     | 去掉 `getPlatform() === 'macos'`                                                                          |
+| `src/utils/computerUse/swiftLoader.ts`  | 移除 darwin-only throw                                                                                    |
+| `src/utils/computerUse/executor.ts`     | 平台守卫扩展为 darwin+win32+linux；剪贴板按平台分发（pbcopy→PowerShell→xclip）；paste 快捷键 command→ctrl |
+| `src/utils/computerUse/drainRunLoop.ts` | 非 darwin 直接执行 fn()                                                                                   |
+| `src/utils/computerUse/escHotkey.ts`    | 非 darwin 返回 false（Ctrl+C fallback）                                                                   |
+| `src/utils/computerUse/hostAdapter.ts`  | 非 darwin 权限检查返回 granted                                                                            |
+| `src/utils/computerUse/common.ts`       | platform + screenshotFiltering 动态化                                                                     |
+| `src/utils/computerUse/gates.ts`        | enabled:true + hasRequiredSubscription→true                                                               |
 
 **Phase 3 — input/swift 包 dispatcher + backends 三平台架构：**
 
@@ -657,6 +673,7 @@ packages/@ant/computer-use-{input,swift}/src/
 **编译开关：** `CHICAGO_MCP` 加入 DEFAULT_FEATURES + DEFAULT_BUILD_FEATURES
 
 **验证结果（Windows x64）：**
+
 - `isSupported: true` ✅
 - 鼠标定位 + 前台窗口信息 ✅
 - 双显示器检测 2560x1440 × 2 ✅
@@ -671,10 +688,10 @@ packages/@ant/computer-use-{input,swift}/src/
 
 **新增文件：**
 
-| 文件 | 说明 |
-|------|------|
-| `vendor/audio-capture/{platform}/audio-capture.node` | 6 个平台的原生音频二进制（cpal，来自参考项目） |
-| `vendor/audio-capture-src/index.ts` | 原生模块加载器（按 `${arch}-${platform}` 动态 require `.node`） |
+| 文件                                                 | 说明                                                            |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| `vendor/audio-capture/{platform}/audio-capture.node` | 6 个平台的原生音频二进制（cpal，来自参考项目）                  |
+| `vendor/audio-capture-src/index.ts`                  | 原生模块加载器（按 `${arch}-${platform}` 动态 require `.node`） |
 
 ---
 
@@ -684,21 +701,21 @@ packages/@ant/computer-use-{input,swift}/src/
 
 **替换文件：**
 
-| 文件 | 变更 |
-|------|------|
+| 文件                                               | 变更                      |
+| -------------------------------------------------- | ------------------------- |
 | `packages/@ant/claude-for-chrome-mcp/src/index.ts` | 6 行 stub → 15 行完整导出 |
 
 **新增文件：**
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `packages/@ant/claude-for-chrome-mcp/src/types.ts` | 134 | 类型定义 |
-| `packages/@ant/claude-for-chrome-mcp/src/browserTools.ts` | 546 | 17 个浏览器工具定义 |
-| `packages/@ant/claude-for-chrome-mcp/src/mcpServer.ts` | 96 | MCP Server |
-| `packages/@ant/claude-for-chrome-mcp/src/mcpSocketClient.ts` | 493 | Unix Socket 客户端 |
-| `packages/@ant/claude-for-chrome-mcp/src/mcpSocketPool.ts` | 327 | 多 Profile 连接池 |
-| `packages/@ant/claude-for-chrome-mcp/src/bridgeClient.ts` | 1126 | Bridge WebSocket 客户端 |
-| `packages/@ant/claude-for-chrome-mcp/src/toolCalls.ts` | 301 | 工具调用路由 |
+| 文件                                                         | 行数 | 说明                    |
+| ------------------------------------------------------------ | ---- | ----------------------- |
+| `packages/@ant/claude-for-chrome-mcp/src/types.ts`           | 134  | 类型定义                |
+| `packages/@ant/claude-for-chrome-mcp/src/browserTools.ts`    | 546  | 17 个浏览器工具定义     |
+| `packages/@ant/claude-for-chrome-mcp/src/mcpServer.ts`       | 96   | MCP Server              |
+| `packages/@ant/claude-for-chrome-mcp/src/mcpSocketClient.ts` | 493  | Unix Socket 客户端      |
+| `packages/@ant/claude-for-chrome-mcp/src/mcpSocketPool.ts`   | 327  | 多 Profile 连接池       |
+| `packages/@ant/claude-for-chrome-mcp/src/bridgeClient.ts`    | 1126 | Bridge WebSocket 客户端 |
+| `packages/@ant/claude-for-chrome-mcp/src/toolCalls.ts`       | 301  | 工具调用路由            |
 
 **不需要 feature flag，不需要改 dev.ts/build.ts，不改 src/ 下任何文件。**
 
@@ -714,18 +731,18 @@ packages/@ant/computer-use-{input,swift}/src/
 
 **改动文件（10 个，+384 / -134）：**
 
-| 文件 | 变更 |
-|------|------|
-| `.github/workflows/ci.yml` | CI runner 从 `ubuntu-latest` 改为 `macos-latest` |
-| `README.md` | TODO 列表新增 "OpenAI 接口兼容" 条目 |
-| `src/components/ConsoleOAuthFlow.tsx` | 新增 `openai_chat_api` OAuth state（含 Base URL / API Key / 3 个模型映射字段）；idle 选择列表新增 "OpenAI Compatible" 选项；完整表单 UI（Tab 切换、Enter 保存）；保存时写入 `modelType: 'openai'` + env 到 settings.json；OAuth 登录时重置 `modelType` 为 `anthropic` |
-| `src/services/api/openai/index.ts` | 从直接 `yield* adaptOpenAIStreamToAnthropic()` 改为完整流处理循环：累积 content blocks（text/tool_use/thinking）、按 `content_block_stop` yield `AssistantMessage`、同时 yield `StreamEvent` 用于实时显示；错误处理改用新签名 `createAssistantAPIErrorMessage({ content, apiError, error })` |
-| `src/services/api/openai/convertMessages.ts` | 输入类型从 Anthropic SDK `BetaMessageParam[]` 改为内部 `(UserMessage \| AssistantMessage)[]`；通过 `msg.type` 而非 `msg.role` 判断角色；从 `msg.message.content` 读取内容；跳过 `cache_edits` / `server_tool_use` 等内部 block 类型 |
-| `src/services/api/openai/modelMapping.ts` | 移除 `OPENAI_MODEL_MAP` JSON 环境变量 + 缓存机制；新增 `getModelFamily()` 按 haiku/sonnet/opus 分类；解析优先级改为：`OPENAI_MODEL` → `ANTHROPIC_DEFAULT_{FAMILY}_MODEL` → `DEFAULT_MODEL_MAP` → 原名透传 |
-| `src/services/api/openai/__tests__/convertMessages.test.ts` | 测试输入从裸 `{ role, content }` 改为 `makeUserMsg()` / `makeAssistantMsg()` 包装的内部格式 |
-| `src/services/api/openai/__tests__/modelMapping.test.ts` | 测试从 `OPENAI_MODEL_MAP` 改为 `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`；新增 3 个 env var override 测试 |
-| `src/utils/model/providers.ts` | `getAPIProvider()` 新增最高优先级：从 settings.json `modelType` 字段判断；环境变量 `CLAUDE_CODE_USE_OPENAI` 降为次优先 |
-| `src/utils/settings/types.ts` | `SettingsSchema` 新增 `modelType` 字段：`z.enum(['anthropic', 'openai']).optional()` |
+| 文件                                                        | 变更                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/ci.yml`                                  | CI runner 从 `ubuntu-latest` 改为 `macos-latest`                                                                                                                                                                                                                                             |
+| `README.md`                                                 | TODO 列表新增 "OpenAI 接口兼容" 条目                                                                                                                                                                                                                                                         |
+| `src/components/ConsoleOAuthFlow.tsx`                       | 新增 `openai_chat_api` OAuth state（含 Base URL / API Key / 3 个模型映射字段）；idle 选择列表新增 "OpenAI Compatible" 选项；完整表单 UI（Tab 切换、Enter 保存）；保存时写入 `modelType: 'openai'` + env 到 settings.json；OAuth 登录时重置 `modelType` 为 `anthropic`                        |
+| `src/services/api/openai/index.ts`                          | 从直接 `yield* adaptOpenAIStreamToAnthropic()` 改为完整流处理循环：累积 content blocks（text/tool_use/thinking）、按 `content_block_stop` yield `AssistantMessage`、同时 yield `StreamEvent` 用于实时显示；错误处理改用新签名 `createAssistantAPIErrorMessage({ content, apiError, error })` |
+| `src/services/api/openai/convertMessages.ts`                | 输入类型从 Anthropic SDK `BetaMessageParam[]` 改为内部 `(UserMessage \| AssistantMessage)[]`；通过 `msg.type` 而非 `msg.role` 判断角色；从 `msg.message.content` 读取内容；跳过 `cache_edits` / `server_tool_use` 等内部 block 类型                                                          |
+| `src/services/api/openai/modelMapping.ts`                   | 移除 `OPENAI_MODEL_MAP` JSON 环境变量 + 缓存机制；新增 `getModelFamily()` 按 haiku/sonnet/opus 分类；解析优先级改为：`OPENAI_MODEL` → `ANTHROPIC_DEFAULT_{FAMILY}_MODEL` → `DEFAULT_MODEL_MAP` → 原名透传                                                                                    |
+| `src/services/api/openai/__tests__/convertMessages.test.ts` | 测试输入从裸 `{ role, content }` 改为 `makeUserMsg()` / `makeAssistantMsg()` 包装的内部格式                                                                                                                                                                                                  |
+| `src/services/api/openai/__tests__/modelMapping.test.ts`    | 测试从 `OPENAI_MODEL_MAP` 改为 `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`；新增 3 个 env var override 测试                                                                                                                                                                                |
+| `src/utils/model/providers.ts`                              | `getAPIProvider()` 新增最高优先级：从 settings.json `modelType` 字段判断；环境变量 `CLAUDE_CODE_USE_OPENAI` 降为次优先                                                                                                                                                                       |
+| `src/utils/settings/types.ts`                               | `SettingsSchema` 新增 `modelType` 字段：`z.enum(['anthropic', 'openai']).optional()`                                                                                                                                                                                                         |
 
 **关键设计决策：**
 
@@ -763,13 +780,13 @@ Remote Control 功能将本地 CLI 注册为 bridge 环境，生成可分享的 
 
 **改动文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `scripts/dev.ts` | `DEFAULT_FEATURES` 加入 `"BRIDGE_MODE"`，dev 模式默认启用 |
-| `src/bridge/peerSessions.ts` | stub → 完整实现：通过 bridge API 发送跨会话消息，含三层安全防护（trim + validateBridgeId 白名单 + encodeURIComponent） |
-| `src/bridge/webhookSanitizer.ts` | stub → 完整实现：正则 redact 8 类 secret（GitHub/Anthropic/AWS/npm/Slack token），先 redact 再截断，失败返回安全占位符 |
-| `src/entrypoints/sdk/controlTypes.ts` | 12 个 `any` stub → `z.infer<ReturnType<typeof XxxSchema>>` 从现有 Zod schema 推导类型 |
-| `src/hooks/useReplBridge.tsx` | `tengu_bridge_system_init` 默认值 `false` → `true`，使 app 端显示 "active" 而非卡在 "connecting" |
+| 文件                                  | 变更                                                                                                                   |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `scripts/dev.ts`                      | `DEFAULT_FEATURES` 加入 `"BRIDGE_MODE"`，dev 模式默认启用                                                              |
+| `src/bridge/peerSessions.ts`          | stub → 完整实现：通过 bridge API 发送跨会话消息，含三层安全防护（trim + validateBridgeId 白名单 + encodeURIComponent） |
+| `src/bridge/webhookSanitizer.ts`      | stub → 完整实现：正则 redact 8 类 secret（GitHub/Anthropic/AWS/npm/Slack token），先 redact 再截断，失败返回安全占位符 |
+| `src/entrypoints/sdk/controlTypes.ts` | 12 个 `any` stub → `z.infer<ReturnType<typeof XxxSchema>>` 从现有 Zod schema 推导类型                                  |
+| `src/hooks/useReplBridge.tsx`         | `tengu_bridge_system_init` 默认值 `false` → `true`，使 app 端显示 "active" 而非卡在 "connecting"                       |
 
 **关键设计决策：**
 
@@ -795,12 +812,12 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `src/constants/keys.ts` | `getGrowthBookClientKey()` 优先读取 `CLAUDE_GB_ADAPTER_KEY` 环境变量 |
-| `src/services/analytics/growthbook.ts` | `isGrowthBookEnabled()` 适配器模式下直接返回 `true`，绕过 1P event logging 门控 |
-| `src/services/analytics/growthbook.ts` | `getGrowthBookClient()` base URL 优先使用 `CLAUDE_GB_ADAPTER_URL` |
-| `docs/internals/growthbook-adapter.mdx` | 新增适配器配置文档，含全部 ~58 个 feature key 列表 |
+| 文件                                    | 变更                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------- |
+| `src/constants/keys.ts`                 | `getGrowthBookClientKey()` 优先读取 `CLAUDE_GB_ADAPTER_KEY` 环境变量            |
+| `src/services/analytics/growthbook.ts`  | `isGrowthBookEnabled()` 适配器模式下直接返回 `true`，绕过 1P event logging 门控 |
+| `src/services/analytics/growthbook.ts`  | `getGrowthBookClient()` base URL 优先使用 `CLAUDE_GB_ADAPTER_URL`               |
+| `docs/internals/growthbook-adapter.mdx` | 新增适配器配置文档，含全部 ~58 个 feature key 列表                              |
 
 **用法：** `CLAUDE_GB_ADAPTER_URL=https://gb.example.com/ CLAUDE_GB_ADAPTER_KEY=sdk-xxx bun run dev`
 
@@ -812,10 +829,10 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `src/services/analytics/datadog.ts` | `DATADOG_LOGS_ENDPOINT` 和 `DATADOG_CLIENT_TOKEN` 从硬编码常量改为读取 `process.env.DATADOG_LOGS_ENDPOINT` / `process.env.DATADOG_API_KEY`，默认空字符串；`initializeDatadog()` 增加守卫：端点或 Token 未配置时直接返回 `false` |
-| `docs/telemetry-remote-config-audit.md` | 更新第 1 节，反映新的环境变量配置方式 |
+| 文件                                    | 变更                                                                                                                                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/services/analytics/datadog.ts`     | `DATADOG_LOGS_ENDPOINT` 和 `DATADOG_CLIENT_TOKEN` 从硬编码常量改为读取 `process.env.DATADOG_LOGS_ENDPOINT` / `process.env.DATADOG_API_KEY`，默认空字符串；`initializeDatadog()` 增加守卫：端点或 Token 未配置时直接返回 `false` |
+| `docs/telemetry-remote-config-audit.md` | 更新第 1 节，反映新的环境变量配置方式                                                                                                                                                                                           |
 
 **效果：** 默认不向任何外部发送数据；设置两个环境变量即可接入自己的 Datadog 实例。原有 `DISABLE_TELEMETRY`、privacy level、sink killswitch 等防线保留。
 
@@ -829,20 +846,20 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 
 **新增文件：**
 
-| 文件 | 说明 |
-|------|------|
+| 文件                  | 说明                                                                                                                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/utils/sentry.ts` | 核心模块：`initSentry()`、`captureException()`、`setTag()`、`setUser()`、`closeSentry()`；`beforeSend` 过滤 auth headers 等敏感信息；忽略 ECONNREFUSED/AbortError 等非 actionable 错误 |
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
-| `src/utils/errorLogSink.ts` | `logErrorImpl` 末尾调用 `captureException()`，所有经 `logError()` 的错误自动上报 |
-| `src/components/SentryErrorBoundary.ts` | 添加 `componentDidCatch`，React 组件渲染错误上报到 Sentry（含 componentStack） |
-| `src/entrypoints/init.ts` | 网络配置后调用 `initSentry()` |
-| `src/utils/gracefulShutdown.ts` | 优雅关闭时 flush Sentry 事件 |
-| `src/screens/REPL.tsx:2809` | `fireCompanionObserver` 调用增加 `typeof` 防护，BUDDY feature 启用时不报错（TODO: 待实现） |
-| `package.json` | devDependencies 新增 `@sentry/node` |
+| 文件                                    | 变更                                                                                       |
+| --------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `src/utils/errorLogSink.ts`             | `logErrorImpl` 末尾调用 `captureException()`，所有经 `logError()` 的错误自动上报           |
+| `src/components/SentryErrorBoundary.ts` | 添加 `componentDidCatch`，React 组件渲染错误上报到 Sentry（含 componentStack）             |
+| `src/entrypoints/init.ts`               | 网络配置后调用 `initSentry()`                                                              |
+| `src/utils/gracefulShutdown.ts`         | 优雅关闭时 flush Sentry 事件                                                               |
+| `src/screens/REPL.tsx:2809`             | `fireCompanionObserver` 调用增加 `typeof` 防护，BUDDY feature 启用时不报错（TODO: 待实现） |
+| `package.json`                          | devDependencies 新增 `@sentry/node`                                                        |
 
 **用法：** `SENTRY_DSN=https://xxx@xxx.ingest.sentry.io/xxx bun run dev`
 
@@ -866,21 +883,21 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 
 **新增文件：**
 
-| 文件 | 说明 |
-|------|------|
-| `src/tools/WebSearchTool/adapters/types.ts` | 适配器接口定义：`WebSearchAdapter`、`SearchResult`、`SearchOptions`、`SearchProgress` |
-| `src/tools/WebSearchTool/adapters/apiAdapter.ts` | API 适配器 — 将原有 `queryModelWithStreaming` 逻辑封装为 `ApiSearchAdapter` |
-| `src/tools/WebSearchTool/adapters/bingAdapter.ts` | Bing 适配器 — 直接抓取 Bing HTML，正则提取搜索结果 |
-| `src/tools/WebSearchTool/adapters/index.ts` | 适配器工厂 — 根据环境变量 / API Base URL 选择后端 |
-| `src/tools/WebSearchTool/__tests__/bingAdapter.test.ts` | Bing 适配器单元测试（32 cases：decodeHtmlEntities、extractBingResults、search mock） |
-| `src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts` | Bing 适配器集成测试 — 真实网络请求验证 |
+| 文件                                                           | 说明                                                                                  |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `src/tools/WebSearchTool/adapters/types.ts`                    | 适配器接口定义：`WebSearchAdapter`、`SearchResult`、`SearchOptions`、`SearchProgress` |
+| `src/tools/WebSearchTool/adapters/apiAdapter.ts`               | API 适配器 — 将原有 `queryModelWithStreaming` 逻辑封装为 `ApiSearchAdapter`           |
+| `src/tools/WebSearchTool/adapters/bingAdapter.ts`              | Bing 适配器 — 直接抓取 Bing HTML，正则提取搜索结果                                    |
+| `src/tools/WebSearchTool/adapters/index.ts`                    | 适配器工厂 — 根据环境变量 / API Base URL 选择后端                                     |
+| `src/tools/WebSearchTool/__tests__/bingAdapter.test.ts`        | Bing 适配器单元测试（32 cases：decodeHtmlEntities、extractBingResults、search mock）  |
+| `src/tools/WebSearchTool/__tests__/bingAdapter.integration.ts` | Bing 适配器集成测试 — 真实网络请求验证                                                |
 
 **重构文件：**
 
-| 文件 | 变更 |
-|------|------|
+| 文件                                       | 变更                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
 | `src/tools/WebSearchTool/WebSearchTool.ts` | 从直接调用 API 改为 `createAdapter()` 工厂模式；`isEnabled()` 始终返回 true；删除 ~200 行内联 API 调用逻辑 |
-| `src/tools/WebFetchTool/utils.ts` | `skipWebFetchPreflight` 默认值从 `!undefined`（即 true）改为显式 `=== false`，使域名预检默认启用 |
+| `src/tools/WebFetchTool/utils.ts`          | `skipWebFetchPreflight` 默认值从 `!undefined`（即 true）改为显式 `=== false`，使域名预检默认启用           |
 
 **Bing 适配器关键技术细节：**
 
@@ -899,6 +916,7 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 项目中发现三处 anti-distillation 相关代码，全部移除。
 
 **移除内容：**
+
 - `src/services/api/claude.ts` — 删除 fake_tools 注入逻辑（原第 302-314 行），该代码通过 `ANTI_DISTILLATION_CC` feature flag 在 API 请求中注入 `anti_distillation: ['fake_tools']`，使服务端在响应中混入虚假工具调用以污染蒸馏数据
 - `src/utils/betas.ts` — 删除 connector-text summarization beta 注入块及 `SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER` 导入，该机制让服务端缓冲工具调用间的 assistant 文本并摘要化返回
 - `src/constants/betas.ts` — 删除 `SUMMARIZE_CONNECTOR_TEXT_BETA_HEADER` 常量定义（原第 23-25 行）
@@ -911,12 +929,14 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 合入 `pr/smallflyingpig/36` 分支（支持 buddy 命令 + 修复 rehatch），并修正 feature flag 使用方式。
 
 **合入内容（来自 PR）：**
+
 - `src/commands/buddy/buddy.ts` — 新增 `/buddy` 命令，支持 hatch / rehatch / pet / mute / unmute 子命令
 - `src/commands/buddy/index.ts` — 从 stub 改为正确的 `Command` 类型导出
 - `src/buddy/companion.ts` — 新增 `generateSeed()`，`getCompanion()` 支持 seed 驱动的可复现 rolling
 - `src/buddy/types.ts` — `CompanionSoul` 增加 `seed?` 字段
 
 **合并后修正：**
+
 - `src/entrypoints/cli.tsx` — PR 硬编码了 `const feature = (name) => name === "BUDDY"`，违反 feature flag 规范，恢复为标准 `import { feature } from 'bun:bundle'`
 - `src/commands.ts` — PR 用静态 `import buddy` 绕过了 feature gate，恢复为 `feature('BUDDY') ? require(...) : null` + 条件展开
 - `src/commands/buddy/buddy.ts` — 删除未使用的 `companionInfoText` 函数和多余的 `Roll`/`SPECIES` import
@@ -931,11 +951,13 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 反编译丢失了 auto mode 分类器的三个 prompt 模板文件，代码逻辑完整但无法运行。
 
 **新增：**
+
 - `yolo-classifier-prompts/auto_mode_system_prompt.txt` — 主系统提示词
 - `yolo-classifier-prompts/permissions_external.txt` — 外部权限模板（用户规则替换默认值）
 - `yolo-classifier-prompts/permissions_anthropic.txt` — 内部权限模板（用户规则追加）
 
 **改动：**
+
 - `scripts/dev.ts` + `build.ts` — 扫描 `FEATURE_*` 环境变量注入 Bun `--feature`
 - `cli.tsx` — 启动时打印已启用的 feature
 - `permissionSetup.ts` — `AUTO_MODE_ENABLED_DEFAULT` 由 `feature('TRANSCRIPT_CLASSIFIER')` 决定，开 feature 即开 auto mode
@@ -955,6 +977,7 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 `cli.tsx`, `model.ts`, `context.ts`, `effort.ts`, `thinking.ts`, `undercover.ts`, `Spinner.tsx`, `AntModelSwitchCallout.tsx`(新建), `UndercoverAutoCallout.tsx`(新建)
 
 注意：
+
 - `USER_TYPE=ant` 启用 alt-screen 全屏模式，中心区域满屏是预期行为
 - `global.d.ts` 中剩余未 stub 的全局函数（`getAntModels` 等）遇到 `X is not defined` 时按同样模式处理
 
@@ -966,12 +989,13 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 
 **修改文件：**
 
-| 文件 | 变更 |
-|------|------|
+| 文件                                  | 变更                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/components/ConsoleOAuthFlow.tsx` | `OAuthStatus` 类型新增 `custom_platform` state（含 `baseUrl`、`apiKey`、`haikuModel`、`sonnetModel`、`opusModel`、`activeField`）；`idle` case Select 选项新增 Custom Platform 并排第一位；新增 `custom_platform` case 渲染 5 字段表单（Tab/Shift+Tab 切换、focus 高亮、Enter 跳转/保存）；Select onChange 处理 `custom_platform` 初始状态（从 `process.env` 预填当前值）；`OAuthStatusMessageProps` 类型及调用处新增 `onDone` prop |
-| `src/components/ConsoleOAuthFlow.tsx` | 新增 `updateSettingsForSource` import |
+| `src/components/ConsoleOAuthFlow.tsx` | 新增 `updateSettingsForSource` import                                                                                                                                                                                                                                                                                                                                                                                               |
 
 **UI 交互：**
+
 - 5 个字段同屏：Base URL、API Key、Haiku Model、Sonnet Model、Opus Model
 - 当前活动字段的标签用 `suggestion` 背景色 + `inverseText` 反色高亮
 - Tab / Shift+Tab 在字段间切换，各自保留输入值
@@ -980,6 +1004,7 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 - 保存时调用 `updateSettingsForSource('userSettings', { env })` 写入 settings.json，同时更新 `process.env`
 
 **保存的 settings.json env 字段：**
+
 ```json
 {
   "ANTHROPIC_BASE_URL": "...",
@@ -991,4 +1016,3 @@ GrowthBook 功能开关系统原为 Anthropic 内部构建设计，硬编码 SDK
 ```
 
 非空字段才写入，保存后立即生效（`onDone()` 触发 `onChangeAPIKey()` 刷新 API 客户端）。
-

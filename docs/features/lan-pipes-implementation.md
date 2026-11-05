@@ -35,19 +35,19 @@ Machine A (192.168.50.22)                Machine B (192.168.50.27)
 
 ## 核心文件
 
-| 文件 | 说明 |
-|------|------|
-| `src/utils/pipeTransport.ts` | PipeServer/PipeClient（UDS + TCP 双模式） |
-| `src/utils/lanBeacon.ts` | UDP multicast beacon + module singleton |
-| `src/utils/ndjsonFramer.ts` | 共享 NDJSON socket 帧解析 |
-| `src/utils/pipeRegistry.ts` | 文件注册表 + `mergeWithLanPeers()` |
-| `src/utils/peerAddress.ts` | 地址解析（uds/bridge/tcp scheme） |
-| `src/utils/pipePermissionRelay.ts` | 权限转发 + `setPipeRelay`/`getPipeRelay` singleton |
-| `src/hooks/usePipeIpc.ts` | 生命周期 hook（从 REPL.tsx 提取） |
-| `src/hooks/usePipeRelay.ts` | 消息回传 hook |
-| `src/hooks/usePipePermissionForward.ts` | 权限转发 hook |
-| `src/hooks/usePipeRouter.ts` | 输入路由 hook |
-| `src/hooks/useMasterMonitor.ts` | slave 注册表 + 消息订阅 |
+| 文件                                    | 说明                                               |
+| --------------------------------------- | -------------------------------------------------- |
+| `src/utils/pipeTransport.ts`            | PipeServer/PipeClient（UDS + TCP 双模式）          |
+| `src/utils/lanBeacon.ts`                | UDP multicast beacon + module singleton            |
+| `src/utils/ndjsonFramer.ts`             | 共享 NDJSON socket 帧解析                          |
+| `src/utils/pipeRegistry.ts`             | 文件注册表 + `mergeWithLanPeers()`                 |
+| `src/utils/peerAddress.ts`              | 地址解析（uds/bridge/tcp scheme）                  |
+| `src/utils/pipePermissionRelay.ts`      | 权限转发 + `setPipeRelay`/`getPipeRelay` singleton |
+| `src/hooks/usePipeIpc.ts`               | 生命周期 hook（从 REPL.tsx 提取）                  |
+| `src/hooks/usePipeRelay.ts`             | 消息回传 hook                                      |
+| `src/hooks/usePipePermissionForward.ts` | 权限转发 hook                                      |
+| `src/hooks/usePipeRouter.ts`            | 输入路由 hook                                      |
+| `src/hooks/useMasterMonitor.ts`         | slave 注册表 + 消息订阅                            |
 
 ---
 
@@ -87,13 +87,13 @@ socket 帧解析使用 `attachNdjsonFramer()` from `ndjsonFramer.ts`（替代原
 
 ### 协议参数
 
-| 参数 | 值 |
-|------|-----|
+| 参数         | 值            |
+| ------------ | ------------- |
 | Multicast 组 | `224.0.71.67` |
-| 端口 | `7101` |
-| 广播间隔 | `3000ms` |
-| Peer 超时 | `15000ms` |
-| TTL | `1` |
+| 端口         | `7101`        |
+| 广播间隔     | `3000ms`      |
+| Peer 超时    | `15000ms`     |
+| TTL          | `1`           |
 
 ### Announce 包
 
@@ -148,10 +148,10 @@ module-level singleton：`getLanBeacon()` / `setLanBeacon()`。不挂在 Zustand
 ```typescript
 const usePipeIpc = feature('UDS_INBOX')
   ? require('../hooks/usePipeIpc.js').usePipeIpc
-  : () => undefined;
+  : () => undefined
 
 // 组件内
-usePipeIpc({ store, handleIncomingPrompt });
+usePipeIpc({ store, handleIncomingPrompt })
 ```
 
 内部使用 **lazy getter** 函数加载依赖（避免循环依赖导致 Bun 运行时崩溃）：
@@ -167,12 +167,12 @@ const mm = () => require('./useMasterMonitor.js')
 
 ### 四个阶段函数
 
-| 函数 | 职责 |
-|------|------|
-| `initPipeServer` | 角色判定 + server 创建 + beacon 启动 |
+| 函数                      | 职责                                                  |
+| ------------------------- | ----------------------------------------------------- |
+| `initPipeServer`          | 角色判定 + server 创建 + beacon 启动                  |
 | `registerMessageHandlers` | ping、attach、prompt、permission、detach 五个 handler |
-| `runMainHeartbeat` | cleanup + 发现 + auto-attach + 清理死连接 |
-| `runSubHeartbeat` | 检测 main 是否存活，死亡则接管或独立 |
+| `runMainHeartbeat`        | cleanup + 发现 + auto-attach + 清理死连接             |
+| `runSubHeartbeat`         | 检测 main 是否存活，死亡则接管或独立                  |
 
 ### usePipeRelay（消息回传）
 
@@ -185,6 +185,7 @@ const mm = () => require('./useMasterMonitor.js')
 `src/hooks/usePipePermissionForward.ts`（159 行）
 
 订阅 `subscribePipeEntries()`，处理：
+
 - `permission_request` → 解析 payload → 查找 tool → 加入确认队列
 - `permission_cancel` → 从队列移除
 - `stream/error/done` → 转为系统消息显示（含 role + IP 标签）
@@ -208,8 +209,8 @@ export async function getAliveSubs(): Promise<PipeRegistrySub[]> {
   const registry = await readRegistry()
   const results = await Promise.all(
     registry.subs.map(sub =>
-      isPipeAlive(sub.pipeName, 1000).then(alive => alive ? sub : null)
-    )
+      isPipeAlive(sub.pipeName, 1000).then(alive => (alive ? sub : null)),
+    ),
   )
   return results.filter(Boolean)
 }
@@ -218,6 +219,7 @@ export async function getAliveSubs(): Promise<PipeRegistrySub[]> {
 ### cleanupStaleEntries()
 
 两阶段：
+
 1. **无锁并行探测**：`Promise.all` 探测 main + 所有 subs
 2. **短暂持锁写入**：`acquireLock()` → 重新读取 → 应用变更 → 写入 → `releaseLock()`
 
@@ -233,24 +235,25 @@ Windows/macOS 使用 `execFile`（异步），不阻塞主线程。结果缓存�
 
 ### 消息类型
 
-| 类型 | 方向 | 数据 |
-|------|------|------|
-| `ping` / `pong` | 双向 | 无 |
-| `attach_request` | M→S | `meta: { machineId }` |
-| `attach_accept` / `attach_reject` | S→M | `data: reason` |
-| `detach` | M→S | 无 |
-| `prompt` | M→S | `data: prompt_text` |
-| `prompt_ack` | S→M | `data: 'accepted'` |
-| `stream` | S→M | `data: partial_text` |
-| `done` | S→M | 无 |
-| `error` | 双向 | `data: error_message` |
-| `permission_request` | S→M | `data: JSON(PipePermissionRequestPayload)` |
-| `permission_response` | M→S | `data: JSON(PipePermissionResponsePayload)` |
-| `permission_cancel` | M→S | `data: JSON({ requestId, reason })` |
+| 类型                              | 方向 | 数据                                        |
+| --------------------------------- | ---- | ------------------------------------------- |
+| `ping` / `pong`                   | 双向 | 无                                          |
+| `attach_request`                  | M→S  | `meta: { machineId }`                       |
+| `attach_accept` / `attach_reject` | S→M  | `data: reason`                              |
+| `detach`                          | M→S  | 无                                          |
+| `prompt`                          | M→S  | `data: prompt_text`                         |
+| `prompt_ack`                      | S→M  | `data: 'accepted'`                          |
+| `stream`                          | S→M  | `data: partial_text`                        |
+| `done`                            | S→M  | 无                                          |
+| `error`                           | 双向 | `data: error_message`                       |
+| `permission_request`              | S→M  | `data: JSON(PipePermissionRequestPayload)`  |
+| `permission_response`             | M→S  | `data: JSON(PipePermissionResponsePayload)` |
+| `permission_cancel`               | M→S  | `data: JSON({ requestId, reason })`         |
 
 ### 帧格式
 
 每行一个 JSON 对象，`\n` 分隔：
+
 ```
 {"type":"ping","from":"cli-abc","ts":"2026-04-11T00:00:00.000Z"}\n
 {"type":"prompt","data":"检查 git status","from":"cli-abc"}\n
@@ -291,13 +294,13 @@ CLI-B (192.168.50.27) 心跳循环
 
 ## 测试
 
-| 文件 | 测试数 | 覆盖 |
-|------|--------|------|
-| `lanBeacon.test.ts` | 7 | socket 初始化、announce、peer 发现/过滤/清理 |
-| `peerAddress.test.ts` | 8 | scheme 解析、parseTcpTarget、端口范围验证 |
-| `pipePermissionRelay.test.ts` | 2 | setPipeRelay singleton、权限请求/响应 |
-| `pipeTransport.test.ts` | 2 | UDS 基础行为 |
-| `useMasterMonitor.test.ts` | 5 | slave 注册/移除、事件发射 |
+| 文件                          | 测试数 | 覆盖                                         |
+| ----------------------------- | ------ | -------------------------------------------- |
+| `lanBeacon.test.ts`           | 7      | socket 初始化、announce、peer 发现/过滤/清理 |
+| `peerAddress.test.ts`         | 8      | scheme 解析、parseTcpTarget、端口范围验证    |
+| `pipePermissionRelay.test.ts` | 2      | setPipeRelay singleton、权限请求/响应        |
+| `pipeTransport.test.ts`       | 2      | UDS 基础行为                                 |
+| `useMasterMonitor.test.ts`    | 5      | slave 注册/移除、事件发射                    |
 
 全量：2190 pass / 0 fail
 

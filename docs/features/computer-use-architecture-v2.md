@@ -68,27 +68,36 @@ src/utils/computerUse/
 ```typescript
 /** 窗口标识 — 跨平台 */
 export interface WindowHandle {
-  id: string           // macOS: bundleId, Windows: HWND string, Linux: window ID
+  id: string // macOS: bundleId, Windows: HWND string, Linux: window ID
   pid: number
   title: string
-  exePath?: string     // Windows/Linux: 进程路径
+  exePath?: string // Windows/Linux: 进程路径
 }
 
 /** 输入平台接口 — 两种模式 */
 export interface InputPlatform {
   // 模式 A: 全局输入（macOS/Linux 默认，向前台窗口发送）
   moveMouse(x: number, y: number): Promise<void>
-  click(x: number, y: number, button: 'left' | 'right' | 'middle'): Promise<void>
+  click(
+    x: number,
+    y: number,
+    button: 'left' | 'right' | 'middle',
+  ): Promise<void>
   typeText(text: string): Promise<void>
   key(name: string, action: 'press' | 'release'): Promise<void>
   keys(combo: string[]): Promise<void>
   scroll(amount: number, direction: 'vertical' | 'horizontal'): Promise<void>
   mouseLocation(): Promise<{ x: number; y: number }>
-  
+
   // 模式 B: 窗口绑定输入（Windows SendMessage，不抢焦点）
   sendChar?(hwnd: string, char: string): Promise<void>
   sendKey?(hwnd: string, vk: number, action: 'down' | 'up'): Promise<void>
-  sendClick?(hwnd: string, x: number, y: number, button: 'left' | 'right'): Promise<void>
+  sendClick?(
+    hwnd: string,
+    x: number,
+    y: number,
+    button: 'left' | 'right',
+  ): Promise<void>
   sendText?(hwnd: string, text: string): Promise<void>
 }
 
@@ -97,7 +106,12 @@ export interface ScreenshotPlatform {
   // 全屏截图
   captureScreen(displayId?: number): Promise<ScreenshotResult>
   // 区域截图
-  captureRegion(x: number, y: number, w: number, h: number): Promise<ScreenshotResult>
+  captureRegion(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): Promise<ScreenshotResult>
   // 窗口截图（Windows: PrintWindow，macOS: SCContentFilter，Linux: xdotool+import）
   captureWindow?(hwnd: string): Promise<ScreenshotResult | null>
 }
@@ -131,7 +145,7 @@ export interface DisplayInfo {
 }
 
 export interface InstalledApp {
-  id: string       // macOS: bundleId, Windows: exe path, Linux: .desktop name
+  id: string // macOS: bundleId, Windows: exe path, Linux: .desktop name
   displayName: string
   path: string
 }
@@ -145,7 +159,12 @@ export interface FrontmostAppInfo {
 ### 2.3 平台分发器（`platforms/index.ts`）
 
 ```typescript
-import type { InputPlatform, ScreenshotPlatform, DisplayPlatform, AppsPlatform } from './types.js'
+import type {
+  InputPlatform,
+  ScreenshotPlatform,
+  DisplayPlatform,
+  AppsPlatform,
+} from './types.js'
 
 export interface Platform {
   input: InputPlatform
@@ -171,6 +190,7 @@ export function loadPlatform(): Platform {
 ### 2.4 各平台实现
 
 **`platforms/darwin.ts`** — 委托给 @ant 包（保持兼容）：
+
 ```typescript
 // macOS: 通过 @ant/computer-use-input 和 @ant/computer-use-swift
 // 这两个包的 darwin 后端保留不动
@@ -178,14 +198,23 @@ import { requireComputerUseInput } from '../inputLoader.js'
 import { requireComputerUseSwift } from '../swiftLoader.js'
 
 export const platform = {
-  input: { /* 委托给 requireComputerUseInput() */ },
-  screenshot: { /* 委托给 requireComputerUseSwift().screenshot */ },
-  display: { /* 委托给 requireComputerUseSwift().display */ },
-  apps: { /* 委托给 requireComputerUseSwift().apps */ },
+  input: {
+    /* 委托给 requireComputerUseInput() */
+  },
+  screenshot: {
+    /* 委托给 requireComputerUseSwift().screenshot */
+  },
+  display: {
+    /* 委托给 requireComputerUseSwift().display */
+  },
+  apps: {
+    /* 委托给 requireComputerUseSwift().apps */
+  },
 }
 ```
 
 **`platforms/win32.ts`** — 使用 `src/utils/computerUse/win32/` 模块：
+
 ```typescript
 // Windows: SendMessage 输入 + PrintWindow 截图 + EnumWindows 应用
 import { sendChar, sendKey, sendClick, sendText } from '../win32/windowMessage.js'
@@ -211,13 +240,22 @@ export const platform = {
 ```
 
 **`platforms/linux.ts`** — 使用 xdotool/scrot：
+
 ```typescript
 // Linux: xdotool + scrot + xrandr + wmctrl
 export const platform = {
-  input: { /* xdotool mousemove/click/key/type */ },
-  screenshot: { /* scrot */ },
-  display: { /* xrandr */ },
-  apps: { /* wmctrl + ps */ },
+  input: {
+    /* xdotool mousemove/click/key/type */
+  },
+  screenshot: {
+    /* scrot */
+  },
+  display: {
+    /* xrandr */
+  },
+  apps: {
+    /* wmctrl + ps */
+  },
 }
 ```
 
@@ -233,7 +271,7 @@ const platform = loadPlatform()
 
 // 截图
 platform.screenshot.captureScreen()
-platform.screenshot.captureWindow(hwnd)  // 窗口绑定
+platform.screenshot.captureWindow(hwnd) // 窗口绑定
 
 // 输入（窗口绑定模式，不抢焦点）
 platform.input.sendText?.(hwnd, 'Hello')
@@ -246,55 +284,55 @@ platform.input.click(500, 500, 'left')
 
 ## 3. Windows 输入模式对比
 
-| 方式 | API | 抢焦点 | 移鼠标 | 窗口可最小化 | 适用场景 |
-|------|-----|--------|--------|-------------|---------|
-| **全局输入** | `SetCursorPos` + `SendInput` | ✅ 抢 | ✅ 动 | ❌ 不行 | 需要坐标点击（fallback） |
-| **窗口消息** | `SendMessage(WM_CHAR/WM_KEYDOWN)` | ❌ 不抢 | ❌ 不动 | ✅ 可以 | 打字、按键（首选） |
-| **窗口消息** | `SendMessage(WM_LBUTTONDOWN)` | ❌ 不抢 | ❌ 不动 | ⚠️ 部分 | 窗口内点击 |
-| **窗口截图** | `PrintWindow(hwnd, PW_RENDERFULLCONTENT)` | ❌ 不抢 | ❌ 不动 | ✅ 可以 | 窗口截图 |
-| **UI 操作** | `UIAutomation InvokePattern` | ❌ 不抢 | ❌ 不动 | ✅ 可以 | 按钮点击、文本写入 |
+| 方式         | API                                       | 抢焦点  | 移鼠标  | 窗口可最小化 | 适用场景                 |
+| ------------ | ----------------------------------------- | ------- | ------- | ------------ | ------------------------ |
+| **全局输入** | `SetCursorPos` + `SendInput`              | ✅ 抢   | ✅ 动   | ❌ 不行      | 需要坐标点击（fallback） |
+| **窗口消息** | `SendMessage(WM_CHAR/WM_KEYDOWN)`         | ❌ 不抢 | ❌ 不动 | ✅ 可以      | 打字、按键（首选）       |
+| **窗口消息** | `SendMessage(WM_LBUTTONDOWN)`             | ❌ 不抢 | ❌ 不动 | ⚠️ 部分      | 窗口内点击               |
+| **窗口截图** | `PrintWindow(hwnd, PW_RENDERFULLCONTENT)` | ❌ 不抢 | ❌ 不动 | ✅ 可以      | 窗口截图                 |
+| **UI 操作**  | `UIAutomation InvokePattern`              | ❌ 不抢 | ❌ 不动 | ✅ 可以      | 按钮点击、文本写入       |
 
 **策略**：优先用窗口消息 + UIAutomation（不干扰用户），全局输入作为 fallback。
 
 ## 4. 需要新增的文件
 
-| 文件 | 说明 |
-|------|------|
-| `src/utils/computerUse/platforms/types.ts` | 公共接口定义 |
-| `src/utils/computerUse/platforms/index.ts` | 平台分发器 |
-| `src/utils/computerUse/platforms/darwin.ts` | macOS: 委托给 @ant 包 |
-| `src/utils/computerUse/platforms/win32.ts` | Windows: 组合 win32/ 下各模块 |
-| `src/utils/computerUse/platforms/linux.ts` | Linux: xdotool/scrot |
+| 文件                                           | 说明                             |
+| ---------------------------------------------- | -------------------------------- |
+| `src/utils/computerUse/platforms/types.ts`     | 公共接口定义                     |
+| `src/utils/computerUse/platforms/index.ts`     | 平台分发器                       |
+| `src/utils/computerUse/platforms/darwin.ts`    | macOS: 委托给 @ant 包            |
+| `src/utils/computerUse/platforms/win32.ts`     | Windows: 组合 win32/ 下各模块    |
+| `src/utils/computerUse/platforms/linux.ts`     | Linux: xdotool/scrot             |
 | `src/utils/computerUse/win32/windowMessage.ts` | **新增**: SendMessage 无焦点输入 |
 
 ## 5. 需要移除/清理的文件
 
-| 文件 | 操作 | 原因 |
-|------|------|------|
+| 文件                                                     | 操作 | 原因                          |
+| -------------------------------------------------------- | ---- | ----------------------------- |
 | `packages/@ant/computer-use-input/src/backends/win32.ts` | 删除 | Windows 代码不应在 macOS 包里 |
-| `packages/@ant/computer-use-input/src/backends/linux.ts` | 删除 | Linux 代码不应在 macOS 包里 |
-| `packages/@ant/computer-use-swift/src/backends/win32.ts` | 删除 | 同上 |
-| `packages/@ant/computer-use-swift/src/backends/linux.ts` | 删除 | 同上 |
-| `packages/@ant/computer-use-input/src/types.ts` | 删除 | 移到 platforms/types.ts |
-| `packages/@ant/computer-use-swift/src/types.ts` | 删除 | 移到 platforms/types.ts |
+| `packages/@ant/computer-use-input/src/backends/linux.ts` | 删除 | Linux 代码不应在 macOS 包里   |
+| `packages/@ant/computer-use-swift/src/backends/win32.ts` | 删除 | 同上                          |
+| `packages/@ant/computer-use-swift/src/backends/linux.ts` | 删除 | 同上                          |
+| `packages/@ant/computer-use-input/src/types.ts`          | 删除 | 移到 platforms/types.ts       |
+| `packages/@ant/computer-use-swift/src/types.ts`          | 删除 | 移到 platforms/types.ts       |
 
 ## 6. 需要修改的文件
 
-| 文件 | 改动 |
-|------|------|
+| 文件                                            | 改动                                                |
+| ----------------------------------------------- | --------------------------------------------------- |
 | `packages/@ant/computer-use-input/src/index.ts` | 恢复为仅 darwin dispatcher（去掉 win32/linux case） |
 | `packages/@ant/computer-use-swift/src/index.ts` | 恢复为仅 darwin dispatcher（去掉 win32/linux case） |
-| `src/utils/computerUse/executor.ts` | 通过 `platforms/` 获取平台实现，不直接调 @ant 包 |
-| `src/utils/computerUse/swiftLoader.ts` | 仅 darwin 加载 |
-| `src/utils/computerUse/inputLoader.ts` | 仅 darwin 加载 |
+| `src/utils/computerUse/executor.ts`             | 通过 `platforms/` 获取平台实现，不直接调 @ant 包    |
+| `src/utils/computerUse/swiftLoader.ts`          | 仅 darwin 加载                                      |
+| `src/utils/computerUse/inputLoader.ts`          | 仅 darwin 加载                                      |
 
 ## 7. @ant 包的定位（修正后）
 
-| 包 | 职责 | 平台 |
-|---|------|------|
-| `@ant/computer-use-input` | macOS enigo 键鼠原生模块包装 | **仅 darwin** |
-| `@ant/computer-use-swift` | macOS Swift 截图/应用原生模块包装 | **仅 darwin** |
-| `@ant/computer-use-mcp` | MCP Server + 工具定义 + 调用路由 | **跨平台**（不含平台代码） |
+| 包                        | 职责                              | 平台                       |
+| ------------------------- | --------------------------------- | -------------------------- |
+| `@ant/computer-use-input` | macOS enigo 键鼠原生模块包装      | **仅 darwin**              |
+| `@ant/computer-use-swift` | macOS Swift 截图/应用原生模块包装 | **仅 darwin**              |
+| `@ant/computer-use-mcp`   | MCP Server + 工具定义 + 调用路由  | **跨平台**（不含平台代码） |
 
 Windows/Linux 的平台实现全部在 `src/utils/computerUse/platforms/` 和 `src/utils/computerUse/win32/` 中。
 

@@ -78,6 +78,7 @@ export function renderToScreen(
       noop,
       noop,
       noop,
+      null, // transitionCallbacks - React 19 reconciler types require the slot
     )
   }
 

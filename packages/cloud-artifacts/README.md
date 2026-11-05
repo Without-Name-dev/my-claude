@@ -66,13 +66,13 @@ curl "https://cloud-artifacts.claude-code-best.win/7d/V1StGXR8_Z5jdHi6B-myT.html
 
 ### `POST /upload`
 
-| Header / Query | 必填 | 说明 |
-|----------------|------|------|
-| `Authorization: Bearer <TOKEN>` | 是 | 与 Worker secret `TOKEN` 完全相等 |
-| `Content-Type: text/html` | 是 | 不接受其他类型 |
-| `?ttl=7\|30` | 否 | 默认 7，**只允许 7 或 30**（与 R2 lifecycle prefix 对应） |
-| `?hash=<custom-id>` | 否 | 自定义 ID，校验 `^[A-Za-z0-9_-]{1,128}$`；指定时覆盖同 ID 旧版本 |
-| body | 是 | 原始 HTML（`--data-binary @file.html`），≤10MB |
+| Header / Query                  | 必填 | 说明                                                             |
+| ------------------------------- | ---- | ---------------------------------------------------------------- |
+| `Authorization: Bearer <TOKEN>` | 是   | 与 Worker secret `TOKEN` 完全相等                                |
+| `Content-Type: text/html`       | 是   | 不接受其他类型                                                   |
+| `?ttl=7\|30`                    | 否   | 默认 7，**只允许 7 或 30**（与 R2 lifecycle prefix 对应）        |
+| `?hash=<custom-id>`             | 否   | 自定义 ID，校验 `^[A-Za-z0-9_-]{1,128}$`；指定时覆盖同 ID 旧版本 |
+| body                            | 是   | 原始 HTML（`--data-binary @file.html`），≤10MB                   |
 
 成功 200：
 
@@ -86,14 +86,14 @@ curl "https://cloud-artifacts.claude-code-best.win/7d/V1StGXR8_Z5jdHi6B-myT.html
 
 错误（统一 `{ "error": "<code>" }`，状态码见下）：
 
-| 状态码（直连） | error code | 触发条件 |
-|--------|------------|----------|
-| 400 | `invalid_ttl` | `ttl` 非 7 或 30 |
-| 400 | `invalid_hash` | `hash` 不匹配 `^[A-Za-z0-9_-]{1,128}$` |
-| 401 | `unauthorized` | 缺 Authorization / token 不匹配 |
-| 404 | `not_found` | 非 `/upload` 路径或 GET 路径不匹配 `/<7d\|30d>/<id>.html` |
-| 413 | `payload_too_large` | body > 10MB |
-| 415 | `unsupported_media_type` | Content-Type 非 `text/html` |
+| 状态码（直连） | error code               | 触发条件                                                  |
+| -------------- | ------------------------ | --------------------------------------------------------- |
+| 400            | `invalid_ttl`            | `ttl` 非 7 或 30                                          |
+| 400            | `invalid_hash`           | `hash` 不匹配 `^[A-Za-z0-9_-]{1,128}$`                    |
+| 401            | `unauthorized`           | 缺 Authorization / token 不匹配                           |
+| 404            | `not_found`              | 非 `/upload` 路径或 GET 路径不匹配 `/<7d\|30d>/<id>.html` |
+| 413            | `payload_too_large`      | body > 10MB                                               |
+| 415            | `unsupported_media_type` | Content-Type 非 `text/html`                               |
 
 > **经 Deno Deploy 代理时**：以上所有错误状态码统一返回 **200**，但 body 仍是上表中的 `{error: ...}` JSON。客户端解析逻辑应以 body 的 `error` 字段为准。
 
@@ -183,14 +183,14 @@ curl -X POST "http://localhost:8787/upload" \
 
 ## Troubleshooting
 
-| 现象 | 原因 / 处理 |
-|------|-------------|
-| 所有请求返 HTTP 200 但业务出错 | 经 Deno Deploy 代理时正常现象，看 body 的 `error` 字段判断真实状态 |
-| `curl` 到 `*.workers.dev` 超时 | 国内 DNS 污染 + 路由问题，走 `cloud-artifacts.claude-code-best.win` 出口或挂代理 |
+| 现象                                                            | 原因 / 处理                                                                                                                                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 所有请求返 HTTP 200 但业务出错                                  | 经 Deno Deploy 代理时正常现象，看 body 的 `error` 字段判断真实状态                                                                          |
+| `curl` 到 `*.workers.dev` 超时                                  | 国内 DNS 污染 + 路由问题，走 `cloud-artifacts.claude-code-best.win` 出口或挂代理                                                            |
 | 响应 html 多一段 `<a href="/cdn-cgi/content...">` 和 `<script>` | Cloudflare 默认注入的 Browser Insights（RUM），不影响内容渲染。要纯净响应：dashboard → Workers & Pages → cloud-artifacts → 关 Web Analytics |
-| 上传 413 但文件不到 10MB | 检查 `Content-Length` header 是否被中间层改写；Worker 同时按 `Content-Length` 和 `arrayBuffer().byteLength` 双重校验 |
-| `?ttl=14` 返 400 | 设计如此，只允许 7 或 30（对应 R2 lifecycle prefix） |
-| `wrangler secret list` 看到 TOKEN 但上传 401 | token 值不一致。重新 `wrangler secret put TOKEN` 设正确值 |
+| 上传 413 但文件不到 10MB                                        | 检查 `Content-Length` header 是否被中间层改写；Worker 同时按 `Content-Length` 和 `arrayBuffer().byteLength` 双重校验                        |
+| `?ttl=14` 返 400                                                | 设计如此，只允许 7 或 30（对应 R2 lifecycle prefix）                                                                                        |
+| `wrangler secret list` 看到 TOKEN 但上传 401                    | token 值不一致。重新 `wrangler secret put TOKEN` 设正确值                                                                                   |
 
 ## 依赖
 

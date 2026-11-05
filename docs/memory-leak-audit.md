@@ -21,6 +21,7 @@
 - [x] #17 LSP Opened Files Map 不收缩 — **已修复**：LSPServerManager 添加 closeAllFiles() 方法，postCompactCleanup 集成调用，compaction 后释放 openedFiles Map，5 tests
 
 ## 总览
+
 ---
 
 ## 1. 图片处理无限内存增长 (v2.1.121)
@@ -67,7 +68,6 @@ export async function cleanupOldImageCaches(): Promise<void> { ... }
 
 ## 2. /usage 命令泄漏约 2GB (v2.1.121)
 
-
 **CHANGELOG 描述**：Fixed /usage leaking up to ~2GB of memory on machines with large transcript histories
 
 ### 实现位置
@@ -107,7 +107,12 @@ export async function readTranscriptForLoad(
   try {
     let filePos = 0
     while (filePos < fileSize) {
-      const { bytesRead } = await fd.read(chunk, 0, Math.min(CHUNK_SIZE, fileSize - filePos), filePos)
+      const { bytesRead } = await fd.read(
+        chunk,
+        0,
+        Math.min(CHUNK_SIZE, fileSize - filePos),
+        filePos,
+      )
       if (bytesRead === 0) break
       filePos += bytesRead
       // ... 分块处理逻辑
@@ -122,7 +127,6 @@ export async function readTranscriptForLoad(
 ---
 
 ## 3. 长时间运行工具进度事件泄漏 (v2.1.121)
-
 
 **CHANGELOG 描述**：Fixed memory leak when long-running tools fail to emit a clear progress event
 
@@ -225,7 +229,6 @@ function createClock(tickIntervalMs: number): Clock {
 
 ## 5. 虚拟滚动器保留历史消息拷贝 (v2.1.101)
 
-
 **CHANGELOG 描述**：Fixed a memory leak where long sessions retained dozens of historical copies of the message list in the virtual scroller
 
 ### 实现位置
@@ -264,7 +267,6 @@ const keys = keysRef.current
 ---
 
 ## 6. 管道模式超宽行过度分配 (v2.1.110)
-
 
 **CHANGELOG 描述**：Fixed potential excessive memory allocation when piped (non-TTY) Ink output contains a single very wide line
 
@@ -310,7 +312,7 @@ reset(width: number, height: number, screen: Screen): void {
 // because the resolved path points to the internal bunfs binary path where
 // node_modules cannot be found. A top-level import ensures the module is
 // bundled and accessible at runtime.
-import hljs from 'highlight.js'  // 顶层静态导入
+import hljs from 'highlight.js' // 顶层静态导入
 
 type HLJSApi = typeof hljs
 let cachedHljs: HLJSApi | null = null
@@ -409,7 +411,6 @@ hook 的 cleanup 函数（组件卸载时的 `replBridgePermissionCallbacks = un
 
 ## 10. MCP HTTP/SSE 缓冲区累积 (v2.1.97)
 
-
 **CHANGELOG 描述**：Fixed MCP HTTP/SSE connections accumulating ~50 MB/hr of unreleased buffers when servers reconnect
 
 ### 实现位置
@@ -454,7 +455,6 @@ function releaseStreamResources(): void {
 ## 11. LRU 缓存键保留大 JSON (v2.1.89)
 
 **状态：已确认完整实现**
-
 
 **CHANGELOG 描述**：Fixed memory leak where large JSON inputs were retained as LRU cache keys in long-running sessions
 
@@ -519,7 +519,7 @@ function coerceToolContentToString(value: unknown): string {
 if (msg.subtype === 'compact_boundary' && msg.compactMetadata) {
   const mutableBoundaryIdx = this.mutableMessages.length - 1
   if (mutableBoundaryIdx > 0) {
-    this.mutableMessages.splice(0, mutableBoundaryIdx)  // 清理旧消息
+    this.mutableMessages.splice(0, mutableBoundaryIdx) // 清理旧消息
   }
 }
 ```
@@ -529,21 +529,26 @@ if (msg.subtype === 'compact_boundary' && msg.compactMetadata) {
 ```typescript
 // snipCompact.ts — 完整文件
 // Auto-generated stub — replace with real implementation
-export {};
-import type { Message } from 'src/types/message';
+export {}
+import type { Message } from 'src/types/message'
 
-export const isSnipMarkerMessage: (message: Message) => boolean = () => false;
+export const isSnipMarkerMessage: (message: Message) => boolean = () => false
 export const snipCompactIfNeeded: (
   messages: Message[],
   options?: { force?: boolean },
-) => { messages: Message[]; executed: boolean; tokensFreed: number; boundaryMessage?: Message } = (messages) => ({
+) => {
+  messages: Message[]
+  executed: boolean
+  tokensFreed: number
+  boundaryMessage?: Message
+} = messages => ({
   messages,
-  executed: false,   // 永远 false — 清理从不执行
+  executed: false, // 永远 false — 清理从不执行
   tokensFreed: 0,
-});
-export const isSnipRuntimeEnabled: () => boolean = () => false;
-export const shouldNudgeForSnips: (messages: Message[]) => boolean = () => false;
-export const SNIP_NUDGE_TEXT: string = '';
+})
+export const isSnipRuntimeEnabled: () => boolean = () => false
+export const shouldNudgeForSnips: (messages: Message[]) => boolean = () => false
+export const SNIP_NUDGE_TEXT: string = ''
 ```
 
 `snipReplay` 回调依赖 `HISTORY_SNIP` feature flag，且调用的 `snipCompactIfNeeded` 永远返回 `executed: false`。

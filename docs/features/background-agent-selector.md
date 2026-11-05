@@ -37,14 +37,14 @@ Background Agent Selector 是渲染在 PromptInput 下方的常驻状态条，�
 
 ### 键盘路由
 
-| 位置 / 状态 | 按键 | 行为 |
-|---|---|---|
-| PromptInput 非空 | ↑↓ | 光标移动 / 翻历史（不变） |
-| PromptInput 空 + 历史底部 | ↓ | 焦点下放到 selector，高亮到 `● main` |
-| Selector 聚焦（`footerSelection === 'bg_agent'`） | ↓ | 高亮下移，-1 → 0 → ... → N-1 |
-| Selector 聚焦 | ↑ | 高亮上移；在 `main` 再 ↑ → 焦点回 PromptInput |
-| Selector 聚焦 | Enter | `-1` → `exitTeammateView`；`>=0` → `enterTeammateView(agentId)`。焦点保留在 pill |
-| Selector 聚焦 | Esc | `footer:clearSelection`，焦点回 PromptInput |
+| 位置 / 状态                                       | 按键  | 行为                                                                             |
+| ------------------------------------------------- | ----- | -------------------------------------------------------------------------------- |
+| PromptInput 非空                                  | ↑↓    | 光标移动 / 翻历史（不变）                                                        |
+| PromptInput 空 + 历史底部                         | ↓     | 焦点下放到 selector，高亮到 `● main`                                             |
+| Selector 聚焦（`footerSelection === 'bg_agent'`） | ↓     | 高亮下移，-1 → 0 → ... → N-1                                                     |
+| Selector 聚焦                                     | ↑     | 高亮上移；在 `main` 再 ↑ → 焦点回 PromptInput                                    |
+| Selector 聚焦                                     | Enter | `-1` → `exitTeammateView`；`>=0` → `enterTeammateView(agentId)`。焦点保留在 pill |
+| Selector 聚焦                                     | Esc   | `footer:clearSelection`，焦点回 PromptInput                                      |
 
 ### 视觉规则
 
@@ -87,12 +87,17 @@ export function useBackgroundAgentTasks(): LocalAgentTaskState[] {
 
 ```ts
 export type FooterItem =
-  | 'tasks' | 'tmux' | 'bagel' | 'teams' | 'bridge' | 'companion'
-  | 'bg_agent'   // ← 新增
+  | 'tasks'
+  | 'tmux'
+  | 'bagel'
+  | 'teams'
+  | 'bridge'
+  | 'companion'
+  | 'bg_agent' // ← 新增
 
 export type AppState = DeepImmutable<{
   // ...
-  selectedBgAgentIndex: number  // -1 = main, 0..N-1 = 选中的 agent
+  selectedBgAgentIndex: number // -1 = main, 0..N-1 = 选中的 agent
 }>
 ```
 
@@ -193,30 +198,30 @@ user([tool_result..., text("<fork-boilerplate>...Your directive: <prompt>")])
 
 ## 五、关键 API 复用
 
-| 官方已有能力 | selector 如何使用 |
-|---|---|
-| `AppState.tasks` | 单一数据源，无需 file watcher / output JSONL 订阅 |
-| `registerAsyncAgent` | `/fork` 和 AgentTool 共用，selector 不区分来源 |
-| `enterTeammateView(id)` | Enter 时调用，负责 retain + disk bootstrap |
-| `exitTeammateView` | Enter 选中 `main` 时调用 |
-| `release(task)` + `PANEL_GRACE_MS` | 30s keep-alive，selector 自动生效 |
-| `useElapsedTime` | 每行时长显示，非 running 自动停 interval |
-| `formatTokens` (`utils/format.ts`) | token 数 1k 缩写 |
-| `footer:up` / `footer:down` / `footer:openSelected` keybinding | 键盘路由复用 Footer context |
+| 官方已有能力                                                   | selector 如何使用                                 |
+| -------------------------------------------------------------- | ------------------------------------------------- |
+| `AppState.tasks`                                               | 单一数据源，无需 file watcher / output JSONL 订阅 |
+| `registerAsyncAgent`                                           | `/fork` 和 AgentTool 共用，selector 不区分来源    |
+| `enterTeammateView(id)`                                        | Enter 时调用，负责 retain + disk bootstrap        |
+| `exitTeammateView`                                             | Enter 选中 `main` 时调用                          |
+| `release(task)` + `PANEL_GRACE_MS`                             | 30s keep-alive，selector 自动生效                 |
+| `useElapsedTime`                                               | 每行时长显示，非 running 自动停 interval          |
+| `formatTokens` (`utils/format.ts`)                             | token 数 1k 缩写                                  |
+| `footer:up` / `footer:down` / `footer:openSelected` keybinding | 键盘路由复用 Footer context                       |
 
 ## 六、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `src/hooks/useBackgroundAgentTasks.ts` | 数据过滤 hook（backgrounded local_agent + evictAfter 过滤 + startTime 排序） |
-| `src/components/tasks/BackgroundAgentSelector.tsx` | 底部 selector UI，纯展示 |
-| `src/components/PromptInput/PromptInput.tsx` | 新增 `'bg_agent'` footer pill + 对应的 `footer:up/down/openSelected` 分支 |
-| `src/state/AppStateStore.ts` | `FooterItem` 加 `'bg_agent'`；新增 `selectedBgAgentIndex` 字段 |
-| `src/main.tsx` | `getDefaultAppState` 同步初始化 `selectedBgAgentIndex: -1` |
-| `src/screens/REPL.tsx` | 在 PromptInput + SessionBackgroundHint 之后挂载 `<BackgroundAgentSelector />`；切换 agent 主视图；对 fork transcript 做 prompt 归一化 |
-| `src/components/messages/AssistantToolUseMessage.tsx` | 新增 `defaultCollapsed?: boolean` prop，为后续详情视图默认折叠工具块预留 |
-| `src/components/messages/UserTextMessage.tsx` | 识别 `<fork-boilerplate>`，交给 fork 专用 renderer 处理 |
-| `src/components/messages/UserForkBoilerplateMessage.tsx` | 将 fork boilerplate text 折叠为纯用户 prompt；作为 transcript 中原位渲染的兼容路径 |
+| 文件                                                     | 职责                                                                                                                                  |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/hooks/useBackgroundAgentTasks.ts`                   | 数据过滤 hook（backgrounded local_agent + evictAfter 过滤 + startTime 排序）                                                          |
+| `src/components/tasks/BackgroundAgentSelector.tsx`       | 底部 selector UI，纯展示                                                                                                              |
+| `src/components/PromptInput/PromptInput.tsx`             | 新增 `'bg_agent'` footer pill + 对应的 `footer:up/down/openSelected` 分支                                                             |
+| `src/state/AppStateStore.ts`                             | `FooterItem` 加 `'bg_agent'`；新增 `selectedBgAgentIndex` 字段                                                                        |
+| `src/main.tsx`                                           | `getDefaultAppState` 同步初始化 `selectedBgAgentIndex: -1`                                                                            |
+| `src/screens/REPL.tsx`                                   | 在 PromptInput + SessionBackgroundHint 之后挂载 `<BackgroundAgentSelector />`；切换 agent 主视图；对 fork transcript 做 prompt 归一化 |
+| `src/components/messages/AssistantToolUseMessage.tsx`    | 新增 `defaultCollapsed?: boolean` prop，为后续详情视图默认折叠工具块预留                                                              |
+| `src/components/messages/UserTextMessage.tsx`            | 识别 `<fork-boilerplate>`，交给 fork 专用 renderer 处理                                                                               |
+| `src/components/messages/UserForkBoilerplateMessage.tsx` | 将 fork boilerplate text 折叠为纯用户 prompt；作为 transcript 中原位渲染的兼容路径                                                    |
 
 ## 七、已知限制
 

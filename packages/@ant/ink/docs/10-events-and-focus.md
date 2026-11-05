@@ -20,9 +20,9 @@ Emitted for every keystroke or input action.
 
 ```ts
 class InputEvent extends Event {
-  readonly input: string     // Character(s) entered
-  readonly key: Key          // Parsed key metadata
-  readonly keypress: ParsedKey  // Raw keypress data
+  readonly input: string // Character(s) entered
+  readonly key: Key // Parsed key metadata
+  readonly keypress: ParsedKey // Raw keypress data
 }
 ```
 
@@ -44,8 +44,8 @@ Mouse click event (alt-screen only).
 
 ```ts
 class ClickEvent extends Event {
-  readonly x: number  // Column (0-indexed)
-  readonly y: number  // Row (0-indexed)
+  readonly x: number // Column (0-indexed)
+  readonly y: number // Row (0-indexed)
 }
 ```
 
@@ -92,21 +92,21 @@ stdin data → parse-keypress → InputEvent
 ### Capture and Bubble Phases
 
 ```tsx
-<Box
-  onKeyDownCapture={(e) => {
+;<Box
+  onKeyDownCapture={e => {
     // Capture phase: fires top-down
     console.log('Parent captures key')
   }}
-  onKeyDown={(e) => {
+  onKeyDown={e => {
     // Bubble phase: fires bottom-up
     console.log('Parent receives bubbled key')
   }}
 >
   <Box
-    onKeyDown={(e) => {
+    onKeyDown={e => {
       // Target: fires first in bubble phase
       console.log('Child handles key')
-      e.stopImmediatePropagation()  // Stop here
+      e.stopImmediatePropagation() // Stop here
     }}
   >
     <Text>Focus here</Text>
@@ -116,10 +116,10 @@ stdin data → parse-keypress → InputEvent
 
 ### Event Propagation Methods
 
-| Method | Effect |
-|--------|--------|
-| `event.stopImmediatePropagation()` | Stop all subsequent handlers |
-| `event.preventDefault()` | Not supported in terminal context |
+| Method                             | Effect                            |
+| ---------------------------------- | --------------------------------- |
+| `event.stopImmediatePropagation()` | Stop all subsequent handlers      |
+| `event.preventDefault()`           | Not supported in terminal context |
 
 ## FocusManager
 
@@ -140,8 +140,8 @@ class FocusManager {
 
   focus(node: DOMElement): void
   blur(): void
-  focusNext(root: DOMElement): void     // Tab
-  focusPrevious(root: DOMElement): void  // Shift+Tab
+  focusNext(root: DOMElement): void // Tab
+  focusPrevious(root: DOMElement): void // Shift+Tab
 
   handleNodeRemoved(node: DOMElement, root: DOMElement): void
   handleAutoFocus(node: DOMElement): void
@@ -155,16 +155,16 @@ class FocusManager {
 ### Tab Navigation
 
 ```tsx
-<Box flexDirection="column">
+;<Box flexDirection="column">
   <Button tabIndex={0} onAction={handleSave}>
-    {(s) => <Text>{s.focused ? '> Save' : '  Save'}</Text>}
+    {s => <Text>{s.focused ? '> Save' : '  Save'}</Text>}
   </Button>
   <Button tabIndex={0} onAction={handleCancel}>
-    {(s) => <Text>{s.focused ? '> Cancel' : '  Cancel'}</Text>}
+    {s => <Text>{s.focused ? '> Cancel' : '  Cancel'}</Text>}
   </Button>
   <Button tabIndex={-1} onAction={handleSecret}>
     {/* Not reachable via Tab */}
-    {(s) => <Text>Secret</Text>}
+    {s => <Text>Secret</Text>}
   </Button>
 </Box>
 ```
@@ -172,7 +172,7 @@ class FocusManager {
 ### Auto Focus
 
 ```tsx
-<Box tabIndex={0} autoFocus onKeyDown={handleKey}>
+;<Box tabIndex={0} autoFocus onKeyDown={handleKey}>
   <Text>Receives focus immediately on mount</Text>
 </Box>
 ```
@@ -180,12 +180,12 @@ class FocusManager {
 ### Focus Events
 
 ```tsx
-<Box
+;<Box
   tabIndex={0}
-  onFocus={(e) => console.log('Got focus')}
-  onBlur={(e) => console.log('Lost focus')}
-  onFocusCapture={(e) => console.log('Capture: focus in')}
-  onBlurCapture={(e) => console.log('Capture: focus out')}
+  onFocus={e => console.log('Got focus')}
+  onBlur={e => console.log('Lost focus')}
+  onFocusCapture={e => console.log('Capture: focus in')}
+  onBlurCapture={e => console.log('Capture: focus out')}
 >
   <Text>Focusable element</Text>
 </Box>

@@ -20,13 +20,13 @@ VOICE_MODE 实现"按键说话"（Push-to-Talk）语音输入。用户按住空�
 
 ## 二、用户交互
 
-| 操作 | 行为 |
-|------|------|
-| 长按空格 | 开始录音，显示录音状态 |
-| 释放空格 | 停止录音，转录结果自动提交 |
-| `/voice` | 切换语音模式开关（默认使用 Anthropic 后端） |
-| `/voice doubao` | 启用语音模式并使用豆包 ASR 后端 |
-| `/voice anthropic` | 切换回 Anthropic STT 后端 |
+| 操作               | 行为                                        |
+| ------------------ | ------------------------------------------- |
+| 长按空格           | 开始录音，显示录音状态                      |
+| 释放空格           | 停止录音，转录结果自动提交                  |
+| `/voice`           | 切换语音模式开关（默认使用 Anthropic 后端） |
+| `/voice doubao`    | 启用语音模式并使用豆包 ASR 后端             |
+| `/voice anthropic` | 切换回 Anthropic STT 后端                   |
 
 ### UI 反馈
 
@@ -57,15 +57,15 @@ isVoiceAvailable() = isVoiceGrowthBookEnabled()
 
 ### 3.2 核心模块
 
-| 模块 | 职责 |
-|------|------|
-| `src/voice/voiceModeEnabled.ts` | Feature flag + GrowthBook + Auth 三层门控 |
-| `src/hooks/useVoice.ts` | React hook 管理录音状态和后端连接 |
-| `src/services/voiceStreamSTT.ts` | Anthropic WebSocket 流式 STT |
-| `src/services/doubaoSTT.ts` | 豆包 ASR 适配器（AsyncGenerator → VoiceStreamConnection） |
-| `src/commands/voice/voice.ts` | `/voice` 命令实现，处理后端选择和持久化 |
-| `src/hooks/useVoiceEnabled.ts` | 语音启用状态 hook，根据 provider 决定是否跳过 OAuth |
-| `src/utils/settings/types.ts` | `voiceProvider: 'anthropic' | 'doubao'` 设置类型定义 |
+| 模块                             | 职责                                                      |
+| -------------------------------- | --------------------------------------------------------- |
+| `src/voice/voiceModeEnabled.ts`  | Feature flag + GrowthBook + Auth 三层门控                 |
+| `src/hooks/useVoice.ts`          | React hook 管理录音状态和后端连接                         |
+| `src/services/voiceStreamSTT.ts` | Anthropic WebSocket 流式 STT                              |
+| `src/services/doubaoSTT.ts`      | 豆包 ASR 适配器（AsyncGenerator → VoiceStreamConnection） |
+| `src/commands/voice/voice.ts`    | `/voice` 命令实现，处理后端选择和持久化                   |
+| `src/hooks/useVoiceEnabled.ts`   | 语音启用状态 hook，根据 provider 决定是否跳过 OAuth       |
+| `src/utils/settings/types.ts`    | `voiceProvider: 'anthropic'                               | 'doubao'` 设置类型定义 |
 
 ### 3.3 数据流
 
@@ -130,6 +130,7 @@ finalize() 立即返回（豆包在录音过程中已返回结果，无需等待
 ### 3.4 音频录制
 
 支持两种音频后端（两个 STT 后端共享）：
+
 - **macOS 原生音频**：优先使用，低延迟
 - **SoX（Sound eXchange）**：回退方案，跨平台
 
@@ -140,11 +141,13 @@ finalize() 立即返回（豆包在录音过程中已返回结果，无需等待
 豆包后端使用适配器模式，将 `doubaoime-asr` 的 AsyncGenerator 协议桥接到 `VoiceStreamConnection` 接口：
 
 **AudioChunkQueue** — push 式异步队列：
+
 - 实现 `AsyncIterable<Uint8Array>` 接口
 - `push(chunk)` 将音频数据入队，`push(null)` 发送结束信号
 - 内部维护等待者（waiting）和缓冲队列（chunks）两个状态
 
 **connectDoubaoStream()** — 连接入口：
+
 - 动态导入 `doubaoime-asr`（optionalDependencies）
 - 从 `~/.claude/tts/doubao/credentials.json` 加载凭证
 - 创建 AudioChunkQueue 和 VoiceStreamConnection
@@ -154,14 +157,14 @@ finalize() 立即返回（豆包在录音过程中已返回结果，无需等待
 
 **响应类型映射**：
 
-| doubaoime-asr ResponseType | 回调映射 |
-|----------------------------|----------|
-| SESSION_STARTED | 日志记录 |
-| VAD_START | 日志记录 |
-| INTERIM_RESULT | `onTranscript(text, false)` |
-| FINAL_RESULT | `onTranscript(text, true)` |
-| ERROR | `onError(errorMsg)` |
-| SESSION_FINISHED | 日志记录 |
+| doubaoime-asr ResponseType | 回调映射                    |
+| -------------------------- | --------------------------- |
+| SESSION_STARTED            | 日志记录                    |
+| VAD_START                  | 日志记录                    |
+| INTERIM_RESULT             | `onTranscript(text, false)` |
+| FINAL_RESULT               | `onTranscript(text, true)`  |
+| ERROR                      | `onError(errorMsg)`         |
+| SESSION_FINISHED           | 日志记录                    |
 
 ### 3.6 后端选择逻辑
 
@@ -183,6 +186,7 @@ const connectFn = isDoubaoProvider()
 ```
 
 豆包后端的特殊处理：
+
 - 跳过 `getVoiceKeyterms()` 调用（豆包无需关键词提示）
 - 跳过 Focus Mode（`if (!enabled || !focusMode || isDoubaoProvider())`）
 
@@ -240,24 +244,24 @@ FEATURE_VOICE_MODE=1 bun run dev
 
 ## 六、外部依赖
 
-| 依赖 | 说明 | 适用后端 |
-|------|------|----------|
-| Anthropic OAuth | claude.ai 订阅登录，非 API key | Anthropic |
-| GrowthBook | `tengu_amber_quartz_disabled` 紧急关闭 | 通用 |
-| macOS 原生音频 或 SoX | 音频录制 | 通用 |
-| Nova 3 STT | Anthropic 语音转文本模型 | Anthropic |
-| doubaoime-asr | 豆包 ASR SDK（optionalDependencies） | 豆包 |
-| 凭证文件 | `~/.claude/tts/doubao/credentials.json` | 豆包 |
+| 依赖                  | 说明                                    | 适用后端  |
+| --------------------- | --------------------------------------- | --------- |
+| Anthropic OAuth       | claude.ai 订阅登录，非 API key          | Anthropic |
+| GrowthBook            | `tengu_amber_quartz_disabled` 紧急关闭  | 通用      |
+| macOS 原生音频 或 SoX | 音频录制                                | 通用      |
+| Nova 3 STT            | Anthropic 语音转文本模型                | Anthropic |
+| doubaoime-asr         | 豆包 ASR SDK（optionalDependencies）    | 豆包      |
+| 凭证文件              | `~/.claude/tts/doubao/credentials.json` | 豆包      |
 
 ## 七、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `src/voice/voiceModeEnabled.ts` | 三层门控逻辑 + `isVoiceAvailable()` |
-| `src/hooks/useVoice.ts` | React hook（录音状态 + 后端选择 + 连接管理） |
-| `src/hooks/useVoiceEnabled.ts` | 语音启用状态 hook（按 provider 决定 OAuth 检查） |
-| `src/services/voiceStreamSTT.ts` | Anthropic STT WebSocket 流式传输 |
-| `src/services/doubaoSTT.ts` | 豆包 ASR 适配器（AudioChunkQueue + connectDoubaoStream） |
-| `src/commands/voice/voice.ts` | `/voice` 命令（开关 + 后端选择） |
-| `src/commands/voice/index.ts` | 命令注册（去除 availability 限制） |
-| `src/utils/settings/types.ts` | `voiceProvider` 类型定义 |
+| 文件                             | 职责                                                     |
+| -------------------------------- | -------------------------------------------------------- |
+| `src/voice/voiceModeEnabled.ts`  | 三层门控逻辑 + `isVoiceAvailable()`                      |
+| `src/hooks/useVoice.ts`          | React hook（录音状态 + 后端选择 + 连接管理）             |
+| `src/hooks/useVoiceEnabled.ts`   | 语音启用状态 hook（按 provider 决定 OAuth 检查）         |
+| `src/services/voiceStreamSTT.ts` | Anthropic STT WebSocket 流式传输                         |
+| `src/services/doubaoSTT.ts`      | 豆包 ASR 适配器（AudioChunkQueue + connectDoubaoStream） |
+| `src/commands/voice/voice.ts`    | `/voice` 命令（开关 + 后端选择）                         |
+| `src/commands/voice/index.ts`    | 命令注册（去除 availability 限制）                       |
+| `src/utils/settings/types.ts`    | `voiceProvider` 类型定义                                 |

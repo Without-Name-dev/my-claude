@@ -1,4 +1,5 @@
 ---
+
 name: Bug 报告
 about: 报告一个可复现的 bug
 title: "bug: "
@@ -18,13 +19,13 @@ assignees: []
 
 ## 运行环境
 
-| 项目| 值|
-|---|---|
-| 操作系统| 例如 macOS 15.4、Ubuntu 24.04|
-| Bun 版本| 例如 `bun --version` 的输出|
-| Claude Code 版本| 例如 `2.4.3` 或 commit hash|
-| 安装方式| `bun run build` / npm / 其他|
-| 模型| 例如 claude-sonnet-4-6、claude-opus-4-7|
+| 项目             | 值                                      |
+| ---------------- | --------------------------------------- |
+| 操作系统         | 例如 macOS 15.4、Ubuntu 24.04           |
+| Bun 版本         | 例如 `bun --version` 的输出             |
+| Claude Code 版本 | 例如 `2.4.3` 或 commit hash             |
+| 安装方式         | `bun run build` / npm / 其他            |
+| 模型             | 例如 claude-sonnet-4-6、claude-opus-4-7 |
 
 ## 复现步骤
 

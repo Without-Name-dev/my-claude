@@ -30,17 +30,17 @@ A terminal React rendering framework for building rich command-line interfaces.
 
 ### Documentation
 
-| Chapter | File | Contents |
-|---------|------|----------|
-| 1 | [Getting Started](./01-getting-started.md) | Installation, rendering, basic concepts |
-| 2 | [Layout System](./02-layout.md) | Box, Flexbox, Yoga, positioning, dimensions |
-| 3 | [Text & Styling](./03-text-and-styling.md) | Text component, colors, text wrapping, ANSI styling |
-| 4 | [Theme System](./04-theme-system.md) | ThemeProvider, themes, ThemedBox, ThemedText, color() |
-| 5 | [Design System Components](./05-design-system.md) | Dialog, ProgressBar, FuzzyPicker, Tabs, Spinner, etc. |
-| 6 | [Scrolling](./06-scrolling.md) | ScrollBox, sticky scroll, imperative scroll API |
-| 7 | [User Input](./07-user-input.md) | useInput, Key types, raw mode, mouse events |
-| 8 | [Keybinding System](./08-keybindings.md) | KeybindingProvider, useKeybinding, chord sequences, parser |
-| 9 | [Hooks Reference](./09-hooks-reference.md) | All hooks with full API signatures |
-| 10 | [Events & Focus](./10-events-and-focus.md) | Event system, FocusManager, click/hover, tab navigation |
-| 11 | [Core Architecture](./11-core-architecture.md) | Reconciler, screen buffer, terminal I/O, rendering pipeline |
-| 12 | [Terminal Integration](./12-terminal-integration.md) | Alternate screen, mouse tracking, clipboard, notifications |
+| Chapter | File                                                 | Contents                                                    |
+| ------- | ---------------------------------------------------- | ----------------------------------------------------------- |
+| 1       | [Getting Started](./01-getting-started.md)           | Installation, rendering, basic concepts                     |
+| 2       | [Layout System](./02-layout.md)                      | Box, Flexbox, Yoga, positioning, dimensions                 |
+| 3       | [Text & Styling](./03-text-and-styling.md)           | Text component, colors, text wrapping, ANSI styling         |
+| 4       | [Theme System](./04-theme-system.md)                 | ThemeProvider, themes, ThemedBox, ThemedText, color()       |
+| 5       | [Design System Components](./05-design-system.md)    | Dialog, ProgressBar, FuzzyPicker, Tabs, Spinner, etc.       |
+| 6       | [Scrolling](./06-scrolling.md)                       | ScrollBox, sticky scroll, imperative scroll API             |
+| 7       | [User Input](./07-user-input.md)                     | useInput, Key types, raw mode, mouse events                 |
+| 8       | [Keybinding System](./08-keybindings.md)             | KeybindingProvider, useKeybinding, chord sequences, parser  |
+| 9       | [Hooks Reference](./09-hooks-reference.md)           | All hooks with full API signatures                          |
+| 10      | [Events & Focus](./10-events-and-focus.md)           | Event system, FocusManager, click/hover, tab navigation     |
+| 11      | [Core Architecture](./11-core-architecture.md)       | Reconciler, screen buffer, terminal I/O, rendering pipeline |
+| 12      | [Terminal Integration](./12-terminal-integration.md) | Alternate screen, mouse tracking, clipboard, notifications  |

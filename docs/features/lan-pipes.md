@@ -20,6 +20,7 @@ LAN Pipes 让多台机器上的 Claude Code 实例通过局域网自动发现并
 **每台机器都需要执行。**
 
 **Windows**（管理员 PowerShell）：
+
 ```powershell
 New-NetFirewallRule -DisplayName "CCB LAN Beacon (UDP)" -Direction Inbound -Protocol UDP -LocalPort 7101 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "CCB LAN Pipes (TCP)" -Direction Inbound -Protocol TCP -LocalPort 1024-65535 -Program (Get-Command bun).Source -Action Allow -Profile Private
@@ -32,11 +33,13 @@ New-NetFirewallRule -DisplayName "CCB LAN Beacon Out (UDP)" -Direction Outbound 
 首次运行时系统弹出"允许接受传入连接"对话框，点击"允许"。
 
 如果使用 pf 防火墙：
+
 ```bash
 echo "pass in proto udp from any to any port 7101" | sudo pfctl -ef -
 ```
 
 **Linux**（firewalld）：
+
 ```bash
 sudo firewall-cmd --zone=trusted --add-port=7101/udp --permanent
 sudo firewall-cmd --zone=trusted --add-port=1024-65535/tcp --permanent
@@ -44,6 +47,7 @@ sudo firewall-cmd --reload
 ```
 
 **Linux**（iptables）：
+
 ```bash
 sudo iptables -A INPUT -p udp --dport 7101 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 1024:65535 -m owner --uid-owner $(id -u) -j ACCEPT
@@ -64,11 +68,13 @@ bun run dev
 ### 第三步：查看和操作
 
 在任一台机器上：
+
 ```
 /pipes
 ```
 
 输出示例：
+
 ```
 pipe: cli-a91bad56 (main) 192.168.50.22  2/3 selected
 
@@ -89,6 +95,7 @@ LAN Peers:
 5. 输入 prompt，自动路由到远端执行
 
 远端执行结果会流式回传到你的消息列表：
+
 ```
 [main vmwin11/192.168.50.27 / cli-04d67950] 正在检查 git status...
 [main vmwin11/192.168.50.27 / cli-04d67950] Completed
@@ -96,44 +103,45 @@ LAN Peers:
 
 ## 完整命令参考
 
-| 命令 | 说明 |
-|------|------|
-| `/pipes` | 显示所有实例（本机 + LAN），Shift+↓ 展开选择面板 |
-| `/pipes select <name>` | 选中某实例 |
-| `/pipes all` | 全选 |
-| `/pipes none` | 取消全选 |
-| `/attach <name>` | 手动 attach（自动识别 LAN peer 并通过 TCP 连接） |
-| `/detach <name>` | 断开连接 |
-| `/send <name> <msg>` | 向指定 pipe 发送消息 |
-| `/send tcp:host:port <msg>` | 直接通过 TCP 地址发送 |
-| `/claim-main` | 强制声明为 main |
-| `/pipe-status` | 显示详细状态 |
-| `/peers` | 列出所有已发现的 peer |
+| 命令                        | 说明                                             |
+| --------------------------- | ------------------------------------------------ |
+| `/pipes`                    | 显示所有实例（本机 + LAN），Shift+↓ 展开选择面板 |
+| `/pipes select <name>`      | 选中某实例                                       |
+| `/pipes all`                | 全选                                             |
+| `/pipes none`               | 取消全选                                         |
+| `/attach <name>`            | 手动 attach（自动识别 LAN peer 并通过 TCP 连接） |
+| `/detach <name>`            | 断开连接                                         |
+| `/send <name> <msg>`        | 向指定 pipe 发送消息                             |
+| `/send tcp:host:port <msg>` | 直接通过 TCP 地址发送                            |
+| `/claim-main`               | 强制声明为 main                                  |
+| `/pipe-status`              | 显示详细状态                                     |
+| `/peers`                    | 列出所有已发现的 peer                            |
 
 ## 快捷键
 
-| 快捷键 | 场景 | 作用 |
-|--------|------|------|
-| `Shift+↓` | 状态栏可见时 | 展开/收起选择面板 |
-| `↑ / ↓` | 面板展开时 | 移动光标 |
-| `Space` | 面板展开时 | 选中/取消 |
-| `Enter` | 面板展开时 | 确认关闭 |
-| `Esc` | 面板展开时 | 取消关闭 |
-| `← / →` | 有选中 pipe 时 | 切换路由模式 |
-| `M` | 面板展开时 | 同 ←/→ 切换路由模式 |
+| 快捷键    | 场景           | 作用                |
+| --------- | -------------- | ------------------- |
+| `Shift+↓` | 状态栏可见时   | 展开/收起选择面板   |
+| `↑ / ↓`   | 面板展开时     | 移动光标            |
+| `Space`   | 面板展开时     | 选中/取消           |
+| `Enter`   | 面板展开时     | 确认关闭            |
+| `Esc`     | 面板展开时     | 取消关闭            |
+| `← / →`   | 有选中 pipe 时 | 切换路由模式        |
+| `M`       | 面板展开时     | 同 ←/→ 切换路由模式 |
 
 ## 路由模式
 
-| 模式 | 显示 | 行为 |
-|------|------|------|
+| 模式                  | 显示 | 行为                                   |
+| --------------------- | ---- | -------------------------------------- |
 | `selected pipes only` | 绿色 | prompt 仅发送到选中的 pipe，本地不执行 |
-| `local main` | 灰色 | prompt 仅在本地执行，不转发 |
+| `local main`          | 灰色 | prompt 仅在本地执行，不转发            |
 
 切换路由模式不会清空选择。
 
 ## 权限转发
 
 当远端 slave 执行需要权限的工具（如 BashTool）时：
+
 1. slave 发送 `permission_request` 到 main
 2. main 弹出权限确认对话框，显示 `[role hostname/ip / pipeName]`
 3. 用户确认/拒绝
@@ -157,12 +165,12 @@ LAN Peers:
 
 ### 角色模型
 
-| 角色 | 说明 |
-|------|------|
-| `main` | 首个启动的实例 |
-| `sub` | 同机后续启动的实例 |
+| 角色     | 说明                           |
+| -------- | ------------------------------ |
+| `main`   | 首个启动的实例                 |
+| `sub`    | 同机后续启动的实例             |
 | `master` | attach 了至少一个 slave 的实例 |
-| `slave` | 被 master attach 的实例 |
+| `slave`  | 被 master attach 的实例        |
 
 跨机器 attach 时，两边都可以是 main——不要求对方必须是 sub。
 

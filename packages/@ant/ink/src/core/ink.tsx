@@ -341,10 +341,12 @@ export default class Ink {
       noop, // onCaughtError
       noop, // onRecoverableError
       noop, // onDefaultTransitionIndicator
+      null, // transitionCallbacks - React 19 reconciler types require the slot
     );
 
     // @ts-expect-error MACRO-replaced comparison — always false in production builds
     if ('production' === 'development') {
+      // @ts-expect-error injectIntoDevTools is not on the typed reconciler instance
       reconciler.injectIntoDevTools({
         bundleType: 0,
         // Reporting React DOM's version, not Ink's

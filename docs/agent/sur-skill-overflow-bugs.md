@@ -18,16 +18,16 @@ These bugs were latent because:
 
 ## 2. Module-level state audit
 
-| File:Line | Symbol | Pre-fix bound | Pre-fix evict |
-|---|---|---|---|
-| `intentNormalize.ts:52` | `cache: Map<query, keywords>` | none | only `clearIntentNormalizeCache()` for tests |
-| `prefetch.ts:17` | `discoveredThisSession: Set<skillName>` | none | none |
-| `prefetch.ts:18` | `recordedGapSignals: Set<gapKey>` | none | none |
-| `projectContext.ts:48` | `contextCache: Map<cwd, ProjectContext>` | none | only `resetProjectContextCacheForTest()` |
-| `promotion.ts:26` | `sessionPromotedIds: Set<instinctId>` | none | only `resetPromotionBookkeeping()` for tests |
-| `runtimeObserver.ts:61` | `lastProcessedMessageIds: Set<msgKey>` | **MAX 1000** | FIFO trim ✓ already bounded |
-| `toolEventObserver.ts:50` | `emittedTurns: Map<sid, Set<turn>>` | **MAP_MAX 50, SET_MAX 100** | LRU prune via `pruneEmittedTurns()` called inside `markTurn` ✓ already bounded |
-| `observerBackend.ts:21` | `registry: Map<name, Backend>` | fixed N | n/a — registry pattern, finite ✓ |
+| File:Line                 | Symbol                                   | Pre-fix bound               | Pre-fix evict                                                                  |
+| ------------------------- | ---------------------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `intentNormalize.ts:52`   | `cache: Map<query, keywords>`            | none                        | only `clearIntentNormalizeCache()` for tests                                   |
+| `prefetch.ts:17`          | `discoveredThisSession: Set<skillName>`  | none                        | none                                                                           |
+| `prefetch.ts:18`          | `recordedGapSignals: Set<gapKey>`        | none                        | none                                                                           |
+| `projectContext.ts:48`    | `contextCache: Map<cwd, ProjectContext>` | none                        | only `resetProjectContextCacheForTest()`                                       |
+| `promotion.ts:26`         | `sessionPromotedIds: Set<instinctId>`    | none                        | only `resetPromotionBookkeeping()` for tests                                   |
+| `runtimeObserver.ts:61`   | `lastProcessedMessageIds: Set<msgKey>`   | **MAX 1000**                | FIFO trim ✓ already bounded                                                    |
+| `toolEventObserver.ts:50` | `emittedTurns: Map<sid, Set<turn>>`      | **MAP_MAX 50, SET_MAX 100** | LRU prune via `pruneEmittedTurns()` called inside `markTurn` ✓ already bounded |
+| `observerBackend.ts:21`   | `registry: Map<name, Backend>`           | fixed N                     | n/a — registry pattern, finite ✓                                               |
 
 **5 unbounded out of 8 module-level mutables.** All 5 are addressed in this PR.
 
@@ -44,15 +44,15 @@ The fix bounds all 5 with FIFO/LRU eviction at sensible sizes (200–1000 entrie
 
 ## 4. Fix surface
 
-| File | Change |
-|---|---|
-| `src/services/skillSearch/intentNormalize.ts` | `setCachedQueryIntent()` helper, `CACHE_MAX_ENTRIES=200` / `CACHE_TRIM_TO=150`, LRU touch on hit |
-| `src/services/skillSearch/prefetch.ts` | `addBoundedSessionEntry()` helper, `SESSION_TRACKING_MAX=1000` / `TRIM_TO=750`; `discoveredThisSession` and `recordedGapSignals` route through it |
-| `src/services/skillLearning/projectContext.ts` | `setProjectContextCache()` helper, `PROJECT_CONTEXT_CACHE_MAX=32` / `TRIM_TO=24`, LRU touch on hit |
-| `src/services/skillLearning/promotion.ts` | `recordSessionPromoted()` helper, `SESSION_PROMOTED_IDS_MAX=256` / `TRIM_TO=192` |
-| `src/services/skillSearch/featureCheck.ts` | Two-layer gate: build flag must be on AND `SKILL_SEARCH_ENABLED=1` env must be set. Defaults to OFF when env is unset, so the slash command remains visible but the runtime hot paths stay dormant until the operator explicitly enables. |
-| `src/services/skillLearning/featureCheck.ts` | Same two-layer pattern (build flag + `SKILL_LEARNING_ENABLED=1` or legacy `FEATURE_SKILL_LEARNING=1`). |
-| `scripts/defines.ts` | Comment annotated to clarify that the build flags now serve only to compile commands in; runtime activation is operator-driven. |
+| File                                           | Change                                                                                                                                                                                                                                    |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/services/skillSearch/intentNormalize.ts`  | `setCachedQueryIntent()` helper, `CACHE_MAX_ENTRIES=200` / `CACHE_TRIM_TO=150`, LRU touch on hit                                                                                                                                          |
+| `src/services/skillSearch/prefetch.ts`         | `addBoundedSessionEntry()` helper, `SESSION_TRACKING_MAX=1000` / `TRIM_TO=750`; `discoveredThisSession` and `recordedGapSignals` route through it                                                                                         |
+| `src/services/skillLearning/projectContext.ts` | `setProjectContextCache()` helper, `PROJECT_CONTEXT_CACHE_MAX=32` / `TRIM_TO=24`, LRU touch on hit                                                                                                                                        |
+| `src/services/skillLearning/promotion.ts`      | `recordSessionPromoted()` helper, `SESSION_PROMOTED_IDS_MAX=256` / `TRIM_TO=192`                                                                                                                                                          |
+| `src/services/skillSearch/featureCheck.ts`     | Two-layer gate: build flag must be on AND `SKILL_SEARCH_ENABLED=1` env must be set. Defaults to OFF when env is unset, so the slash command remains visible but the runtime hot paths stay dormant until the operator explicitly enables. |
+| `src/services/skillLearning/featureCheck.ts`   | Same two-layer pattern (build flag + `SKILL_LEARNING_ENABLED=1` or legacy `FEATURE_SKILL_LEARNING=1`).                                                                                                                                    |
+| `scripts/defines.ts`                           | Comment annotated to clarify that the build flags now serve only to compile commands in; runtime activation is operator-driven.                                                                                                           |
 
 ## 5. Why default-off (without removing from build)?
 

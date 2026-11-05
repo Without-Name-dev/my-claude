@@ -62,7 +62,7 @@ export function formatDiagnosticsForAttachment(
 
   const diagnostics = params.diagnostics.map(
     (diag: {
-      message: string
+      message: string | { value?: string }
       severity?: number
       range: {
         start: { line: number; character: number }
@@ -71,7 +71,10 @@ export function formatDiagnosticsForAttachment(
       source?: string
       code?: string | number
     }) => ({
-      message: diag.message,
+      message:
+        typeof diag.message === 'string'
+          ? diag.message
+          : (diag.message.value ?? ''),
       severity: mapLSPSeverity(diag.severity),
       range: {
         start: {

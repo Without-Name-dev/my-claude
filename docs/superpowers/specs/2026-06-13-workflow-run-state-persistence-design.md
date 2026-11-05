@@ -26,13 +26,13 @@ Workflow 脚本的 `return` 值和终态 `RunProgress`（status / agents / phase
 
 ### 组件
 
-| 文件 | 改动 | 职责 |
-|---|---|---|
-| `src/workflow/persistence.ts` | 新增 | `writeRunState` / `readRunState` / `listPersistedRuns`；原子覆盖写（tmp + rename）；`getRunsDir()` 统一 runsDir 来源 |
-| `src/workflow/progress/store.ts` | 改 | 新增 `hydrate(run: RunProgress): void` —— 绕过 bus 直接注入磁盘 run（用于 `loadPersistedRuns`） |
-| `src/workflow/service.ts` | 改 | 订阅 bus `run_done` → `writeRunState`；`getRun(id)` 内存 miss → `readRunState` fallback；新增 `loadPersistedRuns(): Promise<void>` |
-| `src/workflow/panel/WorkflowsPanel.tsx` | 改 | mount 时调一次 `svc.loadPersistedRuns()`（flag 在 service 单例内部守护，panel 无脑调，重复调用是 no-op） |
-| `src/workflow/ports.ts` | 改 | `${getProjectRoot()}/.claude/workflow-runs` 提取为 `getRunsDir()` 共享（消除重复拼接，与 persistence.ts 同源） |
+| 文件                                    | 改动 | 职责                                                                                                                               |
+| --------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `src/workflow/persistence.ts`           | 新增 | `writeRunState` / `readRunState` / `listPersistedRuns`；原子覆盖写（tmp + rename）；`getRunsDir()` 统一 runsDir 来源               |
+| `src/workflow/progress/store.ts`        | 改   | 新增 `hydrate(run: RunProgress): void` —— 绕过 bus 直接注入磁盘 run（用于 `loadPersistedRuns`）                                    |
+| `src/workflow/service.ts`               | 改   | 订阅 bus `run_done` → `writeRunState`；`getRun(id)` 内存 miss → `readRunState` fallback；新增 `loadPersistedRuns(): Promise<void>` |
+| `src/workflow/panel/WorkflowsPanel.tsx` | 改   | mount 时调一次 `svc.loadPersistedRuns()`（flag 在 service 单例内部守护，panel 无脑调，重复调用是 no-op）                           |
+| `src/workflow/ports.ts`                 | 改   | `${getProjectRoot()}/.claude/workflow-runs` 提取为 `getRunsDir()` 共享（消除重复拼接，与 persistence.ts 同源）                     |
 
 ## 数据流
 
@@ -85,8 +85,8 @@ service.getRun(id)
     "workflowName": "audit-agent-system-vs-ultracode",
     "status": "completed",
     "phases": [
-      {"title": "Review", "status": "done"},
-      {"title": "Verify", "status": "done"}
+      { "title": "Review", "status": "done" },
+      { "title": "Verify", "status": "done" }
     ],
     "declaredPhases": ["Review", "Verify"],
     "currentPhase": null,
@@ -103,7 +103,11 @@ service.getRun(id)
       }
     ],
     "agentCount": 11,
-    "returnValue": {"dimensionsAudited": 9, "confirmedCount": 2, "confirmed": []},
+    "returnValue": {
+      "dimensionsAudited": 9,
+      "confirmedCount": 2,
+      "confirmed": []
+    },
     "startedAt": 1718277600000,
     "updatedAt": 1718278000000,
     "description": "Audit workflow engine against ultracode skill spec"
@@ -119,16 +123,16 @@ service.getRun(id)
 
 ## 错误处理
 
-| 场景 | 行为 |
-|---|---|
-| `writeRunState` IO 失败（磁盘满 / 权限） | `logForDebugging('[workflow warn] ...')` 吞掉，**不阻断 workflow 完成**——workflow 本身已成功，持久化失败只意味着重启后取不到，可接受 |
-| `readRunState` 文件不存在 | 返回 `null`，调用方按 miss 处理 |
-| `readRunState` JSON 解析失败 | 返回 `null`，log warn，当 miss（不崩） |
-| `readRunState` schema 结构不匹配（缺字段/类型错） | 返回 `null`，log warn，当 miss |
-| `schemaVersion` 未来不匹配 | 当前是 `1`，无迁移链，任何非 1 的版本 → 返回 `null` 当 miss（向前兼容兜底）。未来升级版本时再引入迁移函数链 |
-| 原子写中途崩溃 | `writeFile(state.json.tmp)` + `rename(tmp, state.json)`，rename 原子；最坏留下 `.tmp` 文件，下次写覆盖 |
-| `loadPersistedRuns` 扫到子目录无 `state.json`（只有 journal） | 跳过，不报错（半残 run） |
-| `loadPersistedRuns` 扫到某 `state.json` 损坏 | 跳过该单个文件，继续扫其余（一个坏文件不阻塞整体加载） |
+| 场景                                                          | 行为                                                                                                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `writeRunState` IO 失败（磁盘满 / 权限）                      | `logForDebugging('[workflow warn] ...')` 吞掉，**不阻断 workflow 完成**——workflow 本身已成功，持久化失败只意味着重启后取不到，可接受 |
+| `readRunState` 文件不存在                                     | 返回 `null`，调用方按 miss 处理                                                                                                      |
+| `readRunState` JSON 解析失败                                  | 返回 `null`，log warn，当 miss（不崩）                                                                                               |
+| `readRunState` schema 结构不匹配（缺字段/类型错）             | 返回 `null`，log warn，当 miss                                                                                                       |
+| `schemaVersion` 未来不匹配                                    | 当前是 `1`，无迁移链，任何非 1 的版本 → 返回 `null` 当 miss（向前兼容兜底）。未来升级版本时再引入迁移函数链                          |
+| 原子写中途崩溃                                                | `writeFile(state.json.tmp)` + `rename(tmp, state.json)`，rename 原子；最坏留下 `.tmp` 文件，下次写覆盖                               |
+| `loadPersistedRuns` 扫到子目录无 `state.json`（只有 journal） | 跳过，不报错（半残 run）                                                                                                             |
+| `loadPersistedRuns` 扫到某 `state.json` 损坏                  | 跳过该单个文件，继续扫其余（一个坏文件不阻塞整体加载）                                                                               |
 
 ## 关键不变量
 

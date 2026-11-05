@@ -15,6 +15,7 @@
 这个 commit 引入的 workflow engine **架构干净、引擎层测试覆盖率高**，但**脚本沙箱和路径校验存在真实漏洞**，并且在本次审查过程中**我亲身实证发现了多个 judge report 没覆盖的 host 集成 bug**（其中包括 workflow 状态变更通知根本没有接进 host 通知系统，导致"完成时自动通知"承诺落空）。受信 LLM 威胁模型下无严格 blocker，但建议合并前修 4 项。
 
 **严重度计数**（综合 judge + 我的实证）：
+
 - CRITICAL: 0
 - HIGH: 2
 - MEDIUM: 9

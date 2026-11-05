@@ -16,18 +16,18 @@
 
 ### 新增
 
-| 文件 | 说明 |
-|------|------|
-| `src/cli/bg/engine.ts` | BgEngine 接口 + BgStartOptions/BgStartResult 类型 |
-| `src/cli/bg/engines/tmux.ts` | TmuxEngine: 从 `bg.ts` 提取 tmux 相关逻辑 |
+| 文件                             | 说明                                                 |
+| -------------------------------- | ---------------------------------------------------- |
+| `src/cli/bg/engine.ts`           | BgEngine 接口 + BgStartOptions/BgStartResult 类型    |
+| `src/cli/bg/engines/tmux.ts`     | TmuxEngine: 从 `bg.ts` 提取 tmux 相关逻辑            |
 | `src/cli/bg/engines/detached.ts` | DetachedEngine: spawn({ detached }) + logFile 重定向 |
-| `src/cli/bg/engines/index.ts` | selectEngine() 自动选择 + re-export |
-| `src/cli/bg/tail.ts` | 跨平台日志 tail: fs.watch + 轮询 fallback |
+| `src/cli/bg/engines/index.ts`    | selectEngine() 自动选择 + re-export                  |
+| `src/cli/bg/tail.ts`             | 跨平台日志 tail: fs.watch + 轮询 fallback            |
 
 ### 修改
 
-| 文件 | 变更 |
-|------|------|
+| 文件            | 变更                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------ |
 | `src/cli/bg.ts` | `handleBgFlag()` 改为调用 `selectEngine().start()`；`attachHandler()` 改为调用 `engine.attach()` |
 
 ## 实现方案
@@ -44,7 +44,7 @@ export interface BgEngine {
 
 export interface BgStartOptions {
   sessionName: string
-  args: string[]         // CLI args (去除 --bg)
+  args: string[] // CLI args (去除 --bg)
   env: Record<string, string | undefined>
   logPath: string
   cwd: string
@@ -61,6 +61,7 @@ export interface BgStartResult {
 ### 2. TmuxEngine (`src/cli/bg/engines/tmux.ts`)
 
 从 `bg.ts:handleBgFlag()` 和 `bg.ts:attachHandler()` 提取:
+
 - `available()`: `execFileNoThrow('tmux', ['-V'])` 返回 code === 0
 - `start()`: `tmux new-session -d -s <name> <cmd>`
 - `attach()`: `tmux attach-session -t <session.tmuxSessionName>`
@@ -72,7 +73,7 @@ export class DetachedEngine implements BgEngine {
   readonly name = 'detached'
 
   async available(): Promise<boolean> {
-    return true  // 总是可用
+    return true // 总是可用
   }
 
   async start(opts: BgStartOptions): Promise<BgStartResult> {
@@ -133,6 +134,7 @@ export async function selectEngine(): Promise<BgEngine> {
 ### 6. bg.ts 重构
 
 `handleBgFlag()` 改名为 `handleBgStart()`，内部逻辑:
+
 ```typescript
 export async function handleBgStart(args: string[]): Promise<void> {
   const engine = await selectEngine()
@@ -155,6 +157,7 @@ export async function handleBgStart(args: string[]): Promise<void> {
 ```
 
 `attachHandler()` 根据 `session.engine` 字段选择引擎:
+
 ```typescript
 export async function attachHandler(target: string | undefined): Promise<void> {
   // ... 找到 session

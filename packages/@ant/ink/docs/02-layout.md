@@ -9,7 +9,7 @@ Ink uses [Yoga](https://yogalayout.com/) (Facebook's cross-platform layout engin
 ```tsx
 import { Box, Text } from '@anthropic/ink'
 
-<Box flexDirection="row" gap={1}>
+;<Box flexDirection="row" gap={1}>
   <Text>Left</Text>
   <Text>Right</Text>
 </Box>
@@ -166,12 +166,12 @@ Position `absolute` removes the element from normal flow and positions it relati
 Control individual sides and colors:
 
 ```tsx
-<Box
+;<Box
   borderStyle="single"
-  borderTop={false}           // Hide top border
-  borderBottom={true}         // Show bottom border
-  borderColor="rgb(255,0,0)"  // Red border
-  borderDimColor={true}       // Dim the border
+  borderTop={false} // Hide top border
+  borderBottom={true} // Show bottom border
+  borderColor="rgb(255,0,0)" // Red border
+  borderDimColor={true} // Dim the border
 >
   ...
 </Box>
@@ -180,7 +180,7 @@ Control individual sides and colors:
 Per-side colors:
 
 ```tsx
-<Box
+;<Box
   borderStyle="single"
   borderTopColor="rgb(255,0,0)"
   borderBottomColor="ansi:green"
@@ -192,16 +192,13 @@ Per-side colors:
 Border text (labels in the border):
 
 ```tsx
-<Box
-  borderStyle="round"
-  borderText={{ title: "My Panel", align: "left" }}
-/>
+;<Box borderStyle="round" borderText={{ title: 'My Panel', align: 'left' }} />
 ```
 
 #### Background
 
 ```tsx
-<Box backgroundColor="rgb(40,40,40)">...</Box>
+;<Box backgroundColor="rgb(40,40,40)">...</Box>
 ```
 
 #### Overflow
@@ -217,7 +214,7 @@ Border text (labels in the border):
 #### Opaque
 
 ```tsx
-<Box opaque={true}>...</Box>
+;<Box opaque={true}>...</Box>
 ```
 
 Fills the box interior with spaces (using terminal's default background) before rendering children. Useful for absolute-positioned overlays where gaps would otherwise be transparent.
@@ -236,7 +233,7 @@ Only affects alt-screen text selection. Useful for gutters (line numbers, diff m
 `Spacer` fills all available space along the main axis (equivalent to `flexGrow: 1`).
 
 ```tsx
-<Box flexDirection="row">
+;<Box flexDirection="row">
   <Text>Left</Text>
   <Spacer />
   <Text>Right</Text>
@@ -248,7 +245,7 @@ Only affects alt-screen text selection. Useful for gutters (line numbers, diff m
 Inserts line breaks.
 
 ```tsx
-<Text>
+;<Text>
   Line 1
   <Newline />
   Line 2
@@ -262,7 +259,7 @@ Inserts line breaks.
 ### Two-column layout
 
 ```tsx
-<Box flexDirection="row" width={80}>
+;<Box flexDirection="row" width={80}>
   <Box width="50%" padding={1}>
     <Text>Left column</Text>
   </Box>
@@ -275,7 +272,7 @@ Inserts line breaks.
 ### Centered content
 
 ```tsx
-<Box justifyContent="center" alignItems="center" height={20}>
+;<Box justifyContent="center" alignItems="center" height={20}>
   <Text>Centered!</Text>
 </Box>
 ```
@@ -283,7 +280,7 @@ Inserts line breaks.
 ### Sticky footer
 
 ```tsx
-<Box flexDirection="column" height={24}>
+;<Box flexDirection="column" height={24}>
   <Box flexGrow={1}>
     <Text>Scrollable content area</Text>
   </Box>
@@ -296,7 +293,7 @@ Inserts line breaks.
 ### Bordered panel with title
 
 ```tsx
-<Box
+;<Box
   flexDirection="column"
   borderStyle="round"
   borderColor="rgb(87,105,247)"
@@ -315,7 +312,7 @@ Wraps a region to exclude it from text selection in alt-screen mode. A convenien
 ```tsx
 import { NoSelect } from '@anthropic/ink'
 
-<Box flexDirection="row">
+;<Box flexDirection="row">
   <NoSelect>
     <Text dimColor>1 │ </Text>
   </NoSelect>
@@ -325,10 +322,10 @@ import { NoSelect } from '@anthropic/ink'
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `children` | `ReactNode` | - | Content |
-| `fromLeftEdge` | `boolean` | `false` | Extend exclusion from column 0 to box's right edge |
+| Prop           | Type        | Default | Description                                        |
+| -------------- | ----------- | ------- | -------------------------------------------------- |
+| `children`     | `ReactNode` | -       | Content                                            |
+| `fromLeftEdge` | `boolean`   | `false` | Extend exclusion from column 0 to box's right edge |
 
 Accepts all `BoxProps` except `noSelect`.
 

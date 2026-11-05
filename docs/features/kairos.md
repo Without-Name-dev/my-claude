@@ -56,23 +56,24 @@ KAIROS 在系统提示中注入两大段落：
 
 ### 3.1 核心模块
 
-| 模块 | 文件 | 状态 | 职责 |
-|------|------|------|------|
-| Assistant 入口 | `src/assistant/index.ts` | Stub | `isAssistantMode()`、`initializeAssistantTeam()` |
-| Session 发现 | `src/assistant/sessionDiscovery.ts` | Stub | 发现可用 bridge session |
-| Session 历史 | `src/assistant/sessionHistory.ts` | Stub | 持久化 session 历史 |
-| Gate 控制 | `src/assistant/gate.ts` | Stub | GrowthBook 门控检查 |
-| Session 选择器 | `src/assistant/AssistantSessionChooser.ts` | Stub | UI 选择 session |
-| BriefTool | `src/tools/BriefTool/` | Stub | 结构化消息输出工具 |
-| Channel Notification | `src/services/mcp/channelNotification.ts` | Stub | 外部频道消息接入 |
-| Dream Task | `src/components/tasks/src/tasks/DreamTask/` | Stub | 记忆蒸馏任务 |
-| Memory Directory | `src/memdir/memdir.ts` | Stub | 记忆目录管理 |
+| 模块                 | 文件                                        | 状态 | 职责                                             |
+| -------------------- | ------------------------------------------- | ---- | ------------------------------------------------ |
+| Assistant 入口       | `src/assistant/index.ts`                    | Stub | `isAssistantMode()`、`initializeAssistantTeam()` |
+| Session 发现         | `src/assistant/sessionDiscovery.ts`         | Stub | 发现可用 bridge session                          |
+| Session 历史         | `src/assistant/sessionHistory.ts`           | Stub | 持久化 session 历史                              |
+| Gate 控制            | `src/assistant/gate.ts`                     | Stub | GrowthBook 门控检查                              |
+| Session 选择器       | `src/assistant/AssistantSessionChooser.ts`  | Stub | UI 选择 session                                  |
+| BriefTool            | `src/tools/BriefTool/`                      | Stub | 结构化消息输出工具                               |
+| Channel Notification | `src/services/mcp/channelNotification.ts`   | Stub | 外部频道消息接入                                 |
+| Dream Task           | `src/components/tasks/src/tasks/DreamTask/` | Stub | 记忆蒸馏任务                                     |
+| Memory Directory     | `src/memdir/memdir.ts`                      | Stub | 记忆目录管理                                     |
 
 ### 3.2 SleepTool（与 Proactive 共享）
 
 文件：`src/tools/SleepTool/prompt.ts`
 
 SleepTool 是 KAIROS/Proactive 的节奏控制核心。工具描述让模型理解"休眠"概念：
+
 - 工具名：`Sleep`
 - 功能：等待指定时间后响应 tick prompt；若队列出现新工作或 proactive 被关闭，会提前唤醒
 - 与 `<tick_tag>` 配合实现心跳式自主工作
@@ -164,19 +165,19 @@ FEATURE_KAIROS=1 FEATURE_TOKEN_BUDGET=1 bun run dev
 
 ## 七、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/assistant/index.ts` | 9 | Assistant 模块入口（stub） |
-| `src/assistant/gate.ts` | — | GrowthBook 门控（stub） |
-| `src/assistant/sessionDiscovery.ts` | — | Session 发现（stub） |
-| `src/assistant/sessionHistory.ts` | — | Session 历史（stub） |
-| `src/assistant/AssistantSessionChooser.ts` | — | Session 选择 UI（stub） |
-| `src/tools/BriefTool/` | — | BriefTool 实现（stub） |
-| `src/tools/SleepTool/prompt.ts` | ~30 | SleepTool 工具提示 |
-| `src/tools/SleepTool/SleepTool.ts` | ~200 | 休眠/唤醒与 automation metadata |
-| `src/services/mcp/channelNotification.ts` | 5 | 频道消息接入（stub） |
-| `src/memdir/memdir.ts` | — | 记忆目录管理（stub） |
-| `src/constants/prompts.ts:557,847-918` | 72 | 系统提示注入 |
-| `src/components/tasks/src/tasks/DreamTask/` | 3 | Dream 任务（stub） |
-| `src/proactive/index.ts` | — | Proactive 核心（KAIROS 共享） |
-| `src/utils/sessionState.ts` | — | 向 bridge/CCR 暴露 automation 状态 |
+| 文件                                        | 行数 | 职责                               |
+| ------------------------------------------- | ---- | ---------------------------------- |
+| `src/assistant/index.ts`                    | 9    | Assistant 模块入口（stub）         |
+| `src/assistant/gate.ts`                     | —    | GrowthBook 门控（stub）            |
+| `src/assistant/sessionDiscovery.ts`         | —    | Session 发现（stub）               |
+| `src/assistant/sessionHistory.ts`           | —    | Session 历史（stub）               |
+| `src/assistant/AssistantSessionChooser.ts`  | —    | Session 选择 UI（stub）            |
+| `src/tools/BriefTool/`                      | —    | BriefTool 实现（stub）             |
+| `src/tools/SleepTool/prompt.ts`             | ~30  | SleepTool 工具提示                 |
+| `src/tools/SleepTool/SleepTool.ts`          | ~200 | 休眠/唤醒与 automation metadata    |
+| `src/services/mcp/channelNotification.ts`   | 5    | 频道消息接入（stub）               |
+| `src/memdir/memdir.ts`                      | —    | 记忆目录管理（stub）               |
+| `src/constants/prompts.ts:557,847-918`      | 72   | 系统提示注入                       |
+| `src/components/tasks/src/tasks/DreamTask/` | 3    | Dream 任务（stub）                 |
+| `src/proactive/index.ts`                    | —    | Proactive 核心（KAIROS 共享）      |
+| `src/utils/sessionState.ts`                 | —    | 向 bridge/CCR 暴露 automation 状态 |

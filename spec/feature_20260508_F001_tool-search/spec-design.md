@@ -48,73 +48,73 @@
 
 **始终加载的核心工具**（31 个）:
 
-| 工具 | 始终加载的理由 |
-|------|----------------|
-| `BashTool` | 几乎所有任务都需要 shell 执行 |
-| `FileReadTool` | 读取文件是基础操作 |
-| `FileEditTool` | 编辑文件是核心能力 |
-| `FileWriteTool` | 写入文件是核心能力 |
-| `GlobTool` | 文件搜索是基础操作 |
-| `GrepTool` | 内容搜索是基础操作 |
-| `AgentTool` | 子 agent 调度是核心架构 |
-| `AskUserQuestionTool` | 用户交互是基础能力 |
-| `ToolSearchTool` | 工具发现入口 |
-| `ExecuteTool` | 延迟工具执行入口（新增） |
-| `TaskOutputTool` | 任务输出查询是高频操作 |
-| `TaskStopTool` | 任务停止是 agent 生命周期管理 |
-| `EnterPlanModeTool` | 进入计划模式是常见工作流 |
-| `ExitPlanModeV2Tool` | 退出计划模式是常见工作流 |
+| 工具                      | 始终加载的理由                   |
+| ------------------------- | -------------------------------- |
+| `BashTool`                | 几乎所有任务都需要 shell 执行    |
+| `FileReadTool`            | 读取文件是基础操作               |
+| `FileEditTool`            | 编辑文件是核心能力               |
+| `FileWriteTool`           | 写入文件是核心能力               |
+| `GlobTool`                | 文件搜索是基础操作               |
+| `GrepTool`                | 内容搜索是基础操作               |
+| `AgentTool`               | 子 agent 调度是核心架构          |
+| `AskUserQuestionTool`     | 用户交互是基础能力               |
+| `ToolSearchTool`          | 工具发现入口                     |
+| `ExecuteTool`             | 延迟工具执行入口（新增）         |
+| `TaskOutputTool`          | 任务输出查询是高频操作           |
+| `TaskStopTool`            | 任务停止是 agent 生命周期管理    |
+| `EnterPlanModeTool`       | 进入计划模式是常见工作流         |
+| `ExitPlanModeV2Tool`      | 退出计划模式是常见工作流         |
 | `VerifyPlanExecutionTool` | 计划执行验证与 ExitPlanMode 配套 |
-| `TaskCreateTool` | 任务创建（TodoV2）是高频操作 |
-| `TaskGetTool` | 任务查询（TodoV2）是高频操作 |
-| `TaskUpdateTool` | 任务更新（TodoV2）是高频操作 |
-| `TaskListTool` | 任务列表（TodoV2）是高频操作 |
-| `TodoWriteTool` | 待办写入是任务跟踪基础 |
-| `SendMessageTool` | 团队内 agent 通信 |
-| `TeamCreateTool` | 团队创建（swarm 模式核心） |
-| `TeamDeleteTool` | 团队删除（swarm 模式核心） |
-| `ListPeersTool` | 跨会话通信发现 |
-| `SkillTool` | 技能调用（/skill 命令） |
-| `WebFetchTool` | Web 内容获取是常见需求 |
-| `WebSearchTool` | Web 搜索是常见需求 |
-| `NotebookEditTool` | Notebook 编辑是数据分析基础 |
-| `LSPTool` | LSP 代码智能是开发基础 |
-| `MonitorTool` | 后台监控进程（日志/轮询） |
-| `SleepTool` | 等待时长（轮询 deploy 等场景） |
+| `TaskCreateTool`          | 任务创建（TodoV2）是高频操作     |
+| `TaskGetTool`             | 任务查询（TodoV2）是高频操作     |
+| `TaskUpdateTool`          | 任务更新（TodoV2）是高频操作     |
+| `TaskListTool`            | 任务列表（TodoV2）是高频操作     |
+| `TodoWriteTool`           | 待办写入是任务跟踪基础           |
+| `SendMessageTool`         | 团队内 agent 通信                |
+| `TeamCreateTool`          | 团队创建（swarm 模式核心）       |
+| `TeamDeleteTool`          | 团队删除（swarm 模式核心）       |
+| `ListPeersTool`           | 跨会话通信发现                   |
+| `SkillTool`               | 技能调用（/skill 命令）          |
+| `WebFetchTool`            | Web 内容获取是常见需求           |
+| `WebSearchTool`           | Web 搜索是常见需求               |
+| `NotebookEditTool`        | Notebook 编辑是数据分析基础      |
+| `LSPTool`                 | LSP 代码智能是开发基础           |
+| `MonitorTool`             | 后台监控进程（日志/轮询）        |
+| `SleepTool`               | 等待时长（轮询 deploy 等场景）   |
 
 **延迟加载的工具**（约 26 个内置工具 + 全部 MCP 工具）:
 
 所有未在核心列表中的内置工具，包括：
 
-| 工具 | 延迟加载的理由 |
-|------|----------------|
-| `ConfigTool` | 配置操作低频（ant only） |
-| `TungstenTool` | 专用工具低频（ant only） |
-| `SuggestBackgroundPRTool` | PR 建议低频 |
-| `WebBrowserTool` | 浏览器操作低频（feature-gated） |
-| `OverflowTestTool` | 测试专用（feature-gated） |
-| `CtxInspectTool` | 上下文检查低频（debug/feature-gated） |
-| `TerminalCaptureTool` | 终端捕获低频（feature-gated） |
-| `EnterWorktreeTool` | worktree 操作低频 |
-| `ExitWorktreeTool` | worktree 操作低频 |
-| `REPLTool` | REPL 模式低频（ant only） |
-| `WorkflowTool` | 工作流脚本低频（feature-gated） |
-| `CronCreateTool` | 调度创建低频 |
-| `CronDeleteTool` | 调度删除低频 |
-| `CronListTool` | 调度列表低频 |
-| `RemoteTriggerTool` | 远程触发低频 |
-| `BriefTool` | 通信通道低频（KAIROS） |
-| `SendUserFileTool` | 文件发送低频（KAIROS） |
-| `PushNotificationTool` | 推送通知低频（KAIROS） |
-| `SubscribePRTool` | PR 订阅低频 |
-| `ReviewArtifactTool` | 产物审查低频 |
-| `PowerShellTool` | PowerShell 低频（需显式启用） |
-| `SnipTool` | 上下文裁剪低频（HISTORY_SNIP） |
-| `DiscoverSkillsTool` | 技能发现低频（feature-gated） |
-| `ListMcpResourcesTool` | MCP 资源列表低频 |
-| `ReadMcpResourceTool` | MCP 资源读取低频 |
-| `TestingPermissionTool` | 仅测试环境 |
-| 全部 MCP 工具 | 按连接动态加载 |
+| 工具                      | 延迟加载的理由                        |
+| ------------------------- | ------------------------------------- |
+| `ConfigTool`              | 配置操作低频（ant only）              |
+| `TungstenTool`            | 专用工具低频（ant only）              |
+| `SuggestBackgroundPRTool` | PR 建议低频                           |
+| `WebBrowserTool`          | 浏览器操作低频（feature-gated）       |
+| `OverflowTestTool`        | 测试专用（feature-gated）             |
+| `CtxInspectTool`          | 上下文检查低频（debug/feature-gated） |
+| `TerminalCaptureTool`     | 终端捕获低频（feature-gated）         |
+| `EnterWorktreeTool`       | worktree 操作低频                     |
+| `ExitWorktreeTool`        | worktree 操作低频                     |
+| `REPLTool`                | REPL 模式低频（ant only）             |
+| `WorkflowTool`            | 工作流脚本低频（feature-gated）       |
+| `CronCreateTool`          | 调度创建低频                          |
+| `CronDeleteTool`          | 调度删除低频                          |
+| `CronListTool`            | 调度列表低频                          |
+| `RemoteTriggerTool`       | 远程触发低频                          |
+| `BriefTool`               | 通信通道低频（KAIROS）                |
+| `SendUserFileTool`        | 文件发送低频（KAIROS）                |
+| `PushNotificationTool`    | 推送通知低频（KAIROS）                |
+| `SubscribePRTool`         | PR 订阅低频                           |
+| `ReviewArtifactTool`      | 产物审查低频                          |
+| `PowerShellTool`          | PowerShell 低频（需显式启用）         |
+| `SnipTool`                | 上下文裁剪低频（HISTORY_SNIP）        |
+| `DiscoverSkillsTool`      | 技能发现低频（feature-gated）         |
+| `ListMcpResourcesTool`    | MCP 资源列表低频                      |
+| `ReadMcpResourceTool`     | MCP 资源读取低频                      |
+| `TestingPermissionTool`   | 仅测试环境                            |
+| 全部 MCP 工具             | 按连接动态加载                        |
 
 **实现方式**:
 
@@ -139,19 +139,35 @@ a capability is unavailable.
 ```typescript
 export const CORE_TOOLS = new Set([
   // 文件操作
-  'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+  'Bash',
+  'Read',
+  'Edit',
+  'Write',
+  'Glob',
+  'Grep',
   // Agent 与交互
-  'Agent', 'AskUserQuestion', 'SendMessage', 'ListPeers',
+  'Agent',
+  'AskUserQuestion',
+  'SendMessage',
+  'ListPeers',
   // 团队（swarm）
-  'TeamCreate', 'TeamDelete',
+  'TeamCreate',
+  'TeamDelete',
   // 任务管理
-  'TaskOutput', 'TaskStop',
-  'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'TaskCreate',
+  'TaskGet',
+  'TaskUpdate',
+  'TaskList',
   'TodoWrite',
   // 规划
-  'EnterPlanMode', 'ExitPlanMode', 'VerifyPlanExecution',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'VerifyPlanExecution',
   // Web
-  'WebFetch', 'WebSearch',
+  'WebFetch',
+  'WebSearch',
   // 编辑器
   'NotebookEdit',
   // 代码智能
@@ -159,9 +175,11 @@ export const CORE_TOOLS = new Set([
   // 技能
   'Skill',
   // 调度与监控
-  'Sleep', 'Monitor',
+  'Sleep',
+  'Monitor',
   // 工具发现与执行（新增）
-  'ToolSearch', 'ExecuteTool',
+  'ToolSearch',
+  'ExecuteTool',
 ])
 ```
 
@@ -188,11 +206,13 @@ export function isDeferredTool(tool: Tool): boolean {
 构建 API 请求时，核心工具的 schema 正常注入。延迟工具仅注入名称列表到 `<available-deferred-tools>` 或 `system-reminder` 附件中，模型通过 ToolSearchTool 获取详情。
 
 **收益**:
+
 - 初始 prompt 体积减少约 30-40%（26 个内置工具 schema → 名称列表，加上 MCP 工具全延迟）
 - Prompt cache 命中率提升（核心 31 工具列表稳定，延迟工具仅名称列表）
 - 支持无限工具扩展（不受 context window 限制）
 
 **权衡**:
+
 - 非核心工具首次使用需要一轮 ToolSearch → ExecuteTool 的额外交互
 - 模型需要更积极地使用 ToolSearchTool 发现可用工具
 
@@ -206,33 +226,35 @@ export function isDeferredTool(tool: Tool): boolean {
 
 ```typescript
 interface ToolIndexEntry {
-  name: string                    // 工具名（如 "FileEditTool" 或 "mcp__server__action"）
-  normalizedName: string          // 小写 + 连字符替换
-  description: string             // 工具描述文本
-  searchHint: string | undefined  // buildTool 中定义的 searchHint
-  isMcp: boolean                  // 是否 MCP 工具
-  isDeferred: boolean             // 是否延迟加载工具
+  name: string // 工具名（如 "FileEditTool" 或 "mcp__server__action"）
+  normalizedName: string // 小写 + 连字符替换
+  description: string // 工具描述文本
+  searchHint: string | undefined // buildTool 中定义的 searchHint
+  isMcp: boolean // 是否 MCP 工具
+  isDeferred: boolean // 是否延迟加载工具
   inputSchema: object | undefined // 参数 schema（JSON Schema 格式，供 discover 模式返回）
-  tokens: string[]                // 分词后的 token 列表
-  tfVector: Map<string, number>   // TF-IDF 向量
+  tokens: string[] // 分词后的 token 列表
+  tfVector: Map<string, number> // TF-IDF 向量
 }
 ```
 
 **字段权重**:
 
-| 字段 | 权重 | 说明 |
-|------|------|------|
-| name | 3.0 | 工具名称（CamelCase 拆分、MCP `__` 拆分） |
-| searchHint | 2.5 | 工具的 `searchHint` 字段（高信号） |
-| description | 1.0 | 工具描述文本 |
+| 字段        | 权重 | 说明                                      |
+| ----------- | ---- | ----------------------------------------- |
+| name        | 3.0  | 工具名称（CamelCase 拆分、MCP `__` 拆分） |
+| searchHint  | 2.5  | 工具的 `searchHint` 字段（高信号）        |
+| description | 1.0  | 工具描述文本                              |
 
 **索引生命周期**:
+
 - 按需构建，缓存在会话中
 - MCP 工具连接/断开时触发增量更新（复用 `DeferredToolsDelta` 机制）
 - 内置工具在首次构建时全量索引
 - 仅索引延迟工具（核心工具已在模型上下文中，无需发现）
 
 **工具名解析**:
+
 - MCP 工具：`mcp__server__action` → 拆分为 `["mcp", "server", "action"]`
 - 内置工具：`FileEditTool` → CamelCase 拆分为 `["file", "edit", "tool"]`
 - 与现有 `ToolSearchTool.parseToolName` 逻辑对齐
@@ -260,6 +282,7 @@ query 输入
 ```
 
 **结果合并策略**:
+
 - 关键词匹配分数 × 0.4 + TF-IDF 相似度分数 × 0.6
 - 权重可通过环境变量 `TOOL_SEARCH_WEIGHT_KEYWORD` / `TOOL_SEARCH_WEIGHT_TFIDF` 调整
 - 去重：同一工具取两路中最高分
@@ -320,11 +343,13 @@ const ExecuteTool = buildTool({
 5. **结果透传**: 直接返回目标工具的执行结果
 
 **权限模型**:
+
 - ExecuteTool 本身不做额外权限检查
 - 权限检查委托给目标工具的 `checkPermissions`
 - 用户审批时显示实际工具名和操作内容（而非 "ExecuteTool"）
 
 **工具注册**:
+
 - 在 `src/tools.ts` 的 `getAllBaseTools()` 中注册
 - 与 ToolSearchTool 关联启用：当 `isToolSearchEnabledOptimistic()` 为 true 时注册
 
@@ -364,6 +389,7 @@ const ExecuteTool = buildTool({
 **展示形式**: 在 REPL 输入区域上方渲染推荐提示条（类似现有 skill search tips 的设计）。
 
 **UI 规格**:
+
 - 显示匹配度最高的 2-3 个工具
 - 每个工具显示：工具名 + 简短描述（一行截断） + 匹配分数
 - 样式与现有 skill search tips 对齐（Ink 组件，使用 theme 色系）
@@ -371,6 +397,7 @@ const ExecuteTool = buildTool({
 - 选择后将工具信息追加到当前消息的上下文中
 
 **条件显示**:
+
 - 仅当预取结果非空时显示
 - 匹配分数低于阈值（默认 0.15）时不显示
 - 用户可通过 `settings.json` 关闭推荐提示
@@ -414,27 +441,27 @@ const ExecuteTool = buildTool({
 
 ### 新增文件清单
 
-| 文件 | 职责 |
-|------|------|
-| `src/services/toolSearch/toolIndex.ts` | TF-IDF 工具索引构建与查询 |
-| `src/services/toolSearch/prefetch.ts` | 用户输入预取管道 |
-| `packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts` | 工具执行入口 |
-| `packages/builtin-tools/src/tools/ExecuteTool/prompt.ts` | ExecuteTool prompt 定义 |
-| `packages/builtin-tools/src/tools/ExecuteTool/constants.ts` | 常量定义 |
-| `src/components/ToolSearchHint.tsx` | 用户推荐 UI 组件 |
+| 文件                                                          | 职责                      |
+| ------------------------------------------------------------- | ------------------------- |
+| `src/services/toolSearch/toolIndex.ts`                        | TF-IDF 工具索引构建与查询 |
+| `src/services/toolSearch/prefetch.ts`                         | 用户输入预取管道          |
+| `packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts` | 工具执行入口              |
+| `packages/builtin-tools/src/tools/ExecuteTool/prompt.ts`      | ExecuteTool prompt 定义   |
+| `packages/builtin-tools/src/tools/ExecuteTool/constants.ts`   | 常量定义                  |
+| `src/components/ToolSearchHint.tsx`                           | 用户推荐 UI 组件          |
 
 ### 修改文件清单
 
-| 文件 | 修改内容 |
-|------|----------|
-| `packages/builtin-tools/src/tools/ToolSearchTool/ToolSearchTool.ts` | 新增 TF-IDF 搜索路径、discover 模式 |
-| `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts` | 更新 prompt 文档、修改 `isDeferredTool` 判定逻辑 |
-| `src/constants/tools.ts` | 新增 `CORE_TOOLS` 常量集合 |
-| `src/tools.ts` | 注册 ExecuteTool、调整 `getAllBaseTools()` 工具注册 |
-| `src/utils/toolSearch.ts` | 适配新的延迟判定逻辑 |
-| `src/constants/prompts.ts` | 添加 ToolSearch 引导指令到系统提示词 |
-| `src/services/api/claude.ts` | 集成预取管道、调整延迟工具注入方式 |
-| `src/screens/REPL.tsx` | 集成 ToolSearchHint 组件 |
+| 文件                                                                | 修改内容                                            |
+| ------------------------------------------------------------------- | --------------------------------------------------- |
+| `packages/builtin-tools/src/tools/ToolSearchTool/ToolSearchTool.ts` | 新增 TF-IDF 搜索路径、discover 模式                 |
+| `packages/builtin-tools/src/tools/ToolSearchTool/prompt.ts`         | 更新 prompt 文档、修改 `isDeferredTool` 判定逻辑    |
+| `src/constants/tools.ts`                                            | 新增 `CORE_TOOLS` 常量集合                          |
+| `src/tools.ts`                                                      | 注册 ExecuteTool、调整 `getAllBaseTools()` 工具注册 |
+| `src/utils/toolSearch.ts`                                           | 适配新的延迟判定逻辑                                |
+| `src/constants/prompts.ts`                                          | 添加 ToolSearch 引导指令到系统提示词                |
+| `src/services/api/claude.ts`                                        | 集成预取管道、调整延迟工具注入方式                  |
+| `src/screens/REPL.tsx`                                              | 集成 ToolSearchHint 组件                            |
 
 ## 验收标准
 

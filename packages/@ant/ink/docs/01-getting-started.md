@@ -19,16 +19,16 @@
 
 ### Key Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `chalk` | ANSI color generation |
-| `cli-boxes` | Border style definitions |
-| `get-east-asian-width` | CJK character width measurement |
-| `wrap-ansi` | ANSI-aware word wrapping |
-| `bidi-js` | Bidirectional text support |
-| `lodash-es` | Utility functions (throttle, noop) |
-| `signal-exit` | Process exit handler cleanup |
-| `emoji-regex` | Emoji width handling |
+| Package                | Purpose                            |
+| ---------------------- | ---------------------------------- |
+| `chalk`                | ANSI color generation              |
+| `cli-boxes`            | Border style definitions           |
+| `get-east-asian-width` | CJK character width measurement    |
+| `wrap-ansi`            | ANSI-aware word wrapping           |
+| `bidi-js`              | Bidirectional text support         |
+| `lodash-es`            | Utility functions (throttle, noop) |
+| `signal-exit`          | Process exit handler cleanup       |
+| `emoji-regex`          | Emoji width handling               |
 
 ## Basic Rendering
 
@@ -43,15 +43,17 @@ import { Box, Text } from '@anthropic/ink'
 const { unmount, rerender, waitUntilExit } = await render(
   <Box>
     <Text>Hello, World!</Text>
-  </Box>
+  </Box>,
 )
 ```
 
 **Parameters:**
+
 - `node` -- `ReactNode` to render
 - `options` -- `RenderOptions | NodeJS.WriteStream` (optional)
 
 **Returns:** `Promise<Instance>` with:
+
 - `rerender(node)` -- Replace the root node
 - `unmount()` -- Unmount and clean up
 - `waitUntilExit()` -- `Promise<void>` that resolves on unmount
@@ -88,6 +90,7 @@ root.unmount()
 ```
 
 **Returns:** `Promise<Root>` with:
+
 - `render(node)` -- Mount or update the tree
 - `unmount()` -- Unmount
 - `waitUntilExit()` -- `Promise<void>`
@@ -123,8 +126,10 @@ type RenderOptions = {
 Ink renders React components to a terminal using a custom reconciler. The tree structure maps to terminal output:
 
 ```tsx
-<Box flexDirection="column">
-  <Text bold color="green">Header</Text>
+;<Box flexDirection="column">
+  <Text bold color="green">
+    Header
+  </Text>
   <Box flexDirection="row" gap={1}>
     <Text>Left</Text>
     <Text>Right</Text>
@@ -151,7 +156,15 @@ Import everything from the package root:
 import { render, createRoot, renderSync } from '@anthropic/ink'
 
 // Components (base, no theme)
-import { BaseBox, BaseText, ScrollBox, Button, Link, Newline, Spacer } from '@anthropic/ink'
+import {
+  BaseBox,
+  BaseText,
+  ScrollBox,
+  Button,
+  Link,
+  Newline,
+  Spacer,
+} from '@anthropic/ink'
 
 // Theme-aware components (recommended)
 import { Box, Text } from '@anthropic/ink'

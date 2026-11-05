@@ -70,6 +70,9 @@ export async function logOTelEvent(
   // Emit log record as an event
   eventLogger.emit({
     body: `claude_code.${eventName}`,
-    attributes,
+    // Attributes vs AnyValueMap differ across the pinned OTel versions.
+    attributes: attributes as unknown as Parameters<
+      typeof eventLogger.emit
+    >[0]['attributes'],
   })
 }

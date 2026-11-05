@@ -3,7 +3,7 @@ name: Release RCS Docker Image
 on:
   push:
     tags:
-      - 'rcs-v*'
+      - "rcs-v*"
 
 env:
   REGISTRY: ghcr.io

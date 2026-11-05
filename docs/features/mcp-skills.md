@@ -46,10 +46,10 @@ getMcpSkillCommands() 过滤 → SkillTool 调用
 `getMcpSkillCommands(mcpCommands)` 过滤条件：
 
 ```ts
-cmd.type === 'prompt'                  // 必须是 prompt 类型
-cmd.loadedFrom === 'mcp'               // 必须来自 MCP 服务器
-!cmd.disableModelInvocation            // 必须可由模型调用
-feature('MCP_SKILLS')                  // feature flag 必须开启
+cmd.type === 'prompt' // 必须是 prompt 类型
+cmd.loadedFrom === 'mcp' // 必须来自 MCP 服务器
+!cmd.disableModelInvocation // 必须可由模型调用
+feature('MCP_SKILLS') // feature flag 必须开启
 ```
 
 ### 2.3 条件加载
@@ -68,20 +68,20 @@ const fetchMcpSkillsForClient = feature('MCP_SKILLS')
 
 技能获取函数维护 `.cache`（Map），在以下时机清除：
 
-| 事件 | 行为 |
-|------|------|
-| 连接关闭 | 清除该 client 的技能缓存 |
-| `disconnectMcpServer()` | 清除技能缓存 |
-| `prompts/list_changed` 通知 | 刷新 prompts + 并行获取技能 |
+| 事件                          | 行为                            |
+| ----------------------------- | ------------------------------- |
+| 连接关闭                      | 清除该 client 的技能缓存        |
+| `disconnectMcpServer()`       | 清除技能缓存                    |
+| `prompts/list_changed` 通知   | 刷新 prompts + 并行获取技能     |
 | `resources/list_changed` 通知 | 刷新 resources + prompts + 技能 |
 
 ### 2.5 集成点
 
-| 文件 | 行 | 说明 |
-|------|------|------|
-| `src/commands.ts` | 604-616, 620-633 | 命令过滤和 SkillTool 命令收集 |
-| `src/services/mcp/client.ts` | 129-133, 1394, 1672, 2176 | 技能获取、缓存清除、连接时获取 |
-| `src/services/mcp/useManageMCPConnections.ts` | 22-26, 682-740 | 实时刷新（prompts/resources 变化） |
+| 文件                                          | 行                        | 说明                               |
+| --------------------------------------------- | ------------------------- | ---------------------------------- |
+| `src/commands.ts`                             | 604-616, 620-633          | 命令过滤和 SkillTool 命令收集      |
+| `src/services/mcp/client.ts`                  | 129-133, 1394, 1672, 2176 | 技能获取、缓存清除、连接时获取     |
+| `src/services/mcp/useManageMCPConnections.ts` | 22-26, 682-740            | 实时刷新（prompts/resources 变化） |
 
 ## 三、关键设计决策
 
@@ -103,16 +103,16 @@ FEATURE_MCP_SKILLS=1 bun run dev
 
 ## 五、需要补全的内容
 
-| 文件 | 状态 | 需要实现 |
-|------|------|---------|
-| `src/skills/mcpSkills.ts` | Stub | `fetchMcpSkillsForClient()` — 从 MCP 资源列表中筛选 `skill://` URI 并转换为 Command 对象 |
-| `src/skills/mcpSkillBuilders.ts` | Stub | 技能构建器注册（避免循环依赖） |
+| 文件                             | 状态 | 需要实现                                                                                 |
+| -------------------------------- | ---- | ---------------------------------------------------------------------------------------- |
+| `src/skills/mcpSkills.ts`        | Stub | `fetchMcpSkillsForClient()` — 从 MCP 资源列表中筛选 `skill://` URI 并转换为 Command 对象 |
+| `src/skills/mcpSkillBuilders.ts` | Stub | 技能构建器注册（避免循环依赖）                                                           |
 
 ## 六、文件索引
 
-| 文件 | 职责 |
-|------|------|
-| `src/commands.ts:547-608` | 技能命令过滤 |
-| `src/services/mcp/client.ts:117-2358` | 技能获取 + 缓存管理 |
-| `src/services/mcp/useManageMCPConnections.ts` | 实时刷新 |
-| `src/skills/mcpSkills.ts` | 核心转换逻辑（stub） |
+| 文件                                          | 职责                 |
+| --------------------------------------------- | -------------------- |
+| `src/commands.ts:547-608`                     | 技能命令过滤         |
+| `src/services/mcp/client.ts:117-2358`         | 技能获取 + 缓存管理  |
+| `src/services/mcp/useManageMCPConnections.ts` | 实时刷新             |
+| `src/skills/mcpSkills.ts`                     | 核心转换逻辑（stub） |

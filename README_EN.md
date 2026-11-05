@@ -84,12 +84,14 @@ powershell -c "irm bun.sh/install.ps1 | iex"
    Windows PowerShell users can close and reopen PowerShell.
 
 2. **Verify that Bun is available:**
+
    ```bash
    bun --help
    bun --version
    ```
 
 3. **Update to latest version (if already installed):**
+
    ```bash
    bun upgrade
    ```
@@ -131,13 +133,13 @@ After the first run, enter `/login` in the REPL to access the login configuratio
 
 Fields to fill in:
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| Base URL | API service URL | `https://api.example.com/v1` |
-| API Key | Authentication key | `sk-xxx` |
-| Haiku Model | Fast model ID | `claude-haiku-4-5-20251001` |
-| Sonnet Model | Balanced model ID | `claude-sonnet-4-6` |
-| Opus Model | High-performance model ID | `claude-opus-4-6` |
+| Field        | Description               | Example                      |
+| ------------ | ------------------------- | ---------------------------- |
+| Base URL     | API service URL           | `https://api.example.com/v1` |
+| API Key      | Authentication key        | `sk-xxx`                     |
+| Haiku Model  | Fast model ID             | `claude-haiku-4-5-20251001`  |
+| Sonnet Model | Balanced model ID         | `claude-sonnet-4-6`          |
+| Opus Model   | High-performance model ID | `claude-opus-4-6`            |
 
 - **Tab / Shift+Tab** to switch fields, **Enter** to confirm and move to the next, press Enter on the last field to save
 - Model fields auto-fill from current environment variables
@@ -176,9 +178,11 @@ The TUI (REPL) mode requires a real terminal and cannot be launched directly via
 ### Steps
 
 1. **Start inspect server in terminal**:
+
    ```bash
    bun run dev:inspect
    ```
+
    This outputs an address like `ws://localhost:8888/xxxxxxxx`.
 
 2. **Attach debugger from VS Code**:

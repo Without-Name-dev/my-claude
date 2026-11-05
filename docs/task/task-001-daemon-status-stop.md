@@ -19,16 +19,16 @@
 
 ### 新增文件
 
-| 文件 | 说明 |
-|------|------|
+| 文件                  | 说明                    |
+| --------------------- | ----------------------- |
 | `src/daemon/state.ts` | daemon 状态文件读写模块 |
 
 ### 修改文件
 
-| 文件 | 改动 |
-|------|------|
-| `src/daemon/main.ts` | `start` 写入状态文件；`status`/`stop` 调用 state 模块 |
-| `src/commands/remoteControlServer/remoteControlServer.tsx` | 读取同一份状态文件（轻量改动） |
+| 文件                                                       | 改动                                                  |
+| ---------------------------------------------------------- | ----------------------------------------------------- |
+| `src/daemon/main.ts`                                       | `start` 写入状态文件；`status`/`stop` 调用 state 模块 |
+| `src/commands/remoteControlServer/remoteControlServer.tsx` | 读取同一份状态文件（轻量改动）                        |
 
 ### 状态文件
 

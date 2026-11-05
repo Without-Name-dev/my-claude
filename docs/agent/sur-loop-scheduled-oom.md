@@ -25,7 +25,7 @@ When a scheduled task fires while its prior run is still queued or running, the 
 ### Actual behaviour (before fix)
 
 1. `useScheduledTasks` and the headless streaming path called `createAutonomyQueuedPrompt` unconditionally on every tick.
-2. `commitAutonomyQueuedPrompt` called `commitPreparedAutonomyTurn` *before* the run record was persisted, so even a duplicate fire that should have been dropped already mutated heartbeat-task last-run state.
+2. `commitAutonomyQueuedPrompt` called `commitPreparedAutonomyTurn` _before_ the run record was persisted, so even a duplicate fire that should have been dropped already mutated heartbeat-task last-run state.
 3. `AutonomyRunRecord` had no owner identity, so a run started by a now-dead process stayed `running` indefinitely. Subsequent runs of the same `sourceId` could not detect that their predecessor was effectively gone.
 4. Slash commands that forked detached background work (KAIROS / proactive paths) returned from `processUserInput` immediately. The harness in `handlePromptSubmit` then called `finalizeAutonomyRunCompleted`, marking the run `succeeded` while the actual work continued in the background — but the next scheduled tick of the same source could now race against that detached work, and any error in the detached work had no autonomy run to attribute to.
 
@@ -75,30 +75,30 @@ Sessions with long-lived autonomy/cron use cases were unsafe. The OOM took the e
 
 ## 3. Entry points
 
-| Surface | Entry | Notes |
-|---|---|---|
-| REPL | `useScheduledTasks` cron tick | Calls `createScheduledTaskQueuedCommand` (new helper) instead of raw `createAutonomyQueuedPrompt` |
-| REPL | Slash command pipeline | `processUserInput → processUserInputBase → processSlashCommand` now threads `autonomy` context so commands can defer completion |
-| Headless | `runHeadlessStreaming` cron path | Same migration to `createAutonomyQueuedPromptIfNoActiveSource`, plus `shouldCreate` callback honouring `inputClosed` |
+| Surface      | Entry                                                       | Notes                                                                                                                                  |
+| ------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| REPL         | `useScheduledTasks` cron tick                               | Calls `createScheduledTaskQueuedCommand` (new helper) instead of raw `createAutonomyQueuedPrompt`                                      |
+| REPL         | Slash command pipeline                                      | `processUserInput → processUserInputBase → processSlashCommand` now threads `autonomy` context so commands can defer completion        |
+| Headless     | `runHeadlessStreaming` cron path                            | Same migration to `createAutonomyQueuedPromptIfNoActiveSource`, plus `shouldCreate` callback honouring `inputClosed`                   |
 | Tool harness | `ToolUseContext.options.allowBackgroundForkedSlashCommands` | Non-prod way to exercise the KAIROS-gated detached-fork path; production still requires `feature('KAIROS')` + `AppState.kairosEnabled` |
-| Persistence | `.claude/autonomy/runs.json` | Schema gains `ownerProcessId`, `ownerSessionId`; readers must tolerate older records lacking these fields |
+| Persistence  | `.claude/autonomy/runs.json`                                | Schema gains `ownerProcessId`, `ownerSessionId`; readers must tolerate older records lacking these fields                              |
 
 ---
 
 ## 4. Key files
 
-| File | Lines changed | Why it matters |
-|---|---|---|
-| `src/utils/autonomyRuns.ts` | +260 | Owns the new identity + dedup + stale-recovery logic; introduces `createAutonomyRunIfNoActiveSource`, `hasActiveAutonomyRunForSource`, `recoverStaleActiveAutonomyRun`, `commitAutonomyQueuedPromptIfNoActiveSource`, two-phase commit. The structural heart of the fix. |
-| `src/utils/processUserInput/processSlashCommand.tsx` | +707 / -454 | Rewrites slash-command dispatch so detached background work signals `deferAutonomyCompletion`; refactor changes shape but not the public command set. |
-| `src/hooks/useScheduledTasks.ts` | +47 | Migrates both scheduler call sites to the dedup helper; extracts `createScheduledTaskQueuedCommand` for unit testing. |
-| `src/cli/print.ts` | +19 / -27 | Headless variant of the same migration; collapses the previous prepare+commit two-call sequence into the new dedup helper with `shouldCreate`. |
-| `src/utils/handlePromptSubmit.ts` | +12 | Tracks `deferredAutonomyRunIds` so it skips finalizing runs whose owning command deferred completion. |
-| `src/utils/processUserInput/processUserInput.ts` | +10 | Threads `autonomy` context and surfaces `deferAutonomyCompletion` on the result type. |
-| `src/Tool.ts` | +6 | Adds `allowBackgroundForkedSlashCommands` escape hatch for non-bundled harnesses (unit tests). |
-| `src/utils/__tests__/autonomyRuns.test.ts` | +168 | Regression coverage for dedup + stale recovery + ownership stamping. |
-| `src/hooks/__tests__/useScheduledTasks.test.ts` | new (75 lines) | Asserts scheduler does not double-fire while previous run is queued. |
-| `src/utils/processUserInput/__tests__/processSlashCommand.test.ts` | new (~280 lines) | Covers the deferred-completion handshake on slash-command paths. |
+| File                                                               | Lines changed    | Why it matters                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/utils/autonomyRuns.ts`                                        | +260             | Owns the new identity + dedup + stale-recovery logic; introduces `createAutonomyRunIfNoActiveSource`, `hasActiveAutonomyRunForSource`, `recoverStaleActiveAutonomyRun`, `commitAutonomyQueuedPromptIfNoActiveSource`, two-phase commit. The structural heart of the fix. |
+| `src/utils/processUserInput/processSlashCommand.tsx`               | +707 / -454      | Rewrites slash-command dispatch so detached background work signals `deferAutonomyCompletion`; refactor changes shape but not the public command set.                                                                                                                    |
+| `src/hooks/useScheduledTasks.ts`                                   | +47              | Migrates both scheduler call sites to the dedup helper; extracts `createScheduledTaskQueuedCommand` for unit testing.                                                                                                                                                    |
+| `src/cli/print.ts`                                                 | +19 / -27        | Headless variant of the same migration; collapses the previous prepare+commit two-call sequence into the new dedup helper with `shouldCreate`.                                                                                                                           |
+| `src/utils/handlePromptSubmit.ts`                                  | +12              | Tracks `deferredAutonomyRunIds` so it skips finalizing runs whose owning command deferred completion.                                                                                                                                                                    |
+| `src/utils/processUserInput/processUserInput.ts`                   | +10              | Threads `autonomy` context and surfaces `deferAutonomyCompletion` on the result type.                                                                                                                                                                                    |
+| `src/Tool.ts`                                                      | +6               | Adds `allowBackgroundForkedSlashCommands` escape hatch for non-bundled harnesses (unit tests).                                                                                                                                                                           |
+| `src/utils/__tests__/autonomyRuns.test.ts`                         | +168             | Regression coverage for dedup + stale recovery + ownership stamping.                                                                                                                                                                                                     |
+| `src/hooks/__tests__/useScheduledTasks.test.ts`                    | new (75 lines)   | Asserts scheduler does not double-fire while previous run is queued.                                                                                                                                                                                                     |
+| `src/utils/processUserInput/__tests__/processSlashCommand.test.ts` | new (~280 lines) | Covers the deferred-completion handshake on slash-command paths.                                                                                                                                                                                                         |
 
 ---
 
@@ -159,8 +159,8 @@ type AutonomyRunRecord = {
   sourceId?: string
   ownerKey?: string
   // new
-  ownerProcessId?: number     // process.pid at create time and at markRunning time
-  ownerSessionId?: string     // getSessionId() at the same points
+  ownerProcessId?: number // process.pid at create time and at markRunning time
+  ownerSessionId?: string // getSessionId() at the same points
   // ...
 }
 ```
@@ -180,7 +180,7 @@ Recovery mutates the in-memory list inside the persistence lock and writes it ba
 
 ### Heartbeat last-run state mutation point
 
-Before fix: `commitAutonomyQueuedPrompt` called `commitPreparedAutonomyTurn(prepared)` *first*, then created the run. A skipped duplicate already advanced heartbeat last-run timestamps.
+Before fix: `commitAutonomyQueuedPrompt` called `commitPreparedAutonomyTurn(prepared)` _first_, then created the run. A skipped duplicate already advanced heartbeat last-run timestamps.
 
 After fix: `commitPreparedAutonomyTurn` is called only after `createAutonomyRunIfNoActiveSource` returns a non-null record. Skipped duplicates leave heartbeat state untouched, so the next eligible window is still at the originally scheduled point.
 
@@ -200,7 +200,7 @@ queued ──► running ──► succeeded
 
 ### New invariants
 
-1. **Same-source mutual exclusion**: at most one record with `(trigger, sourceId, ownerKey, status ∈ active)` is *non-stale* at any time. Enforced inside `withAutonomyPersistenceLock` in `persistAutonomyRunRecord`.
+1. **Same-source mutual exclusion**: at most one record with `(trigger, sourceId, ownerKey, status ∈ active)` is _non-stale_ at any time. Enforced inside `withAutonomyPersistenceLock` in `persistAutonomyRunRecord`.
 
 2. **Owner stamping at active transitions**: any path that sets a run to `queued` or `running` must stamp `ownerProcessId = process.pid` and `ownerSessionId = getSessionId()`. `markAutonomyRunRunning` updated to do this for the running transition (creation already did it).
 
@@ -276,13 +276,13 @@ restart-after-crash schedule disruption becomes observable in practice.
 
 **Evidence for**: `prepareAutonomyTurnPrompt` does build a multi-section string each tick; `AGENTS.md` in this repo is now 220 lines.
 
-**Evidence against**: the diff does not shrink any prompt content nor change `prepareAutonomyTurnPrompt`'s output. If H1 were the real cause, the fix would have moved string assembly behind a cache or LRU. The fix instead targets the *number* of in-flight runs.
+**Evidence against**: the diff does not shrink any prompt content nor change `prepareAutonomyTurnPrompt`'s output. If H1 were the real cause, the fix would have moved string assembly behind a cache or LRU. The fix instead targets the _number_ of in-flight runs.
 
 **Verdict**: contributing factor at most. Rejected as primary root cause.
 
 ### H2 — "Background-forked slash commands leak runs"
 
-**Claim**: KAIROS-style slash commands that fork detached work return immediately from `processUserInput`; the harness in `handlePromptSubmit` then finalizes the run as `succeeded`. Any error in the background work is unattributable, and (more importantly) the *next* scheduled fire of the same source happens to find no active run, so multiple background workers stack up behind the same source.
+**Claim**: KAIROS-style slash commands that fork detached work return immediately from `processUserInput`; the harness in `handlePromptSubmit` then finalizes the run as `succeeded`. Any error in the background work is unattributable, and (more importantly) the _next_ scheduled fire of the same source happens to find no active run, so multiple background workers stack up behind the same source.
 
 **Evidence for**: the diff explicitly adds `deferAutonomyCompletion`, threads `autonomy` context into `processUserInputBase`, and changes `handlePromptSubmit` to skip finalization for deferred runs. New test file `processSlashCommand.test.ts` is dedicated to this exact handshake.
 
@@ -328,15 +328,15 @@ Why previous local patches likely failed: any one of these in isolation looks fi
 
 ### Minimal fix surface
 
-| Module | Change | Reason |
-|---|---|---|
-| `autonomyRuns.ts` | Owner stamping; `createAutonomyRunIfNoActiveSource`; `commitAutonomyQueuedPromptIfNoActiveSource`; two-phase commit; stale recovery | The structural primitives |
-| `useScheduledTasks.ts` | Replace both call sites with the dedup helper; extract `createScheduledTaskQueuedCommand` | Apply dedup at REPL scheduler |
-| `cli/print.ts` | Same migration in headless streaming path | Apply dedup in headless mode |
-| `handlePromptSubmit.ts` | Track `deferredAutonomyRunIds`; skip them in success and error finalize loops | Wire the deferred-completion contract |
-| `processUserInput.ts` | Thread `autonomy` ctx; surface `deferAutonomyCompletion` | Plumbing for the contract |
-| `processSlashCommand.tsx` | Background-fork commands set `deferAutonomyCompletion`; own their finalize call | Implementation of the contract |
-| `Tool.ts` | `allowBackgroundForkedSlashCommands` flag on `ToolUseContext.options` | Make the path testable from non-bundled harnesses |
+| Module                    | Change                                                                                                                              | Reason                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `autonomyRuns.ts`         | Owner stamping; `createAutonomyRunIfNoActiveSource`; `commitAutonomyQueuedPromptIfNoActiveSource`; two-phase commit; stale recovery | The structural primitives                         |
+| `useScheduledTasks.ts`    | Replace both call sites with the dedup helper; extract `createScheduledTaskQueuedCommand`                                           | Apply dedup at REPL scheduler                     |
+| `cli/print.ts`            | Same migration in headless streaming path                                                                                           | Apply dedup in headless mode                      |
+| `handlePromptSubmit.ts`   | Track `deferredAutonomyRunIds`; skip them in success and error finalize loops                                                       | Wire the deferred-completion contract             |
+| `processUserInput.ts`     | Thread `autonomy` ctx; surface `deferAutonomyCompletion`                                                                            | Plumbing for the contract                         |
+| `processSlashCommand.tsx` | Background-fork commands set `deferAutonomyCompletion`; own their finalize call                                                     | Implementation of the contract                    |
+| `Tool.ts`                 | `allowBackgroundForkedSlashCommands` flag on `ToolUseContext.options`                                                               | Make the path testable from non-bundled harnesses |
 
 ### Tests added
 
@@ -346,7 +346,7 @@ Why previous local patches likely failed: any one of these in isolation looks fi
 
 ### Compatibility / migration risk
 
-- Older `runs.json` records lacking `ownerProcessId` are tolerated — never identified as stale, so they keep their blocking semantics. Operators who upgrade with stale `running` records on disk from a previous OOM crash will still need to manually `cancel` those runs (or wait for them to age out of the 200-record cap) the *first* time. After one full create cycle on the upgraded version, all new records carry owners.
+- Older `runs.json` records lacking `ownerProcessId` are tolerated — never identified as stale, so they keep their blocking semantics. Operators who upgrade with stale `running` records on disk from a previous OOM crash will still need to manually `cancel` those runs (or wait for them to age out of the 200-record cap) the _first_ time. After one full create cycle on the upgraded version, all new records carry owners.
 - **Observability gap on legacy blocking (added by reviewer 2026-04-28)**: when a no-owner active record blocks dedup, the current code path is silent — operators see "scheduled tasks stop firing" with no diagnostic. `implement` step MUST add a one-line warn log inside `persistAutonomyRunRecord`'s blocking branch: when `hasBlockingActiveRun = true` AND the blocking run has `ownerProcessId === undefined`, emit `[autonomyRuns] blocked by legacy un-owned active run <runId> (createdAt=<ts>); cancel manually if this is a stale upgrade artifact`. ≤ 10 lines of code, converts silent hang into a diagnosable signal. Do **not** change behavior — just observability.
 - `ToolUseContext.options.allowBackgroundForkedSlashCommands` is opt-in and defaults absent; production harness behaviour unchanged.
 - No on-disk schema version bump required.
@@ -394,7 +394,7 @@ bun run build
 
 ## 13. Open questions
 
-1. ~~Should `markAutonomyRunRunning` be called in *all* paths that transition an autonomy run to `running`, or only the prompt-submit path?~~ **Closed (verified 2026-04-28).**
+1. ~~Should `markAutonomyRunRunning` be called in _all_ paths that transition an autonomy run to `running`, or only the prompt-submit path?~~ **Closed (verified 2026-04-28).**
    `markAutonomyRunRunning` (`autonomyRuns.ts:554-579`) is the **only** function that transitions `AutonomyRunRecord.status → 'running'`. It stamps `ownerProcessId = process.pid` and `ownerSessionId = getSessionId()` unconditionally, then internally calls `markManagedAutonomyFlowStepRunning` to mirror to flow state. `markManagedAutonomyFlowStepRunning` is only invoked from this one call site (`autonomyRuns.ts:571`); no caller bypasses the stamp. All four real callers (`cli/print.ts:2177`, `screens/REPL.tsx:4859`, `utils/handlePromptSubmit.ts:492`, `utils/swarm/inProcessRunner.ts:741`) go through the stamping path. Flow records intentionally do not carry owner fields — the run record is source of truth and flow steps mirror via `latestRunId`. Stale-recovery operates on runs, so flow-step runs are covered.
 2. ~~`getSessionId()` import was added to `autonomyRuns.ts`. Confirm no circular import is introduced...~~ **Closed (verified 2026-04-28).**
    No risk on three counts: (a) `autonomyRuns.ts:4` already imported `getProjectRoot` from `bootstrap/state.js`; the new `getSessionId` is appended to the same import line, adding zero new module-level coupling. (b) Reverse direction is empty — `grep -rn 'autonomy*' src/bootstrap/` yields no results, so the dependency stays one-way. (c) `getSessionId()` (`bootstrap/state.ts:425-427`) returns `STATE.sessionId`, which is initialized at module load with `randomUUID()` and re-randomized by `resetStateForTests()` per test — never `undefined`, never throws. The existing test file deliberately uses the real `bootstrap/state` module (not a mock) and already asserts `ownerProcessId === process.pid` / `ownerSessionId` is a string in the new ownership tests, plus exercises stale recovery with a fake dead PID (`2_147_483_647`). No mock updates needed.
@@ -422,15 +422,15 @@ recommendations to make that decision faster and more auditable.
 
 ### Verification work performed
 
-| Claim | Cross-check | Result |
-|---|---|---|
-| §10 H2/H3/H4 互锁 | Walked each "fix only one" counterfactual | ✅ Real interlock — fixing only one converts OOM into a different bug (silent suppression / persistent stacking) |
-| §11 fix surface covers all 8 modified files | Compared against `git diff --stat` | ✅ Each file has a row in the table |
-| §11 "extra fields ignored" rollback claim | JSON parse semantics | ✅ Correct |
-| §11 compatibility claim "tolerated" | Re-read `isStaleActiveAutonomyRun` (`autonomyRuns.ts`) | ⚠️ Tolerance is real but **silent** — gap surfaced as Concern A below |
-| §13 Q1 owner stamping completeness | (closed in earlier turn — see §13) | ✅ |
-| §13 Q2 circular-import / mock impact | (closed in earlier turn — see §13) | ✅ |
-| §13 Q3 200-record cap acceptability | Reasoned about stale-recovery-driven churn | ✅ Non-blocking; forensic loss only |
+| Claim                                       | Cross-check                                            | Result                                                                                                           |
+| ------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| §10 H2/H3/H4 互锁                           | Walked each "fix only one" counterfactual              | ✅ Real interlock — fixing only one converts OOM into a different bug (silent suppression / persistent stacking) |
+| §11 fix surface covers all 8 modified files | Compared against `git diff --stat`                     | ✅ Each file has a row in the table                                                                              |
+| §11 "extra fields ignored" rollback claim   | JSON parse semantics                                   | ✅ Correct                                                                                                       |
+| §11 compatibility claim "tolerated"         | Re-read `isStaleActiveAutonomyRun` (`autonomyRuns.ts`) | ⚠️ Tolerance is real but **silent** — gap surfaced as Concern A below                                            |
+| §13 Q1 owner stamping completeness          | (closed in earlier turn — see §13)                     | ✅                                                                                                               |
+| §13 Q2 circular-import / mock impact        | (closed in earlier turn — see §13)                     | ✅                                                                                                               |
+| §13 Q3 200-record cap acceptability         | Reasoned about stale-recovery-driven churn             | ✅ Non-blocking; forensic loss only                                                                              |
 
 ### Concerns surfaced
 
@@ -442,6 +442,7 @@ change.
 
 **Concern B — `processSlashCommand.tsx` is +707/-454 (>50% rewrite)** — **RESOLVED 2026-04-28**:
 investigation showed the diff is composed of:
+
 - **18 contract-related lines** (verified by `grep -E '(autonomy|QueuedCommand|deferAutonomy|finalizeAutonomy|allowBackgroundForkedSlashCommands|deferredAutonomy)'`):
   - import `QueuedCommand` type
   - import `finalizeAutonomyRunCompleted` / `finalizeAutonomyRunFailed`
@@ -473,12 +474,12 @@ revisiting (relates to §13 Q3). Not a blocker; suggested for follow-up flow.
 
 ### Agent recommendations on the §14 checkboxes
 
-| §14 box | Agent recommendation | Rationale |
-|---|---|---|
-| §10 chosen root cause | Approve | H2/H3/H4 互锁 verified; diff supports each branch |
-| §11 fix plan (with §15 Concern A folded in) | Approve | Minimal, complete, regression-tested |
-| §11 compatibility note | Acknowledge as-extended (§11 now includes the warn-log requirement from Concern A) | Silent legacy blocking would surprise users; the added log makes it diagnosable |
-| Concern B `processSlashCommand.tsx` >50% diff | Resolved by commit-split rule (chore + feat) | 18 lines contract + ~250 lines formatter churn; commit split makes review tractable without fragile revert |
+| §14 box                                       | Agent recommendation                                                               | Rationale                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| §10 chosen root cause                         | Approve                                                                            | H2/H3/H4 互锁 verified; diff supports each branch                                                          |
+| §11 fix plan (with §15 Concern A folded in)   | Approve                                                                            | Minimal, complete, regression-tested                                                                       |
+| §11 compatibility note                        | Acknowledge as-extended (§11 now includes the warn-log requirement from Concern A) | Silent legacy blocking would surprise users; the added log makes it diagnosable                            |
+| Concern B `processSlashCommand.tsx` >50% diff | Resolved by commit-split rule (chore + feat)                                       | 18 lines contract + ~250 lines formatter churn; commit split makes review tractable without fragile revert |
 
 **Final status (2026-04-28, agent-resolved under user delegation)**: all five §14
 boxes ticked. Flow `recurring-bug-loop-oom` may advance from `report` to
@@ -489,4 +490,4 @@ boxes ticked. Flow `recurring-bug-loop-oom` may advance from `report` to
 3. Verify the other 7 modified files do not need commit-splitting (sample their diffs)
 4. Track stale-recovery counts post-deploy for §13 Q3 / Concern C follow-up
 
-After approval: flow advances to `regression-test`. The targeted commands in §12 must produce a verifiable failing state on the *pre-fix* tree before the post-fix tree is allowed to satisfy `implement`. Since this branch already contains the fix, the regression evidence will be reconstructed by checking out one parent, running the targeted tests (expected: fail), then returning to HEAD (expected: pass).
+After approval: flow advances to `regression-test`. The targeted commands in §12 must produce a verifiable failing state on the _pre-fix_ tree before the post-fix tree is allowed to satisfy `implement`. Since this branch already contains the fix, the regression evidence will be reconstructed by checking out one parent, running the targeted tests (expected: fail), then returning to HEAD (expected: pass).

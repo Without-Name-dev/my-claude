@@ -10,14 +10,14 @@ Auto Dream 是 Claude Code 的后台记忆整合机制。它在会话间自动�
 
 ### 核心模块
 
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| 调度器 | `src/services/autoDream/autoDream.ts` | 时间/会话/锁三重门控，触发 forked agent |
-| 配置 | `src/services/autoDream/config.ts` | 读取 `isAutoDreamEnabled()` 开关 |
-| 提示词 | `src/services/autoDream/consolidationPrompt.ts` | 构建 4 阶段整理提示词 |
-| 锁文件 | `src/services/autoDream/consolidationLock.ts` | PID 锁 + mtime 作为 `lastConsolidatedAt` |
-| 任务 UI | `src/tasks/DreamTask/DreamTask.ts` | 后台任务注册，footer pill + Shift+Down 可见 |
-| 手动入口 | `src/skills/bundled/dream.ts` | `/dream` 命令，无条件可用 |
+| 模块     | 路径                                            | 职责                                        |
+| -------- | ----------------------------------------------- | ------------------------------------------- |
+| 调度器   | `src/services/autoDream/autoDream.ts`           | 时间/会话/锁三重门控，触发 forked agent     |
+| 配置     | `src/services/autoDream/config.ts`              | 读取 `isAutoDreamEnabled()` 开关            |
+| 提示词   | `src/services/autoDream/consolidationPrompt.ts` | 构建 4 阶段整理提示词                       |
+| 锁文件   | `src/services/autoDream/consolidationLock.ts`   | PID 锁 + mtime 作为 `lastConsolidatedAt`    |
+| 任务 UI  | `src/tasks/DreamTask/DreamTask.ts`              | 后台任务注册，footer pill + Shift+Down 可见 |
+| 手动入口 | `src/skills/bundled/dream.ts`                   | `/dream` 命令，无条件可用                   |
 
 ### 记忆路径解析
 
@@ -71,18 +71,18 @@ Auto Dream 是 Claude Code 的后台记忆整合机制。它在会话间自动�
 
 ### 配置开关
 
-| 开关 | 位置 | 作用 |
-|------|------|------|
-| `autoDreamEnabled` | `settings.json` | `true`/`false` 显式开关 |
-| `autoMemoryEnabled` | `settings.json` | 总开关，关闭后所有记忆功能禁用 |
-| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | 环境变量 | `1`/`true` 关闭所有记忆功能 |
-| `tengu_onyx_plover` | GrowthBook | 官方远程配置，控制 `enabled`/`minHours`/`minSessions` |
+| 开关                              | 位置            | 作用                                                  |
+| --------------------------------- | --------------- | ----------------------------------------------------- |
+| `autoDreamEnabled`                | `settings.json` | `true`/`false` 显式开关                               |
+| `autoMemoryEnabled`               | `settings.json` | 总开关，关闭后所有记忆功能禁用                        |
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | 环境变量        | `1`/`true` 关闭所有记忆功能                           |
+| `tengu_onyx_plover`               | GrowthBook      | 官方远程配置，控制 `enabled`/`minHours`/`minSessions` |
 
 默认值（无 GrowthBook 连接时）：
 
 ```typescript
-minHours: 24      // 距上次整理至少 24 小时
-minSessions: 5    // 至少有 5 个新会话
+minHours: 24 // 距上次整理至少 24 小时
+minSessions: 5 // 至少有 5 个新会话
 ```
 
 ## 整理流程（4 阶段）
@@ -119,12 +119,12 @@ Dream agent 执行的提示词包含 4 个阶段：
 
 记忆系统使用 4 种类型（`src/memdir/memoryTypes.ts`）：
 
-| 类型 | 用途 | 示例 |
-|------|------|------|
-| `user` | 用户角色、偏好、知识 | 用户是高级后端工程师，偏好中文交流 |
-| `feedback` | 工作方式指导 | 不要 mock 数据库测试；代码审查用 bundled PR |
-| `project` | 项目上下文（非代码可推导的） | 合并冻结从 3 月 5 日开始；认证重写是合规需求 |
-| `reference` | 外部系统指针 | Linear INGEST 项目跟踪 pipeline bugs |
+| 类型        | 用途                         | 示例                                         |
+| ----------- | ---------------------------- | -------------------------------------------- |
+| `user`      | 用户角色、偏好、知识         | 用户是高级后端工程师，偏好中文交流           |
+| `feedback`  | 工作方式指导                 | 不要 mock 数据库测试；代码审查用 bundled PR  |
+| `project`   | 项目上下文（非代码可推导的） | 合并冻结从 3 月 5 日开始；认证重写是合规需求 |
+| `reference` | 外部系统指针                 | Linear INGEST 项目跟踪 pipeline bugs         |
 
 **不保存的内容**：代码模式、架构、文件路径（可从代码推导）；Git 历史（`git log` 权威）；调试方案（代码中已有）。
 

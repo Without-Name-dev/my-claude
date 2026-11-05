@@ -17,6 +17,7 @@ This is a **reverse-engineered / decompiled** version of Anthropic's official Cl
 常见 type：`feat`、`fix`、`docs`、`chore`、`refactor`
 
 示例：
+
 - `feat: 添加模型 1M 上下文切换`
 - `fix: 修复初次登陆的校验问题`
 - `chore: remove prefetchOfficialMcpUrls call on startup`
@@ -160,26 +161,26 @@ bun run docs:dev
 
 ### Workspace Packages
 
-| Package | 说明 |
-|---------|------|
-| `packages/@ant/ink/` | Forked Ink 框架（components、hooks、keybindings、theme） |
-| `packages/@ant/computer-use-mcp/` | Computer Use MCP server（截图/键鼠/剪贴板/应用管理） |
-| `packages/@ant/computer-use-input/` | 键鼠模拟（dispatcher + darwin/win32/linux backend） |
-| `packages/@ant/computer-use-swift/` | 截图 + 应用管理（dispatcher + per-platform backend） |
-| `packages/@ant/claude-for-chrome-mcp/` | Chrome 浏览器控制（通过 `--chrome` 启用） |
-| `packages/@ant/model-provider/` | Model provider 抽象层 |
-| `packages/builtin-tools/` | 内置工具集（60 个 tool 实现，通过 `@claude-code-best/builtin-tools` 导出） |
-| `packages/agent-tools/` | Agent 工具集 |
-| `packages/acp-link/` | ACP 代理服务器（WebSocket → ACP agent 桥接） |
-| `packages/mcp-client/` | MCP 客户端库 |
-| `packages/remote-control-server/` | 自托管 Remote Control Server（Docker 部署，含 Web UI）— Web UI 已重构为 React + Vite + Radix UI，支持 ACP agent 接入 |
-| `packages/cloud-artifacts/` | 独立 Cloudflare Worker + R2 服务：POST `/upload` HTML 上传返回 hash URL，GET `/<7d\|30d>/<id>.html` 由 Worker 代理读取；R2 lifecycle rule 自动 7/30 天过期 |
-| `packages/audio-capture-napi/` | 原生音频捕获（已恢复） |
-| `packages/color-diff-napi/` | 颜色差异计算（完整实现，11 tests） |
-| `packages/image-processor-napi/` | 图像处理（已恢复） |
-| `packages/modifiers-napi/` | 键盘修饰键检测（macOS FFI 实现） |
-| `packages/url-handler-napi/` | URL scheme 处理（环境变量 + CLI 参数读取） |
-| `packages/weixin/` | 微信集成（非 workspace 包） |
+| Package                                | 说明                                                                                                                                                       |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/@ant/ink/`                   | Forked Ink 框架（components、hooks、keybindings、theme）                                                                                                   |
+| `packages/@ant/computer-use-mcp/`      | Computer Use MCP server（截图/键鼠/剪贴板/应用管理）                                                                                                       |
+| `packages/@ant/computer-use-input/`    | 键鼠模拟（dispatcher + darwin/win32/linux backend）                                                                                                        |
+| `packages/@ant/computer-use-swift/`    | 截图 + 应用管理（dispatcher + per-platform backend）                                                                                                       |
+| `packages/@ant/claude-for-chrome-mcp/` | Chrome 浏览器控制（通过 `--chrome` 启用）                                                                                                                  |
+| `packages/@ant/model-provider/`        | Model provider 抽象层                                                                                                                                      |
+| `packages/builtin-tools/`              | 内置工具集（60 个 tool 实现，通过 `@claude-code-best/builtin-tools` 导出）                                                                                 |
+| `packages/agent-tools/`                | Agent 工具集                                                                                                                                               |
+| `packages/acp-link/`                   | ACP 代理服务器（WebSocket → ACP agent 桥接）                                                                                                               |
+| `packages/mcp-client/`                 | MCP 客户端库                                                                                                                                               |
+| `packages/remote-control-server/`      | 自托管 Remote Control Server（Docker 部署，含 Web UI）— Web UI 已重构为 React + Vite + Radix UI，支持 ACP agent 接入                                       |
+| `packages/cloud-artifacts/`            | 独立 Cloudflare Worker + R2 服务：POST `/upload` HTML 上传返回 hash URL，GET `/<7d\|30d>/<id>.html` 由 Worker 代理读取；R2 lifecycle rule 自动 7/30 天过期 |
+| `packages/audio-capture-napi/`         | 原生音频捕获（已恢复）                                                                                                                                     |
+| `packages/color-diff-napi/`            | 颜色差异计算（完整实现，11 tests）                                                                                                                         |
+| `packages/image-processor-napi/`       | 图像处理（已恢复）                                                                                                                                         |
+| `packages/modifiers-napi/`             | 键盘修饰键检测（macOS FFI 实现）                                                                                                                           |
+| `packages/url-handler-napi/`           | URL scheme 处理（环境变量 + CLI 参数读取）                                                                                                                 |
+| `packages/weixin/`                     | 微信集成（非 workspace 包）                                                                                                                                |
 
 辅助目录（无 package.json，非 workspace 包）: `langfuse-dashboard`（Langfuse 面板）、`shared-web-ui`（共享 Web UI 组件）、`highlight-code`（代码高亮）、`claude-pencil`（编辑器）、`vscode-ide-bridge`（VS Code 桥接）、`pokemon`（示例/测试）。
 
@@ -217,6 +218,7 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 **启用方式**: 环境变量 `FEATURE_<FLAG_NAME>=1`。例如 `FEATURE_BUDDY=1 bun run dev`。
 
 **Build 默认 features**（65+ 个，见 `build.ts` 中 `DEFAULT_BUILD_FEATURES`）:
+
 - 基础: `BUDDY`, `TRANSCRIPT_CLASSIFIER`, `BRIDGE_MODE`, `AGENT_TRIGGERS_REMOTE`, `CHICAGO_MCP`, `VOICE_MODE`
 - 统计/缓存: `SHOT_STATS`, `PROMPT_CACHE_BREAK_DETECTION`, `TOKEN_BUDGET`
 - P0 本地: `AGENT_TRIGGERS`, `ULTRATHINK`, `BUILTIN_EXPLORE_PLAN_AGENTS`, `LODESTONE`
@@ -270,18 +272,18 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 
 ### Stubbed/Deleted Modules
 
-| Module | Status |
-|--------|--------|
-| Computer Use (`@ant/*`) | Restored — macOS + Windows + Linux（后端完整度不一） |
-| `*-napi` packages | 全部已恢复/实现：`audio-capture-napi`、`image-processor-napi` 已恢复；`color-diff-napi` 完整；`modifiers-napi`（macOS FFI）；`url-handler-napi`（环境变量+CLI） |
-| Voice Mode | Restored — Push-to-Talk 语音输入（需 Anthropic OAuth） |
-| OpenAI/Gemini/Grok 兼容层 | Restored |
-| Remote Control Server | Restored — 自托管 RCS + Web UI |
-| `packages/shell/`, `packages/swarm/`, `packages/mcp-server/`, `packages/cc-knowledge/` | Removed — 功能合并或废弃 |
-| Analytics / GrowthBook / Sentry | Empty implementations |
-| Magic Docs / LSP Server | Restored — Magic Docs 自动更新 + LSP 服务器管理器 |
-| Plugins / Marketplace | Restored — 插件安装/卸载/启用/禁用 + Marketplace 浏览 |
-| MCP OAuth | Simplified |
+| Module                                                                                 | Status                                                                                                                                                          |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Computer Use (`@ant/*`)                                                                | Restored — macOS + Windows + Linux（后端完整度不一）                                                                                                            |
+| `*-napi` packages                                                                      | 全部已恢复/实现：`audio-capture-napi`、`image-processor-napi` 已恢复；`color-diff-napi` 完整；`modifiers-napi`（macOS FFI）；`url-handler-napi`（环境变量+CLI） |
+| Voice Mode                                                                             | Restored — Push-to-Talk 语音输入（需 Anthropic OAuth）                                                                                                          |
+| OpenAI/Gemini/Grok 兼容层                                                              | Restored                                                                                                                                                        |
+| Remote Control Server                                                                  | Restored — 自托管 RCS + Web UI                                                                                                                                  |
+| `packages/shell/`, `packages/swarm/`, `packages/mcp-server/`, `packages/cc-knowledge/` | Removed — 功能合并或废弃                                                                                                                                        |
+| Analytics / GrowthBook / Sentry                                                        | Empty implementations                                                                                                                                           |
+| Magic Docs / LSP Server                                                                | Restored — Magic Docs 自动更新 + LSP 服务器管理器                                                                                                               |
+| Plugins / Marketplace                                                                  | Restored — 插件安装/卸载/启用/禁用 + Marketplace 浏览                                                                                                           |
+| MCP OAuth                                                                              | Simplified                                                                                                                                                      |
 
 ### Key Type Files
 
@@ -308,11 +310,11 @@ Feature flags control which functionality is enabled at runtime. 代码中统一
 **`log.ts` 和 `debug.ts` 使用共享 mock**（`tests/mocks/log.ts` / `tests/mocks/debug.ts`），不要在测试文件中内联 mock 定义。使用方式：
 
 ```ts
-import { logMock } from "../../../tests/mocks/log";
-mock.module("src/utils/log.ts", logMock);
+import { logMock } from '../../../tests/mocks/log'
+mock.module('src/utils/log.ts', logMock)
 
-import { debugMock } from "../../../../tests/mocks/debug";
-mock.module("src/utils/debug.ts", debugMock);
+import { debugMock } from '../../../../tests/mocks/debug'
+mock.module('src/utils/debug.ts', debugMock)
 ```
 
 源文件导出变更时只需更新 `tests/mocks/` 下的对应文件，不需要逐个修改测试。
@@ -326,6 +328,7 @@ mock.module("src/utils/debug.ts", debugMock);
 **Bun 的 `mock.module` 是进程全局的（last-write-wins），不是 per-file 隔离的。** 一个测试文件的 `mock.module` 会污染同一进程中所有其他测试文件的 `require`/`import`。
 
 **关键事实（Bun 1.x 实测验证）：**
+
 - 测试文件执行顺序**不是严格字母序**，不要假设文件 A 一定在文件 B 之前执行。
 - `mock.module` 在 `beforeAll` 内部调用时**不会被提升**（hoist），但仍会污染后续加载的文件。
 - `require()` 和 `import()` 共享同一模块注册表，`mock.module` 对两者都生效。
@@ -334,6 +337,7 @@ mock.module("src/utils/debug.ts", debugMock);
 **核心规则：不要 mock 被测模块的上层业务模块。**
 
 错误做法（会污染同目录的 `api.test.ts`）：
+
 ```ts
 // launchSchedule.test.ts — 直接 mock 源 API 模块 ❌
 mock.module('src/commands/schedule/triggersApi.js', () => ({
@@ -343,6 +347,7 @@ mock.module('src/commands/schedule/triggersApi.js', () => ({
 ```
 
 正确做法（mock 底层 HTTP 层，不污染业务模块）：参考 `launchSkillStore.test.ts`、`launchVault.test.ts` 的模式。
+
 ```ts
 // launchSchedule.test.ts — mock axios 而非 triggersApi ✅
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
@@ -351,13 +356,18 @@ const axiosHandle = setupAxiosMock()
 axiosHandle.stubs.get = axiosGetMock
 axiosHandle.stubs.post = axiosPostMock
 
-beforeAll(() => { axiosHandle.useStubs = true })
-afterAll(() => { axiosHandle.useStubs = false })
+beforeAll(() => {
+  axiosHandle.useStubs = true
+})
+afterAll(() => {
+  axiosHandle.useStubs = false
+})
 ```
 
 **判断标准：** 如果目录下同时有 `launch*.test.ts`（集成测试）和 `api.test.ts`（回归测试），`launch*.test.ts` 必须 mock axios 而非源 API 模块。`api.test.ts` 需要测试真实 API 模块的 HTTP 方法/URL/错误处理逻辑，被 mock 后就无法测试。
 
 **排查 mock 污染的方法：**
+
 1. 单独运行可疑文件确认其通过：`bun test path/to/suspect.test.ts`
 2. 与同目录其他文件一起运行定位污染源：`bun test path/to/__tests__/`
 3. 在两个文件中各加 `console.error('[file] milestone')` 追踪实际执行顺序
@@ -372,6 +382,7 @@ bun run precheck
 ```
 
 **类型规范**：
+
 - 生产代码禁止 `as any`；测试文件中 mock 数据可用 `as any`
 - 类型不匹配优先用 `as unknown as SpecificType` 双重断言，或补充 interface
 - 未知结构对象用 `Record<string, unknown>` 替代 `any`

@@ -6,19 +6,19 @@
 
 ## 本次复查的资源消耗
 
-| 维度 | 数值 |
-|---|---|
-| 子系统数 | 8(render-core / screen-buffer / layout / termio / events / keybindings / components / text-encoding) |
-| 审查代码量 | ~27,500 行 / 145 个 `.ts`/`.tsx` 文件 |
-| 编排阶段 | 4(Map → Find → Verify → Synthesize) |
-| **Agent 总数** | **158**(157 × glm-5.2 + 1 × opus 用于综合成文) |
-| **总 token 消耗** | **≈ 5.92M**(input ≈ 5.68M,output ≈ 244K) |
-| 工具调用次数 | 2,332 次(平均 14.8 次/agent) |
-| 单 agent 上下文中位数 | 32,341 input tokens / 1,208 output tokens |
-| Wall-clock 时长 | ≈ 10.6 小时(并发度 3) |
-| Candidate findings | 47 条 |
-| Confirmed findings | 6 条(13% 通过率) |
-| Rejected findings | 41 条(其中 7 条作为「误报分析」收入本文) |
+| 维度                  | 数值                                                                                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| 子系统数              | 8(render-core / screen-buffer / layout / termio / events / keybindings / components / text-encoding) |
+| 审查代码量            | ~27,500 行 / 145 个 `.ts`/`.tsx` 文件                                                                |
+| 编排阶段              | 4(Map → Find → Verify → Synthesize)                                                                  |
+| **Agent 总数**        | **158**(157 × glm-5.2 + 1 × opus 用于综合成文)                                                       |
+| **总 token 消耗**     | **≈ 5.92M**(input ≈ 5.68M,output ≈ 244K)                                                             |
+| 工具调用次数          | 2,332 次(平均 14.8 次/agent)                                                                         |
+| 单 agent 上下文中位数 | 32,341 input tokens / 1,208 output tokens                                                            |
+| Wall-clock 时长       | ≈ 10.6 小时(并发度 3)                                                                                |
+| Candidate findings    | 47 条                                                                                                |
+| Confirmed findings    | 6 条(13% 通过率)                                                                                     |
+| Rejected findings     | 41 条(其中 7 条作为「误报分析」收入本文)                                                             |
 
 > 这 5.92M token 不是被「浪费」的 — 80% 以上消耗在 verify 阶段:每个 candidate finding 都被派给 3 个独立视角的 verifier(correctness / reproducibility / severity)做对抗性核验,每个 verifier 都要重新 Read/Grep 源码独立判断。47 个 candidate × 3 视角 = 141 次 verifier 调用,加上 verifier 之间的反复 Read,这一阶段贡献了绝大部分 token 与工具调用。代价高昂,但回报是 87% 的 candidate 被独立证伪,只有经得起 3 视角同时审视的问题才进入最终文章。
 
@@ -147,7 +147,7 @@ Dispatcher      hit-test.ts       keybinding-setup
 
 - **位置**: `packages/@ant/ink/src/core/parse-keypress.ts:722-724`
 - **类别**: correctness
-- **现象**: 在 raw mode 终端按 Ctrl+Space,组件收到的 keydown 事件中 `e.key === '`'` 且 `ctrlKey=true`,而不是 `'space'`。结果:(1) 绑定到 Ctrl+Space 的快捷键(很多编辑器/IDE 用作补全)不会触发;(2) 若有 Ctrl+` 绑定,可能误触发。
+- **现象**: 在 raw mode 终端按 Ctrl+Space,组件收到的 keydown 事件中 `e.key === '`'`且`ctrlKey=true`,而不是 `'space'`。结果:(1) 绑定到 Ctrl+Space 的快捷键(很多编辑器/IDE 用作补全)不会触发;(2) 若有 Ctrl+` 绑定,可能误触发。
 - **根因**: parse-keypress.ts:722-724 对 `s <= '\x1a' && s.length === 1` 的控制字节执行:
 
   ```ts
@@ -157,9 +157,9 @@ Dispatcher      hit-test.ts       keybinding-setup
 
   对 Ctrl+Space (`\x00`):`charCodeAt(0) = 0`,`0 + 97 - 1 = 96 = '`'`(反引号,0x60)。
 
-  下游 `keyboard-event.ts:38` 的 `keyFromParsed` 因 `parsed.ctrl` 为 true 直接 `return name`,故 `e.key === '`'`。`input-event.ts:69` 的修复 `if (keypress.ctrl && input === 'space')` 只覆盖了 `name === 'space'` 的路径(即字面量 0x20 字节),对 `\x00` legacy 路径无效——此时 `keypress.name` 已经是 '`' 而非 'space'`。
+  下游 `keyboard-event.ts:38` 的 `keyFromParsed` 因 `parsed.ctrl` 为 true 直接 `return name`,故 `e.key === '`'`。`input-event.ts:69`的修复`if (keypress.ctrl && input === 'space')`只覆盖了`name === 'space'`的路径(即字面量 0x20 字节),对`\x00`legacy 路径无效——此时`keypress.name` 已经是 '`' 而非 'space'`。
 
-  对 `\x00` 之前的所有分支(716-721 行的特殊处理)均未匹配,`match.ts:45` 的 `getKeyName` 对单字符 input 返回 `input.toLowerCase()`,即 '`',而 ctrl+space 的 `target.key` 是 `' '`(parser.ts:54),两者永不相等。
+  对 `\x00` 之前的所有分支(716-721 行的特殊处理)均未匹配,`match.ts:45` 的 `getKeyName` 对单字符 input 返回 `input.toLowerCase()`,即 '`',而 ctrl+space 的 `target.key`是`' '`(parser.ts:54),两者永不相等。
 
 - **触发条件**: 任何 raw mode 终端(发送 `\x00` 是 xterm/VT100/iTerm2/kitty/Alacritty/gnome-terminal/Windows Terminal/tmux/screen 的标准行为)下按 Ctrl+Space。macOS 上可能被系统/IME 拦截,但 Linux/Windows/远程 ssh 必触发。
 - **修复方向**: 在控制字节映射分支前显式判断 `if (s === '\x00') { key.name = 'space'; key.ctrl = true; }`,或把映射起点改为 `'a'.charCodeAt(0)` 并对 0 单独处理。同时检查 ctrl+@ (`\x00`) 在 `input-event.ts` 的 input 值是否一致。
@@ -284,18 +284,18 @@ start>0 时的跳过逻辑正确,因为那时零宽标记属于左侧 base char(
 
 ### P0(立即修复,低风险高收益)
 
-| 项 | 位置 | 改动 | 预期效果 | 风险 |
-|---|---|---|---|---|
-| 制表符样式丢失 | output.ts:670-675 | `stylePool.none` → `character.styleId`,`hyperlink: undefined` → `character.hyperlink` | 带背景色的制表符行不再出现断续背景条带 | 极低,与正常字符路径(output.ts:789-794)实现一致 |
-| Ctrl+Space 映射错误 | parse-keypress.ts:722-724 | 在控制字节分支前显式判断 `s === '\x00'` → `{ name: 'space', ctrl: true }` | Ctrl+Space 不再被误判为 Ctrl+`,绑定到 Ctrl+Space 的快捷键正常触发 | 低,只新增分支不改既有逻辑 |
-| Tokenizer ESC 泄漏 | tokenize.ts:181-185 等 4 处 | 错误回退时 `textStart = seqStart + 1` 跳过 ESC 字节,csi/escapeIntermediate 额外 consume 中间字节 | 畸形 ANSI 输入不再泄漏为可见字素 | 低,但需补充单测覆盖 4 个错误回退分支 |
+| 项                  | 位置                        | 改动                                                                                             | 预期效果                                                          | 风险                                           |
+| ------------------- | --------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------- |
+| 制表符样式丢失      | output.ts:670-675           | `stylePool.none` → `character.styleId`,`hyperlink: undefined` → `character.hyperlink`            | 带背景色的制表符行不再出现断续背景条带                            | 极低,与正常字符路径(output.ts:789-794)实现一致 |
+| Ctrl+Space 映射错误 | parse-keypress.ts:722-724   | 在控制字节分支前显式判断 `s === '\x00'` → `{ name: 'space', ctrl: true }`                        | Ctrl+Space 不再被误判为 Ctrl+`,绑定到 Ctrl+Space 的快捷键正常触发 | 低,只新增分支不改既有逻辑                      |
+| Tokenizer ESC 泄漏  | tokenize.ts:181-185 等 4 处 | 错误回退时 `textStart = seqStart + 1` 跳过 ESC 字节,csi/escapeIntermediate 额外 consume 中间字节 | 畸形 ANSI 输入不再泄漏为可见字素                                  | 低,但需补充单测覆盖 4 个错误回退分支           |
 
 ### P1(近期修复,中等收益)
 
-| 项 | 位置 | 改动 | 预期效果 | 风险 |
-|---|---|---|---|---|
-| Windows Terminal extended keys | terminal.ts:154-167 | 加 `|| process.env.WT_SESSION` 分支,或改用 `!!process.env.WT_SESSION` | 原生 Windows Terminal 用户获得 ctrl+shift+letter 区分能力 | 低,与同文件其他 5+ 处检测口径对齐 |
-| ChordInterceptor stopImmediatePropagation | KeybindingSetup.tsx:247-270 | wasInChord && match 时,在 handler 查找前无条件 `event.stopImmediatePropagation()` | 自定义 chord + handler 未挂载场景下,第二键不再误触发 single-key binding | 中,需覆盖 chord_completed 但无 handler 的单测 |
+| 项                                        | 位置                        | 改动                                                                              | 预期效果                                                                | 风险                                                         |
+| ----------------------------------------- | --------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Windows Terminal extended keys            | terminal.ts:154-167         | 加 `                                                                              |                                                                         | process.env.WT_SESSION`分支,或改用`!!process.env.WT_SESSION` | 原生 Windows Terminal 用户获得 ctrl+shift+letter 区分能力 | 低,与同文件其他 5+ 处检测口径对齐 |
+| ChordInterceptor stopImmediatePropagation | KeybindingSetup.tsx:247-270 | wasInChord && match 时,在 handler 查找前无条件 `event.stopImmediatePropagation()` | 自定义 chord + handler 未挂载场景下,第二键不再误触发 single-key binding | 中,需覆盖 chord_completed 但无 handler 的单测                |
 
 ### P2(结构性清理,长期)
 
@@ -312,4 +312,3 @@ start>0 时的跳过逻辑正确,因为那时零宽标记属于左侧 base char(
 第三阶段是本次复查可信度的核心:每个 candidate finding 经三个独立视角验证——**correctness**(代码逻辑层面是否成立)、**reproducibility**(在真实终端会话中是否能复现,触发条件是否现实)、**severity**(影响范围与严重程度)。三个视角独立给出 confirmed/rejected 判断与 adjustedSeverity,只有当问题在机制成立 + 真实可复现 + 严重程度匹配三个维度上都站得住,才最终确认。这一机制在本轮复查中证明了价值:47 个 candidate 中只有 6 个最终 confirmed(13% 通过率),且多个被排除的 finding 是「代码读起来确实像 bug」(如 blitRegion 不对称、SGR fall-through、sliceAnsi 零宽处理),但通过运行时实测、调用链追踪、不变量核对被推翻。
 
 第四阶段综合三个视角的分歧,产出 finalSeverity。对分歧较大的 finding(如 Ctrl+Space 一条,severity 视角判 rejected 但 correctness/reproducibility 视角判 confirmed),本文采取「机制成立即收入,严重程度取中间值」的策略,既不放过真实的正确性缺陷,也不夸大影响。读者可根据每条 finding 的 verdicts 字段自行判断结论的稳健程度。
-

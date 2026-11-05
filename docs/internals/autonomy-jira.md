@@ -18,12 +18,14 @@ in-memory queue without marking the persisted run as running/completed/failed,
 so managed flows could stay stuck in `queued` and never advance.
 
 Evidence:
+
 - `src/query.ts` drains queued commands via `getCommandsByMaxPriority()`.
 - `src/query.ts` removes consumed commands from the queue.
 - Lifecycle updates existed only in the normal queued-submit path
   `src/utils/handlePromptSubmit.ts` and headless `src/cli/print.ts`.
 
 Acceptance criteria:
+
 - Mid-turn consumed autonomy commands mark runs `running`.
 - Normal query completion finalizes consumed runs and queues next managed-flow
   steps.
@@ -45,6 +47,7 @@ could mark a cancelled/completed/failed run back to `running`, causing a
 cancelled flow to execute or a terminal flow to be rewritten.
 
 Evidence:
+
 - `markAutonomyRunRunning`, `markAutonomyRunCompleted`,
   `markAutonomyRunFailed`, and `markAutonomyRunCancelled` updated records
   without checking current status.
@@ -52,6 +55,7 @@ Evidence:
   process, so stale commands are a realistic input.
 
 Acceptance criteria:
+
 - `queued -> running/completed/failed/cancelled` remains allowed.
 - `running -> completed/failed/cancelled` remains allowed.
 - Any terminal status rejects later lifecycle updates.
@@ -72,11 +76,13 @@ be lost from diagnostics. In one-shot cron paths, the scheduler has already
 decided the task fired.
 
 Evidence:
+
 - `src/proactive/useProactive.ts` used a detached async IIFE without catch.
 - `src/cli/print.ts` proactive and cron paths also detached async work.
 - `src/hooks/useScheduledTasks.ts` cron callbacks detached async work.
 
 Acceptance criteria:
+
 - Detached proactive/cron fire work has explicit error logging.
 - REPL proactive tick generation is non-reentrant.
 - Tick generation stops queueing after hook unmount.
@@ -95,11 +101,13 @@ the supervisor alive until the timer fired, forcing the stop path toward
 SIGKILL.
 
 Evidence:
+
 - `src/daemon/main.ts` scheduled restart timers directly in the worker exit
   handler.
 - Shutdown only signaled child processes and did not clear restart timers.
 
 Acceptance criteria:
+
 - Worker restart timers are tracked per worker.
 - Shutdown clears any pending restart timers.
 - Restart and force-kill grace timers do not keep the supervisor alive alone.
@@ -118,10 +126,12 @@ never matched, so root-level lock bookkeeping could accumulate in long-lived
 processes that touch many workspaces.
 
 Evidence:
+
 - `src/utils/autonomyPersistence.ts` stored `previous.then(() => current)`.
 - Cleanup compared `persistenceLocks.get(key) === current`.
 
 Acceptance criteria:
+
 - The stored chained promise is the value used for cleanup comparison.
 - Existing serialization behavior for same-root calls remains unchanged.
 - Tests directly assert same-root lock bookkeeping returns to zero after both
@@ -141,10 +151,12 @@ completion, which removes recovery evidence and can break managed-flow
 advancement.
 
 Evidence:
+
 - `src/utils/autonomyRuns.ts` keeps the latest 200 runs by `createdAt`.
 - `src/utils/autonomyFlows.ts` keeps the latest 100 flows by `updatedAt`.
 
 Acceptance criteria:
+
 - Active records are retained before completed historical records are trimmed.
 - Tests cover trimming with more than the configured cap and active records
   near the tail.
@@ -164,6 +176,7 @@ that had already been consumed as a queued attachment could be marked
 completed and advance its managed flow even though the provider call failed.
 
 Evidence:
+
 - `src/services/api/openai/index.ts`, `src/services/api/gemini/index.ts`, and
   `src/services/api/grok/index.ts` yield `createAssistantAPIErrorMessage()` on
   adapter errors.
@@ -173,6 +186,7 @@ Evidence:
   to mark consumed runs completed or failed.
 
 Acceptance criteria:
+
 - Provider API-error assistant messages terminate the query with
   `reason: 'model_error'`.
 - Any consumed autonomy run is marked failed rather than completed.
@@ -195,12 +209,14 @@ queued autonomy commands that had already been claimed as `running` could stay
 persisted as `running` forever if the REPL/SDK consumer closed the generator.
 
 Evidence:
+
 - Claimed run IDs were collected during queued attachment injection.
 - Completion/failure finalization happened only after `yield* queryLoop(...)`
   returned normally or threw.
 - Claude cross-validation flagged this as a durable run/flow leak.
 
 Acceptance criteria:
+
 - Consumed autonomy runs are finalized from a `finally` path.
 - Normal completion marks consumed runs completed and enqueues next managed
   flow steps.
@@ -223,11 +239,13 @@ already yielded. A concurrent cancellation between those steps could still send
 a cancelled prompt into the model context.
 
 Evidence:
+
 - `partitionConsumableQueuedAutonomyCommands()` only checked persisted status.
 - `markAutonomyRunRunning()` previously ran after `getAttachmentMessages()`.
 - Reviewer cross-validation identified the check-then-act race.
 
 Acceptance criteria:
+
 - Query claims queued autonomy runs before passing commands to attachment
   generation.
 - Only successfully claimed commands are injected as queued-command
@@ -250,6 +268,7 @@ after persistence but before enqueue, the queued run is left on disk with no
 in-memory command to consume it.
 
 Evidence:
+
 - `createProactiveAutonomyCommands()` commits runs before returning commands.
 - `commitAutonomyQueuedPrompt()` persists scheduled-task runs before callers
   enqueue them.
@@ -257,6 +276,7 @@ Evidence:
   return without terminalizing the run.
 
 Acceptance criteria:
+
 - Proactive hook cancellation checks run both before commit and after command
   creation.
 - Headless proactive and cron paths cancel any already-created command that is
@@ -278,12 +298,14 @@ That allowed new terminal reasons such as `model_error` and continuation
 reasons such as `collapse_drain_retry` to drift without compiler checks.
 
 Evidence:
+
 - Claude cross-validation flagged the `Terminal = any` contract as a remaining
   issue.
 - Tightening the type immediately caught that
   `collapse_drain_retry.committed` is a `number`, not a `boolean`.
 
 Acceptance criteria:
+
 - `Terminal` is a concrete union of query terminal reasons.
 - `Continue` is a concrete union of continuation reasons and payloads.
 - `bun run typecheck` validates all query return sites against that contract.
@@ -302,11 +324,13 @@ expanded mock avoided the failure but over-coupled the provider test to
 unrelated settings internals.
 
 Evidence:
+
 - Full test runs observed cross-file settings mock pollution.
 - `src/utils/model/providers.ts` only needs the real `getInitialSettings()`
   behavior.
 
 Acceptance criteria:
+
 - Provider tests do not mock `settings.js`.
 - `modelType` precedence is exercised through an injected settings snapshot,
   leaving global bootstrap state untouched.

@@ -48,14 +48,14 @@
 
 ### 端口契约（包内 `ports.ts`）
 
-| 端口 | 职责 | 核心侧 adapter 实现 |
-|---|---|---|
-| `AgentRunner` | `agent()` 后端：`runAgentToResult(params, hostHandle) → AgentRunResult` | 委托 `runAgent` + `assembleToolPool`；schema 时注入 StructuredOutput 工具；`finalizeAgentTool` 抽取最终消息 + usage |
-| `ProgressEmitter` | `emit(event)` 推进度事件 | 写 `LocalWorkflowTaskState.progress` + `rootSetAppState` |
-| `TaskRegistrar` | 后台任务生命周期 + 读 `pendingAgentAction` | 复用 `LocalWorkflowTask` API |
-| `JournalStore` | journal 读写（按 runId） | 文件 fs（`.claude/workflow-runs/<runId>/journal.jsonl`），走端口便于 mock |
-| `PermissionGate` | `agent()` 前置权限/取消检查 | abort signal + `pendingAgentAction` |
-| `Logger` | 调试日志 + 遥测 | `logForDebugging` / `logEvent` |
+| 端口              | 职责                                                                    | 核心侧 adapter 实现                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `AgentRunner`     | `agent()` 后端：`runAgentToResult(params, hostHandle) → AgentRunResult` | 委托 `runAgent` + `assembleToolPool`；schema 时注入 StructuredOutput 工具；`finalizeAgentTool` 抽取最终消息 + usage |
+| `ProgressEmitter` | `emit(event)` 推进度事件                                                | 写 `LocalWorkflowTaskState.progress` + `rootSetAppState`                                                            |
+| `TaskRegistrar`   | 后台任务生命周期 + 读 `pendingAgentAction`                              | 复用 `LocalWorkflowTask` API                                                                                        |
+| `JournalStore`    | journal 读写（按 runId）                                                | 文件 fs（`.claude/workflow-runs/<runId>/journal.jsonl`），走端口便于 mock                                           |
+| `PermissionGate`  | `agent()` 前置权限/取消检查                                             | abort signal + `pendingAgentAction`                                                                                 |
+| `Logger`          | 调试日志 + 遥测                                                         | `logForDebugging` / `logEvent`                                                                                      |
 
 **不透明 host 句柄**：`HostHandle = { readonly __workflowHost: unique symbol }`。核心侧每次工具调用构造一个句柄（内含 `toolUseContext`/`canUseTool`/`agentId` 等），包内绝不检视，只透传给 `AgentRunner`；adapter 把它 cast 回核心上下文。包对核心类型零依赖的唯一缝隙，且是不透明的。
 
@@ -94,14 +94,14 @@ packages/workflow-engine/
 
 ### 4.1 钩子语义
 
-| 钩子 | 语义 | 失败行为 |
-|---|---|---|
-| `agent(prompt, opts?)` | 取信号量 → 查 journal（命中即返回缓存）→ 调 `AgentRunner` → 写 journal → 返回 | 终态 API 错耗尽重试 → `null`（不抛） |
-| `parallel(thunks)` | **屏障**：`Promise.all` 所有 thunk（每个内部各自过信号量）；wall-clock = 最慢项 | 单项抛错/agent 错 → 该项 `null`；调用本身永不 reject |
-| `pipeline(items, …stages)` | **无屏障**：每项跑 `stage1→stage2→…` 异步链，多链并发；stage 回调收 `(prevResult, originalItem, index)` | 某 stage 抛错 → 该项 `null`、跳过后续 stage |
-| `phase(title)` | 开启新阶段，后续 agent/log 归入该组直到下次 `phase()` | — |
-| `log(message)` | 向用户发一行旁白进度 | — |
-| `workflow(nameOrRef, args?)` | 内联跑子 workflow，返回其返回值；共享并发/计数/budget；`/workflows` 显示为 `▸ name` 组 | 子 workflow 内再嵌套 → 抛错（仅一层） |
+| 钩子                         | 语义                                                                                                    | 失败行为                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `agent(prompt, opts?)`       | 取信号量 → 查 journal（命中即返回缓存）→ 调 `AgentRunner` → 写 journal → 返回                           | 终态 API 错耗尽重试 → `null`（不抛）                 |
+| `parallel(thunks)`           | **屏障**：`Promise.all` 所有 thunk（每个内部各自过信号量）；wall-clock = 最慢项                         | 单项抛错/agent 错 → 该项 `null`；调用本身永不 reject |
+| `pipeline(items, …stages)`   | **无屏障**：每项跑 `stage1→stage2→…` 异步链，多链并发；stage 回调收 `(prevResult, originalItem, index)` | 某 stage 抛错 → 该项 `null`、跳过后续 stage          |
+| `phase(title)`               | 开启新阶段，后续 agent/log 归入该组直到下次 `phase()`                                                   | —                                                    |
+| `log(message)`               | 向用户发一行旁白进度                                                                                    | —                                                    |
+| `workflow(nameOrRef, args?)` | 内联跑子 workflow，返回其返回值；共享并发/计数/budget；`/workflows` 显示为 `▸ name` 组                  | 子 workflow 内再嵌套 → 抛错（仅一层）                |
 
 `agent` 的 `opts`：`label`、`phase`（显式分组）、`schema`（JSON Schema）、`model`、`isolation:'worktree'`、`agentType`（自定义子 agent 类型）、`allowedTools`。
 
@@ -135,8 +135,8 @@ packages/workflow-engine/
 ```ts
 type AgentRunResult =
   | { kind: 'ok'; output: string | object; usage: { outputTokens: number } }
-  | { kind: 'skipped' }   // 用户 skip → agent() 返回 null
-  | { kind: 'dead' }      // 终态 API 错耗尽重试 → agent() 返回 null
+  | { kind: 'skipped' } // 用户 skip → agent() 返回 null
+  | { kind: 'dead' } // 终态 API 错耗尽重试 → agent() 返回 null
 ```
 
 `output` 为 `string`（无 schema）或已校验对象（有 schema）。`agent()` 据此映射：`ok`→返回 output，`skipped`/`dead`→返回 `null`。
@@ -155,16 +155,16 @@ type AgentRunResult =
 
 ## 5. 错误处理
 
-| 场景 | 行为 |
-|---|---|
-| 脚本无 `meta` / `meta` 非字面量 / 语法错 | 引擎抛错 → task `failed` → 通知带错误信息 |
-| `Date.now`/`Math.random`/`new Date()` | shim 抛 → 冒泡为脚本错误 → task failed |
-| `agent()` 终态 API 错（重试耗尽） | 返回 `null`，**不杀** workflow |
-| `parallel`/`pipeline` 单项抛错 | 该项 `null`，workflow 继续 |
-| budget 耗尽 | `agent()` 抛错（脚本可 try/catch） |
-| 并发/1000/4096 上限 | 抛错 |
-| kill（abort） | signal 传播；`agent()` 检查 signal；workflow 停；task `killed`；通知 partial |
-| 工具调用层（`call`）脚本非法 | 直接返回错误给模型（不进后台） |
+| 场景                                     | 行为                                                                         |
+| ---------------------------------------- | ---------------------------------------------------------------------------- |
+| 脚本无 `meta` / `meta` 非字面量 / 语法错 | 引擎抛错 → task `failed` → 通知带错误信息                                    |
+| `Date.now`/`Math.random`/`new Date()`    | shim 抛 → 冒泡为脚本错误 → task failed                                       |
+| `agent()` 终态 API 错（重试耗尽）        | 返回 `null`，**不杀** workflow                                               |
+| `parallel`/`pipeline` 单项抛错           | 该项 `null`，workflow 继续                                                   |
+| budget 耗尽                              | `agent()` 抛错（脚本可 try/catch）                                           |
+| 并发/1000/4096 上限                      | 抛错                                                                         |
+| kill（abort）                            | signal 传播；`agent()` 检查 signal；workflow 停；task `killed`；通知 partial |
+| 工具调用层（`call`）脚本非法             | 直接返回错误给模型（不进后台）                                               |
 
 ## 6. 测试策略
 
@@ -200,17 +200,17 @@ type AgentRunResult =
 
 ## 8. 现有文件迁移
 
-| 文件 | 处理 |
-|---|---|
-| `builtin-tools/.../WorkflowTool/WorkflowTool.ts`（清单版） | 删除，逻辑移入新包 |
-| `constants.ts`（WORKFLOW_TOOL_NAME） | 移入包 `tool/constants.ts`，core 侧 re-export |
-| `WorkflowPermissionRequest.tsx`（React UI） | 移到 `src/workflow/`（依赖 src 权限组件，属核心侧） |
-| `createWorkflowCommand.ts`（.md/.yaml 扫描） | 改为扫 `.ts/.js/.mjs` → 生成 `/<name>` 命令，调用时以脚本启动引擎 |
-| `bundled/index.ts`（no-op） | 保留为包的 bundled-workflow 扩展点 |
-| `src/utils/workflowRuns.ts`（清单记录） | 重写为 run+journal 模型（或并入包 JournalStore） |
-| `src/commands/workflows/index.ts` | 改为**实时进度查看器**，复用 `WorkflowDetailDialog.tsx` |
-| `src/tasks.ts` LocalWorkflowTask 门控 | 保持不变 |
-| `constants/tools.ts` CORE_TOOLS 含 `workflow` | 保持 |
+| 文件                                                       | 处理                                                              |
+| ---------------------------------------------------------- | ----------------------------------------------------------------- |
+| `builtin-tools/.../WorkflowTool/WorkflowTool.ts`（清单版） | 删除，逻辑移入新包                                                |
+| `constants.ts`（WORKFLOW_TOOL_NAME）                       | 移入包 `tool/constants.ts`，core 侧 re-export                     |
+| `WorkflowPermissionRequest.tsx`（React UI）                | 移到 `src/workflow/`（依赖 src 权限组件，属核心侧）               |
+| `createWorkflowCommand.ts`（.md/.yaml 扫描）               | 改为扫 `.ts/.js/.mjs` → 生成 `/<name>` 命令，调用时以脚本启动引擎 |
+| `bundled/index.ts`（no-op）                                | 保留为包的 bundled-workflow 扩展点                                |
+| `src/utils/workflowRuns.ts`（清单记录）                    | 重写为 run+journal 模型（或并入包 JournalStore）                  |
+| `src/commands/workflows/index.ts`                          | 改为**实时进度查看器**，复用 `WorkflowDetailDialog.tsx`           |
+| `src/tasks.ts` LocalWorkflowTask 门控                      | 保持不变                                                          |
+| `constants/tools.ts` CORE_TOOLS 含 `workflow`              | 保持                                                              |
 
 ## 9. 工作分解（writing-plans 将细化）
 

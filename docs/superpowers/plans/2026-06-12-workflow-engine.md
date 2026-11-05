@@ -28,42 +28,42 @@
 
 **新包 `packages/workflow-engine/`（零 `src/*` 导入）：**
 
-| 文件 | 职责 |
-|---|---|
-| `package.json` / `tsconfig.json` | 包清单 + TS 配置 |
-| `src/index.ts` | 公共导出 |
-| `src/constants.ts` | 目录/上限常量 |
-| `src/types.ts` | 纯类型（WorkflowInput/meta/JournalEntry/ProgressEvent/AgentRunParams/AgentRunResult） |
-| `src/ports.ts` | 端口接口 + HostHandle + HostFactory + WorkflowHostContext |
-| `src/engine/concurrency.ts` | Semaphore + maxConcurrency + 上限常量引用 |
-| `src/engine/script.ts` | meta 字面量提取 + async 包装 + Date/Math 沙箱 shim |
-| `src/engine/journal.ts` | agentCallKey(hash) + JournalStore 读写实现 |
-| `src/engine/budget.ts` | Budget 累加器 |
-| `src/engine/structuredOutput.ts` | validateAgainstSchema(Ajv) |
-| `src/engine/namedWorkflows.ts` | name → `.claude/workflows/<name>.ts\|js\|mjs` 解析 |
-| `src/engine/context.ts` | EngineContext + SharedResources |
-| `src/engine/hooks.ts` | agent/parallel/pipeline/phase/log/workflow 实现 |
-| `src/engine/runWorkflow.ts` | 引擎入口：校验/执行/journal/resume |
-| `src/progress/events.ts` | ProgressEvent 类型 + emit 辅助 |
-| `src/tool/schema.ts` | 输入 zod schema |
-| `src/tool/WorkflowTool.ts` | createWorkflowTool({ports, hostFactory}) → 自包含描述符 |
-| `src/tool/constants.ts` | WORKFLOW_TOOL_NAME 等（供 core re-export） |
-| `src/__tests__/*.test.ts` | 包内全量单测（mock 端口） |
+| 文件                             | 职责                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| `package.json` / `tsconfig.json` | 包清单 + TS 配置                                                                      |
+| `src/index.ts`                   | 公共导出                                                                              |
+| `src/constants.ts`               | 目录/上限常量                                                                         |
+| `src/types.ts`                   | 纯类型（WorkflowInput/meta/JournalEntry/ProgressEvent/AgentRunParams/AgentRunResult） |
+| `src/ports.ts`                   | 端口接口 + HostHandle + HostFactory + WorkflowHostContext                             |
+| `src/engine/concurrency.ts`      | Semaphore + maxConcurrency + 上限常量引用                                             |
+| `src/engine/script.ts`           | meta 字面量提取 + async 包装 + Date/Math 沙箱 shim                                    |
+| `src/engine/journal.ts`          | agentCallKey(hash) + JournalStore 读写实现                                            |
+| `src/engine/budget.ts`           | Budget 累加器                                                                         |
+| `src/engine/structuredOutput.ts` | validateAgainstSchema(Ajv)                                                            |
+| `src/engine/namedWorkflows.ts`   | name → `.claude/workflows/<name>.ts\|js\|mjs` 解析                                    |
+| `src/engine/context.ts`          | EngineContext + SharedResources                                                       |
+| `src/engine/hooks.ts`            | agent/parallel/pipeline/phase/log/workflow 实现                                       |
+| `src/engine/runWorkflow.ts`      | 引擎入口：校验/执行/journal/resume                                                    |
+| `src/progress/events.ts`         | ProgressEvent 类型 + emit 辅助                                                        |
+| `src/tool/schema.ts`             | 输入 zod schema                                                                       |
+| `src/tool/WorkflowTool.ts`       | createWorkflowTool({ports, hostFactory}) → 自包含描述符                               |
+| `src/tool/constants.ts`          | WORKFLOW_TOOL_NAME 等（供 core re-export）                                            |
+| `src/__tests__/*.test.ts`        | 包内全量单测（mock 端口）                                                             |
 
 **核心侧（`src/`）：**
 
-| 文件 | 职责 |
-|---|---|
-| `src/workflow/adapter.ts` | createWorkflowAdapter：实现端口（委托 runAgent 等）+ hostFactory 构造 HostHandle |
-| `src/workflow/wiring.ts` | createWorkflowTool()：建 adapter → 包描述符 → buildTool |
-| `src/workflow/hostHandle.ts` | HostHandle bundle 类型 + 构造/解包 |
-| `src/workflow/namedWorkflowCommands.ts` | 扫 `.ts/.js/.mjs` → `/<name>` 斜杠命令（重写） |
-| `src/workflow/WorkflowProgressView.tsx` | `/workflows` 实时进度查看器 |
-| 修改 `src/tools.ts` | 注册位改指向 `src/workflow/wiring.js` |
-| 修改 `src/commands/workflows/index.ts` | 改为进度查看器入口 |
-| 修改 `src/utils/workflowRuns.ts` | 重写为 run+journal 模型 |
-| 移动 `WorkflowPermissionRequest.tsx` → `src/workflow/` | 依赖 src 权限组件 |
-| 删除 `builtin-tools/.../WorkflowTool/WorkflowTool.ts` 等 | 清单版逻辑移入包 |
+| 文件                                                     | 职责                                                                             |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `src/workflow/adapter.ts`                                | createWorkflowAdapter：实现端口（委托 runAgent 等）+ hostFactory 构造 HostHandle |
+| `src/workflow/wiring.ts`                                 | createWorkflowTool()：建 adapter → 包描述符 → buildTool                          |
+| `src/workflow/hostHandle.ts`                             | HostHandle bundle 类型 + 构造/解包                                               |
+| `src/workflow/namedWorkflowCommands.ts`                  | 扫 `.ts/.js/.mjs` → `/<name>` 斜杠命令（重写）                                   |
+| `src/workflow/WorkflowProgressView.tsx`                  | `/workflows` 实时进度查看器                                                      |
+| 修改 `src/tools.ts`                                      | 注册位改指向 `src/workflow/wiring.js`                                            |
+| 修改 `src/commands/workflows/index.ts`                   | 改为进度查看器入口                                                               |
+| 修改 `src/utils/workflowRuns.ts`                         | 重写为 run+journal 模型                                                          |
+| 移动 `WorkflowPermissionRequest.tsx` → `src/workflow/`   | 依赖 src 权限组件                                                                |
+| 删除 `builtin-tools/.../WorkflowTool/WorkflowTool.ts` 等 | 清单版逻辑移入包                                                                 |
 
 **自然检查点：** Phase 1–3 完成后，包独立可测（全 mock 端口，无 LLM），是一个可提交的里程碑。Phase 4–6 是核心集成。
 
@@ -74,6 +74,7 @@
 ### Task 1：创建包脚手架
 
 **Files:**
+
 - Create: `packages/workflow-engine/package.json`
 - Create: `packages/workflow-engine/tsconfig.json`
 - Create: `packages/workflow-engine/src/index.ts`
@@ -160,6 +161,7 @@ git commit -m "feat(workflow): scaffold @claude-code-best/workflow-engine packag
 ### Task 2：常量（`constants.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/constants.ts`
 
 - [ ] **Step 1：写 `constants.ts`**
@@ -207,6 +209,7 @@ git commit -m "feat(workflow): add engine constants"
 ### Task 3：核心类型（`types.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/types.ts`
 - Test: `packages/workflow-engine/src/__tests__/types.test.ts`
 
@@ -217,7 +220,11 @@ import { expect, test } from 'bun:test'
 
 // 直接构造未导出的类型形状，验证 JSON 往返（resume 持久化的核心要求）。
 test('AgentRunResult ok 分支可 JSON 往返', () => {
-  const result = { kind: 'ok' as const, output: { confirmed: true }, usage: { outputTokens: 42 } }
+  const result = {
+    kind: 'ok' as const,
+    output: { confirmed: true },
+    usage: { outputTokens: 42 },
+  }
   const round = JSON.parse(JSON.stringify(result))
   expect(round).toEqual(result)
   expect(round.kind).toBe('ok')
@@ -231,7 +238,10 @@ test('AgentRunResult skipped/dead 分支可 JSON 往返', () => {
 })
 
 test('JournalEntry 形状稳定', () => {
-  const entry = { key: 'abc123', result: { kind: 'ok', output: 'text', usage: { outputTokens: 1 } } }
+  const entry = {
+    key: 'abc123',
+    result: { kind: 'ok', output: 'text', usage: { outputTokens: 1 } },
+  }
   const round = JSON.parse(JSON.stringify(entry))
   expect(round.key).toBe('abc123')
   expect(round.result.kind).toBe('ok')
@@ -304,11 +314,22 @@ export type JournalEntry = {
 
 /** 进度事件。所有变体携带 runId，供 adapter 路由到对应 task（多并发 workflow）。 */
 export type ProgressEvent =
-  | { type: 'run_started'; runId: string; workflowName: string; meta: WorkflowMeta | null }
+  | {
+      type: 'run_started'
+      runId: string
+      workflowName: string
+      meta: WorkflowMeta | null
+    }
   | { type: 'phase_started'; runId: string; phase: string }
   | { type: 'phase_done'; runId: string; phase: string }
   | { type: 'agent_started'; runId: string; label?: string; phase?: string }
-  | { type: 'agent_done'; runId: string; label?: string; phase?: string; result: AgentRunResult }
+  | {
+      type: 'agent_done'
+      runId: string
+      label?: string
+      phase?: string
+      result: AgentRunResult
+    }
   | { type: 'log'; runId: string; message: string }
   | {
       type: 'run_done'
@@ -350,6 +371,7 @@ git commit -m "feat(workflow): add core types (input/meta/journal/progress/agent
 ### Task 4：端口契约（`ports.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/ports.ts`
 - Test: `packages/workflow-engine/src/__tests__/ports.test.ts`
 
@@ -379,16 +401,28 @@ test('端口对象满足最小形状', () => {
     agentRunner: { runAgentToResult: noop },
     progressEmitter: { emit: noop },
     taskRegistrar: {
-      register: () => ({ runId: 'run-1', signal: new AbortController().signal }),
+      register: () => ({
+        runId: 'run-1',
+        signal: new AbortController().signal,
+      }),
       complete: noop,
       fail: noop,
       kill: noop,
       pendingAction: () => null,
     },
-    journalStore: { read: async () => [], append: async () => {}, truncate: async () => {} },
+    journalStore: {
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
+    },
     permissionGate: { isAborted: () => false },
     logger: { debug: noop, event: noop },
-    hostFactory: () => ({ handle: createHostHandle(null), cwd: '/tmp', budgetTotal: null, toolUseId: 'tu-1' }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      cwd: '/tmp',
+      budgetTotal: null,
+      toolUseId: 'tu-1',
+    }),
   }
   expect(ports.taskRegistrar.register().runId).toBe('run-1')
   expect(ports.hostFactory().toolUseId).toBe('tu-1')
@@ -403,11 +437,7 @@ Expected: FAIL —— `../ports.js` 尚无导出。
 - [ ] **Step 3：写 `ports.ts`**
 
 ```ts
-import type {
-  AgentRunParams,
-  AgentRunResult,
-  ProgressEvent,
-} from './types.js'
+import type { AgentRunParams, AgentRunResult, ProgressEvent } from './types.js'
 
 /**
  * 不透明 host 句柄。核心侧每次工具调用构造一个，内含 toolUseContext/
@@ -552,6 +582,7 @@ git commit -m "feat(workflow): add ports & opaque HostHandle contracts"
 ### Task 5：并发信号量与上限（`engine/concurrency.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/concurrency.ts`
 - Test: `packages/workflow-engine/src/__tests__/concurrency.test.ts`
 
@@ -641,7 +672,10 @@ function cpuCores(): number {
 
 /** min(MAX_CONCURRENCY_CAP, cpuCores - MAX_CONCURRENCY_OFFSET)，至少 1。 */
 export function maxConcurrency(): number {
-  return Math.max(1, Math.min(MAX_CONCURRENCY_CAP, cpuCores() - MAX_CONCURRENCY_OFFSET))
+  return Math.max(
+    1,
+    Math.min(MAX_CONCURRENCY_CAP, cpuCores() - MAX_CONCURRENCY_OFFSET),
+  )
 }
 ```
 
@@ -662,6 +696,7 @@ git commit -m "feat(workflow): add Semaphore and maxConcurrency"
 ### Task 6：脚本解析与沙箱（`engine/script.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/script.ts`
 - Test: `packages/workflow-engine/src/__tests__/script.test.ts`
 
@@ -669,11 +704,25 @@ git commit -m "feat(workflow): add Semaphore and maxConcurrency"
 
 ```ts
 import { expect, test } from 'bun:test'
-import { ScriptError, extractMeta, parseScript, type WorkflowHooks } from '../engine/script.js'
+import {
+  ScriptError,
+  extractMeta,
+  parseScript,
+  type WorkflowHooks,
+} from '../engine/script.js'
 
 const stubHooks: WorkflowHooks = {
   agent: async () => 'agent-result',
-  parallel: async (thunks) => Promise.all(thunks.map(async t => { try { return await t() } catch { return null } })),
+  parallel: async thunks =>
+    Promise.all(
+      thunks.map(async t => {
+        try {
+          return await t()
+        } catch {
+          return null
+        }
+      }),
+    ),
   pipeline: async () => [],
   phase: () => {},
   log: () => {},
@@ -709,18 +758,26 @@ test('parseScript 执行 body 顶层 return', async () => {
 
 test('脚本中 Date.now() 抛非确定性错误', async () => {
   const { execute } = parseScript(`return Date.now()`)
-  await expect(execute(stubHooks, {}, { total: null })).rejects.toThrow(/Date\.now/)
+  await expect(execute(stubHooks, {}, { total: null })).rejects.toThrow(
+    /Date\.now/,
+  )
 })
 
 test('脚本中 Math.random() 抛非确定性错误', async () => {
   const { execute } = parseScript(`return Math.random()`)
-  await expect(execute(stubHooks, {}, { total: null })).rejects.toThrow(/Math\.random/)
+  await expect(execute(stubHooks, {}, { total: null })).rejects.toThrow(
+    /Math\.random/,
+  )
 })
 
 test('无参 new Date() 抛，有参 new Date() 可用', async () => {
   const bad = parseScript(`return new Date()`)
-  await expect(bad.execute(stubHooks, {}, { total: null })).rejects.toThrow(/new Date/)
-  const good = parseScript(`return new Date('2020-06-12T00:00:00Z').getUTCFullYear()`)
+  await expect(bad.execute(stubHooks, {}, { total: null })).rejects.toThrow(
+    /new Date/,
+  )
+  const good = parseScript(
+    `return new Date('2020-06-12T00:00:00Z').getUTCFullYear()`,
+  )
   await expect(good.execute(stubHooks, {}, { total: null })).resolves.toBe(2020)
 })
 ```
@@ -748,11 +805,16 @@ export type WorkflowHooks = {
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>>
   pipeline: <T, R>(
     items: readonly T[],
-    ...stages: Array<(prev: unknown, item: T, index: number) => Promise<unknown>>
+    ...stages: Array<
+      (prev: unknown, item: T, index: number) => Promise<unknown>
+    >
   ) => Promise<Array<R | null>>
   phase: (title: string) => void
   log: (message: string) => void
-  workflow: (nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>
+  workflow: (
+    nameOrRef: string | { scriptPath: string },
+    args?: unknown,
+  ) => Promise<unknown>
 }
 
 const META_RE = /export\s+const\s+meta\s*=\s*/
@@ -816,9 +878,10 @@ export function extractMeta(source: string): {
   const meta = validateMeta(metaObj)
 
   // 剥离 meta 语句（含尾随分号与多余空行）
-  const body = (
-    source.slice(0, match.index) + source.slice(i)
-  ).replace(/[ \t]*;[ \t]*\n/, '\n')
+  const body = (source.slice(0, match.index) + source.slice(i)).replace(
+    /[ \t]*;[ \t]*\n/,
+    '\n',
+  )
   return { meta, body }
 }
 
@@ -845,7 +908,8 @@ class NonDeterministicError extends Error {
 
 function sandboxDate(): DateConstructor {
   const fn = function (...args: unknown[]): Date {
-    if (args.length === 0) throw new NonDeterministicError('Date.now()/new Date()')
+    if (args.length === 0)
+      throw new NonDeterministicError('Date.now()/new Date()')
     return new (Date as unknown as DateConstructor)(
       ...(args as [string | number | Date]),
     )
@@ -871,7 +935,8 @@ function sandboxMath(): Math {
   }) as Math
 }
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as {
+const AsyncFunction = Object.getPrototypeOf(async function () {})
+  .constructor as {
   new (...args: string[]): (...args: unknown[]) => Promise<unknown>
 }
 
@@ -944,6 +1009,7 @@ git commit -m "feat(workflow): add script parsing, meta extraction & Date/Math s
 ### Task 7：Journal（`engine/journal.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/journal.ts`
 - Test: `packages/workflow-engine/src/__tests__/journal.test.ts`
 
@@ -977,7 +1043,10 @@ test('FileJournalStore append → read 保序，truncate 清空', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-journal-'))
   try {
     const store = createFileJournalStore(dir)
-    const e1 = { key: 'k1', result: { kind: 'ok' as const, output: 'x', usage: { outputTokens: 1 } } }
+    const e1 = {
+      key: 'k1',
+      result: { kind: 'ok' as const, output: 'x', usage: { outputTokens: 1 } },
+    }
     const e2 = { key: 'k2', result: { kind: 'dead' as const } }
     await store.append('run-1', e1)
     await store.append('run-1', e2)
@@ -1067,6 +1136,7 @@ git commit -m "feat(workflow): add agentCallKey hash & file JournalStore"
 ### Task 8：Budget（`engine/budget.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/budget.ts`
 - Test: `packages/workflow-engine/src/__tests__/budget.test.ts`
 
@@ -1133,7 +1203,9 @@ export class Budget {
   }
 
   remaining(): number {
-    return this.total == null ? Infinity : Math.max(0, this.total - this.spentTokens)
+    return this.total == null
+      ? Infinity
+      : Math.max(0, this.total - this.spentTokens)
   }
 
   addOutputTokens(n: number): void {
@@ -1165,6 +1237,7 @@ git commit -m "feat(workflow): add Budget token accumulator with hard ceiling"
 ### Task 9：结构化输出校验（`engine/structuredOutput.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/structuredOutput.ts`
 - Test: `packages/workflow-engine/src/__tests__/structuredOutput.test.ts`
 
@@ -1185,7 +1258,10 @@ const schema = {
 }
 
 test('合法对象通过', () => {
-  const { valid, errors } = validateAgainstSchema({ name: 'a', count: 1 }, schema)
+  const { valid, errors } = validateAgainstSchema(
+    { name: 'a', count: 1 },
+    schema,
+  )
   expect(valid).toBe(true)
   expect(errors).toEqual([])
 })
@@ -1204,7 +1280,9 @@ test('类型错误失败', () => {
 test('同一 schema 复用缓存', () => {
   validateAgainstSchema({ name: 'a', count: 1 }, schema)
   // 第二次用同一 schema 对象应命中缓存（不抛错即可）
-  expect(validateAgainstSchema({ name: 'b', count: 2 }, schema).valid).toBe(true)
+  expect(validateAgainstSchema({ name: 'b', count: 2 }, schema).valid).toBe(
+    true,
+  )
 })
 ```
 
@@ -1237,7 +1315,9 @@ export function validateAgainstSchema(
   const valid = validate(value) as boolean
   return {
     valid,
-    errors: valid ? [] : (validate.errors ?? []).map(e => e.message ?? 'validation error'),
+    errors: valid
+      ? []
+      : (validate.errors ?? []).map(e => e.message ?? 'validation error'),
   }
 }
 ```
@@ -1259,6 +1339,7 @@ git commit -m "feat(workflow): add JSON Schema validation via Ajv"
 ### Task 10：命名 workflow 解析（`engine/namedWorkflows.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/namedWorkflows.ts`
 - Test: `packages/workflow-engine/src/__tests__/namedWorkflows.test.ts`
 
@@ -1269,12 +1350,18 @@ import { expect, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listNamedWorkflows, resolveNamedWorkflow } from '../engine/namedWorkflows.js'
+import {
+  listNamedWorkflows,
+  resolveNamedWorkflow,
+} from '../engine/namedWorkflows.js'
 
 test('按扩展名优先级解析命名 workflow', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-named-'))
   try {
-    await writeFile(join(dir, 'a.ts'), 'export const meta = { name: "a", description: "d" }\nreturn 1')
+    await writeFile(
+      join(dir, 'a.ts'),
+      'export const meta = { name: "a", description: "d" }\nreturn 1',
+    )
     await writeFile(join(dir, 'b.js'), 'return 2')
     await writeFile(join(dir, 'c.mjs'), 'return 3')
     await writeFile(join(dir, 'ignore.md'), '# not a workflow')
@@ -1293,7 +1380,9 @@ test('按扩展名优先级解析命名 workflow', async () => {
 })
 
 test('listNamedWorkflows 不存在目录返回空数组', async () => {
-  expect(await listNamedWorkflows(join(tmpdir(), 'wf-nope-' + Date.now()))).toEqual([])
+  expect(
+    await listNamedWorkflows(join(tmpdir(), 'wf-nope-' + Date.now())),
+  ).toEqual([])
 })
 ```
 
@@ -1312,7 +1401,9 @@ import { WORKFLOW_SCRIPT_EXTENSIONS } from '../constants.js'
 type Ext = (typeof WORKFLOW_SCRIPT_EXTENSIONS)[number]
 
 function isScriptExt(ext: string): ext is Ext {
-  return (WORKFLOW_SCRIPT_EXTENSIONS as readonly string[]).includes(ext.toLowerCase())
+  return (WORKFLOW_SCRIPT_EXTENSIONS as readonly string[]).includes(
+    ext.toLowerCase(),
+  )
 }
 
 /** 按 .ts → .js → .mjs 优先级解析命名 workflow 文件。 */
@@ -1332,7 +1423,9 @@ export async function resolveNamedWorkflow(
 }
 
 /** 列出目录下所有命名 workflow（不含非脚本文件）。 */
-export async function listNamedWorkflows(workflowDir: string): Promise<string[]> {
+export async function listNamedWorkflows(
+  workflowDir: string,
+): Promise<string[]> {
   let files: string[]
   try {
     files = await readdir(workflowDir)
@@ -1379,6 +1472,7 @@ git commit -m "feat(workflow): add named-workflow file resolution"
 ### Task 11：errors / 进度事件 / 执行上下文
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/errors.ts`
 - Create: `packages/workflow-engine/src/progress/events.ts`
 - Create: `packages/workflow-engine/src/engine/context.ts`
@@ -1389,7 +1483,10 @@ git commit -m "feat(workflow): add named-workflow file resolution"
 ```ts
 import { expect, test } from 'bun:test'
 import { createBufferingEmitter } from '../progress/events.js'
-import { createEngineContext, createSharedResources } from '../engine/context.js'
+import {
+  createEngineContext,
+  createSharedResources,
+} from '../engine/context.js'
 import { WorkflowError } from '../engine/errors.js'
 import { createHostHandle, type WorkflowPorts } from '../ports.js'
 
@@ -1397,11 +1494,26 @@ function mockPorts(): WorkflowPorts {
   return {
     agentRunner: { runAgentToResult: async () => ({ kind: 'dead' }) },
     progressEmitter: { emit: () => {} },
-    taskRegistrar: { register: () => 'r', complete: () => {}, fail: () => {}, kill: () => {}, pendingAction: () => null },
-    journalStore: { read: async () => [], append: async () => {}, truncate: async () => {} },
+    taskRegistrar: {
+      register: () => 'r',
+      complete: () => {},
+      fail: () => {},
+      kill: () => {},
+      pendingAction: () => null,
+    },
+    journalStore: {
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
+    },
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
-    hostFactory: () => ({ handle: createHostHandle(null), signal: new AbortController().signal, cwd: '/tmp', budgetTotal: null }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: '/tmp',
+      budgetTotal: null,
+    }),
   }
 }
 
@@ -1413,11 +1525,21 @@ test('createSharedResources 初始化预算与计数', () => {
 })
 
 test('createEngineContext 复制 journal 并重置游标', () => {
-  const journal = [{ key: 'k', result: { kind: 'ok', output: 'x', usage: { outputTokens: 1 } } }]
+  const journal = [
+    {
+      key: 'k',
+      result: { kind: 'ok', output: 'x', usage: { outputTokens: 1 } },
+    },
+  ]
   const ctx = createEngineContext({
-    ports: mockPorts(), host: createHostHandle(null),
-    signal: new AbortController().signal, runId: 'r1', workflowName: 'w', cwd: '/tmp',
-    budgetTotal: null, journal,
+    ports: mockPorts(),
+    host: createHostHandle(null),
+    signal: new AbortController().signal,
+    runId: 'r1',
+    workflowName: 'w',
+    cwd: '/tmp',
+    budgetTotal: null,
+    journal,
   })
   expect(ctx.journal).toHaveLength(1)
   expect(ctx.journalIndex).toBe(0)
@@ -1471,7 +1593,9 @@ import type { ProgressEvent } from '../types.js'
 export type { ProgressEvent }
 
 /** 从单个回调构造 ProgressEmitter。 */
-export function createProgressEmitter(onEvent: (e: ProgressEvent) => void): ProgressEmitter {
+export function createProgressEmitter(
+  onEvent: (e: ProgressEvent) => void,
+): ProgressEmitter {
   return { emit: onEvent }
 }
 
@@ -1516,7 +1640,9 @@ export type EngineContext = {
   currentPhase: string | null
 }
 
-export function createSharedResources(budgetTotal: number | null): SharedResources {
+export function createSharedResources(
+  budgetTotal: number | null,
+): SharedResources {
   return {
     semaphore: new Semaphore(maxConcurrency()),
     budget: new Budget(budgetTotal),
@@ -1570,6 +1696,7 @@ git commit -m "feat(workflow): add errors, progress emitter & engine context"
 ### Task 12：钩子实现（`engine/hooks.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/hooks.ts`
 - Test: `packages/workflow-engine/src/__tests__/hooks.test.ts`
 
@@ -1584,12 +1711,14 @@ import { createBufferingEmitter } from '../progress/events.js'
 import { createHostHandle, type WorkflowPorts } from '../ports.js'
 import type { AgentRunParams, AgentRunResult } from '../types.js'
 
-function buildCtx(overrides: Partial<{
-  agentResults: Map<string, AgentRunResult>
-  pending: { kind: 'skip' | 'retry' } | null
-  journal: import('../types.js').JournalEntry[]
-  budgetTotal: number | null
-}> = {}) {
+function buildCtx(
+  overrides: Partial<{
+    agentResults: Map<string, AgentRunResult>
+    pending: { kind: 'skip' | 'retry' } | null
+    journal: import('../types.js').JournalEntry[]
+    budgetTotal: number | null
+  }> = {},
+) {
   const { emitter, events } = createBufferingEmitter()
   const results = overrides.agentResults ?? new Map<string, AgentRunResult>()
   const ports: WorkflowPorts = {
@@ -1599,19 +1728,33 @@ function buildCtx(overrides: Partial<{
     },
     progressEmitter: emitter,
     taskRegistrar: {
-      register: () => 'r', complete: () => {}, fail: () => {}, kill: () => {},
+      register: () => 'r',
+      complete: () => {},
+      fail: () => {},
+      kill: () => {},
       pendingAction: () => overrides.pending ?? null,
     },
     journalStore: {
-      read: async () => [], append: async () => {}, truncate: async () => {},
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
     },
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
-    hostFactory: () => ({ handle: createHostHandle(null), signal: new AbortController().signal, cwd: '/tmp', budgetTotal: null }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: '/tmp',
+      budgetTotal: null,
+    }),
   }
   const ctx = createEngineContext({
-    ports, host: createHostHandle(null),
-    signal: new AbortController().signal, runId: 'r1', workflowName: 'w', cwd: '/tmp',
+    ports,
+    host: createHostHandle(null),
+    signal: new AbortController().signal,
+    runId: 'r1',
+    workflowName: 'w',
+    cwd: '/tmp',
     budgetTotal: overrides.budgetTotal ?? null,
     journal: overrides.journal,
   })
@@ -1621,7 +1764,9 @@ function buildCtx(overrides: Partial<{
 
 test('agent 返回文本结果并计数', async () => {
   const { ctx, hooks } = buildCtx({
-    agentResults: new Map([['hi', { kind: 'ok', output: 'hello', usage: { outputTokens: 5 } }]]),
+    agentResults: new Map([
+      ['hi', { kind: 'ok', output: 'hello', usage: { outputTokens: 5 } }],
+    ]),
   })
   const out = await hooks.agent('hi')
   expect(out).toBe('hello')
@@ -1646,21 +1791,50 @@ test('agent journal 命中时不调用 runner', async () => {
   let called = 0
   const { emitter, events } = createBufferingEmitter()
   const ports: WorkflowPorts = {
-    agentRunner: { runAgentToResult: async () => { called++; return { kind: 'ok', output: 'live', usage: { outputTokens: 1 } } } },
+    agentRunner: {
+      runAgentToResult: async () => {
+        called++
+        return { kind: 'ok', output: 'live', usage: { outputTokens: 1 } }
+      },
+    },
     progressEmitter: emitter,
-    taskRegistrar: { register: () => 'r', complete: () => {}, fail: () => {}, kill: () => {}, pendingAction: () => null },
-    journalStore: { read: async () => [], append: async () => {}, truncate: async () => {} },
+    taskRegistrar: {
+      register: () => 'r',
+      complete: () => {},
+      fail: () => {},
+      kill: () => {},
+      pendingAction: () => null,
+    },
+    journalStore: {
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
+    },
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
-    hostFactory: () => ({ handle: createHostHandle(null), signal: new AbortController().signal, cwd: '/tmp', budgetTotal: null }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: '/tmp',
+      budgetTotal: null,
+    }),
   }
   const { agentCallKey } = await import('../engine/journal.js')
   const key = agentCallKey('hi', { prompt: 'hi' })
   const ctx = createEngineContext({
-    ports, host: createHostHandle(null),
-    signal: new AbortController().signal, runId: 'r1', workflowName: 'w', cwd: '/tmp',
+    ports,
+    host: createHostHandle(null),
+    signal: new AbortController().signal,
+    runId: 'r1',
+    workflowName: 'w',
+    cwd: '/tmp',
     budgetTotal: null,
-    journal: [{ key, result: { kind: 'ok', output: 'cached', usage: { outputTokens: 1 } } }],
+    journal: [
+      {
+        key,
+        result: { kind: 'ok', output: 'cached', usage: { outputTokens: 1 } },
+      },
+    ],
   })
   const hooks = makeHooks(ctx, async () => null)
   expect(await hooks.agent('hi')).toBe('cached')
@@ -1677,7 +1851,9 @@ test('parallel 单项抛错 → null，其余保留', async () => {
   const { hooks } = buildCtx()
   const out = await hooks.parallel([
     async () => 'a',
-    async () => { throw new Error('x') },
+    async () => {
+      throw new Error('x')
+    },
     async () => 'c',
   ])
   expect(out).toEqual(['a', null, 'c'])
@@ -1687,21 +1863,23 @@ test('pipeline 逐 stage 链式，stage 抛错 → null', async () => {
   const { hooks } = buildCtx()
   const out = await hooks.pipeline(
     [1, 2],
-    (n) => Promise.resolve((n as number) + 1),
-    (m) => Promise.resolve((m as number) * 10),
+    n => Promise.resolve((n as number) + 1),
+    m => Promise.resolve((m as number) * 10),
   )
   expect(out).toEqual([20, 30])
   const out2 = await hooks.pipeline(
     [1],
     () => Promise.reject(new Error('boom')),
-    (m) => Promise.resolve(m),
+    m => Promise.resolve(m),
   )
   expect(out2).toEqual([null])
 })
 
 test('pipeline 超 4096 抛错', async () => {
   const { hooks } = buildCtx()
-  await expect(hooks.pipeline(Array(4097), () => Promise.resolve(1))).rejects.toThrow(WorkflowError)
+  await expect(
+    hooks.pipeline(Array(4097), () => Promise.resolve(1)),
+  ).rejects.toThrow(WorkflowError)
 })
 
 test('phase 切换发射 phase_started/done；log 发射 log', async () => {
@@ -1709,10 +1887,16 @@ test('phase 切换发射 phase_started/done；log 发射 log', async () => {
   hooks.phase('A')
   hooks.log('hello')
   hooks.phase('B')
-  expect(events.some(e => e.type === 'phase_started' && e.phase === 'A')).toBe(true)
-  expect(events.some(e => e.type === 'phase_done' && e.phase === 'A')).toBe(true)
+  expect(events.some(e => e.type === 'phase_started' && e.phase === 'A')).toBe(
+    true,
+  )
+  expect(events.some(e => e.type === 'phase_done' && e.phase === 'A')).toBe(
+    true,
+  )
   expect(events.some(e => e.type === 'log' && e.message === 'hello')).toBe(true)
-  expect(events.some(e => e.type === 'phase_started' && e.phase === 'B')).toBe(true)
+  expect(events.some(e => e.type === 'phase_started' && e.phase === 'B')).toBe(
+    true,
+  )
 })
 ```
 
@@ -1724,7 +1908,11 @@ Expected: FAIL —— 模块不存在。
 - [ ] **Step 3：写 `engine/hooks.ts`**
 
 ```ts
-import { MAX_ITEMS_PER_CALL, MAX_TOTAL_AGENTS, WORKFLOW_DIR_NAME } from '../constants.js'
+import {
+  MAX_ITEMS_PER_CALL,
+  MAX_TOTAL_AGENTS,
+  WORKFLOW_DIR_NAME,
+} from '../constants.js'
 import type { HostHandle, WorkflowPorts } from '../ports.js'
 import type { AgentRunParams, AgentRunResult, JournalEntry } from '../types.js'
 import type { EngineContext, SharedResources } from './context.js'
@@ -1746,26 +1934,40 @@ type HookProgressInit =
   | { type: 'phase_started'; phase: string }
   | { type: 'phase_done'; phase: string }
   | { type: 'agent_started'; label?: string; phase?: string }
-  | { type: 'agent_done'; label?: string; phase?: string; result: AgentRunResult }
+  | {
+      type: 'agent_done'
+      label?: string
+      phase?: string
+      result: AgentRunResult
+    }
   | { type: 'log'; message: string }
 
-export function makeHooks(ctx: EngineContext, runSubWorkflow: SubWorkflowRunner): WorkflowHooks {
+export function makeHooks(
+  ctx: EngineContext,
+  runSubWorkflow: SubWorkflowRunner,
+): WorkflowHooks {
   // 所有进度事件自动注入 runId，供 adapter 路由到对应 task（多并发 workflow）
   const emit = (init: HookProgressInit): void => {
-    ctx.ports.progressEmitter.emit({ runId: ctx.runId, ...init } as ProgressEvent)
+    ctx.ports.progressEmitter.emit({
+      runId: ctx.runId,
+      ...init,
+    } as ProgressEvent)
   }
 
   const agent: WorkflowHooks['agent'] = async (prompt, opts = {}) => {
     const r = ctx.resources
     if (r.agentCountBox.value >= MAX_TOTAL_AGENTS) {
-      throw new WorkflowError(`workflow 超过 agent 总数上限 (${MAX_TOTAL_AGENTS})`)
+      throw new WorkflowError(
+        `workflow 超过 agent 总数上限 (${MAX_TOTAL_AGENTS})`,
+      )
     }
     r.budget.assertCanSpend()
 
     const params: AgentRunParams = { prompt, ...opts }
     const key = agentCallKey(prompt, params)
     const label = opts.label as string | undefined
-    const phase = (opts.phase as string | undefined) ?? ctx.currentPhase ?? undefined
+    const phase =
+      (opts.phase as string | undefined) ?? ctx.currentPhase ?? undefined
 
     // journal 命中 → 直接返回缓存
     if (!ctx.journalInvalidated && ctx.journalIndex < ctx.journal.length) {
@@ -1794,11 +1996,19 @@ export function makeHooks(ctx: EngineContext, runSubWorkflow: SubWorkflowRunner)
 
       ctx.resources.agentCountBox.value++
       emit({ type: 'agent_started', label, phase })
-      const result = await ctx.ports.agentRunner.runAgentToResult(params, ctx.host)
+      const result = await ctx.ports.agentRunner.runAgentToResult(
+        params,
+        ctx.host,
+      )
       if (result.kind === 'ok') {
         ctx.resources.budget.addOutputTokens(result.usage.outputTokens)
       }
-      ctx.ports.progressEmitter.emit({ type: 'agent_done', label, phase, result })
+      ctx.ports.progressEmitter.emit({
+        type: 'agent_done',
+        label,
+        phase,
+        result,
+      })
 
       const entry: JournalEntry = { key, result }
       ctx.journal.push(entry)
@@ -1812,7 +2022,9 @@ export function makeHooks(ctx: EngineContext, runSubWorkflow: SubWorkflowRunner)
 
   const parallel: WorkflowHooks['parallel'] = async thunks => {
     if (thunks.length > MAX_ITEMS_PER_CALL) {
-      throw new WorkflowError(`parallel 超过单次调用 items 上限 (${MAX_ITEMS_PER_CALL})`)
+      throw new WorkflowError(
+        `parallel 超过单次调用 items 上限 (${MAX_ITEMS_PER_CALL})`,
+      )
     }
     return Promise.all(
       thunks.map(async t => {
@@ -1827,7 +2039,9 @@ export function makeHooks(ctx: EngineContext, runSubWorkflow: SubWorkflowRunner)
 
   const pipeline: WorkflowHooks['pipeline'] = async (items, ...stages) => {
     if (items.length > MAX_ITEMS_PER_CALL) {
-      throw new WorkflowError(`pipeline 超过单次调用 items 上限 (${MAX_ITEMS_PER_CALL})`)
+      throw new WorkflowError(
+        `pipeline 超过单次调用 items 上限 (${MAX_ITEMS_PER_CALL})`,
+      )
     }
     return Promise.all(
       items.map(async (item, index) => {
@@ -1861,7 +2075,9 @@ export function makeHooks(ctx: EngineContext, runSubWorkflow: SubWorkflowRunner)
       throw new WorkflowError('workflow() 嵌套仅允许一层')
     }
     const sub: Parameters<SubWorkflowRunner>[0] =
-      typeof nameOrRef === 'string' ? { name: nameOrRef } : { scriptPath: nameOrRef.scriptPath }
+      typeof nameOrRef === 'string'
+        ? { name: nameOrRef }
+        : { scriptPath: nameOrRef.scriptPath }
     return runSubWorkflow({ ...sub, args })
   }
 
@@ -1873,7 +2089,10 @@ function resultToOutput(result: AgentRunResult): unknown {
 }
 
 // 仅用于抑制未使用导入告警（WORKFLOW_DIR_NAME 在 runWorkflow 中用于子 workflow 解析）
-export type _Unused = typeof WORKFLOW_DIR_NAME & typeof SharedResources & HostHandle & WorkflowPorts
+export type _Unused = typeof WORKFLOW_DIR_NAME &
+  typeof SharedResources &
+  HostHandle &
+  WorkflowPorts
 ```
 
 > 注：`_Unused` 行是占位防止 lint 抱怨未使用导入——若 `bunx tsc` 报「未使用」，移除该行及对应未用 import。最终版只保留真正用到的 import（`MAX_ITEMS_PER_CALL`、`MAX_TOTAL_AGENTS`、`AgentRunParams`、`AgentRunResult`、`JournalEntry`、`EngineContext`、`WorkflowAbortedError`、`WorkflowError`、`agentCallKey`、`WorkflowHooks`、`SubWorkflowRunner`）。实现时清理为：
@@ -1909,6 +2128,7 @@ git commit -m "feat(workflow): implement agent/parallel/pipeline/phase/log/workf
 ### Task 13：引擎编排入口（`engine/runWorkflow.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/engine/runWorkflow.ts`
 - Test: `packages/workflow-engine/src/__tests__/runWorkflow.test.ts`
 
@@ -1925,26 +2145,52 @@ import { agentCallKey } from '../engine/journal.js'
 import { createHostHandle, type WorkflowPorts } from '../ports.js'
 import type { AgentRunParams, AgentRunResult } from '../types.js'
 
-function portsWith(runsDir: string, results: Map<string, AgentRunResult>): WorkflowPorts {
+function portsWith(
+  runsDir: string,
+  results: Map<string, AgentRunResult>,
+): WorkflowPorts {
   return {
-    agentRunner: { runAgentToResult: async (p: AgentRunParams) => results.get(p.prompt) ?? { kind: 'dead' } },
+    agentRunner: {
+      runAgentToResult: async (p: AgentRunParams) =>
+        results.get(p.prompt) ?? { kind: 'dead' },
+    },
     progressEmitter: { emit: () => {} },
-    taskRegistrar: { register: () => 'r', complete: () => {}, fail: () => {}, kill: () => {}, pendingAction: () => null },
+    taskRegistrar: {
+      register: () => 'r',
+      complete: () => {},
+      fail: () => {},
+      kill: () => {},
+      pendingAction: () => null,
+    },
     journalStore: createFileJournalStore(runsDir),
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
-    hostFactory: () => ({ handle: createHostHandle(null), signal: new AbortController().signal, cwd: '/tmp', budgetTotal: null }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: '/tmp',
+      budgetTotal: null,
+    }),
   }
 }
 
 test('端到端：脚本返回 agent 结果，状态 completed', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-run-'))
   try {
-    const ports = portsWith(dir, new Map([['compute', { kind: 'ok', output: 42, usage: { outputTokens: 3 } }]]))
+    const ports = portsWith(
+      dir,
+      new Map([
+        ['compute', { kind: 'ok', output: 42, usage: { outputTokens: 3 } }],
+      ]),
+    )
     const result = await runWorkflow({
       script: `export const meta = { name: 't', description: 'd' }\nreturn agent('compute')`,
-      runId: 'run-1', ports, host: createHostHandle(null),
-      signal: new AbortController().signal, cwd: dir, budgetTotal: null,
+      runId: 'run-1',
+      ports,
+      host: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: dir,
+      budgetTotal: null,
     })
     expect(result.status).toBe('completed')
     expect(result.returnValue).toBe(42)
@@ -1959,8 +2205,12 @@ test('脚本语法错误 → failed', async () => {
     const ports = portsWith(dir, new Map())
     const result = await runWorkflow({
       script: `export const meta = { name: 't', description: 'd' }\nreturn ((`,
-      runId: 'run-2', ports, host: createHostHandle(null),
-      signal: new AbortController().signal, cwd: dir, budgetTotal: null,
+      runId: 'run-2',
+      ports,
+      host: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: dir,
+      budgetTotal: null,
     })
     expect(result.status).toBe('failed')
     expect(result.error).toBeTruthy()
@@ -1974,22 +2224,45 @@ test('resume：journal 命中则不调用 runner', async () => {
   try {
     let called = 0
     const ports: WorkflowPorts = {
-      agentRunner: { runAgentToResult: async () => { called++; return { kind: 'ok', output: 'live', usage: { outputTokens: 1 } } } },
+      agentRunner: {
+        runAgentToResult: async () => {
+          called++
+          return { kind: 'ok', output: 'live', usage: { outputTokens: 1 } }
+        },
+      },
       progressEmitter: { emit: () => {} },
-      taskRegistrar: { register: () => 'r', complete: () => {}, fail: () => {}, kill: () => {}, pendingAction: () => null },
+      taskRegistrar: {
+        register: () => 'r',
+        complete: () => {},
+        fail: () => {},
+        kill: () => {},
+        pendingAction: () => null,
+      },
       journalStore: createFileJournalStore(dir),
       permissionGate: { isAborted: () => false },
       logger: { debug: () => {}, event: () => {} },
-      hostFactory: () => ({ handle: createHostHandle(null), signal: new AbortController().signal, cwd: dir, budgetTotal: null }),
+      hostFactory: () => ({
+        handle: createHostHandle(null),
+        signal: new AbortController().signal,
+        cwd: dir,
+        budgetTotal: null,
+      }),
     }
     // 预置 journal：与脚本中 agent('compute') 的 key 匹配
     const key = agentCallKey('compute', { prompt: 'compute' })
-    await ports.journalStore.append('run-3', { key, result: { kind: 'ok', output: 'cached', usage: { outputTokens: 1 } } })
+    await ports.journalStore.append('run-3', {
+      key,
+      result: { kind: 'ok', output: 'cached', usage: { outputTokens: 1 } },
+    })
 
     const result = await runWorkflow({
       script: `return agent('compute')`,
-      runId: 'run-3', ports, host: createHostHandle(null),
-      signal: new AbortController().signal, cwd: dir, budgetTotal: null,
+      runId: 'run-3',
+      ports,
+      host: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: dir,
+      budgetTotal: null,
       resume: true,
     })
     expect(result.status).toBe('completed')
@@ -2003,13 +2276,20 @@ test('resume：journal 命中则不调用 runner', async () => {
 test('abort → killed', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-run-'))
   try {
-    const ports = portsWith(dir, new Map([['x', { kind: 'ok', output: 1, usage: { outputTokens: 1 } }]]))
+    const ports = portsWith(
+      dir,
+      new Map([['x', { kind: 'ok', output: 1, usage: { outputTokens: 1 } }]]),
+    )
     const ac = new AbortController()
     ac.abort()
     const result = await runWorkflow({
       script: `return agent('x')`,
-      runId: 'run-4', ports, host: createHostHandle(null),
-      signal: ac.signal, cwd: dir, budgetTotal: null,
+      runId: 'run-4',
+      ports,
+      host: createHostHandle(null),
+      signal: ac.signal,
+      cwd: dir,
+      budgetTotal: null,
     })
     expect(result.status).toBe('killed')
   } finally {
@@ -2026,11 +2306,23 @@ test('workflow() 嵌套（一层）共享计数；二层被拒', async () => {
       join(dir, '.claude', 'workflows', 'child.ts'),
       `return agent('child')\n// 以下故意触发二层嵌套以测guard，但单独运行不会`,
     )
-    const ports = portsWith(dir, new Map([['child', { kind: 'ok', output: 'child-out', usage: { outputTokens: 1 } }]]))
+    const ports = portsWith(
+      dir,
+      new Map([
+        [
+          'child',
+          { kind: 'ok', output: 'child-out', usage: { outputTokens: 1 } },
+        ],
+      ]),
+    )
     const result = await runWorkflow({
       script: `return workflow('child')`,
-      runId: 'run-5', ports, host: createHostHandle(null),
-      signal: new AbortController().signal, cwd: dir, budgetTotal: null,
+      runId: 'run-5',
+      ports,
+      host: createHostHandle(null),
+      signal: new AbortController().signal,
+      cwd: dir,
+      budgetTotal: null,
     })
     expect(result.status).toBe('completed')
     expect(result.returnValue).toBe('child-out')
@@ -2076,7 +2368,9 @@ export type RunWorkflowOptions = {
   scriptChanged?: boolean
 }
 
-export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRunResult> {
+export async function runWorkflow(
+  opts: RunWorkflowOptions,
+): Promise<WorkflowRunResult> {
   const { ports } = opts
 
   let parsed: ParsedScript
@@ -2084,7 +2378,12 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
     parsed = parseScript(opts.script)
   } catch (e) {
     const error = (e as Error).message
-    ports.progressEmitter.emit({ type: 'run_done', runId: opts.runId, status: 'failed', error })
+    ports.progressEmitter.emit({
+      type: 'run_done',
+      runId: opts.runId,
+      status: 'failed',
+      error,
+    })
     return { status: 'failed', error }
   }
 
@@ -2141,16 +2440,34 @@ export async function runWorkflow(opts: RunWorkflowOptions): Promise<WorkflowRun
   const hooks = makeHooks(ctx, runSubWorkflow)
 
   try {
-    const returnValue = await parsed.execute(hooks, opts.args, ctx.resources.budget)
-    ports.progressEmitter.emit({ type: 'run_done', runId: opts.runId, status: 'completed', returnValue })
+    const returnValue = await parsed.execute(
+      hooks,
+      opts.args,
+      ctx.resources.budget,
+    )
+    ports.progressEmitter.emit({
+      type: 'run_done',
+      runId: opts.runId,
+      status: 'completed',
+      returnValue,
+    })
     return { status: 'completed', returnValue }
   } catch (e) {
     if (e instanceof WorkflowAbortedError) {
-      ports.progressEmitter.emit({ type: 'run_done', runId: opts.runId, status: 'killed' })
+      ports.progressEmitter.emit({
+        type: 'run_done',
+        runId: opts.runId,
+        status: 'killed',
+      })
       return { status: 'killed' }
     }
     const error = (e as Error).message
-    ports.progressEmitter.emit({ type: 'run_done', runId: opts.runId, status: 'failed', error })
+    ports.progressEmitter.emit({
+      type: 'run_done',
+      runId: opts.runId,
+      status: 'failed',
+      error,
+    })
     return { status: 'failed', error }
   }
 }
@@ -2162,7 +2479,10 @@ async function resolveSubScript(
   if (sub.script) return sub.script
   if (sub.scriptPath) return await readFile(sub.scriptPath, 'utf-8')
   if (sub.name) {
-    const found = await resolveNamedWorkflow(join(cwd, WORKFLOW_DIR_NAME), sub.name)
+    const found = await resolveNamedWorkflow(
+      join(cwd, WORKFLOW_DIR_NAME),
+      sub.name,
+    )
     if (!found) throw new WorkflowError(`子 workflow "${sub.name}" 未找到`)
     return found.content
   }
@@ -2201,6 +2521,7 @@ git commit -m "feat(workflow): add runWorkflow orchestrator with resume & nestin
 ### Task 14：输入 schema（`tool/schema.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/tool/schema.ts`
 - Create: `packages/workflow-engine/src/tool/constants.ts`
 
@@ -2225,10 +2546,7 @@ export const workflowInputSchema = z.object({
     .string()
     .optional()
     .describe('命名 workflow，解析到 .claude/workflows/<name>.ts|js|mjs'),
-  scriptPath: z
-    .string()
-    .optional()
-    .describe('已有脚本文件的绝对路径'),
+  scriptPath: z.string().optional().describe('已有脚本文件的绝对路径'),
   args: z
     .unknown()
     .optional()
@@ -2239,10 +2557,7 @@ export const workflowInputSchema = z.object({
     .string()
     .optional()
     .describe('resume 指定 run，重放 journal'),
-  description: z
-    .string()
-    .optional()
-    .describe('本次调用的简短描述（3-5 词）'),
+  description: z.string().optional().describe('本次调用的简短描述（3-5 词）'),
   title: z.string().optional().describe('进度查看器标题'),
 })
 
@@ -2266,6 +2581,7 @@ git commit -m "feat(workflow): add tool input schema"
 ### Task 15：WorkflowTool 描述符（`tool/WorkflowTool.ts`）
 
 **Files:**
+
 - Create: `packages/workflow-engine/src/tool/WorkflowTool.ts`
 - Test: `packages/workflow-engine/src/__tests__/WorkflowTool.test.ts`
 
@@ -2280,7 +2596,10 @@ import { createWorkflowTool } from '../tool/WorkflowTool.js'
 import { createHostHandle, type WorkflowPorts } from '../ports.js'
 import type { AgentRunParams, AgentRunResult } from '../types.js'
 
-function mockPorts(runsDir: string, results: Map<string, AgentRunResult>): {
+function mockPorts(
+  runsDir: string,
+  results: Map<string, AgentRunResult>,
+): {
   ports: WorkflowPorts
   events: import('../types.js').ProgressEvent[]
   runStatus: Map<string, string>
@@ -2288,19 +2607,33 @@ function mockPorts(runsDir: string, results: Map<string, AgentRunResult>): {
   const events: import('../types.js').ProgressEvent[] = []
   const runStatus = new Map<string, string>()
   const ports: WorkflowPorts = {
-    agentRunner: { runAgentToResult: async (p: AgentRunParams) => results.get(p.prompt) ?? { kind: 'dead' } },
+    agentRunner: {
+      runAgentToResult: async (p: AgentRunParams) =>
+        results.get(p.prompt) ?? { kind: 'dead' },
+    },
     progressEmitter: { emit: e => void events.push(e) },
     taskRegistrar: {
-      register: () => ({ runId: 'run-x', signal: new AbortController().signal }),
+      register: () => ({
+        runId: 'run-x',
+        signal: new AbortController().signal,
+      }),
       complete: (id, _s) => void runStatus.set(id, 'completed'),
       fail: (id, _e) => void runStatus.set(id, 'failed'),
       kill: id => void runStatus.set(id, 'killed'),
       pendingAction: () => null,
     },
-    journalStore: { read: async () => [], append: async () => {}, truncate: async () => {} },
+    journalStore: {
+      read: async () => [],
+      append: async () => {},
+      truncate: async () => {},
+    },
     permissionGate: { isAborted: () => false },
     logger: { debug: () => {}, event: () => {} },
-    hostFactory: () => ({ handle: createHostHandle(null), cwd: runsDir, budgetTotal: null }),
+    hostFactory: () => ({
+      handle: createHostHandle(null),
+      cwd: runsDir,
+      budgetTotal: null,
+    }),
   }
   return { ports, events, runStatus }
 }
@@ -2308,11 +2641,18 @@ function mockPorts(runsDir: string, results: Map<string, AgentRunResult>): {
 test('call 返回 launch 消息并在后台完成', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-tool-'))
   try {
-    const { ports, runStatus } = mockPorts(dir, new Map([['compute', { kind: 'ok', output: 42, usage: { outputTokens: 1 } }]]))
+    const { ports, runStatus } = mockPorts(
+      dir,
+      new Map([
+        ['compute', { kind: 'ok', output: 42, usage: { outputTokens: 1 } }],
+      ]),
+    )
     const tool = createWorkflowTool(ports)
     const res = await tool.call(
       { script: `return agent('compute')` },
-      undefined, undefined, undefined,
+      undefined,
+      undefined,
+      undefined,
     )
     expect(res.data.output).toContain('run_id: run-x')
     // 等待 detached run 完成
@@ -2341,7 +2681,12 @@ test('脚本语法错 → 返回校验错误（不进后台）', async () => {
   try {
     const { ports, runStatus } = mockPorts(dir, new Map())
     const tool = createWorkflowTool(ports)
-    const res = await tool.call({ script: `return ((` }, undefined, undefined, undefined)
+    const res = await tool.call(
+      { script: `return ((` },
+      undefined,
+      undefined,
+      undefined,
+    )
     expect(res.data.output).toMatch(/校验失败|Error/)
     expect(runStatus.size).toBe(0)
   } finally {
@@ -2353,10 +2698,23 @@ test('name 解析到 .claude/workflows/<name>.ts', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'wf-tool-'))
   try {
     await mkdir(join(dir, '.claude', 'workflows'), { recursive: true })
-    await writeFile(join(dir, '.claude', 'workflows', 'release.ts'), `return agent('compute')`)
-    const { ports, runStatus } = mockPorts(dir, new Map([['compute', { kind: 'ok', output: 'done', usage: { outputTokens: 1 } }]]))
+    await writeFile(
+      join(dir, '.claude', 'workflows', 'release.ts'),
+      `return agent('compute')`,
+    )
+    const { ports, runStatus } = mockPorts(
+      dir,
+      new Map([
+        ['compute', { kind: 'ok', output: 'done', usage: { outputTokens: 1 } }],
+      ]),
+    )
     const tool = createWorkflowTool(ports)
-    const res = await tool.call({ name: 'release' }, undefined, undefined, undefined)
+    const res = await tool.call(
+      { name: 'release' },
+      undefined,
+      undefined,
+      undefined,
+    )
     expect(res.data.output).toContain('run_id')
     await new Promise(r => setTimeout(r, 50))
     expect(runStatus.get('run-x')).toBe('completed')
@@ -2369,8 +2727,13 @@ test('renderToolUseMessage / mapToolResultToToolResultBlockParam', () => {
   const dir = '/tmp'
   const { ports } = mockPorts(dir, new Map())
   const tool = createWorkflowTool(ports)
-  expect(tool.renderToolUseMessage({ name: 'release' })).toBe('Workflow: release')
-  const block = tool.mapToolResultToToolResultBlockParam({ output: 'hi' }, 'tu-1')
+  expect(tool.renderToolUseMessage({ name: 'release' })).toBe(
+    'Workflow: release',
+  )
+  const block = tool.mapToolResultToToolResultBlockParam(
+    { output: 'hi' },
+    'tu-1',
+  )
   expect(block.tool_use_id).toBe('tu-1')
   expect(block.type).toBe('tool_result')
   expect(block.content[0].text).toBe('hi')
@@ -2428,7 +2791,9 @@ Provide the script inline via "script", or reference a named workflow via "name"
 
 Use "resumeFromRunId" to resume a prior run — completed agent() calls replay from the journal instantly.`
 
-export function createWorkflowTool(ports: WorkflowPorts): WorkflowToolDescriptor {
+export function createWorkflowTool(
+  ports: WorkflowPorts,
+): WorkflowToolDescriptor {
   return {
     name: WORKFLOW_TOOL_NAME,
     inputSchema: workflowInputSchema as unknown as z.ZodType<WorkflowInput>,
@@ -2444,8 +2809,10 @@ export function createWorkflowTool(ports: WorkflowPorts): WorkflowToolDescriptor
     },
 
     renderToolUseMessage(input) {
-      if (input.resumeFromRunId) return `Workflow resume: ${input.resumeFromRunId}`
-      const id = input.name ?? input.scriptPath ?? (input.script ? 'inline' : 'unknown')
+      if (input.resumeFromRunId)
+        return `Workflow resume: ${input.resumeFromRunId}`
+      const id =
+        input.name ?? input.scriptPath ?? (input.script ? 'inline' : 'unknown')
       return `Workflow: ${id}`
     },
 
@@ -2467,7 +2834,9 @@ export function createWorkflowTool(ports: WorkflowPorts): WorkflowToolDescriptor
       try {
         parseScript(script)
       } catch (e) {
-        return { data: { output: `Error: 脚本校验失败：${(e as Error).message}` } }
+        return {
+          data: { output: `Error: 脚本校验失败：${(e as Error).message}` },
+        }
       }
 
       const workflowName = input.name ?? input.title ?? 'workflow'
@@ -2523,10 +2892,16 @@ export function createWorkflowTool(ports: WorkflowPorts): WorkflowToolDescriptor
   }
 }
 
-function onFinish(ports: WorkflowPorts, result: WorkflowRunResult, runId: string): void {
+function onFinish(
+  ports: WorkflowPorts,
+  result: WorkflowRunResult,
+  runId: string,
+): void {
   if (result.status === 'completed') {
     const summary =
-      result.returnValue == null ? '(no return value)' : formatValue(result.returnValue)
+      result.returnValue == null
+        ? '(no return value)'
+        : formatValue(result.returnValue)
     ports.taskRegistrar.complete(runId, summary)
   } else if (result.status === 'failed') {
     ports.taskRegistrar.fail(runId, result.error ?? 'workflow failed')
@@ -2550,12 +2925,20 @@ async function resolveScriptSource(
 ): Promise<{ script: string; workflowFile?: string }> {
   if (input.script) return { script: input.script }
   if (input.scriptPath) {
-    return { script: await readFile(input.scriptPath, 'utf-8'), workflowFile: input.scriptPath }
+    return {
+      script: await readFile(input.scriptPath, 'utf-8'),
+      workflowFile: input.scriptPath,
+    }
   }
   if (input.name) {
-    const found = await resolveNamedWorkflow(join(cwd, WORKFLOW_DIR_NAME), input.name)
+    const found = await resolveNamedWorkflow(
+      join(cwd, WORKFLOW_DIR_NAME),
+      input.name,
+    )
     if (!found) {
-      throw new Error(`命名 workflow "${input.name}" 未找到（查找目录 ${WORKFLOW_DIR_NAME}/）`)
+      throw new Error(
+        `命名 workflow "${input.name}" 未找到（查找目录 ${WORKFLOW_DIR_NAME}/）`,
+      )
     }
     return { script: found.content, workflowFile: found.path }
   }
@@ -2566,7 +2949,10 @@ async function resolveScriptSource(
 - [ ] **Step 4：更新 `src/index.ts` 导出工具描述符**
 
 ```ts
-export { createWorkflowTool, type WorkflowToolDescriptor } from './tool/WorkflowTool.js'
+export {
+  createWorkflowTool,
+  type WorkflowToolDescriptor,
+} from './tool/WorkflowTool.js'
 export { workflowInputSchema } from './tool/schema.js'
 export { WORKFLOW_TOOL_NAME } from './tool/constants.js'
 ```
@@ -2594,6 +2980,7 @@ git commit -m "feat(workflow): add self-contained WorkflowTool descriptor"
 ### Task 16：hostHandle 与进度存储
 
 **Files:**
+
 - Create: `src/workflow/hostHandle.ts`
 - Create: `src/workflow/progressStore.ts`
 
@@ -2689,7 +3076,10 @@ function ensure(runId: string, workflowName: string): RunProgress {
 /** 把引擎进度事件应用到 store。 */
 export function applyProgressEvent(event: ProgressEvent): void {
   const runId = event.runId
-  const p = ensure(runId, 'workflowName' in event ? event.workflowName : 'workflow')
+  const p = ensure(
+    runId,
+    'workflowName' in event ? event.workflowName : 'workflow',
+  )
   p.updatedAt = Date.now()
 
   switch (event.type) {
@@ -2710,7 +3100,11 @@ export function applyProgressEvent(event: ProgressEvent): void {
       p.currentPhase = event.phase
       break
     case 'agent_started':
-      p.agents.push({ label: event.label, phase: event.phase, status: 'running' })
+      p.agents.push({
+        label: event.label,
+        phase: event.phase,
+        status: 'running',
+      })
       p.agentCount++
       break
     case 'agent_done':
@@ -2751,6 +3145,7 @@ git commit -m "feat(workflow): add core-side host handle & progress store"
 ### Task 17：adapter（端口实现）
 
 **Files:**
+
 - Create: `src/workflow/adapter.ts`
 
 - [ ] **Step 1：写 `src/workflow/adapter.ts`**
@@ -2771,7 +3166,10 @@ import { logEvent } from '../services/analytics/index.js'
 import { assembleToolPool } from '../tools.js'
 import { finalizeAgentTool } from '../../packages/builtin-tools/src/tools/AgentTool/agentToolUtils.js'
 import { runAgent } from '../../packages/builtin-tools/src/tools/AgentTool/runAgent.js'
-import { isBuiltInAgent, type AgentDefinition } from '../../packages/builtin-tools/src/tools/AgentTool/loadAgentsDir.js'
+import {
+  isBuiltInAgent,
+  type AgentDefinition,
+} from '../../packages/builtin-tools/src/tools/AgentTool/loadAgentsDir.js'
 import { createUserMessage, extractTextContent } from '../utils/messages.js'
 import type { Message } from '../types/message.js'
 import {
@@ -2780,7 +3178,11 @@ import {
   failWorkflowTask,
   killWorkflowTask,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { makeHostHandle, readHostBundle, type WorkflowHostBundle } from './hostHandle.js'
+import {
+  makeHostHandle,
+  readHostBundle,
+  type WorkflowHostBundle,
+} from './hostHandle.js'
 import { applyProgressEvent, removeRunProgress } from './progressStore.js'
 
 /** workflow 子 agent 的缺省定义（通用研究/执行 agent）。 */
@@ -2797,7 +3199,11 @@ const WORKFLOW_AGENT: AgentDefinition = {
 type RunBinding = {
   runId: string
   taskId: string
-  setAppState: (f: (prev: import('../state/AppState.js').AppState) => import('../state/AppState.js').AppState) => void
+  setAppState: (
+    f: (
+      prev: import('../state/AppState.js').AppState,
+    ) => import('../state/AppState.js').AppState,
+  ) => void
   abortController: AbortController
   workflowName: string
 }
@@ -2844,7 +3250,10 @@ async function runWorkflowSubAgent(
     ...appState.toolPermissionContext,
     mode: agentDef.permissionMode ?? 'acceptEdits',
   }
-  const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools)
+  const workerTools = assembleToolPool(
+    workerPermissionContext,
+    appState.mcp.tools,
+  )
 
   // schema → 通过 appendSystemPrompt 传 JSON Schema 指令；非交互模式下 StructuredOutput 已启用。
   // （完整动态 schema 注入需扩展 SyntheticOutputTool；v1 用指令 + 结果侧校验。）
@@ -2883,7 +3292,8 @@ async function runWorkflowSubAgent(
     agentType: agentDef.agentType,
     isAsync: true,
   })
-  const outputTokens = finalized.usage?.output_tokens ?? finalized.totalTokens ?? 0
+  const outputTokens =
+    finalized.usage?.output_tokens ?? finalized.totalTokens ?? 0
 
   if (params.schema) {
     const structured = extractStructuredOutput(finalized.content, params.schema)
@@ -2939,7 +3349,9 @@ export function createWorkflowAdapter(): WorkflowPorts {
     taskRegistrar: {
       register(opts, host) {
         const bundle = readHostBundle(host)
-        const setAppState = bundle.toolUseContext.setAppStateForTasks ?? bundle.toolUseContext.setAppState
+        const setAppState =
+          bundle.toolUseContext.setAppStateForTasks ??
+          bundle.toolUseContext.setAppState
         const abortController = new AbortController()
         const taskId = registerLocalWorkflowTask(setAppState, {
           description: opts.summary ?? opts.workflowName,
@@ -2950,8 +3362,17 @@ export function createWorkflowAdapter(): WorkflowPorts {
           abortController,
         })
         const runId = opts.runId ?? taskId
-        bindings.set(runId, { runId, taskId, setAppState, abortController, workflowName: opts.workflowName })
-        logEvent('tengu_workflow_started' as never, { workflow: opts.workflowName } as never)
+        bindings.set(runId, {
+          runId,
+          taskId,
+          setAppState,
+          abortController,
+          workflowName: opts.workflowName,
+        })
+        logEvent(
+          'tengu_workflow_started' as never,
+          { workflow: opts.workflowName } as never,
+        )
         return { runId, signal: abortController.signal }
       },
 
@@ -2979,8 +3400,12 @@ export function createWorkflowAdapter(): WorkflowPorts {
         const b = bindings.get(runId)
         if (!b) return null
         // LocalWorkflowTaskState.pendingAgentAction 由 UI 写入；这里只读。
-        const tasks = (bundle_getAppState(b) as { tasks?: Record<string, unknown> }).tasks
-        const task = tasks?.[b.taskId] as { pendingAgentAction?: { kind: 'skip' | 'retry' } } | undefined
+        const tasks = (
+          bundle_getAppState(b) as { tasks?: Record<string, unknown> }
+        ).tasks
+        const task = tasks?.[b.taskId] as
+          | { pendingAgentAction?: { kind: 'skip' | 'retry' } }
+          | undefined
         return task?.pendingAgentAction ?? null
       },
     },
@@ -2994,7 +3419,8 @@ export function createWorkflowAdapter(): WorkflowPorts {
 
     logger: {
       debug: msg => logForDebugging(msg),
-      event: (name, metadata) => logEvent(name as never, (metadata ?? {}) as never),
+      event: (name, metadata) =>
+        logEvent(name as never, (metadata ?? {}) as never),
     },
   }
 }
@@ -3033,15 +3459,14 @@ git commit -m "feat(workflow): add core adapter implementing workflow-engine por
 ### Task 18：wiring 与 tools.ts 注册
 
 **Files:**
+
 - Create: `src/workflow/wiring.ts`
 - Modify: `src/tools.ts:152-159`
 
 - [ ] **Step 1：写 `src/workflow/wiring.ts`**
 
 ```ts
-import {
-  createWorkflowAdapter,
-} from './adapter.js'
+import { createWorkflowAdapter } from './adapter.js'
 import {
   createWorkflowTool,
   type WorkflowToolDescriptor,
@@ -3070,13 +3495,27 @@ export function createWorkflowToolCore(): Tool {
       return descriptor.prompt()
     },
     async call(input, context, canUseTool, parentMessage, onProgress) {
-      const result = await descriptor.call(input, context, canUseTool, parentMessage, onProgress)
+      const result = await descriptor.call(
+        input,
+        context,
+        canUseTool,
+        parentMessage,
+        onProgress,
+      )
       return { data: result.data } as never
     },
-    renderToolUseMessage: (input: Partial<{ name?: string; scriptPath?: string; script?: string; resumeFromRunId?: string }>) =>
-      descriptor.renderToolUseMessage(input as never),
-    mapToolResultToToolResultBlockParam: (data: { output: string }, toolUseId: string) =>
-      descriptor.mapToolResultToToolResultBlockParam(data, toolUseId),
+    renderToolUseMessage: (
+      input: Partial<{
+        name?: string
+        scriptPath?: string
+        script?: string
+        resumeFromRunId?: string
+      }>,
+    ) => descriptor.renderToolUseMessage(input as never),
+    mapToolResultToToolResultBlockParam: (
+      data: { output: string },
+      toolUseId: string,
+    ) => descriptor.mapToolResultToToolResultBlockParam(data, toolUseId),
   }
 
   return buildTool(def)
@@ -3128,6 +3567,7 @@ git commit -m "feat(workflow): wire workflow-engine into tools.ts via adapter"
 ### Task 19：命名 workflow 斜杠命令
 
 **Files:**
+
 - Create: `src/workflow/namedWorkflowCommands.ts`
 - Modify: `src/commands/workflows/index.ts`（改为引用新命令 + 进度查看）
 
@@ -3157,7 +3597,8 @@ export async function getWorkflowCommands(
     progressMessage: `Running workflow ${name}...`,
     contentLength: 0,
     async getPromptForCommand(args, _context) {
-      const argText = typeof args === 'string' && args ? `\n\nArguments: ${args}` : ''
+      const argText =
+        typeof args === 'string' && args ? `\n\nArguments: ${args}` : ''
       return [
         {
           type: 'text' as const,
@@ -3194,10 +3635,13 @@ const call: LocalCommandCall = async _args => {
     lines.push('')
   }
   if (commands.length === 0) {
-    lines.push('No named workflows. Add scripts to .claude/workflows/ (*.ts/*.js/*.mjs).')
+    lines.push(
+      'No named workflows. Add scripts to .claude/workflows/ (*.ts/*.js/*.mjs).',
+    )
   } else {
     lines.push('Named workflows:')
-    for (const cmd of commands) lines.push(`  /${cmd.name} - ${cmd.description}`)
+    for (const cmd of commands)
+      lines.push(`  /${cmd.name} - ${cmd.description}`)
   }
   return { type: 'text', value: lines.join('\n') }
 }
@@ -3230,6 +3674,7 @@ git commit -m "feat(workflow): named-workflow slash commands & /workflows viewer
 ### Task 20：迁移权限 UI 与常量 re-export
 
 **Files:**
+
 - Move: `packages/builtin-tools/src/tools/WorkflowTool/WorkflowPermissionRequest.tsx` → `src/workflow/WorkflowPermissionRequest.tsx`
 - Modify: `src/constants/tools.ts`（WORKFLOW_TOOL_NAME 导入路径）
 - Modify: `packages/builtin-tools/src/index.ts`（re-export 指向新包）
@@ -3294,6 +3739,7 @@ git commit -m "refactor(workflow): move permission UI & repoint constants to wor
 ### Task 21：清理旧清单版文件 + precheck
 
 **Files:**
+
 - Delete: `packages/builtin-tools/src/tools/WorkflowTool/WorkflowTool.ts`
 - Delete: `packages/builtin-tools/src/tools/WorkflowTool/constants.ts`
 - Delete: `packages/builtin-tools/src/tools/WorkflowTool/createWorkflowCommand.ts`
@@ -3333,6 +3779,7 @@ Expected: 零错误。
 
 Run: `FEATURE_WORKFLOW_SCRIPTS=1 bun run dev`
 然后在 REPL 中：
+
 1. `/workflows` —— 应显示「No named workflows」+ 提示。
 2. 创建 `.claude/workflows/demo.ts`：`export const meta = { name: 'demo', description: 'd' }\nreturn agent('say hello in one word')`。
 3. 让模型调用 Workflow 工具 `name="demo"` —— 应返回 run_id，后台执行，完成时通知。
@@ -3352,6 +3799,7 @@ git commit -m "chore(workflow): remove legacy checklist WorkflowTool, precheck p
 ## 自审（Self-Review）
 
 **1. Spec 覆盖：**
+
 - 依赖倒置架构 + 6 端口 + HostHandle → Task 4（ports）、Task 16-18（adapter/wiring）。✓
 - async 函数包装 + Date/Math 沙箱 → Task 6（script）。✓
 - 全钩子（agent/parallel/pipeline/phase/log/workflow）→ Task 12（hooks）、Task 13（runWorkflow 嵌套）。✓
@@ -3368,6 +3816,7 @@ git commit -m "chore(workflow): remove legacy checklist WorkflowTool, precheck p
 **2. Placeholder 扫描：** 包内（Phase 0–3）所有步骤含完整可运行代码，无 TBD。核心侧（Phase 4）`adapter.ts`/`wiring.ts` 含真实结构与导入，但标注 5 处「以 typecheck 为准」的集成对齐点（querySource 联合类型、usage 字段名、ToolResult 形状等）——这些是对真实 API 表面的对齐，非逻辑占位；逻辑（端口映射、事件路由、journal/resume）已完整指定，由 precheck 收口。
 
 **3. 类型一致性：** 已统一修正——
+
 - `TaskRegistrar.register(opts, host) → { runId, signal }`（Task 4 描述符 Task 15 一致调用）。
 - `WorkflowHostContext = { handle, cwd, budgetTotal, toolUseId? }`（无 signal）。
 - `ProgressEvent` 所有变体携带 `runId`（hooks 用 `emit` helper 注入，run_done 显式带）。

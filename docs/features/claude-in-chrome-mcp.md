@@ -14,12 +14,12 @@ Claude in Chrome 让 Claude Code 直接控制你的 Chrome 浏览器。你可以
 
 ## 2. 前置条件
 
-| 条件 | 说明 |
-|------|------|
-| Claude Code 订阅 | 需要 Claude Pro、Max 或 Team 订阅，浏览器插件功能不向免费用户开放 |
-| Chrome 浏览器 | 需已安装 Google Chrome |
-| Claude in Chrome 扩展 | 从 Chrome Web Store 安装（`claude.ai/chrome`） |
-| Claude Code CLI | 已通过 `bun run dev` 或构建产物运行 |
+| 条件                  | 说明                                                              |
+| --------------------- | ----------------------------------------------------------------- |
+| Claude Code 订阅      | 需要 Claude Pro、Max 或 Team 订阅，浏览器插件功能不向免费用户开放 |
+| Chrome 浏览器         | 需已安装 Google Chrome                                            |
+| Claude in Chrome 扩展 | 从 Chrome Web Store 安装（`claude.ai/chrome`）                    |
+| Claude Code CLI       | 已通过 `bun run dev` 或构建产物运行                               |
 
 ## 3. 启用方式
 
@@ -65,46 +65,46 @@ bun run dev -- --no-chrome
 
 ### 页面交互
 
-| 操作 | 说明 |
-|------|------|
-| `navigate` | 导航到指定 URL，或前进/后退 |
-| `computer` | 鼠标点击、移动、拖拽、键盘输入、截图等（13 种 action） |
-| `form_input` | 填写表单字段 |
-| `upload_image` | 上传图片到文件输入框或拖拽区域 |
-| `javascript_tool` | 在页面上下文执行 JavaScript |
+| 操作              | 说明                                                   |
+| ----------------- | ------------------------------------------------------ |
+| `navigate`        | 导航到指定 URL，或前进/后退                            |
+| `computer`        | 鼠标点击、移动、拖拽、键盘输入、截图等（13 种 action） |
+| `form_input`      | 填写表单字段                                           |
+| `upload_image`    | 上传图片到文件输入框或拖拽区域                         |
+| `javascript_tool` | 在页面上下文执行 JavaScript                            |
 
 ### 页面读取
 
-| 操作 | 说明 |
-|------|------|
-| `read_page` | 获取页面可访问性树（DOM 结构） |
-| `get_page_text` | 提取页面纯文本内容 |
-| `find` | 用自然语言搜索页面元素 |
+| 操作            | 说明                           |
+| --------------- | ------------------------------ |
+| `read_page`     | 获取页面可访问性树（DOM 结构） |
+| `get_page_text` | 提取页面纯文本内容             |
+| `find`          | 用自然语言搜索页面元素         |
 
 ### 标签页管理
 
-| 操作 | 说明 |
-|------|------|
+| 操作               | 说明               |
+| ------------------ | ------------------ |
 | `tabs_context_mcp` | 获取当前标签组信息 |
-| `tabs_create_mcp` | 创建新标签页 |
+| `tabs_create_mcp`  | 创建新标签页       |
 
 ### 监控与调试
 
-| 操作 | 说明 |
-|------|------|
+| 操作                    | 说明                 |
+| ----------------------- | -------------------- |
 | `read_console_messages` | 读取浏览器控制台日志 |
-| `read_network_requests` | 读取网络请求记录 |
+| `read_network_requests` | 读取网络请求记录     |
 
 ### 其他
 
-| 操作 | 说明 |
-|------|------|
-| `resize_window` | 调整浏览器窗口尺寸 |
-| `gif_creator` | 录制 GIF 并导出 |
-| `shortcuts_list` | 列出可用快捷方式 |
-| `shortcuts_execute` | 执行快捷方式 |
-| `update_plan` | 向你提交操作计划供审批 |
-| `switch_browser` | 切换到其他 Chrome 浏览器（仅 Bridge 模式） |
+| 操作                | 说明                                       |
+| ------------------- | ------------------------------------------ |
+| `resize_window`     | 调整浏览器窗口尺寸                         |
+| `gif_creator`       | 录制 GIF 并导出                            |
+| `shortcuts_list`    | 列出可用快捷方式                           |
+| `shortcuts_execute` | 执行快捷方式                               |
+| `update_plan`       | 向你提交操作计划供审批                     |
+| `switch_browser`    | 切换到其他 Chrome 浏览器（仅 Bridge 模式） |
 
 ## 6. 通信模式
 

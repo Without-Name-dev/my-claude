@@ -12,33 +12,33 @@
 
 ### 新增
 
-| 文件 | 说明 |
-|------|------|
-| `src/daemon/__tests__/daemonMain.test.ts` | daemonMain 子命令路由测试 |
-| `src/cli/bg/__tests__/engine.test.ts` | BgEngine 选择逻辑测试 |
-| `src/cli/bg/__tests__/detached.test.ts` | DetachedEngine 启动/停止测试 |
-| `src/cli/bg/__tests__/tail.test.ts` | 日志 tail 功能测试 |
+| 文件                                      | 说明                         |
+| ----------------------------------------- | ---------------------------- |
+| `src/daemon/__tests__/daemonMain.test.ts` | daemonMain 子命令路由测试    |
+| `src/cli/bg/__tests__/engine.test.ts`     | BgEngine 选择逻辑测试        |
+| `src/cli/bg/__tests__/detached.test.ts`   | DetachedEngine 启动/停止测试 |
+| `src/cli/bg/__tests__/tail.test.ts`       | 日志 tail 功能测试           |
 
 ### 修改
 
-| 文件 | 变更 |
-|------|------|
+| 文件                      | 变更                          |
+| ------------------------- | ----------------------------- |
 | `src/entrypoints/cli.tsx` | 确认 deprecation 路径正确代理 |
 
 ## 实现方案
 
 ### 1. 向后兼容矩阵
 
-| 旧命令 | 新命令 | 处理方式 |
-|--------|--------|---------|
-| `claude ps` | `claude daemon status` | stderr 输出 `[deprecated] Use: claude daemon status`，然后执行 |
-| `claude logs <x>` | `claude daemon logs <x>` | 同上 |
-| `claude attach <x>` | `claude daemon attach <x>` | 同上 |
-| `claude kill <x>` | `claude daemon kill <x>` | 同上 |
-| `claude --bg` | `claude daemon bg` | 保留为快捷方式，**不** deprecate (太常用) |
-| `claude new <t>` | `claude job new <t>` | stderr deprecation + 执行 |
-| `claude list` | `claude job list` | stderr deprecation + 执行 |
-| `claude reply <id>` | `claude job reply <id>` | stderr deprecation + 执行 |
+| 旧命令              | 新命令                     | 处理方式                                                       |
+| ------------------- | -------------------------- | -------------------------------------------------------------- |
+| `claude ps`         | `claude daemon status`     | stderr 输出 `[deprecated] Use: claude daemon status`，然后执行 |
+| `claude logs <x>`   | `claude daemon logs <x>`   | 同上                                                           |
+| `claude attach <x>` | `claude daemon attach <x>` | 同上                                                           |
+| `claude kill <x>`   | `claude daemon kill <x>`   | 同上                                                           |
+| `claude --bg`       | `claude daemon bg`         | 保留为快捷方式，**不** deprecate (太常用)                      |
+| `claude new <t>`    | `claude job new <t>`       | stderr deprecation + 执行                                      |
+| `claude list`       | `claude job list`          | stderr deprecation + 执行                                      |
+| `claude reply <id>` | `claude job reply <id>`    | stderr deprecation + 执行                                      |
 
 **关键**: deprecation 输出到 stderr 而非 stdout，不影响脚本管道。
 

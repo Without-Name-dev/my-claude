@@ -35,17 +35,17 @@ ToolSearch 采用 **延迟加载（Deferred Loading）** 模式：
 
 **Core Tools**（`src/constants/tools.ts` 中的 `CORE_TOOLS` Set）：
 
-| 类别 | 工具 |
-|------|------|
-| 文件操作 | Bash/Shell, Read, Edit, Write, Glob, Grep, NotebookEdit |
-| Agent 交互 | Agent, AskUserQuestion |
-| 任务管理 | TaskOutput, TaskStop, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite |
-| 规划 | EnterPlanMode, ExitPlanMode, VerifyPlanExecution |
-| Web | WebFetch, WebSearch |
-| 代码智能 | LSP |
-| 技能 | Skill |
-| 调度/监控 | Sleep |
-| 工具发现 | SearchExtraTools, ExecuteExtraTool, SyntheticOutput |
+| 类别       | 工具                                                                       |
+| ---------- | -------------------------------------------------------------------------- |
+| 文件操作   | Bash/Shell, Read, Edit, Write, Glob, Grep, NotebookEdit                    |
+| Agent 交互 | Agent, AskUserQuestion                                                     |
+| 任务管理   | TaskOutput, TaskStop, TaskCreate, TaskGet, TaskList, TaskUpdate, TodoWrite |
+| 规划       | EnterPlanMode, ExitPlanMode, VerifyPlanExecution                           |
+| Web        | WebFetch, WebSearch                                                        |
+| 代码智能   | LSP                                                                        |
+| 技能       | Skill                                                                      |
+| 调度/监控  | Sleep                                                                      |
+| 工具发现   | SearchExtraTools, ExecuteExtraTool, SyntheticOutput                        |
 
 **isDeferredTool 判定逻辑**（`packages/builtin-tools/src/tools/SearchExtraToolsTool/prompt.ts`）：
 
@@ -82,12 +82,12 @@ isDeferredTool(tool) =
 
 SearchExtraToolsTool 支持四种查询模式：
 
-| 模式 | 语法 | 行为 | 返回 |
-|------|------|------|------|
-| **Select** | `select:CronCreate,Snip` | 按名称直接获取，逗号分隔多选 | 精确匹配列表 |
-| **Discover** | `discover:schedule cron job` | 纯发现模式，返回描述+schema | 工具信息文本 |
-| **Keyword** | `notebook jupyter` | 关键词搜索 | 按相关性排序 |
-| **Required** | `+slack send` | `+` 前缀强制包含 | 包含必选词的结果 |
+| 模式         | 语法                         | 行为                         | 返回             |
+| ------------ | ---------------------------- | ---------------------------- | ---------------- |
+| **Select**   | `select:CronCreate,Snip`     | 按名称直接获取，逗号分隔多选 | 精确匹配列表     |
+| **Discover** | `discover:schedule cron job` | 纯发现模式，返回描述+schema  | 工具信息文本     |
+| **Keyword**  | `notebook jupyter`           | 关键词搜索                   | 按相关性排序     |
+| **Required** | `+slack send`                | `+` 前缀强制包含             | 包含必选词的结果 |
 
 **混合搜索算法**：
 
@@ -160,14 +160,14 @@ prefetch → Attachment(type: 'tool_discovery')
 
 通过环境变量 `ENABLE_SEARCH_EXTRA_TOOLS` 控制：
 
-| 环境变量值 | 模式 | 行为 |
-|-----------|------|------|
-| 未设置 | `tst` | 默认启用，始终延迟非核心工具 |
-| `true` | `tst` | 强制启用 |
-| `false` | `standard` | 完全禁用，所有工具内联加载 |
-| `auto` | `tst-auto` | 仅当 deferred tools 超过上下文窗口 10% 时启用 |
-| `auto:N` | `tst-auto` | 自定义阈值百分比（N=0 启用，N=100 禁用） |
-| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` | `standard` | 全局 kill switch |
+| 环境变量值                                 | 模式       | 行为                                          |
+| ------------------------------------------ | ---------- | --------------------------------------------- |
+| 未设置                                     | `tst`      | 默认启用，始终延迟非核心工具                  |
+| `true`                                     | `tst`      | 强制启用                                      |
+| `false`                                    | `standard` | 完全禁用，所有工具内联加载                    |
+| `auto`                                     | `tst-auto` | 仅当 deferred tools 超过上下文窗口 10% 时启用 |
+| `auto:N`                                   | `tst-auto` | 自定义阈值百分比（N=0 启用，N=100 禁用）      |
+| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` | `standard` | 全局 kill switch                              |
 
 `isSearchExtraToolsEnabledOptimistic()` — 快速判断（不检查阈值），用于工具注册
 `isSearchExtraToolsEnabled()` — 完整判断（含阈值检查），用于 API 调用
@@ -196,6 +196,7 @@ Delta attachment 扫描历史消息中的 `deferred_tools_delta` 类型 attachme
 - 实现预取管道和 UI 组件
 
 **关键文件**：
+
 - `src/services/toolSearch/toolIndex.ts` → 后续重命名为 `searchExtraTools/toolIndex.ts`
 - `packages/builtin-tools/src/tools/ExecuteTool/` — 执行入口
 - `src/constants/tools.ts` — CORE_TOOLS 定义
@@ -239,44 +240,46 @@ Delta attachment 扫描历史消息中的 `deferred_tools_delta` 类型 attachme
 
 ### 核心文件
 
-| 文件 | 职责 |
-|------|------|
-| `src/constants/tools.ts` | CORE_TOOLS 白名单、工具权限集合 |
-| `src/utils/searchExtraTools.ts` | 模式判定、阈值计算、delta 差分、discovered tools 提取 |
-| `src/services/searchExtraTools/toolIndex.ts` | TF-IDF 索引构建和搜索 |
-| `src/services/searchExtraTools/prefetch.ts` | 预取管道（turn-zero + inter-turn） |
-| `packages/builtin-tools/src/tools/SearchExtraToolsTool/` | 搜索工具实现（4 种查询模式） |
-| `packages/builtin-tools/src/tools/ExecuteTool/` | 代理执行器实现 |
-| `src/services/api/claude.ts` | API 层集成（工具过滤、消息归一化） |
-| `src/query.ts` | 查询循环集成（预取触发点） |
-| `src/utils/messages.ts` | Attachment → system-reminder 转换 |
+| 文件                                                     | 职责                                                  |
+| -------------------------------------------------------- | ----------------------------------------------------- |
+| `src/constants/tools.ts`                                 | CORE_TOOLS 白名单、工具权限集合                       |
+| `src/utils/searchExtraTools.ts`                          | 模式判定、阈值计算、delta 差分、discovered tools 提取 |
+| `src/services/searchExtraTools/toolIndex.ts`             | TF-IDF 索引构建和搜索                                 |
+| `src/services/searchExtraTools/prefetch.ts`              | 预取管道（turn-zero + inter-turn）                    |
+| `packages/builtin-tools/src/tools/SearchExtraToolsTool/` | 搜索工具实现（4 种查询模式）                          |
+| `packages/builtin-tools/src/tools/ExecuteTool/`          | 代理执行器实现                                        |
+| `src/services/api/claude.ts`                             | API 层集成（工具过滤、消息归一化）                    |
+| `src/query.ts`                                           | 查询循环集成（预取触发点）                            |
+| `src/utils/messages.ts`                                  | Attachment → system-reminder 转换                     |
 
 ### 共享基础设施
 
-| 文件 | 被复用的导出 |
-|------|-------------|
+| 文件                                      | 被复用的导出                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
 | `src/services/skillSearch/localSearch.ts` | `tokenizeAndStem`, `computeWeightedTf`, `computeIdf`, `cosineSimilarity` |
-| `src/services/skillSearch/prefetch.ts` | `extractQueryFromMessages` |
+| `src/services/skillSearch/prefetch.ts`    | `extractQueryFromMessages`                                               |
 
 ### 测试文件
 
-| 文件 | 覆盖范围 |
-|------|---------|
-| `src/services/searchExtraTools/__tests__/toolIndex.test.ts` | 索引构建、TF-IDF 搜索、CJK 处理 |
-| `src/services/searchExtraTools/__tests__/prefetch.test.ts` | 预取管道、去重、attachment 生成 |
-| `packages/builtin-tools/src/tools/SearchExtraToolsTool/__tests__/` | 搜索工具 4 种模式 |
-| `packages/builtin-tools/src/tools/ExecuteTool/__tests__/` | 代理执行 |
+| 文件                                                               | 覆盖范围                        |
+| ------------------------------------------------------------------ | ------------------------------- |
+| `src/services/searchExtraTools/__tests__/toolIndex.test.ts`        | 索引构建、TF-IDF 搜索、CJK 处理 |
+| `src/services/searchExtraTools/__tests__/prefetch.test.ts`         | 预取管道、去重、attachment 生成 |
+| `packages/builtin-tools/src/tools/SearchExtraToolsTool/__tests__/` | 搜索工具 4 种模式               |
+| `packages/builtin-tools/src/tools/ExecuteTool/__tests__/`          | 代理执行                        |
 
 ## 9. 维护指南
 
 ### 9.1 新增工具的延迟化决策
 
 将新工具加入 deferred 状态的标准：
+
 - 工具仅在特定场景使用（如 swarm 模式、特定 MCP 集成）
 - 工具的 schema 较大（占用较多 context token）
 - 工具不是模型默认会尝试的核心操作
 
 将已延迟的工具提升为 core tool：
+
 - 在 `src/constants/tools.ts` 的 `CORE_TOOLS` Set 中添加工具名常量
 - 确保导入对应的 `*_TOOL_NAME` 常量
 
@@ -307,15 +310,16 @@ SEARCH_EXTRA_TOOLS_DISPLAY_MIN_SCORE=0.10  # 最低显示分数阈值
 
 ToolSearch 和 SkillSearch 是平行的搜索系统，共享底层算法但服务于不同领域：
 
-| 维度 | ToolSearch | SkillSearch |
-|------|-----------|-------------|
-| 搜索对象 | Deferred 工具（内置 + MCP） | 用户技能（skill） |
-| 执行方式 | `ExecuteExtraTool` 代理调用 | 直接注入 attachment 内容 |
+| 维度     | ToolSearch                         | SkillSearch                       |
+| -------- | ---------------------------------- | --------------------------------- |
+| 搜索对象 | Deferred 工具（内置 + MCP）        | 用户技能（skill）                 |
+| 执行方式 | `ExecuteExtraTool` 代理调用        | 直接注入 attachment 内容          |
 | 字段权重 | name:3.0, searchHint:2.5, desc:1.0 | name:3.0, whenToUse:2.0, desc:1.0 |
-| 缓存策略 | 按工具名列表缓存 | 按 cwd 缓存 |
-| 去重集合 | `discoveredToolsThisSession` | 独立的 Set |
+| 缓存策略 | 按工具名列表缓存                   | 按 cwd 缓存                       |
+| 去重集合 | `discoveredToolsThisSession`       | 独立的 Set                        |
 
 共享的底层函数：
+
 - `tokenizeAndStem` — 统一的 CJK/ASCII 分词和词干提取
 - `computeWeightedTf` — 加权词频计算
 - `computeIdf` — 逆文档频率计算

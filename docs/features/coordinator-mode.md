@@ -53,8 +53,10 @@ FEATURE_COORDINATOR_MODE=1 CLAUDE_CODE_COORDINATOR_MODE=1 bun run dev
 
 ```ts
 export function isCoordinatorMode(): boolean {
-  return feature('COORDINATOR_MODE') &&
+  return (
+    feature('COORDINATOR_MODE') &&
     isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+  )
 }
 ```
 
@@ -77,14 +79,14 @@ export function isCoordinatorMode(): boolean {
 
 编排者系统提示（`getCoordinatorSystemPrompt()`）约 370 行，包含：
 
-| 章节 | 内容 |
-|------|------|
-| 1. Your Role | 编排者职责定义 |
-| 2. Your Tools | Agent/SendMessage/TaskStop 使用说明 |
-| 3. Workers | Worker 能力和限制 |
-| 4. Task Workflow | Research → Synthesis → Implementation → Verification 流程 |
-| 5. Writing Worker Prompts | 自包含 prompt 编写指南 + 好坏示例对比 |
-| 6. Example Session | 完整示例对话 |
+| 章节                      | 内容                                                      |
+| ------------------------- | --------------------------------------------------------- |
+| 1. Your Role              | 编排者职责定义                                            |
+| 2. Your Tools             | Agent/SendMessage/TaskStop 使用说明                       |
+| 3. Workers                | Worker 能力和限制                                         |
+| 4. Task Workflow          | Research → Synthesis → Implementation → Verification 流程 |
+| 5. Writing Worker Prompts | 自包含 prompt 编写指南 + 好坏示例对比                     |
+| 6. Example Session        | 完整示例对话                                              |
 
 ### 3.5 Worker Agent
 
@@ -144,8 +146,8 @@ CLAUDE_CODE_SIMPLE=1 bun run dev
 
 ## 六、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/coordinator/coordinatorMode.ts` | 370 | 模式检测 + 系统提示 + 用户上下文 |
-| `src/coordinator/workerAgent.ts` | — | Worker agent 定义（stub） |
-| `src/constants/tools.ts` | — | `ASYNC_AGENT_ALLOWED_TOOLS` 工具白名单 |
+| 文件                                 | 行数 | 职责                                   |
+| ------------------------------------ | ---- | -------------------------------------- |
+| `src/coordinator/coordinatorMode.ts` | 370  | 模式检测 + 系统提示 + 用户上下文       |
+| `src/coordinator/workerAgent.ts`     | —    | Worker agent 定义（stub）              |
+| `src/constants/tools.ts`             | —    | `ASYNC_AGENT_ALLOWED_TOOLS` 工具白名单 |

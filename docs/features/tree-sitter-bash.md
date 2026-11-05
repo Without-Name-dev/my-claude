@@ -10,9 +10,9 @@ TREE_SITTER_BASH 启用一个完整的 Bash AST 解析器，用于安全验证 B
 
 ### 关联 Feature
 
-| Feature | 说明 |
-|---------|------|
-| `TREE_SITTER_BASH` | 激活用于权限检查的 AST 解析器 |
+| Feature                   | 说明                                              |
+| ------------------------- | ------------------------------------------------- |
+| `TREE_SITTER_BASH`        | 激活用于权限检查的 AST 解析器                     |
 | `TREE_SITTER_BASH_SHADOW` | Shadow/观测模式：运行解析器但丢弃结果，仅记录遥测 |
 
 ## 二、安全架构
@@ -74,13 +74,13 @@ checkSemantics(commands)
 
 ### 3.1 核心模块
 
-| 模块 | 文件 | 行数 | 职责 |
-|------|------|------|------|
-| 门控入口 | `src/utils/bash/parser.ts` | ~110 | `parseCommand()`、`parseCommandRaw()`、`ensureInitialized()` |
-| Bash 解析器 | `src/utils/bash/bashParser.ts` | 4437 | 纯 TS 词法分析 + 递归下降解析器 |
-| 安全分析器 | `src/utils/bash/ast.ts` | 2680 | 树遍历安全分析 + `parseForSecurity()` |
-| AST 分析辅助 | `src/utils/bash/treeSitterAnalysis.ts` | 507 | 引号上下文、复合结构、危险模式提取 |
-| 权限检查入口 | `src/tools/BashTool/bashPermissions.ts` | — | 集成 AST 结果到权限决策 |
+| 模块         | 文件                                    | 行数 | 职责                                                         |
+| ------------ | --------------------------------------- | ---- | ------------------------------------------------------------ |
+| 门控入口     | `src/utils/bash/parser.ts`              | ~110 | `parseCommand()`、`parseCommandRaw()`、`ensureInitialized()` |
+| Bash 解析器  | `src/utils/bash/bashParser.ts`          | 4437 | 纯 TS 词法分析 + 递归下降解析器                              |
+| 安全分析器   | `src/utils/bash/ast.ts`                 | 2680 | 树遍历安全分析 + `parseForSecurity()`                        |
+| AST 分析辅助 | `src/utils/bash/treeSitterAnalysis.ts`  | 507  | 引号上下文、复合结构、危险模式提取                           |
+| 权限检查入口 | `src/tools/BashTool/bashPermissions.ts` | —    | 集成 AST 结果到权限决策                                      |
 
 ### 3.2 Bash 解析器
 
@@ -97,26 +97,26 @@ checkSemantics(commands)
 
 核心函数：
 
-| 函数 | 职责 |
-|------|------|
-| `parseForSecurity(cmd)` | 顶层入口，返回 `simple/too-complex/parse-unavailable` |
-| `parseForSecurityFromAst(cmd, root)` | 接受预解析 AST |
-| `checkSemantics(commands)` | 后解析语义检查 |
-| `walkCommand()` | 提取 argv、envVars、redirects |
-| `walkArgument()` | Allowlist 参数遍历 |
-| `collectCommands()` | 递归收集所有命令 |
+| 函数                                 | 职责                                                  |
+| ------------------------------------ | ----------------------------------------------------- |
+| `parseForSecurity(cmd)`              | 顶层入口，返回 `simple/too-complex/parse-unavailable` |
+| `parseForSecurityFromAst(cmd, root)` | 接受预解析 AST                                        |
+| `checkSemantics(commands)`           | 后解析语义检查                                        |
+| `walkCommand()`                      | 提取 argv、envVars、redirects                         |
+| `walkArgument()`                     | Allowlist 参数遍历                                    |
+| `collectCommands()`                  | 递归收集所有命令                                      |
 
 ### 3.4 AST 分析辅助
 
 文件：`src/utils/bash/treeSitterAnalysis.ts`（507 行）
 
-| 函数 | 职责 |
-|------|------|
-| `extractQuoteContext()` | 识别单引号、双引号、ANSI-C 字符串、heredoc |
-| `extractCompoundStructure()` | 检测管道、子 shell、命令组 |
-| `hasActualOperatorNodes()` | 区分真实 `;`/`&&`/`||` 与转义形式 |
-| `extractDangerousPatterns()` | 检测命令替换、参数展开、heredocs |
-| `analyzeCommand()` | 单次遍历提取 |
+| 函数                         | 职责                                       |
+| ---------------------------- | ------------------------------------------ |
+| `extractQuoteContext()`      | 识别单引号、双引号、ANSI-C 字符串、heredoc |
+| `extractCompoundStructure()` | 检测管道、子 shell、命令组                 |
+| `hasActualOperatorNodes()`   | 区分真实 `;`/`&&`/`                        |     | ` 与转义形式 |
+| `extractDangerousPatterns()` | 检测命令替换、参数展开、heredocs           |
+| `analyzeCommand()`           | 单次遍历提取                               |
 
 ### 3.5 Shadow 模式
 
@@ -152,10 +152,10 @@ FEATURE_TREE_SITTER_BASH_SHADOW=1 bun run dev
 
 ## 六、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/utils/bash/parser.ts` | ~110 | 门控入口点 |
-| `src/utils/bash/bashParser.ts` | 4437 | 纯 TS bash 解析器 |
-| `src/utils/bash/ast.ts` | 2680 | 安全分析器（核心） |
-| `src/utils/bash/treeSitterAnalysis.ts` | 507 | AST 分析辅助 |
+| 文件                                                           | 行数 | 职责                   |
+| -------------------------------------------------------------- | ---- | ---------------------- |
+| `src/utils/bash/parser.ts`                                     | ~110 | 门控入口点             |
+| `src/utils/bash/bashParser.ts`                                 | 4437 | 纯 TS bash 解析器      |
+| `src/utils/bash/ast.ts`                                        | 2680 | 安全分析器（核心）     |
+| `src/utils/bash/treeSitterAnalysis.ts`                         | 507  | AST 分析辅助           |
 | `packages/builtin-tools/src/tools/BashTool/bashPermissions.ts` | ~140 | 权限集成 + Shadow 遥测 |

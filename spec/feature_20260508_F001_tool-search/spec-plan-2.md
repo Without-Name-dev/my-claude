@@ -24,11 +24,13 @@
 Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可用。
 
 **执行步骤:**
+
 - [x] 确认 Plan 1 产出文件存在
   - `ls src/constants/tools.ts src/services/toolSearch/toolIndex.ts packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts 2>&1`
   - 预期: 所有文件存在
 
 **检查步骤:**
+
 - [x] Plan 1 核心常量可被引用
   - `grep "CORE_TOOLS" src/constants/tools.ts | head -3`
   - 预期: 输出包含 CORE_TOOLS 定义
@@ -45,6 +47,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 [上下游影响] — 本 Task 依赖 Task 1（`CORE_TOOLS`、`isDeferredTool` 白名单制）和 Task 3（ExecuteTool 工具包创建完成）。本 Task 的输出被 Task 6（预取管道）和 Task 7（用户推荐 UI）依赖。
 
 **涉及文件:**
+
 - 修改: `src/constants/prompts.ts`
 - 修改: `src/tools.ts`
 - 修改: `src/utils/toolSearch.ts`
@@ -54,14 +57,17 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/constants/prompts.ts` 中添加 ToolSearch + ExecuteTool 引导指令到系统提示词
   - 位置: `src/constants/prompts.ts` 的 `getSimpleSystemSection()` 函数内，在 L192 的延迟工具说明条目之后
   - 当前 L192 内容为:
+
     ```
     `Your visible tool list is partial by design — many tools (deferred tools, skills, MCP resources) must be loaded via ToolSearch or DiscoverSkills before you can call them. Before telling the user that a capability is unavailable, search for a tool or skill that covers it. Only state something is unavailable after the search returns no match.`,
     ```
   - 在此条目之后（L193 之前）插入新条目:
+
     ```typescript
     `When you need a capability that isn't in your available tools, use ToolSearch to discover and load it. ToolSearch can find all deferred tools by keyword or task description. After discovering a tool, use ExecuteTool to invoke it with the appropriate parameters. Common deferred tools include: CronTools (scheduling), WorktreeTools (git isolation), SnipTool (context management), DiscoverSkills (skill search), MCP resource tools, and many more. Always search first rather than assuming a capability is unavailable.`,
     ```
   - 在文件顶部 import 区域新增:
+
     ```typescript
     import { EXECUTE_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/ExecuteTool/constants.js'
     ```
@@ -71,14 +77,17 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/tools.ts` 的 `getAllBaseTools()` 中注册 ExecuteTool
   - 位置: `src/tools.ts` 的 `getAllBaseTools()` 函数内，在 L272 `...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : [])` 之后
   - 在文件顶部 import 区域（L84 附近，ToolSearchTool import 之后）新增:
+
     ```typescript
     import { ExecuteTool } from '@claude-code-best/builtin-tools/tools/ExecuteTool/ExecuteTool.js'
     ```
   - 将 L272:
+
     ```typescript
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
     ```
   - 修改为:
+
     ```typescript
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool, ExecuteTool] : []),
     ```
@@ -87,56 +96,74 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/utils/toolSearch.ts` 中更新模块文档注释，移除过时的 `shouldDefer` 引用
   - 位置: `src/utils/toolSearch.ts` 文件顶部模块文档注释（L1-L7）
   - 当前 L4 内容为:
-    ```
-`
-  * When enabled, deferred tools (MCP and shouldDefer tools) are sent with
-  * defer_loading: true and discovered via ToolSearchTool rather than being
-  * loaded upfront.
-  ```
-  - 修改为:
-    ```
-`
-  * When enabled, deferred tools (all non-core tools) are sent with
-  * defer_loading: true and discovered via ToolSearchTool rather than being
-  * loaded upfront. Core tools are defined in CORE_TOOLS (src/constants/tools.ts).
-  ```
-  - 位置: `src/utils/toolSearch.ts` 的 `ToolSearchMode` 类型文档注释（L155-L156）
-  - 当前内容为:
-    ```
-`
-  * Tool search mode. Determines how deferrable tools (MCP + shouldDefer) are
-  * surfaced:
-  ```
-  - 修改为:
-    ```
-`
-  * Tool search mode. Determines how deferred tools (all non-core tools)
-  * are surfaced:
-  ```
-  - 位置: `src/utils/toolSearch.ts` 的 `getToolSearchMode()` 函数文档注释（L170）
-  - 当前内容为:
-    ```
-`
-  *   (unset)               tst (default: always defer MCP and shouldDefer tools)
-  ```
-  - 修改为:
-    ```
-`
-  *   (unset)               tst (default: always defer non-core tools)
-  ```
-  - 位置: `src/utils/toolSearch.ts` 的 `getToolSearchMode()` 函数末尾 return 注释（L197）
-  - 当前内容为:
-    ```typescript
-  return 'tst' // default: always defer MCP and shouldDefer tools
-    ```
-  - 修改为:
-    ```typescript
-  return 'tst' // default: always defer non-core tools
-    ```
-  - 注意: `shouldDefer` 在此文件中仅出现在注释中（L4, L155, L170, L197），无任何运行时引用。`isDeferredTool` 函数从 `@claude-code-best/builtin-tools/tools/ToolSearchTool/prompt.js` 导入（L24），Task 1 已将其重构为白名单制，此处无需修改函数调用。
-  - 原因: Task 1 将 `isDeferredTool` 重构为白名单制后，`shouldDefer` 概念已过时。更新注释保持文档与实现一致。
 
-- [x] 为 Task 5 的三个修改点编写单元测试
+    ```
+    ```
+`
+
+- When enabled, deferred tools (MCP and shouldDefer tools) are sent with
+- defer_loading: true and discovered via ToolSearchTool rather than being
+- loaded upfront.
+````
+- 修改为:
+  ```
+`
+* When enabled, deferred tools (all non-core tools) are sent with
+* defer_loading: true and discovered via ToolSearchTool rather than being
+* loaded upfront. Core tools are defined in CORE_TOOLS (src/constants/tools.ts).
+````
+
+- 位置: `src/utils/toolSearch.ts` 的 `ToolSearchMode` 类型文档注释（L155-L156）
+- 当前内容为:
+
+  ```
+  ```
+`
+
+- Tool search mode. Determines how deferrable tools (MCP + shouldDefer) are
+- surfaced:
+````
+- 修改为:
+  ```
+`
+* Tool search mode. Determines how deferred tools (all non-core tools)
+* are surfaced:
+````
+
+- 位置: `src/utils/toolSearch.ts` 的 `getToolSearchMode()` 函数文档注释（L170）
+- 当前内容为:
+
+  ```
+  ```
+`
+
+-   (unset) tst (default: always defer MCP and shouldDefer tools)
+````
+- 修改为:
+  ```
+`
+*   (unset)               tst (default: always defer non-core tools)
+````
+
+- 位置: `src/utils/toolSearch.ts` 的 `getToolSearchMode()` 函数末尾 return 注释（L197）
+- 当前内容为:
+
+  ```typescript
+  ```
+return 'tst' // default: always defer MCP and shouldDefer tools
+```
+
+- 修改为:
+
+  ```typescript
+  ```
+return 'tst' // default: always defer non-core tools
+```
+
+- 注意: `shouldDefer` 在此文件中仅出现在注释中（L4, L155, L170, L197），无任何运行时引用。`isDeferredTool` 函数从 `@claude-code-best/builtin-tools/tools/ToolSearchTool/prompt.js` 导入（L24），Task 1 已将其重构为白名单制，此处无需修改函数调用。
+- 原因: Task 1 将 `isDeferredTool` 重构为白名单制后，`shouldDefer` 概念已过时。更新注释保持文档与实现一致。
+
+* [x] 为 Task 5 的三个修改点编写单元测试
   - 测试文件: `src/__tests__/toolSearchIntegration.test.ts`（新建）
   - 测试场景:
     - `getSystemPrompt` 包含 ExecuteTool 引导: 调用 `getSystemPrompt(mockTools, model)` 后，结果字符串中包含 "ExecuteTool" 和 "ToolSearch" 关键词
@@ -187,6 +214,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 [上下游影响] — 本 Task 依赖 Task 2（`toolIndex.ts` 的 `getToolIndex` 和 `searchTools`）。本 Task 的输出（`prefetch.ts` 模块和集成代码）被 Task 7（用户推荐 UI）间接依赖，UI 组件需要消费预取结果来渲染推荐提示条。
 
 **涉及文件:**
+
 - 新建: `src/services/toolSearch/prefetch.ts`
 - 修改: `src/utils/attachments.ts`
 - 修改: `src/query.ts`
@@ -196,6 +224,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 新建 `src/services/toolSearch/prefetch.ts`，定义 `ToolDiscoveryResult` 类型和 `tool_discovery` attachment 构建函数
   - 位置: 新建文件 `src/services/toolSearch/prefetch.ts`，文件开头
   - 导入依赖:
+
     ```typescript
     import type { Attachment } from '../../utils/attachments.js'
     import type { Message } from '../../types/message.js'
@@ -205,6 +234,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
     import { logForDebugging } from '../../utils/debug.js'
     ```
   - 定义 `ToolDiscoveryResult` 类型:
+
     ```typescript
     export type ToolDiscoveryResult = {
       name: string
@@ -217,6 +247,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
     }
     ```
   - 定义 `buildToolDiscoveryAttachment` 函数:
+
     ```typescript
     function buildToolDiscoveryAttachment(
       tools: ToolDiscoveryResult[],
@@ -240,6 +271,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 实现 `startToolSearchPrefetch` 异步预取函数 — inter-turn 场景，在 query loop 中异步触发
   - 位置: `src/services/toolSearch/prefetch.ts`，在 `buildToolDiscoveryAttachment` 之后
   - 函数签名:
+
     ```typescript
     export async function startToolSearchPrefetch(
       tools: Tool[],
@@ -262,6 +294,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 实现 `getTurnZeroToolSearchPrefetch` 同步获取函数 — turn-0 场景，用户首次输入时阻塞式获取
   - 位置: `src/services/toolSearch/prefetch.ts`，在 `startToolSearchPrefetch` 之后
   - 函数签名:
+
     ```typescript
     export async function getTurnZeroToolSearchPrefetch(
       input: string,
@@ -283,12 +316,14 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 实现 `collectToolSearchPrefetch` 结果收集函数 — 等待异步预取完成并收集结果
   - 位置: `src/services/toolSearch/prefetch.ts`，在 `getTurnZeroToolSearchPrefetch` 之后
   - 函数签名:
+
     ```typescript
     export async function collectToolSearchPrefetch(
       pending: Promise<Attachment[]>,
     ): Promise<Attachment[]>
     ```
   - 核心逻辑（与 `skillSearch/prefetch.ts:collectSkillDiscoveryPrefetch` L298-306 完全一致）:
+
     ```typescript
     try {
       return await pending
@@ -301,10 +336,12 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/utils/attachments.ts` 中注册 `tool_discovery` attachment type — 扩展 Attachment 联合类型
   - 位置: `src/utils/attachments.ts` 的 `Attachment` 类型定义中，在 `skill_discovery` 类型分支（L534-L555）之后
   - 新增 import（文件顶部 import 区域）:
+
     ```typescript
     import type { ToolDiscoveryResult } from '../services/toolSearch/prefetch.js'
     ```
   - 在 `skill_discovery` 分支后追加 `tool_discovery` 类型:
+
     ```typescript
     | {
         type: 'tool_discovery'
@@ -320,6 +357,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/utils/attachments.ts` 中集成 turn-0 工具预取 — 在 skill discovery 附件之后添加 tool discovery 附件
   - 位置: `src/utils/attachments.ts` 的 `getAttachmentMessages` 函数中，在 skill discovery 的 `maybe('skill_discovery', ...)` 调用块（L818-L831）之后
   - 新增条件 require 模块（与 `skillSearchModules` 模式一致，在文件顶部 ~L92 `skillSearchModules` 定义之后）:
+
     ```typescript
     const toolSearchModules = feature('EXPERIMENTAL_TOOL_SEARCH')
       ? {
@@ -329,6 +367,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
       : null
     ```
   - 在 skill discovery 的 spread 数组中追加 tool discovery 附件（在 `]` 闭合 `maybe('skill_discovery', ...)` 之后，在外层 spread `...(feature('EXPERIMENTAL_SKILL_SEARCH') &&` 的 `]` 之前）:
+
     ```typescript
     ...(feature('EXPERIMENTAL_TOOL_SEARCH') &&
     toolSearchModules &&
@@ -354,6 +393,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/query.ts` 中集成 inter-turn 工具预取触发 — 在 skill prefetch 之后异步启动工具预取
   - 位置: `src/query.ts` 文件顶部 conditional require 区域（~L68-70 `skillPrefetch` 定义之后）
   - 新增 conditional require:
+
     ```typescript
     const toolSearchPrefetch = feature('EXPERIMENTAL_TOOL_SEARCH')
       ? (require('./services/toolSearch/prefetch.js') as typeof import('./services/toolSearch/prefetch.js'))
@@ -361,6 +401,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
     ```
   - 位置: `src/query.ts` 的 `queryLoop` 函数中，在 `pendingSkillPrefetch` 定义（L480-484）之后
   - 新增工具预取触发:
+
     ```typescript
     const pendingToolPrefetch = toolSearchPrefetch?.startToolSearchPrefetch(
       state.tools ?? [],
@@ -372,6 +413,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 在 `src/query.ts` 中集成工具预取结果消费 — 在 skill prefetch 收集之后收集工具预取结果
   - 位置: `src/query.ts` 的 `queryLoop` 函数中，在 skill prefetch 结果消费块（L1910-L1918）之后
   - 新增工具预取结果消费:
+
     ```typescript
     if (toolSearchPrefetch && pendingToolPrefetch) {
       const toolAttachments =
@@ -431,6 +473,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
   - 预期: 输出包含 "pass" 且无 "fail"
 
 **认知变更:**
+
 - [x] [CLAUDE.md] `src/services/toolSearch/prefetch.ts` 的 `extractQueryFromMessages` 复用了 `src/services/skillSearch/prefetch.ts` 的同名导出函数。修改 `skillSearch/prefetch.ts` 的 `extractQueryFromMessages` 时需同步检查工具预取的行为。工具预取使用独立的 `discoveredToolsThisSession` Set，与 skill prefetch 的去重集合互不影响。
 
 ---
@@ -443,14 +486,17 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 [上下游影响] — 本 Task 消费 Task 6 `collectToolSearchPrefetch()` 的预取结果数据；本 Task 的组件挂载到 REPL.tsx 的对话框优先级系统中
 
 **涉及文件:**
+
 - 新建: `src/components/ToolSearchHint.tsx`
 - 新建: `src/components/__tests__/ToolSearchHint.test.ts`
 - 修改: `src/screens/REPL.tsx`
 
 **执行步骤:**
+
 - [x] 新建 `src/components/ToolSearchHint.tsx` — Ink 组件，渲染工具推荐提示条
   - 位置: 新建文件，参照 `src/components/ClaudeCodeHint/PluginHintMenu.tsx` 的结构模式
   - 组件签名:
+
     ```typescript
     type ToolSearchHintItem = {
       name: string;
@@ -475,6 +521,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 新建 `src/hooks/useToolSearchHint.ts` — 自定义 Hook，管理工具推荐状态与生命周期
   - 位置: 新建文件，参照 `src/hooks/useClaudeCodeHintRecommendation.tsx` 的状态管理模式
   - Hook 签名:
+
     ```typescript
     type ToolSearchHintResult = {
       tools: ToolSearchHintItem[];
@@ -495,19 +542,23 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 修改 `src/screens/REPL.tsx` — 集成 ToolSearchHint 组件到对话框优先级系统
   - 位置: `getFocusedInputDialog()` 函数（~L2377），在返回类型联合中新增 `'tool-search-hint'`
   - 在 `getFocusedInputDialog()` 函数体中，在 `plugin-hint` 判断（~L2446）之后、`desktop-upsell` 判断（~L2449）之前，新增一个优先级分支:
+
     ```typescript
     if (allowDialogsWithAnimation && toolSearchHint.visible) return 'tool-search-hint';
     ```
   - 位置: 文件顶部 import 区域（~L448，`PluginHintMenu` import 附近），新增 import:
+
     ```typescript
     import { ToolSearchHint } from '../components/ToolSearchHint.js';
     import { useToolSearchHint } from '../hooks/useToolSearchHint.js';
     ```
   - 位置: hook 调用区域（~L1038，`useClaudeCodeHintRecommendation` 调用之后），新增:
+
     ```typescript
     const toolSearchHint = useToolSearchHint();
     ```
   - 位置: JSX 渲染区域（~L6174，`PluginHintMenu` 渲染块之后），新增条件渲染块:
+
     ```tsx
     {focusedInputDialog === 'tool-search-hint' && toolSearchHint.visible && (
       <ToolSearchHint
@@ -532,6 +583,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
   - 预期: 所有测试通过
 
 **检查步骤:**
+
 - [x] 验证新文件已创建且导出正确
   - `grep -c "export function ToolSearchHint" src/components/ToolSearchHint.tsx && grep -c "export function useToolSearchHint" src/hooks/useToolSearchHint.ts`
   - 预期: 两个 grep 均返回 1
@@ -544,6 +596,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 - [x] 验证单元测试通过
   - `bun test src/components/__tests__/ToolSearchHint.test.ts`
   - 预期: 所有测试通过，无失败
+
 ---
 
 ---
@@ -551,6 +604,7 @@ Plan 1 的环境验证已完成，此处仅需确认 Plan 1 的产出文件可�
 ### Task 8: 全功能验收
 
 **前置条件:**
+
 - Plan 1（Task 1-4）和 Plan 2（Task 5-7）全部完成
 - `bun run build` 可用
 

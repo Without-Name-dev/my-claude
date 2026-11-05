@@ -18,11 +18,11 @@ Langfuse 是开源项目，你可以 **自部署**（Docker / Kubernetes），�
 
 核心只需要三个环境变量：
 
-| 环境变量 | 说明 |
-|---------|------|
-| `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥（必填） |
-| `LANGFUSE_SECRET_KEY` | Langfuse 密钥（必填） |
-| `LANGFUSE_BASE_URL` | 服务地址，默认 `https://cloud.langfuse.com`；自部署时改为你的地址（必填） |
+| 环境变量              | 说明                                                                      |
+| --------------------- | ------------------------------------------------------------------------- |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥（必填）                                                     |
+| `LANGFUSE_SECRET_KEY` | Langfuse 密钥（必填）                                                     |
+| `LANGFUSE_BASE_URL`   | 服务地址，默认 `https://cloud.langfuse.com`；自部署时改为你的地址（必填） |
 
 未配置时所有追踪函数为 no-op，零开销。
 
@@ -42,13 +42,13 @@ Langfuse 是开源项目，你可以 **自部署**（Docker / Kubernetes），�
 
 ### 其他可选参数
 
-| 环境变量 | 默认值 | 说明 |
-|---------|--------|------|
-| `LANGFUSE_TRACING_ENVIRONMENT` | `development` | 环境标签，用于 Langfuse 面板筛选 |
-| `LANGFUSE_FLUSH_AT` | `20` | 批量发送的 span 数量阈值 |
-| `LANGFUSE_FLUSH_INTERVAL` | `10` | 定时刷新间隔（秒） |
-| `LANGFUSE_EXPORT_MODE` | `batched` | 导出模式：`batched`（批量）或 `immediate`（即时） |
-| `LANGFUSE_TIMEOUT` | `5` | 请求超时（秒） |
+| 环境变量                       | 默认值        | 说明                                              |
+| ------------------------------ | ------------- | ------------------------------------------------- |
+| `LANGFUSE_TRACING_ENVIRONMENT` | `development` | 环境标签，用于 Langfuse 面板筛选                  |
+| `LANGFUSE_FLUSH_AT`            | `20`          | 批量发送的 span 数量阈值                          |
+| `LANGFUSE_FLUSH_INTERVAL`      | `10`          | 定时刷新间隔（秒）                                |
+| `LANGFUSE_EXPORT_MODE`         | `batched`     | 导出模式：`batched`（批量）或 `immediate`（即时） |
+| `LANGFUSE_TIMEOUT`             | `5`           | 请求超时（秒）                                    |
 
 ## 四、架构
 
@@ -115,15 +115,15 @@ runAgent.ts  ──→  createSubagentTrace()  # 子 Agent 有独立 trace
 
 Provider 名称映射：
 
-| Provider | Generation 名称 |
-|----------|-----------------|
-| `firstParty` | `ChatAnthropic` |
-| `bedrock` | `ChatBedrockAnthropic` |
-| `vertex` | `ChatVertexAnthropic` |
-| `foundry` | `ChatFoundry` |
-| `openai` | `ChatOpenAI` |
-| `gemini` | `ChatGoogleGenerativeAI` |
-| `grok` | `ChatXAI` |
+| Provider     | Generation 名称          |
+| ------------ | ------------------------ |
+| `firstParty` | `ChatAnthropic`          |
+| `bedrock`    | `ChatBedrockAnthropic`   |
+| `vertex`     | `ChatVertexAnthropic`    |
+| `foundry`    | `ChatFoundry`            |
+| `openai`     | `ChatOpenAI`             |
+| `gemini`     | `ChatGoogleGenerativeAI` |
+| `grok`       | `ChatXAI`                |
 
 ### 5.4 工具执行
 
@@ -149,12 +149,12 @@ Provider 名称映射：
 
 ### 6.3 工具输出脱敏（`sanitizeToolOutput`）
 
-| 工具 | 脱敏策略 |
-|------|---------|
+| 工具                                            | 脱敏策略                                                   |
+| ----------------------------------------------- | ---------------------------------------------------------- |
 | `FileReadTool`、`FileWriteTool`、`FileEditTool` | 完全遮蔽，仅保留字符数：`[file content redacted, N chars]` |
-| `BashTool`、`PowerShellTool` | 截断至 500 字符 |
-| `ConfigTool`、`MCPTool` | 完全遮蔽 |
-| 其他工具 | 原样保留 |
+| `BashTool`、`PowerShellTool`                    | 截断至 500 字符                                            |
+| `ConfigTool`、`MCPTool`                         | 完全遮蔽                                                   |
+| 其他工具                                        | 原样保留                                                   |
 
 ## 七、消息格式转换
 
@@ -193,13 +193,13 @@ docker run -d \
 
 ## 十、相关文件
 
-| 文件 | 说明 |
-|------|------|
-| `src/services/langfuse/client.ts` | OTel Provider 初始化、生命周期管理 |
-| `src/services/langfuse/tracing.ts` | Trace/Span 创建和观察记录 |
-| `src/services/langfuse/convert.ts` | Message 格式转换 |
-| `src/services/langfuse/sanitize.ts` | 数据脱敏 |
-| `src/services/langfuse/__tests__/langfuse.test.ts` | 测试（568 行） |
-| `src/query.ts` | 主查询流程中的 Trace 集成 |
-| `src/services/tools/toolExecution.ts` | 工具执行中的观察记录 |
-| `packages/builtin-tools/src/tools/AgentTool/runAgent.ts` | 子 Agent Trace 创建 |
+| 文件                                                     | 说明                               |
+| -------------------------------------------------------- | ---------------------------------- |
+| `src/services/langfuse/client.ts`                        | OTel Provider 初始化、生命周期管理 |
+| `src/services/langfuse/tracing.ts`                       | Trace/Span 创建和观察记录          |
+| `src/services/langfuse/convert.ts`                       | Message 格式转换                   |
+| `src/services/langfuse/sanitize.ts`                      | 数据脱敏                           |
+| `src/services/langfuse/__tests__/langfuse.test.ts`       | 测试（568 行）                     |
+| `src/query.ts`                                           | 主查询流程中的 Trace 集成          |
+| `src/services/tools/toolExecution.ts`                    | 工具执行中的观察记录               |
+| `packages/builtin-tools/src/tools/AgentTool/runAgent.ts` | 子 Agent Trace 创建                |

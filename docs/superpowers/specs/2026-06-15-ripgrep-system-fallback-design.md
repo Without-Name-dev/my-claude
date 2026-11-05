@@ -59,10 +59,10 @@ Rationale for the missing-system-rg branch returning the (nonexistent) builtin p
 
 ```ts
 type RipgrepStatus = {
-  mode: 'system' | 'builtin' | 'embedded'  // unchanged
-  path: string                              // unchanged
-  working: boolean | null                   // unchanged
-  note?: string                             // NEW — human-readable hint
+  mode: 'system' | 'builtin' | 'embedded' // unchanged
+  path: string // unchanged
+  working: boolean | null // unchanged
+  note?: string // NEW — human-readable hint
 }
 ```
 
@@ -90,6 +90,7 @@ A single check near the end of `src/entrypoints/init.ts` reads `getRipgrepStatus
 ```
 
 Constraints:
+
 - Non-blocking — does not throw or exit.
 - Fires at most once per process (memoized config + idempotent init).
 - Goes to stderr so it does not corrupt pipe mode (`-p`) stdout.

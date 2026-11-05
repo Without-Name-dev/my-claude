@@ -23,6 +23,7 @@
 ```
 
 **RCS 是一个纯内存的中间服务**，它的职责是：
+
 - 接收 Claude Code CLI 的环境注册和工作轮询
 - 接收 acp-link 的 ACP agent 注册，支持 WebSocket relay 桥接
 - 提供 Web UI 供操作者远程监控和审批
@@ -93,28 +94,28 @@ docker compose up -d
 
 ### 服务器端
 
-| 变量 | 必填 | 默认值 | 说明 |
-|------|------|--------|------|
-| `RCS_API_KEYS` | **是** | _(空)_ | API 密钥列表，逗号分隔。用于客户端认证和 JWT 签名。**务必设置强密钥** |
-| `RCS_PORT` | 否 | `3000` | 服务监听端口 |
-| `RCS_HOST` | 否 | `0.0.0.0` | 服务监听地址 |
-| `RCS_BASE_URL` | 否 | `http://localhost:3000` | 外部访问 URL。用于生成 WebSocket 连接地址，必须与客户端实际访问的地址一致 |
-| `RCS_VERSION` | 否 | `0.1.0` | 版本号，显示在 `/health` 响应中 |
-| `RCS_POLL_TIMEOUT` | 否 | `8` | V1 工作轮询超时（秒） |
-| `RCS_HEARTBEAT_INTERVAL` | 否 | `20` | 心跳间隔（秒） |
-| `RCS_JWT_EXPIRES_IN` | 否 | `3600` | JWT 令牌有效期（秒） |
-| `RCS_DISCONNECT_TIMEOUT` | 否 | `300` | 断线判定超时（秒） |
-| `RCS_WS_IDLE_TIMEOUT` | 否 | `30` | WebSocket 空闲超时（秒），Bun 发送协议级 ping |
-| `RCS_WS_KEEPALIVE_INTERVAL` | 否 | `20` | 服务端→客户端 keep_alive 帧间隔（秒），防止反向代理关闭空闲连接 |
+| 变量                        | 必填   | 默认值                  | 说明                                                                      |
+| --------------------------- | ------ | ----------------------- | ------------------------------------------------------------------------- |
+| `RCS_API_KEYS`              | **是** | _(空)_                  | API 密钥列表，逗号分隔。用于客户端认证和 JWT 签名。**务必设置强密钥**     |
+| `RCS_PORT`                  | 否     | `3000`                  | 服务监听端口                                                              |
+| `RCS_HOST`                  | 否     | `0.0.0.0`               | 服务监听地址                                                              |
+| `RCS_BASE_URL`              | 否     | `http://localhost:3000` | 外部访问 URL。用于生成 WebSocket 连接地址，必须与客户端实际访问的地址一致 |
+| `RCS_VERSION`               | 否     | `0.1.0`                 | 版本号，显示在 `/health` 响应中                                           |
+| `RCS_POLL_TIMEOUT`          | 否     | `8`                     | V1 工作轮询超时（秒）                                                     |
+| `RCS_HEARTBEAT_INTERVAL`    | 否     | `20`                    | 心跳间隔（秒）                                                            |
+| `RCS_JWT_EXPIRES_IN`        | 否     | `3600`                  | JWT 令牌有效期（秒）                                                      |
+| `RCS_DISCONNECT_TIMEOUT`    | 否     | `300`                   | 断线判定超时（秒）                                                        |
+| `RCS_WS_IDLE_TIMEOUT`       | 否     | `30`                    | WebSocket 空闲超时（秒），Bun 发送协议级 ping                             |
+| `RCS_WS_KEEPALIVE_INTERVAL` | 否     | `20`                    | 服务端→客户端 keep_alive 帧间隔（秒），防止反向代理关闭空闲连接           |
 
 ### 客户端（Claude Code CLI）
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `CLAUDE_BRIDGE_BASE_URL` | **是** | RCS 服务器地址，例如 `https://rcs.example.com`。设置此变量即启用自托管模式，跳过 GrowthBook 门控 |
-| `CLAUDE_BRIDGE_OAUTH_TOKEN` | **是** | 认证令牌，必须与服务器端 `RCS_API_KEYS` 中的某个值匹配 |
-| `CLAUDE_BRIDGE_SESSION_INGRESS_URL` | 否 | WebSocket 入口地址（默认与 `CLAUDE_BRIDGE_BASE_URL` 相同） |
-| `CLAUDE_CODE_REMOTE` | 否 | 设为 `1` 时标记为远程执行模式 |
+| 变量                                | 必填   | 说明                                                                                             |
+| ----------------------------------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `CLAUDE_BRIDGE_BASE_URL`            | **是** | RCS 服务器地址，例如 `https://rcs.example.com`。设置此变量即启用自托管模式，跳过 GrowthBook 门控 |
+| `CLAUDE_BRIDGE_OAUTH_TOKEN`         | **是** | 认证令牌，必须与服务器端 `RCS_API_KEYS` 中的某个值匹配                                           |
+| `CLAUDE_BRIDGE_SESSION_INGRESS_URL` | 否     | WebSocket 入口地址（默认与 `CLAUDE_BRIDGE_BASE_URL` 相同）                                       |
+| `CLAUDE_CODE_REMOTE`                | 否     | 设为 `1` 时标记为远程执行模式                                                                    |
 
 ## Claude Code 客户端连接
 
@@ -160,6 +161,7 @@ https://rcs.example.com/code/session_<id>
 两种 URL 都可以直接在浏览器打开并远程操控当前会话；只有 environment 模式才会出现在 Web UI 的环境列表中。
 
 若已连接，再次执行 `/remote-control` 会显示对话框，包含以下选项：
+
 - **Disconnect this session** — 断开远程连接
 - **Show QR code** — 显示/隐藏二维码
 - **Continue** — 保持连接，继续使用
@@ -218,12 +220,12 @@ acp-link ◄──ACP relay──► RCS ◄──Web UI WS──► 浏览器
 
 ### 后端组件
 
-| 文件 | 职责 |
-|------|------|
-| `src/routes/acp/index.ts` | ACP REST 路由：agents 列表、channel groups、relay |
-| `src/transport/acp-ws-handler.ts` | ACP WebSocket 处理：agent 注册、心跳、消息转发 |
-| `src/transport/acp-relay-handler.ts` | 前端 WS → acp-link 透传 + EventBus inbound 转发 |
-| `src/transport/acp-sse-writer.ts` | SSE event stream 供外部消费者订阅 |
+| 文件                                 | 职责                                              |
+| ------------------------------------ | ------------------------------------------------- |
+| `src/routes/acp/index.ts`            | ACP REST 路由：agents 列表、channel groups、relay |
+| `src/transport/acp-ws-handler.ts`    | ACP WebSocket 处理：agent 注册、心跳、消息转发    |
+| `src/transport/acp-relay-handler.ts` | 前端 WS → acp-link 透传 + EventBus inbound 转发   |
+| `src/transport/acp-sse-writer.ts`    | SSE event stream 供外部消费者订阅                 |
 
 ACP 的 agents、channel groups、relay 和 channel-group SSE 端点都要求有效
 API key。浏览器 `EventSource` 不能发送 `Authorization` header，外部订阅
@@ -315,6 +317,7 @@ Error: Unauthorized
 ```
 
 **检查项**：
+
 1. `CLAUDE_BRIDGE_OAUTH_TOKEN` 是否与 `RCS_API_KEYS` 中的值匹配
 2. API Key 是否包含多余的空格或换行
 3. 两个环境变量是否都已正确设置
@@ -322,6 +325,7 @@ Error: Unauthorized
 ### WebSocket 连接中断
 
 **检查项**：
+
 1. 如果使用反向代理，确认已正确配置 WebSocket 升级（`Upgrade` / `Connection` 头）
 2. 代理的 `proxy_read_timeout` 是否足够大（建议 86400 秒）
 3. 网络防火墙是否允许 WebSocket 流量
@@ -335,23 +339,23 @@ curl https://rcs.example.com/health
 
 ## 限制与注意事项
 
-| 项目 | 说明 |
-|------|------|
-| 存储 | 纯内存存储（Map），服务器重启后所有会话和环境数据丢失 |
-| 扩展 | 不支持水平扩展（无共享状态），单实例部署 |
-| 并发 | 适合中小规模使用，大量并发会话可能需要性能调优 |
-| 数据持久化 | `/app/data` 卷已预留但当前未使用，未来可能用于持久化 |
-| Web UI 认证 | 基于 UUID，无用户账户系统，适合受信任网络环境 |
+| 项目        | 说明                                                  |
+| ----------- | ----------------------------------------------------- |
+| 存储        | 纯内存存储（Map），服务器重启后所有会话和环境数据丢失 |
+| 扩展        | 不支持水平扩展（无共享状态），单实例部署              |
+| 并发        | 适合中小规模使用，大量并发会话可能需要性能调优        |
+| 数据持久化  | `/app/data` 卷已预留但当前未使用，未来可能用于持久化  |
+| Web UI 认证 | 基于 UUID，无用户账户系统，适合受信任网络环境         |
 
 ## 与云端模式对比
 
-| 特性 | 云端 (Anthropic CCR) | 自托管 (RCS) |
-|------|---------------------|--------------|
-| 认证方式 | claude.ai OAuth 订阅 | API Key |
-| GrowthBook 门控 | 需要 `tengu_ccr_bridge` 通过 | 自动跳过 |
-| 功能标志 | 需要 `BRIDGE_MODE=1` | 同样需要 |
-| 部署位置 | Anthropic 云端 | 用户自有服务器 |
-| 数据流经 | Anthropic 基础设施 | 用户私有网络 |
-| 依赖 | claude.ai 订阅 + OAuth | 仅需 API Key |
+| 特性            | 云端 (Anthropic CCR)         | 自托管 (RCS)   |
+| --------------- | ---------------------------- | -------------- |
+| 认证方式        | claude.ai OAuth 订阅         | API Key        |
+| GrowthBook 门控 | 需要 `tengu_ccr_bridge` 通过 | 自动跳过       |
+| 功能标志        | 需要 `BRIDGE_MODE=1`         | 同样需要       |
+| 部署位置        | Anthropic 云端               | 用户自有服务器 |
+| 数据流经        | Anthropic 基础设施           | 用户私有网络   |
+| 依赖            | claude.ai 订阅 + OAuth       | 仅需 API Key   |
 
 自托管模式的核心优势是：设置 `CLAUDE_BRIDGE_BASE_URL` 后，代码自动调用 `isSelfHostedBridge()` 返回 `true`，跳过所有 GrowthBook 和订阅检查，无需 claude.ai 账户即可使用。

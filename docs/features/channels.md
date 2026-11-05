@@ -34,13 +34,13 @@ ccb --dangerously-load-development-channels server:my-custom-channel
 
 ## 支持的 Channel
 
-| Channel | 说明 | 来源 |
-|---------|------|------|
-| **Telegram** | 官方 Telegram Bot 集成 | `/plugin install telegram@claude-plugins-official` |
-| **Discord** | 官方 Discord Bot 集成 | `/plugin install discord@claude-plugins-official` |
-| **iMessage** | macOS 原生消息 | `/plugin install imessage@claude-plugins-official` |
-| **飞书 (Feishu/Lark)** | 双向消息、群组聊天、文件附件 | `/plugin install feishu@claude-code-feishu-channel` |
-| **微信 (WeChat)** | 内置 channel，支持扫码登录、双向消息、附件透传 | `ccb weixin login` + `ccb --channels plugin:weixin@builtin` |
+| Channel                | 说明                                           | 来源                                                        |
+| ---------------------- | ---------------------------------------------- | ----------------------------------------------------------- |
+| **Telegram**           | 官方 Telegram Bot 集成                         | `/plugin install telegram@claude-plugins-official`          |
+| **Discord**            | 官方 Discord Bot 集成                          | `/plugin install discord@claude-plugins-official`           |
+| **iMessage**           | macOS 原生消息                                 | `/plugin install imessage@claude-plugins-official`          |
+| **飞书 (Feishu/Lark)** | 双向消息、群组聊天、文件附件                   | `/plugin install feishu@claude-code-feishu-channel`         |
+| **微信 (WeChat)**      | 内置 channel，支持扫码登录、双向消息、附件透传 | `ccb weixin login` + `ccb --channels plugin:weixin@builtin` |
 
 ## 微信内置 Channel
 
@@ -74,14 +74,14 @@ ccb weixin access pair <code>
 
 ## 相关文件
 
-| 文件 | 职责 |
-|------|------|
-| `src/services/mcp/channelNotification.ts` | 频道 gate 逻辑、消息包装 |
-| `src/services/mcp/channelAllowlist.ts` | 频道开关（已默认开启） |
+| 文件                                          | 职责                     |
+| --------------------------------------------- | ------------------------ |
+| `src/services/mcp/channelNotification.ts`     | 频道 gate 逻辑、消息包装 |
+| `src/services/mcp/channelAllowlist.ts`        | 频道开关（已默认开启）   |
 | `src/services/mcp/useManageMCPConnections.ts` | MCP 连接管理中的频道注册 |
-| `src/components/LogoV2/ChannelsNotice.tsx` | 启动时频道状态提示 |
-| `src/main.tsx` | `--channels` 参数解析 |
-| `src/interactiveHelpers.tsx` | Dev channels 确认对话框 |
+| `src/components/LogoV2/ChannelsNotice.tsx`    | 启动时频道状态提示       |
+| `src/main.tsx`                                | `--channels` 参数解析    |
+| `src/interactiveHelpers.tsx`                  | Dev channels 确认对话框  |
 
 ## 参考链接
 

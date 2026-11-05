@@ -42,8 +42,8 @@ Agent({ subagent_type: "general-purpose", prompt: "..." })
 ```ts
 export function isForkSubagentEnabled(): boolean {
   if (feature('FORK_SUBAGENT')) {
-    if (isCoordinatorMode()) return false   // Coordinator 有自己的委派模型
-    if (getIsNonInteractiveSession()) return false  // pipe/SDK 模式禁用
+    if (isCoordinatorMode()) return false // Coordinator 有自己的委派模型
+    if (getIsNonInteractiveSession()) return false // pipe/SDK 模式禁用
     return true
   }
   return false
@@ -55,10 +55,10 @@ export function isForkSubagentEnabled(): boolean {
 ```ts
 export const FORK_AGENT = {
   agentType: 'fork',
-  tools: ['*'],              // 通配符：使用父级完整工具集
+  tools: ['*'], // 通配符：使用父级完整工具集
   maxTurns: 200,
-  model: 'inherit',          // 继承父级模型
-  permissionMode: 'bubble',  // 权限冒泡到父级终端
+  model: 'inherit', // 继承父级模型
+  permissionMode: 'bubble', // 权限冒泡到父级终端
   getSystemPrompt: () => '', // 不使用：直接传递父级已渲染 prompt
 }
 ```
@@ -143,13 +143,13 @@ isForkSubagentEnabled() && !subagent_type?
 
 这是整个 fork 设计的核心优化目标：
 
-| 优化点 | 实现 |
-|--------|------|
-| **相同 system prompt** | 直传 `renderedSystemPrompt`，避免重新渲染（GrowthBook 状态可能不一致） |
-| **相同工具集** | `useExactTools: true` 直接使用父级工具，不经过 `resolveAgentTools` 过滤 |
-| **相同 thinking config** | 继承父级 thinking 配置（非 fork agent 默认禁用 thinking） |
-| **相同占位符结果** | 所有 fork 使用 `FORK_PLACEHOLDER_RESULT` 相同文本 |
-| **ContentReplacementState 克隆** | 默认克隆父级替换状态，保持 wire prefix 一致 |
+| 优化点                           | 实现                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| **相同 system prompt**           | 直传 `renderedSystemPrompt`，避免重新渲染（GrowthBook 状态可能不一致）  |
+| **相同工具集**                   | `useExactTools: true` 直接使用父级工具，不经过 `resolveAgentTools` 过滤 |
+| **相同 thinking config**         | 继承父级 thinking 配置（非 fork agent 默认禁用 thinking）               |
+| **相同占位符结果**               | 所有 fork 使用 `FORK_PLACEHOLDER_RESULT` 相同文本                       |
+| **ContentReplacementState 克隆** | 默认克隆父级替换状态，保持 wire prefix 一致                             |
 
 ## 五、子 Agent 指令
 
@@ -183,13 +183,13 @@ FEATURE_FORK_SUBAGENT=1 bun run dev
 
 ## 八、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `packages/builtin-tools/src/tools/AgentTool/forkSubagent.ts` | ~210 | 核心定义 + 消息构建 + 递归防护 |
-| `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx` | — | Fork 路由 + 强制异步 |
-| `packages/builtin-tools/src/tools/AgentTool/prompt.ts` | — | "When to Fork" 提示词段落 |
-| `packages/builtin-tools/src/tools/AgentTool/runAgent.ts` | — | useExactTools 路径 |
-| `packages/builtin-tools/src/tools/AgentTool/resumeAgent.ts` | — | Fork agent 恢复 |
-| `src/constants/xml.ts` | — | XML 标签常量 |
-| `src/utils/forkedAgent.ts` | — | CacheSafeParams + ContentReplacementState 克隆 |
-| `src/commands/fork/index.ts` | — | /fork 命令（stub） |
+| 文件                                                         | 行数 | 职责                                           |
+| ------------------------------------------------------------ | ---- | ---------------------------------------------- |
+| `packages/builtin-tools/src/tools/AgentTool/forkSubagent.ts` | ~210 | 核心定义 + 消息构建 + 递归防护                 |
+| `packages/builtin-tools/src/tools/AgentTool/AgentTool.tsx`   | —    | Fork 路由 + 强制异步                           |
+| `packages/builtin-tools/src/tools/AgentTool/prompt.ts`       | —    | "When to Fork" 提示词段落                      |
+| `packages/builtin-tools/src/tools/AgentTool/runAgent.ts`     | —    | useExactTools 路径                             |
+| `packages/builtin-tools/src/tools/AgentTool/resumeAgent.ts`  | —    | Fork agent 恢复                                |
+| `src/constants/xml.ts`                                       | —    | XML 标签常量                                   |
+| `src/utils/forkedAgent.ts`                                   | —    | CacheSafeParams + ContentReplacementState 克隆 |
+| `src/commands/fork/index.ts`                                 | —    | /fork 命令（stub）                             |

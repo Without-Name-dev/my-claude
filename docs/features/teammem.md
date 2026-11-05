@@ -20,12 +20,12 @@ TEAMMEM 实现基于 GitHub 仓库的团队共享记忆系统。`memory/team/` �
 
 ### 同步行为
 
-| 事件 | 行为 |
-|------|------|
-| 项目启动 | 自动 pull 团队记忆到 `memory/team/` |
-| 本地文件编辑 | watcher 检测变更，自动 push |
-| 服务端更新 | 下次 pull 时覆盖本地（server-wins） |
-| 密钥检测 | 跳过该文件，记录警告，不阻止其他文件同步 |
+| 事件         | 行为                                     |
+| ------------ | ---------------------------------------- |
+| 项目启动     | 自动 pull 团队记忆到 `memory/team/`      |
+| 本地文件编辑 | watcher 检测变更，自动 push              |
+| 服务端更新   | 下次 pull 时覆盖本地（server-wins）      |
+| 密钥检测     | 跳过该文件，记录警告，不阻止其他文件同步 |
 
 ### API 端点
 
@@ -41,9 +41,9 @@ PUT  /api/claude_code/team_memory?repo={owner/repo}             → 上传 entri
 
 ```ts
 type SyncState = {
-  lastKnownChecksum: string | null    // ETag 条件请求
+  lastKnownChecksum: string | null // ETag 条件请求
   serverChecksums: Map<string, string> // sha256:<hex> 逐文件哈希
-  serverMaxEntries: number | null      // 从 413 学习的服务端容量
+  serverMaxEntries: number | null // 从 413 学习的服务端容量
 }
 ```
 
@@ -109,6 +109,7 @@ batchDeltaByBytes(delta)
 文件：`src/services/teamMemorySync/secretScanner.ts`
 
 使用 gitleaks 规则模式扫描文件内容。检测到密钥时：
+
 - 跳过该文件（不上传）
 - 记录 `tengu_team_mem_secret_skipped` 事件（仅记录规则 ID，不记录值）
 - 不阻止其他文件同步
@@ -149,19 +150,19 @@ FEATURE_TEAMMEM=1 bun run dev
 
 ## 六、外部依赖
 
-| 依赖 | 说明 |
-|------|------|
-| Anthropic OAuth | first-party 认证 |
-| GitHub Remote | `getGithubRepo()` 获取 `owner/repo` 作为同步 scope |
-| Team Memory API | `/api/claude_code/team_memory` 端点 |
+| 依赖            | 说明                                               |
+| --------------- | -------------------------------------------------- |
+| Anthropic OAuth | first-party 认证                                   |
+| GitHub Remote   | `getGithubRepo()` 获取 `owner/repo` 作为同步 scope |
+| Team Memory API | `/api/claude_code/team_memory` 端点                |
 
 ## 七、文件索引
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `src/services/teamMemorySync/index.ts` | 1257 | 核心同步逻辑（pull/push/sync） |
-| `src/services/teamMemorySync/watcher.ts` | — | 文件监视 + 自动同步触发 |
-| `src/services/teamMemorySync/secretScanner.ts` | — | gitleaks 密钥扫描 |
-| `src/services/teamMemorySync/types.ts` | — | Zod schema + 类型定义 |
-| `src/services/teamMemorySync/teamMemSecretGuard.ts` | — | 密钥防护辅助 |
-| `src/memdir/teamMemPaths.ts` | — | 路径验证 + 目录管理 |
+| 文件                                                | 行数 | 职责                           |
+| --------------------------------------------------- | ---- | ------------------------------ |
+| `src/services/teamMemorySync/index.ts`              | 1257 | 核心同步逻辑（pull/push/sync） |
+| `src/services/teamMemorySync/watcher.ts`            | —    | 文件监视 + 自动同步触发        |
+| `src/services/teamMemorySync/secretScanner.ts`      | —    | gitleaks 密钥扫描              |
+| `src/services/teamMemorySync/types.ts`              | —    | Zod schema + 类型定义          |
+| `src/services/teamMemorySync/teamMemSecretGuard.ts` | —    | 密钥防护辅助                   |
+| `src/memdir/teamMemPaths.ts`                        | —    | 路径验证 + 目录管理            |

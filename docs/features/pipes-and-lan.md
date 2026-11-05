@@ -11,9 +11,9 @@ Pipes 系统提供 Claude Code CLI 实例之间的通讯能力，分两层：
 
 ## Feature Flags
 
-| Flag | 控制范围 | 默认 |
-|------|----------|------|
-| `UDS_INBOX` | 本机 Pipe IPC 全部功能 | dev/build 启用 |
+| Flag        | 控制范围                 | 默认           |
+| ----------- | ------------------------ | -------------- |
+| `UDS_INBOX` | 本机 Pipe IPC 全部功能   | dev/build 启用 |
 | `LAN_PIPES` | 局域网 TCP + beacon 扩展 | dev/build 启用 |
 
 手动启用：`FEATURE_UDS_INBOX=1 FEATURE_LAN_PIPES=1 bun run dev`
@@ -49,6 +49,7 @@ bun run dev
 ### 防火墙配置（两台机器都需要）
 
 **Windows**（管理员 PowerShell）：
+
 ```powershell
 New-NetFirewallRule -DisplayName "Claude Code LAN Beacon (UDP)" -Direction Inbound -Protocol UDP -LocalPort 7101 -Action Allow -Profile Private
 New-NetFirewallRule -DisplayName "Claude Code LAN Pipes (TCP)" -Direction Inbound -Protocol TCP -LocalPort 1024-65535 -Program (Get-Command bun).Source -Action Allow -Profile Private
@@ -57,12 +58,14 @@ New-NetFirewallRule -DisplayName "Claude Code LAN Beacon Out (UDP)" -Direction O
 ```
 
 **macOS**（首次运行时系统弹出对话框，点击"允许"即可）：
+
 ```bash
 # 如果需要手动放行 pf 防火墙：
 echo "pass in proto udp from any to any port 7101" | sudo pfctl -ef -
 ```
 
 **Linux**（firewalld / iptables）：
+
 ```bash
 # firewalld
 sudo firewall-cmd --zone=trusted --add-port=7101/udp --permanent
@@ -102,23 +105,23 @@ pipe: cli-a91bad56 (main) 192.168.50.22  ↑↓ move Space select ←/→ or m r
 
 ### 面板内快捷键
 
-| 快捷键 | 场景 | 作用 |
-|--------|------|------|
-| **Shift+↓** | 状态栏可见时 | 展开/收起选择面板 |
-| **↑ / ↓** | 面板展开时 | 上下移动光标 |
-| **Space** | 面板展开时 | 切换当前光标所在 pipe 的选中状态（☑ ↔ ☐） |
-| **Enter** | 面板展开时 | 确认并关闭面板 |
-| **Esc** | 面板展开时 | 取消并关闭面板 |
+| 快捷键         | 场景                       | 作用                                                 |
+| -------------- | -------------------------- | ---------------------------------------------------- |
+| **Shift+↓**    | 状态栏可见时               | 展开/收起选择面板                                    |
+| **↑ / ↓**      | 面板展开时                 | 上下移动光标                                         |
+| **Space**      | 面板展开时                 | 切换当前光标所在 pipe 的选中状态（☑ ↔ ☐）            |
+| **Enter**      | 面板展开时                 | 确认并关闭面板                                       |
+| **Esc**        | 面板展开时                 | 取消并关闭面板                                       |
 | **← / → 或 M** | 状态栏可见且有选中 pipe 时 | 切换路由模式（`selected pipes only` ↔ `local main`） |
 
 ### M 键 — 路由模式切换
 
 M 键（或 ← / →）用于在两种路由模式之间切换，**无需展开面板**：
 
-| 模式 | 状态栏显示 | 行为 |
-|------|-----------|------|
-| `selected pipes only` | 绿色高亮 | 输入的 prompt **仅**发送到选中的 pipe，本地不执行 |
-| `local main` | 灰色 | 输入的 prompt 在**本地 main** 执行，不转发到任何 pipe |
+| 模式                  | 状态栏显示 | 行为                                                  |
+| --------------------- | ---------- | ----------------------------------------------------- |
+| `selected pipes only` | 绿色高亮   | 输入的 prompt **仅**发送到选中的 pipe，本地不执行     |
+| `local main`          | 灰色       | 输入的 prompt 在**本地 main** 执行，不转发到任何 pipe |
 
 切换路由模式**不会清空选择**。你可以在 `local main` 模式下保持选择，随时按 M 切回 `selected pipes only` 继续向远端发送。
 
@@ -152,6 +155,7 @@ M 键（或 ← / →）用于在两种路由模式之间切换，**无需展开
 ```
 
 输出示例：
+
 ```
 Your pipe:   cli-a91bad56
 Role:        main
@@ -211,10 +215,10 @@ attach 后，对方变为 slave，你变为 master。可以向它发送 prompt�
 
 ### 路由模式
 
-| 模式 | 行为 |
-|------|------|
-| `selected`（默认） | 消息发送到选中的 pipe |
-| `local` | 消息仅在本地执行，不转发 |
+| 模式               | 行为                     |
+| ------------------ | ------------------------ |
+| `selected`（默认） | 消息发送到选中的 pipe    |
+| `local`            | 消息仅在本地执行，不转发 |
 
 ## 架构
 
@@ -231,18 +235,18 @@ attach 后，对方变为 slave，你变为 master。可以向它发送 prompt�
 
 ### 消息类型
 
-| 类型 | 方向 | 说明 |
-|------|------|------|
-| `ping`/`pong` | 双向 | 健康检查 |
-| `attach_request`/`accept`/`reject` | M→S/S→M | 连接控制 |
-| `detach` | M→S | 断开连接 |
-| `prompt` | M→S | 主向从发送 prompt |
-| `prompt_ack` | S→M | 从确认接收 |
-| `stream` | S→M | 从流式回传 AI 输出 |
-| `tool_start`/`tool_result` | S→M | 工具执行通知 |
-| `done` | S→M | 本轮完成 |
-| `error` | 双向 | 错误通知 |
-| `permission_request`/`response`/`cancel` | 双向 | 权限审批转发 |
+| 类型                                     | 方向    | 说明               |
+| ---------------------------------------- | ------- | ------------------ |
+| `ping`/`pong`                            | 双向    | 健康检查           |
+| `attach_request`/`accept`/`reject`       | M→S/S→M | 连接控制           |
+| `detach`                                 | M→S     | 断开连接           |
+| `prompt`                                 | M→S     | 主向从发送 prompt  |
+| `prompt_ack`                             | S→M     | 从确认接收         |
+| `stream`                                 | S→M     | 从流式回传 AI 输出 |
+| `tool_start`/`tool_result`               | S→M     | 工具执行通知       |
+| `done`                                   | S→M     | 本轮完成           |
+| `error`                                  | 双向    | 错误通知           |
+| `permission_request`/`response`/`cancel` | 双向    | 权限审批转发       |
 
 ### 传输层
 
@@ -264,14 +268,15 @@ attach 后，对方变为 slave，你变为 master。可以向它发送 prompt�
 
 ### 角色模型
 
-| 角色 | 说明 |
-|------|------|
-| `main` | 首个启动的实例，管理 registry |
-| `sub` | 后续启动的同机实例（或被 attach 的 LAN 实例） |
-| `master` | attach 了至少一个 slave 的实例 |
-| `slave` | 被 master attach 控制的实例 |
+| 角色     | 说明                                          |
+| -------- | --------------------------------------------- |
+| `main`   | 首个启动的实例，管理 registry                 |
+| `sub`    | 后续启动的同机实例（或被 attach 的 LAN 实例） |
+| `master` | attach 了至少一个 slave 的实例                |
+| `slave`  | 被 master attach 控制的实例                   |
 
 角色转换：
+
 - 首个启动 → `main`
 - 同机后续启动 → `sub`（自动被 main attach → `slave`）
 - LAN 发现 → 两边都是 `main`，heartbeat 自动互相 attach
@@ -282,6 +287,7 @@ attach 后，对方变为 slave，你变为 master。可以向它发送 prompt�
 **本机**：通过 `~/.claude/pipes/registry.json` 文件（带文件锁），`machineId` 绑定主机身份。
 
 **LAN**：通过 UDP multicast beacon：
+
 1. 每 3 秒广播 `{ proto, pipeName, machineId, ip, tcpPort, role }`
 2. 收到其他实例的 announce → 记入 peers Map
 3. 15 秒未收到 → 标记 peer lost
@@ -306,19 +312,19 @@ sub 角色:
 
 ## 关键文件
 
-| 文件 | 职责 |
-|------|------|
-| `src/utils/pipeTransport.ts` | PipeServer（双模 UDS+TCP）、PipeClient、类型定义 |
-| `src/utils/lanBeacon.ts` | UDP multicast beacon、singleton 管理 |
-| `src/utils/pipeRegistry.ts` | Registry CRUD、角色判定、machineId、LAN merge |
-| `src/utils/peerAddress.ts` | 地址解析（uds:/bridge:/tcp: scheme） |
-| `src/screens/REPL.tsx` | Bootstrap、heartbeat、cleanup、prompt 路由 |
-| `src/hooks/useMasterMonitor.ts` | Slave client registry、消息订阅 |
-| `src/hooks/useSlaveNotifications.ts` | Slave 端通知处理 |
-| `src/commands/pipes/pipes.ts` | /pipes 命令 |
-| `src/commands/attach/attach.ts` | /attach 命令 |
-| `src/commands/send/send.ts` | /send 命令 |
-| `packages/builtin-tools/src/tools/SendMessageTool/SendMessageTool.ts` | AI 发消息工具（含 tcp: 支持） |
+| 文件                                                                  | 职责                                             |
+| --------------------------------------------------------------------- | ------------------------------------------------ |
+| `src/utils/pipeTransport.ts`                                          | PipeServer（双模 UDS+TCP）、PipeClient、类型定义 |
+| `src/utils/lanBeacon.ts`                                              | UDP multicast beacon、singleton 管理             |
+| `src/utils/pipeRegistry.ts`                                           | Registry CRUD、角色判定、machineId、LAN merge    |
+| `src/utils/peerAddress.ts`                                            | 地址解析（uds:/bridge:/tcp: scheme）             |
+| `src/screens/REPL.tsx`                                                | Bootstrap、heartbeat、cleanup、prompt 路由       |
+| `src/hooks/useMasterMonitor.ts`                                       | Slave client registry、消息订阅                  |
+| `src/hooks/useSlaveNotifications.ts`                                  | Slave 端通知处理                                 |
+| `src/commands/pipes/pipes.ts`                                         | /pipes 命令                                      |
+| `src/commands/attach/attach.ts`                                       | /attach 命令                                     |
+| `src/commands/send/send.ts`                                           | /send 命令                                       |
+| `packages/builtin-tools/src/tools/SendMessageTool/SendMessageTool.ts` | AI 发消息工具（含 tcp: 支持）                    |
 
 ## 后续优化方向
 
