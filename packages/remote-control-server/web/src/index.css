@@ -9,12 +9,13 @@
    stack also matches the native splash and status bar.
    ============================================================ */
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
-    sans-serif;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-display: var(--font-sans);
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
 
   /* Accent — the Claude orange, dialled back to a softer terracotta */
   --color-brand: #d97757;
@@ -186,10 +187,10 @@
 .rcs-scroller {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
-  /* The library sets overflow:auto inline, which lets a wide code block make
-     the whole transcript pan sideways under the thumb. Vertical only. */
-  overflow-x: hidden !important;
-  overscroll-behavior-x: none;
+  /* Declaring the axes keeps the library from writing overflow:auto inline,
+     which let a wide code block pan the whole transcript sideways. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* Safe-area helpers for the iOS wrapper / standalone PWA. */

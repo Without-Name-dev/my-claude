@@ -23,8 +23,9 @@
       var stored = 'system';
       var dark = false;
       var handlers = null;
+      var forced = null;
       try {
-        var forced = new URLSearchParams(location.search).get('theme');
+        forced = new URLSearchParams(location.search).get('theme');
         stored =
           forced === 'light' || forced === 'dark'
             ? forced
