@@ -61,8 +61,9 @@ jobs:
       - name: Add the iOS platform
         working-directory: apps/ios-shell
         run: |
-          test -d ios || npx cap add ios
-          npx cap sync ios
+          set -x
+          test -d ios || npx cap add ios 2>&1 | tee "$RUNNER_TEMP/cap-add.log"
+          npx cap sync ios 2>&1 | tee "$RUNNER_TEMP/cap-sync.log"
 
       - name: Allow the HTTP server
         working-directory: apps/ios-shell
@@ -98,10 +99,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LOG="${RUNNER_TEMP}/ios-archive.log"
           {
             echo "commit ${GITHUB_SHA}"
-            grep -nE "error:|fatal error:" "$LOG" | tail -n 300 || true
+            for f in "$RUNNER_TEMP"/cap-add.log "$RUNNER_TEMP"/cap-sync.log; do
+              if [ -f "$f" ]; then
+                echo "===== $f ====="
+                tail -n 80 "$f" || true
+              fi
+            done
+            LOG="${RUNNER_TEMP}/ios-archive.log"
+            if [ -f "$LOG" ]; then
+              echo "===== xcodebuild ====="
+              grep -nE "error:|fatal error:" "$LOG" | tail -n 300 || true
+            fi
           } > errors.txt
           wc -l errors.txt
           gh release delete ios-build-errors --yes --cleanup-tag >/dev/null 2>&1 || true
