@@ -22,8 +22,10 @@ npx cap open ios
 platform, builds an unsigned archive, packages `ClaudeRemote-unsigned.ipa`,
 and publishes it as the `ios-latest` GitHub release.
 
-Bundle ID is fixed to `app.jade5197.gypsum9420` so reinstalling upgrades the
-existing app instead of creating a second one.
+Bundle ID is `app.jade5197.ccremote`, deliberately different from the App Store
+`Agents Anywhere` build (`app.jade5197.gypsum9420`). iOS refuses to install a
+sideloaded binary over an App Store app with the same bundle ID, because the
+signing team differs; a distinct ID lets both coexist.
 
 ## Notes
 

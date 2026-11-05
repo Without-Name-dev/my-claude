@@ -8,7 +8,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
  * as the browser. The bundled `www` page is only a fallback for launch errors.
  */
 const config: CapacitorConfig = {
-  appId: 'app.jade5197.gypsum9420',
+  appId: 'app.jade5197.ccremote',
   appName: 'Claude Remote',
   webDir: 'www',
   server: {
