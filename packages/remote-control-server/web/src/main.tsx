@@ -8,11 +8,20 @@ import './index.css';
 // panel itself stays hidden until ?debug=1.
 installDebugCapture();
 
+let revealed = false;
+
 function revealApp() {
-  const boot = document.getElementById('boot');
-  if (!boot || boot.classList.contains('is-done')) return;
-  boot.classList.add('is-done');
-  window.setTimeout(() => boot.remove(), 450);
+  if (revealed) return;
+  revealed = true;
+  // One frame for React's commit, one for the browser to paint it, then fade.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const boot = document.getElementById('boot');
+      if (!boot) return;
+      boot.classList.add('is-done');
+      window.setTimeout(() => boot.remove(), 450);
+    });
+  });
 }
 
 const container = document.getElementById('root');
@@ -24,20 +33,8 @@ if (container) {
     </StrictMode>,
   );
 
-  // Fade the boot splash only after React has committed its first frame.
-  // Fading on the script's first tick can reveal an empty page for a frame.
-  const observer = new MutationObserver(() => {
-    if (container.childElementCount === 0) return;
-    observer.disconnect();
-    requestAnimationFrame(() => requestAnimationFrame(revealApp));
-  });
-  observer.observe(container, { childList: true });
-
-  if (container.childElementCount > 0) {
-    observer.disconnect();
-    requestAnimationFrame(() => requestAnimationFrame(revealApp));
-  }
-
+  // App fires this once the real (lazily loaded) screen is committed.
+  window.addEventListener('ccremote:ready', revealApp, { once: true });
   // Never leave a stuck splash if the bundle half-loads.
   window.setTimeout(revealApp, 12000);
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { ThemeProvider } from './lib/theme';
-import { withViewTransition } from './lib/view-transition';
+import { haptic, withViewTransition } from './lib/view-transition';
 import { getUuid, setUuid, apiBind } from './api/client';
 import { DebugPanel } from './components/DebugPanel';
 import { enableDebug } from './lib/debug-log';
@@ -9,6 +9,18 @@ const Workspace = lazy(() => import('./pages/Workspace').then(m => ({ default: m
 const BridgeChat = lazy(() => import('./components/device/BridgeChat').then(m => ({ default: m.BridgeChat })));
 
 type WorkspaceRoute = { deviceId?: string; localSessionId?: string };
+
+/**
+ * Signals the shell to fade the boot splash. It lives inside the Suspense
+ * boundary, so it only commits once the lazy workspace/chat chunk is ready —
+ * the splash never fades onto an empty screen.
+ */
+function ReadySignal() {
+  useEffect(() => {
+    window.dispatchEvent(new Event('ccremote:ready'));
+  }, []);
+  return null;
+}
 
 /**
  * Thin router. The web client is intentionally minimal — the device/session
@@ -104,12 +116,16 @@ export default function App() {
 
   useEffect(() => {
     parseRoute();
-    const onPop = () => withViewTransition(parseRoute);
+    const onPop = () => {
+      haptic('light');
+      withViewTransition(parseRoute);
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, [parseRoute]);
 
   const goWorkspace = useCallback(() => {
+    haptic('light');
     withViewTransition(() => {
       window.history.pushState(null, '', '/code/');
       setBridgeSessionId(null);
@@ -118,6 +134,7 @@ export default function App() {
   }, []);
 
   const navigateSession = useCallback((deviceId: string, localSessionId?: string) => {
+    haptic('light');
     const path = localSessionId
       ? `/code/d/${encodeURIComponent(deviceId)}/s/${encodeURIComponent(localSessionId)}`
       : `/code/d/${encodeURIComponent(deviceId)}`;
@@ -138,6 +155,7 @@ export default function App() {
             </div>
           }
         >
+          {routeReady ? <ReadySignal /> : null}
           {routeReady && bridgeSessionId ? (
             <BridgeChat
               key={bridgeSessionId}
