@@ -196,7 +196,7 @@ export function Workspace({
     <div className="rcs-page-enter flex min-h-0 flex-1 overflow-hidden">
       <aside
         className={cn(
-          'w-full shrink-0 flex-col border-r border-border bg-surface-1 md:flex md:w-[21rem]',
+          'w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem]',
           mobileChat ? 'hidden' : 'flex',
         )}
       >
@@ -224,7 +224,7 @@ export function Workspace({
               onChange={event => setSearch(event.target.value)}
               placeholder="搜索项目或会话"
               aria-label="搜索项目或会话"
-              className="h-10 w-full rounded-xl border border-transparent bg-surface-2 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand/40 focus:outline-none sm:text-[15px]"
+              className="h-10 w-full rounded-xl border border-transparent bg-surface-1 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand/40 focus:outline-none sm:text-[15px]"
             />
           </div>
           {devices.length > 0 && (
@@ -276,7 +276,7 @@ export function Workspace({
                   <button
                     type="button"
                     onClick={() => toggleProject(project)}
-                    className="flex min-h-12 w-full items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-2/70"
+                    className="flex min-h-12 w-full items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-1"
                     title={project.path}
                   >
                     {expanded ? (
@@ -291,8 +291,8 @@ export function Workspace({
                     <div className="pb-1">
                       {sessionsLoading && allSessions.length === 0 && (
                         <div className="space-y-1 px-8 py-1">
-                          <div className="h-6 animate-pulse rounded bg-surface-2" />
-                          <div className="h-6 animate-pulse rounded bg-surface-2" />
+                          <div className="h-6 animate-pulse rounded bg-surface-1" />
+                          <div className="h-6 animate-pulse rounded bg-surface-1" />
                         </div>
                       )}
                       {sessions.map(session => (
@@ -303,8 +303,8 @@ export function Workspace({
                           className={cn(
                             'flex min-h-12 w-full items-center gap-2 pl-10 pr-3 text-left transition-colors',
                             selectedLocalSessionId === session.localSessionId
-                              ? 'bg-surface-2 text-text-primary'
-                              : 'text-text-secondary hover:bg-surface-2/70',
+                              ? 'bg-surface-1 text-text-primary'
+                              : 'text-text-secondary hover:bg-surface-1',
                           )}
                         >
                           <span className="min-w-0 flex-1 truncate text-[14px]">{session.title}</span>
@@ -324,9 +324,9 @@ export function Workspace({
             })}
             {projectsLoading && projects.length === 0 && (
               <div className="space-y-1.5 px-4 py-2">
-                <div className="h-7 animate-pulse rounded bg-surface-2" />
-                <div className="h-7 animate-pulse rounded bg-surface-2" />
-                <div className="h-7 animate-pulse rounded bg-surface-2" />
+                <div className="h-7 animate-pulse rounded bg-surface-1" />
+                <div className="h-7 animate-pulse rounded bg-surface-1" />
+                <div className="h-7 animate-pulse rounded bg-surface-1" />
               </div>
             )}
             {projects.length === 0 && !projectsLoading && activeDevice && !projectsError && (
