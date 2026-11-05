@@ -82,7 +82,9 @@ jobs:
           set -uo pipefail
           BUILD_LOG="$RUNNER_TEMP/ios-archive.log"
           xcodebuild \
-            -project ios/App/App.xcodeproj \
+            # Capacitor's Pods live in the workspace; the bare .xcodeproj
+            # cannot resolve the Capacitor module.
+            -workspace ios/App/App.xcworkspace \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
