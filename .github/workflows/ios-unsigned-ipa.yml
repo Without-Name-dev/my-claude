@@ -1,0 +1,140 @@
+name: iOS unsigned IPA
+
+# Builds the Capacitor shell without code signing and publishes an .ipa.
+# Sign it locally with Sideloadly (free Apple ID) or your own certificate.
+#
+# Runs when the shell or this workflow changes on main, and can also be started
+# from the Actions tab: "iOS unsigned IPA" -> "Run workflow".
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/ios-shell/**"
+      - ".github/workflows/ios-unsigned-ipa.yml"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner label (macos-26 / macos-latest)"
+        required: false
+        default: "macos-26"
+
+permissions:
+  # Publishing the IPA as a release asset makes it downloadable without a
+  # GitHub login, which is how the phone fetches it.
+  contents: write
+  checks: write
+
+concurrency:
+  group: ios-unsigned-ipa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-26' }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          echo "Installed Xcodes:"
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then sudo xcode-select -s "$NEWEST"; fi
+          xcodebuild -version
+
+      - name: Ensure CocoaPods
+        run: command -v pod >/dev/null 2>&1 || sudo gem install cocoapods --no-document
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: packages/ios-shell
+        run: npm install --no-audit --no-fund
+
+      - name: Add the iOS platform
+        working-directory: packages/ios-shell
+        run: |
+          test -d ios || npx cap add ios
+          npx cap sync ios
+
+      - name: Allow the HTTP server
+        working-directory: packages/ios-shell
+        run: |
+          set -euo pipefail
+          PLIST="ios/App/App/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Claude Remote" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$PLIST"
+
+      - name: Build unsigned archive
+        working-directory: packages/ios-shell
+        run: |
+          set -uo pipefail
+          BUILD_LOG="$RUNNER_TEMP/ios-archive.log"
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -archivePath build/App.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive 2>&1 | tee "$BUILD_LOG"
+          exit ${PIPESTATUS[0]}
+
+      - name: Publish build errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG="${RUNNER_TEMP}/ios-archive.log"
+          {
+            echo "commit ${GITHUB_SHA}"
+            grep -nE "error:|fatal error:" "$LOG" | tail -n 300 || true
+          } > errors.txt
+          wc -l errors.txt
+          gh release delete ios-build-errors --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-build-errors errors.txt \
+            --title "iOS build errors" \
+            --notes "Diagnostics from the most recent failed iOS build"
+
+      - name: Package IPA
+        working-directory: packages/ios-shell
+        run: |
+          set -euo pipefail
+          APP="build/App.xcarchive/Products/Applications/App.app"
+          test -d "$APP"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry ClaudeRemote-unsigned.ipa Payload)
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "out/Payload/App.app/Info.plist"
+          ls -lh out/ClaudeRemote-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeRemote-unsigned-ipa
+          path: packages/ios-shell/out/ClaudeRemote-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish IPA as a public release asset
+        working-directory: packages/ios-shell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete ios-latest --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-latest out/ClaudeRemote-unsigned.ipa \
+            --title "iOS unsigned IPA (latest)" \
+            --notes "Built from ${GITHUB_SHA} on $(date -u +%Y-%m-%dT%H:%M:%SZ). Unsigned: sign it before installing."

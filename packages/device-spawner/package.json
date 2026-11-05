@@ -1,0 +1,11 @@
+{
+  "name": "@claude-code-best/device-spawner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Resident connector that lets the Remote Control Server browse local Claude sessions and open a visible terminal for one.",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}
