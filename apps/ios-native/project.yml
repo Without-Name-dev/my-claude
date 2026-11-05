@@ -8,7 +8,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "9.9.9"
-    CURRENT_PROJECT_VERSION: "999"
+    CURRENT_PROJECT_VERSION: "1000"
     DEVELOPMENT_TEAM: ""
 
 targets:
@@ -37,6 +37,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        CADisableMinimumFrameDurationOnPhone: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.jade5197.gypsum9420

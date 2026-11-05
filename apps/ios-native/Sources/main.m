@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <WebKit/WebKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 // A dependency-free shell: one WKWebView pointed at the deployed web UI.
 // Deliberately Objective-C, no Swift runtime, no frameworks, and built with an
@@ -29,14 +30,24 @@
       UIScrollViewContentInsetAdjustmentNever;
   web.opaque = NO;
   web.backgroundColor = [UIColor clearColor];
+  // ProMotion: ask for the full 120Hz range. Without this (and the
+  // CADisableMinimumFrameDurationOnPhone plist key) WKWebView is capped at 60.
+  if (@available(iOS 15.0, *)) {
+    web.scrollView.preferredFrameRateRange =
+        CAFrameRateRangeMake(80.0, 120.0, 120.0);
+  }
 
   UIViewController *controller = [[UIViewController alloc] init];
   controller.view = web;
   self.window.rootViewController = controller;
   [self.window makeKeyAndVisible];
 
-  [web loadRequest:[NSURLRequest requestWithURL:
-                       [NSURL URLWithString:@"http://8.166.138.207/code/"]]];
+  NSURL *url = [NSURL URLWithString:@"http://8.166.138.207/code/"];
+  // Always revalidate the HTML; hashed assets are immutable. A cached
+  // index.html is what makes a freshly deployed UI look unchanged.
+  [web loadRequest:[NSURLRequest requestWithURL:url
+                                     cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                 timeoutInterval:30]];
   return YES;
 }
 
