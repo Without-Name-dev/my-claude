@@ -488,7 +488,14 @@ final class V2SessionRepository {
     func suspend() {
         suspended = true
         prefetchTask?.cancel(); prefetchTask = nil
-        for entry in entries.values { stop(entry); emit(entry, persist: false) }
+        for entry in entries.values {
+            // A foreground event replay only knows what has reached the server.
+            // Refresh the desktop transcript once for sessions being viewed.
+            if !entry.observers.isEmpty && !entry.model.isLocalCreation {
+                entry.needsForegroundSync = true
+            }
+            stop(entry)
+        }
     }
 
     func resume() {
@@ -589,6 +596,13 @@ final class V2SessionRepository {
                         guard entry.connectionID == connectionID else { return }
                         if event.type == "session.subscribed" {
                             // The socket is registered before recovery, closing the snapshot/subscribe race.
+                            // A shared-socket reconnect can arrive while this
+                            // entry still says connected; do not expose stale
+                            // runtime controls while its recovery is in flight.
+                            if entry.connection == .connected { entry.connection = .reconnecting }
+                            entry.projection?.markStale()
+                            self.emit(entry, persist: false)
+                            self.requestForegroundHistoryIfNeeded(entry, connectionID: connectionID)
                             try await self.reconcile(entry)
                             try self.requireCurrent(entry)
                             guard entry.connectionID == connectionID else { return }
@@ -600,19 +614,27 @@ final class V2SessionRepository {
                             do {
                                 try await self.receive(event, entry: entry)
                             } catch {
-                                // Recover promptly from a snapshot instead of
-                                // leaving an undecodable frame unresolved until
-                                // some unrelated future reconnect.
                                 guard isUndecodableEvent(error) else { throw error }
-                                // Drop the frame and keep listening. Rethrowing
-                                // ended the consumer loop, and the coordinator
-                                // replays its per-session buffer to the next
-                                // subscriber - the same undecodable frame came
-                                // back and the session looped on
-                                // load-hydrate-resubscribe-fail for ever.
+                                // Do not resubscribe: that would replay the bad
+                                // buffered frame and can create a retry loop.
+                                // Repair this subscription in place instead;
+                                // merely setting needsSnapshot left it stale
+                                // until some unrelated later disconnect.
                                 entry.needsSnapshot = true
                                 entry.projection?.markStale()
+                                entry.connection = .reconnecting
+                                self.emit(entry, persist: false)
                                 TimelineTrace.shared.record("EVENT.decode", "type=\(event.type)")
+                                _ = try await self.hydrate(entry)
+                                try self.requireCurrent(entry)
+                                guard entry.connectionID == connectionID else { return }
+                                entry.needsSnapshot = false
+                                try await self.reconcile(entry)
+                                try self.requireCurrent(entry)
+                                guard entry.connectionID == connectionID else { return }
+                                entry.connection = .connected
+                                attempt = 0
+                                self.emit(entry, persist: false)
                             }
                         }
                     }
@@ -679,9 +701,44 @@ final class V2SessionRepository {
             invalidateCatalogs(entry)
         }
         emitAfterBacklog(entry)
+        if entry.projection?.data.session.connectorStatus == .online {
+            requestForegroundHistoryIfNeeded(entry, connectionID: entry.connectionID)
+        }
         if entry.projection?.data.session.connectorStatus == .online,
            !wasOnline || previousRuntime != entry.projection?.data.session.effectiveRuntimeId {
             try await reconcile(entry)
+        }
+    }
+
+    /// Ask the connector to reconcile its transcript without holding up event
+    /// replay. The server coalesces repeated requests and skips unchanged data.
+    private func requestForegroundHistoryIfNeeded(_ entry: Entry, connectionID: UUID) {
+        guard entry.needsForegroundSync, entry.foregroundSyncTask == nil,
+              entry.projection?.data.session.connectorStatus == .online else { return }
+        entry.needsForegroundSync = false
+        entry.foregroundSyncTask = Task { [weak self, weak entry] in
+            guard let self, let entry, self.isCurrent(entry),
+                  entry.connectionID == connectionID, !Task.isCancelled else { return }
+            defer {
+                if entry.connectionID == connectionID { entry.foregroundSyncTask = nil }
+            }
+            var attempt = 0
+            while self.isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled {
+                do {
+                    _ = try await self.detail.sync(sessionId: entry.id)
+                    return
+                } catch {
+                    guard self.isCurrent(entry), entry.connectionID == connectionID, !Task.isCancelled else { return }
+                    let failure = V2ClientFailure(error)
+                    TimelineTrace.shared.record("HISTORY.foregroundSyncFailed", "kind=\(failure.kind)")
+                    guard failure.permitsAutomaticReconnect else {
+                        entry.needsForegroundSync = true
+                        return
+                    }
+                    attempt = min(attempt + 1, 6)
+                    do { try await self.sleep(.seconds(min(1 << (attempt - 1), 30))) } catch { return }
+                }
+            }
         }
     }
 
@@ -713,7 +770,16 @@ final class V2SessionRepository {
                 // Apply and advance per page, so a timeout on a later page
                 // resumes where it stopped instead of starting over.
                 var skippedUndecodable = false
-                for event in recovery.events {
+                for (index, event) in recovery.events.enumerated() {
+                    // A recovery page can contain hundreds of decoded events.
+                    // Applying all of them in one main-actor turn blocks input
+                    // and rendering even though the network read was async.
+                    if index > 0 && index.isMultiple(of: 24) {
+                        await Task.yield()
+                        try Task.checkCancellation()
+                        try requireCurrent(entry)
+                        guard entry.connectionID == version else { throw CacheError.invalidated }
+                    }
                     do {
                         try entry.projection?.apply(event)
                     } catch {
@@ -731,6 +797,10 @@ final class V2SessionRepository {
                 }
                 entry.projection?.advanceCursor(recovery.nextCursor)
                 recoveryCursor = recovery.nextCursor
+                // Publish each completed page while runtime state and later
+                // pages are still loading. A slow live-state request must not
+                // keep already recovered messages invisible to the reader.
+                if !recovery.events.isEmpty { emit(entry, persist: false) }
                 if skippedUndecodable { needsSnapshot = true }
                 if !recovery.snapshotRequired { break }
             }
@@ -823,6 +893,9 @@ final class V2SessionRepository {
     }
 
     private func stop(_ entry: Entry) {
+        if entry.foregroundSyncTask != nil { entry.needsForegroundSync = true }
+        entry.foregroundSyncTask?.cancel()
+        entry.foregroundSyncTask = nil
         entry.connectionID = UUID()
         entry.connectionTask?.cancel()
         entry.connectionTask = nil
@@ -864,6 +937,7 @@ private final class Entry {
     let id: V2SessionID
     let model: V2SessionModel
     var needsSnapshot = false
+    var needsForegroundSync = false
     var hasReadLocal = false
     var isDirty = false
     var emitScheduled = false
@@ -881,6 +955,7 @@ private final class Entry {
     var historyTask: Task<V2SessionData, Error>?
     var catalogTask: Task<V2SessionCatalogs, Error>?
     var recoveryTask: Task<Void, Error>?
+    var foregroundSyncTask: Task<Void, Never>?
     var connectionTask: Task<Void, Never>?
     var catalogs: V2SessionCatalogs?
     var catalogScopes: Set<String>?

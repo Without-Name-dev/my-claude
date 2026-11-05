@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Artifact",
+  "description": "Schema for AI-generated artifacts (code, charts, documents)",
+  "type": "object",
+  "required": ["id", "type", "content"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the artifact"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["code", "html", "svg", "markdown", "json", "mermaid", "react"],
+      "description": "Type of artifact content"
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable title for the artifact"
+    },
+    "language": {
+      "type": "string",
+      "description": "Programming language for code artifacts (e.g., javascript, python, go)"
+    },
+    "content": {
+      "type": "string",
+      "description": "The actual artifact content"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the artifact",
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

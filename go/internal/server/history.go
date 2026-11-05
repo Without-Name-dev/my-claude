@@ -82,13 +82,27 @@ func (a *App) refreshLiveHistories(ctx context.Context) {
 // maybeRequestHistory requests a full reconciliation when a session is opened.
 // The connector skips a version it has already sent and the server committed.
 func (a *App) maybeRequestHistory(ctx context.Context, session store.Session) {
+	force := a.historyRequiresForce(ctx, session)
+	a.requestHistory(ctx, session, maxHistoryRequest, true, force)
+}
+
+// Explicit foreground sync must not be swallowed by the periodic history
+// cooldown. The connector still skips an unchanged committed transcript.
+func (a *App) requestExplicitHistory(ctx context.Context, session store.Session) bool {
+	if session.ExternalID == "" || !a.connectors.Online(session.ConnectorID) {
+		return false
+	}
+	force := a.historyRequiresForce(ctx, session)
+	return a.sendHistoryRequest(session, maxHistoryRequest, true, force)
+}
+
+func (a *App) historyRequiresForce(ctx context.Context, session store.Session) bool {
 	items, err := a.db.TimelineItemsLatest(ctx, a.db.Read(), session.ID, 1)
 	_, dirty, dirtyErr := a.db.HistoryImportState(ctx, a.db.Read(), session.ID)
 	if dirtyErr != nil {
 		a.log.Warn("could not read transcript reconciliation state", "session", session.ID, "error", dirtyErr)
 	}
-	force := err != nil || dirtyErr != nil || dirty || len(items) == 0
-	a.requestHistory(ctx, session, maxHistoryRequest, true, force)
+	return err != nil || dirtyErr != nil || dirty || len(items) == 0
 }
 
 // requestHistory sends one transcript request with an explicit window.
@@ -114,8 +128,8 @@ func (a *App) requestChangedHistory(ctx context.Context, session store.Session, 
 	a.sendHistoryRequest(session, limit, full || force, force)
 }
 
-func (a *App) sendHistoryRequest(session store.Session, limit int, full, force bool) {
-	a.connectors.Send(session.ConnectorID, protocol.TypeHistoryRequest, protocol.HistoryRequest{
+func (a *App) sendHistoryRequest(session store.Session, limit int, full, force bool) bool {
+	return a.connectors.Send(session.ConnectorID, protocol.TypeHistoryRequest, protocol.HistoryRequest{
 		SessionID:  session.ID,
 		ExternalID: session.ExternalID,
 		Limit:      limit,

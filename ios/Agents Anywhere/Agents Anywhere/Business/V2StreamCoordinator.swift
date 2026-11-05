@@ -1,8 +1,6 @@
 import Foundation
 
-/// Failures the unified stream reports before it can serve any consumer. After
-/// the first failed connection the coordinator stops trying for this process and
-/// the services keep using the legacy per-session and dashboard sockets.
+/// Failures the unified stream reports before it can serve any consumer.
 nonisolated enum V2StreamError: Error, Hashable, LocalizedError {
     case unavailable
     case readyTimeout
@@ -37,8 +35,7 @@ final class V2StreamCoordinator {
     /// A handful of timeline snapshots can dwarf fifty token deltas, so a new
     /// observer's replay is bounded by bytes as well as event count.
     private static let maximumBufferedBytes = 512 * 1024
-    /// One failed first connection disables the unified endpoint for the whole
-    /// process. Consumers fall back to the legacy sockets and never retry.
+    /// Consumers share the fallback decision until the next foreground retry.
     private static var processFallbackEngaged = false
 
     private let realtimeAPI: any V2RealtimeAPIProtocol
@@ -100,7 +97,19 @@ final class V2StreamCoordinator {
         let suspended = !active
         guard isSuspended != suspended else { return }
         isSuspended = suspended
-        if isSuspended { stopConnection() } else { restartIfNeeded() }
+        if isSuspended {
+            stopConnection()
+        } else {
+            // A previous stall may have forced legacy sockets for the current
+            // process. Backgrounding has stopped those consumers; give the
+            // unified endpoint a fresh attempt instead of requiring a relaunch.
+            if state == .fallback {
+                Self.processFallbackEngaged = false
+                state = .idle
+                clearConnectionBuffers()
+            }
+            restartIfNeeded()
+        }
     }
 
     /// Path changes are a scheduling hint. Offline drops the socket, and the
@@ -204,6 +213,7 @@ final class V2StreamCoordinator {
         if isInvalidated || Self.processFallbackEngaged || state == .fallback {
             throw V2StreamError.unavailable
         }
+        if isSuspended || isOffline { throw V2StreamError.unavailable }
         // Once the unified socket has been established, its own reconnect loop
         // owns recovery. New consumers attach to the existing fan-out instead of
         // opening a second legacy socket while it reconnects; doing otherwise
@@ -338,7 +348,6 @@ final class V2StreamCoordinator {
             }
         }
         var attempt = 0
-        var connectedOnce = false
         while !Task.isCancelled {
             if Self.processFallbackEngaged {
                 // Another coordinator already settled the process on the legacy
@@ -363,7 +372,6 @@ final class V2StreamCoordinator {
                         if !sawReady {
                             let isReconnect = hasEverConnected
                             sawReady = true
-                            connectedOnce = true
                             hasEverConnected = true
                             attempt = 0
                             state = .connected
@@ -376,10 +384,10 @@ final class V2StreamCoordinator {
                     case let .dashboard(snapshot):
                         // Ordering is the contract: anything before ready means
                         // this is not the unified endpoint.
-                        guard sawReady || connectedOnce else { throw V2StreamError.invalidHandshake }
+                        guard sawReady else { throw V2StreamError.invalidHandshake }
                         receiveDashboard(snapshot)
                     case let .session(event):
-                        guard sawReady || connectedOnce else { throw V2StreamError.invalidHandshake }
+                        guard sawReady else { throw V2StreamError.invalidHandshake }
                         receiveSession(event)
                     }
                 }

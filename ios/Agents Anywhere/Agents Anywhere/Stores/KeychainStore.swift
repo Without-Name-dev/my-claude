@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-enum KeychainStoreError: LocalizedError {
+nonisolated enum KeychainStoreError: LocalizedError {
     case unhandledStatus(OSStatus)
 
     var errorDescription: String? {
@@ -18,7 +18,7 @@ enum KeychainStoreError: LocalizedError {
     }
 }
 
-struct KeychainStore {
+nonisolated struct KeychainStore {
     let service = "AgentsAnywhere"
 
     func readString(account: String) throws -> String? {

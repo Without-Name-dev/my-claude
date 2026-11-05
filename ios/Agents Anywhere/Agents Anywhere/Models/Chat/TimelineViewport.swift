@@ -12,14 +12,13 @@ nonisolated struct TimelineViewport: Equatable {
     init(contentHeight: CGFloat = 0, containerHeight: CGFloat = 0,
          topInset: CGFloat = 0, bottomInset: CGFloat = 0, offsetY: CGFloat = 0) {
         self.contentHeight = max(0, contentHeight)
-        visibleHeight = max(0, containerHeight - topInset - bottomInset)
-        visibleBottom = offsetY + containerHeight - bottomInset
+        // ScrollGeometry's container already reflects the occupied safe area
+        // and keyboard. Subtracting the insets a second time both shrank the
+        // viewport and left the calculated bottom above the real tail.
+        visibleHeight = max(0, containerHeight)
+        visibleBottom = offsetY + containerHeight + topInset
         self.offsetY = offsetY
         self.topInset = topInset
-        // The container, not the clamped difference: during a keyboard
-        // transition the insets can exceed the container for a few frames,
-        // and treating the page as unmeasured then disabled every follow
-        // decision exactly while typing.
         measured = containerHeight > 0
     }
 

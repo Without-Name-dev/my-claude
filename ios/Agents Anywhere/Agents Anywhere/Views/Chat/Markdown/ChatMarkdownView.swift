@@ -9,6 +9,7 @@ extension EnvironmentValues {
 
 struct ChatMarkdownView: View {
     let text: String
+    @Environment(\.chatMarkdownFont) private var chatMarkdownFont
     var isStreaming = false
     var resolvesFileReferences = false
     /// Bumped only for an authoritative replacement (not for an appended
@@ -22,15 +23,6 @@ struct ChatMarkdownView: View {
     /// Completed blocks parsed so far; each batch re-parses only the open tail.
     @State private var parseState = MarkdownParseState()
 
-    /// Messages up to this length are parsed before the row is laid out.
-    ///
-    /// A settled row that starts at zero height and inflates after an
-    /// asynchronous parse pushes everything below it when it sits above the
-    /// viewport — the jump seen when swiping up through history. Parsing a
-    /// normal message costs a few milliseconds and happens only when the row is
-    /// realized, so the first layout is already its final height.
-    private static let synchronousParseLimit = 12_000
-
     init(text: String, isStreaming: Bool = false, resolvesFileReferences: Bool = false, layoutGeneration: Int = 0) {
         self.text = text
         self.isStreaming = isStreaming
@@ -43,20 +35,17 @@ struct ChatMarkdownView: View {
            let cached = ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: resolvesFileReferences) {
             _blocks = State(initialValue: cached.blocks)
             _parseState = State(initialValue: cached.state)
-        } else if !isStreaming, text.count <= Self.synchronousParseLimit,
-                  let parsed = try? Self.parse(
-                    ParseRequest(text: text, resolvesFileReferences: resolvesFileReferences, streaming: false),
-                    previous: nil) {
-            _blocks = State(initialValue: parsed.blocks)
-            _parseState = State(initialValue: parsed.state)
-            ChatMarkdownCache.shared.store(
-                ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
-                for: text, resolvesFileReferences: resolvesFileReferences)
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if !isStreaming && blocks.isEmpty && !text.isEmpty {
+                // Reserve a text-sized footprint while the first parse runs.
+                // This is replaced by formatted blocks as soon as they arrive.
+                Text(verbatim: text).font(chatMarkdownFont)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             ForEach(blocks) { block in
                 MarkdownBlockView(block: block, isStreaming: isStreaming, isTail: block.id == blocks.last?.id,
                                   revealDeadline: revealDeadlines[block.id] ?? .distantPast,
@@ -80,20 +69,23 @@ struct ChatMarkdownView: View {
             // Parsing a long response must not block scroll and drawer gestures.
             // Cancelled requests cannot publish an older snapshot over a new reply.
             // Streaming replies reuse the blocks before the last safe boundary.
-            let previous = isStreaming ? parseState : nil
-            let worker = Task.detached(priority: .userInitiated) { try Self.parse(request, previous: previous) }
-            let result = await withTaskCancellationHandler {
-                await worker.result
-            } onCancel: {
-                worker.cancel()
+            let parsed: (blocks: [MarkdownBlockSnapshot], state: MarkdownParseState)
+            if isStreaming {
+                let previous = parseState
+                let worker = Task.detached(priority: .userInitiated) { try Self.parse(request, previous: previous) }
+                let result = await withTaskCancellationHandler {
+                    await worker.result
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard case .success(let value) = result else { return }
+                parsed = value
+            } else {
+                guard let value = try? await SettledParser.shared.parse(request) else { return }
+                parsed = value
             }
-            guard !Task.isCancelled, case .success(let parsed) = result else { return }
+            guard !Task.isCancelled else { return }
             parseState = parsed.state
-            if !isStreaming {
-                ChatMarkdownCache.shared.store(
-                    ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
-                    for: text, resolvesFileReferences: resolvesFileReferences)
-            }
             let next = parsed.blocks
             guard blocks != next else { return }
             if !isStreaming {
@@ -127,6 +119,26 @@ struct ChatMarkdownView: View {
             self.text = text
             self.resolvesFileReferences = resolvesFileReferences
             self.streaming = streaming
+        }
+    }
+
+    /// History rows share one worker so opening a long transcript cannot start
+    /// hundreds of simultaneous parsers. Streaming keeps its own fast path.
+    private actor SettledParser {
+        static let shared = SettledParser()
+
+        func parse(_ request: ParseRequest) throws -> (blocks: [MarkdownBlockSnapshot], state: MarkdownParseState) {
+            try Task.checkCancellation()
+            if let cached = ChatMarkdownCache.shared.value(for: request.text,
+                    resolvesFileReferences: request.resolvesFileReferences) {
+                return (cached.blocks, cached.state)
+            }
+            let parsed = try ChatMarkdownView.parse(request, previous: nil)
+            try Task.checkCancellation()
+            ChatMarkdownCache.shared.store(
+                ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
+                for: request.text, resolvesFileReferences: request.resolvesFileReferences)
+            return parsed
         }
     }
 
@@ -201,19 +213,18 @@ extension ChatMarkdownView {
     /// — the jump seen when swiping up through old messages. Parsing a window
     /// around the reading position ahead of the gesture means a row arrives at
     /// its final height on the first frame instead.
-    nonisolated static func prewarm(_ texts: [String]) {
-        guard !texts.isEmpty else { return }
-        Task.detached(priority: .userInitiated) {
+    nonisolated static func prewarm(_ texts: [String], after previous: Task<Void, Never>? = nil) -> Task<Void, Never>? {
+        guard !texts.isEmpty else { return nil }
+        return Task.detached(priority: .utility) {
+            if let previous { await previous.value }
             for text in texts where !text.isEmpty {
+                guard !Task.isCancelled else { return }
                 if ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: true) != nil { continue }
                 guard ChatMarkdownPrewarmSet.shared.begin(text) else { continue }
                 defer { ChatMarkdownPrewarmSet.shared.end(text) }
                 if ChatMarkdownCache.shared.value(for: text, resolvesFileReferences: true) != nil { continue }
                 let request = ParseRequest(text: text, resolvesFileReferences: true, streaming: false)
-                guard let parsed = try? parse(request, previous: nil) else { continue }
-                ChatMarkdownCache.shared.store(
-                    ChatMarkdownCache.Value(blocks: parsed.blocks, state: parsed.state),
-                    for: text, resolvesFileReferences: true)
+                _ = try? await SettledParser.shared.parse(request)
             }
         }
     }

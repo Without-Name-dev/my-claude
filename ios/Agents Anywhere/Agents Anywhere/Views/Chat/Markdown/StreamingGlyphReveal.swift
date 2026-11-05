@@ -64,11 +64,10 @@ struct StreamingGlyphReveal: ViewModifier {
             // Settled history uses native Text drawing with no clock or glyph walk.
             content.onChange(of: enabled) { _, next in if next { hasStreamed = true } }
         } else {
-            // Every running clock re-evaluates its text each frame, so an idle
-            // block pauses and draws its glyphs settled. 60 fps is enough for a
-            // 0.24 s fade and halves the work on 120 Hz displays.
+            // Only active reveals need a clock. Let the system choose its
+            // cadence so supported ProMotion displays can animate smoothly.
             let running = enabled && stoppedDeadline != deadline && deadline > .now
-            TimelineView(.animation(minimumInterval: 1 / 60, paused: !running)) { timeline in
+            TimelineView(.animation(paused: !running)) { timeline in
                 content.textRenderer(GlyphRevealRenderer(ledger: ledger, now: timeline.date.timeIntervalSinceReferenceDate,
                     enabled: running, revealedPhraseCount: revealedPhraseCount, rises: !plainFade))
             }
@@ -109,12 +108,15 @@ nonisolated struct GlyphRevealRenderer: TextRenderer {
             return
         }
         guard let progress else { return }
-        // Glyphs from one flush share a birth time and so share one effect.
-        // Settled text keeps the system's line/run drawing; only the revealing
-        // suffix is split into per-batch slices. Each batch rasterizes into one
-        // layer with one blur, instead of an offscreen blur per glyph.
+        // Settled text keeps the system's line/run drawing. Revealing slices
+        // with nearly identical progress share a layer, limiting the number of
+        // offscreen blurs even when a stream contains many small batches.
         let batches = progress.batches
-        var slices = [[Text.Layout.RunSlice]](repeating: [], count: batches.count)
+        let effectSteps = 32
+        let batchSteps = batches.map {
+            min(effectSteps - 1, max(0, Int(($0.progress * Double(effectSteps - 1)).rounded())))
+        }
+        var slices = [[Text.Layout.RunSlice]](repeating: [], count: effectSteps)
         var index = 0
         var batch = 0
         for line in layout {
@@ -132,15 +134,15 @@ nonisolated struct GlyphRevealRenderer: TextRenderer {
                     while batch < batches.count && batches[batch].range.upperBound <= index + start { batch += 1 }
                     guard batch < batches.count else { context.draw(run[start..<run.count]); break }
                     let end = min(run.count, batches[batch].range.upperBound - index)
-                    slices[batch].append(run[start..<end])
+                    slices[batchSteps[batch]].append(run[start..<end])
                     start = end
                 }
                 index += run.count
             }
         }
-        for (batch, batchSlices) in zip(batches, slices) where !batchSlices.isEmpty {
+        for (step, batchSlices) in slices.enumerated() where !batchSlices.isEmpty {
             var copy = context
-            let effect = GlyphRevealEffect(progress: batch.progress, rises: rises)
+            let effect = GlyphRevealEffect(progress: Double(step) / Double(effectSteps - 1), rises: rises)
             // Glyphs whose birth is scheduled later draw as a faint ghost
             // instead of nothing: with the typing queue trailing the network,
             // the not-yet-typed tail would otherwise be blank space. A ghost

@@ -12,6 +12,7 @@ struct ChatTimelineView: View {
     /// Reading position the markdown prewarm last covered. Not published: it
     /// moves while the person scrolls and must not invalidate the view.
     @State private var prewarmCursor = ChatPrewarmCursor()
+    @State private var prewarmUpdates = ChatLayoutUpdate<Void>()
     @State private var position = ScrollPosition()
     @State private var scrolling = TimelineScrollState()
     @State private var viewportSample = ChatViewportSample()
@@ -82,7 +83,7 @@ struct ChatTimelineView: View {
                     },
                     onHistoryRowVisibility: { rowID, visible in
                         visibleHistoryRows.setVisible(visible, rowID: rowID)
-                        prewarmAroundReader()
+                        prewarmUpdates.submit(()) { _ in prewarmAroundReader() }
                     },
                     onPromptVisibility: { latestPromptVisible = $0 },
                     onOlderPromptVisibility: { olderPromptVisible = $0 },
@@ -133,7 +134,7 @@ struct ChatTimelineView: View {
                 // the real insets disagreed once already).
                 let geometry = context.geometry
                 TimelineTrace.shared.record("GEOM",
-                    "m=\(mapped) con=\(Int(geometry.containerSize.height)) top=\(Int(geometry.contentInsets.top)) bot=\(Int(geometry.contentInsets.bottom)) vis=\(Int(geometry.visibleRect.height)) vmin=\(Int(geometry.visibleRect.minY)) off=\(Int(geometry.contentOffset.y))")
+                    "m=\(mapped) con=\(Int(geometry.containerSize.height)) top=\(Int(geometry.contentInsets.top)) bot=\(Int(geometry.contentInsets.bottom)) vis=\(Int(geometry.visibleRect.height)) vmin=\(Int(geometry.visibleRect.minY)) off=\(Int(geometry.contentOffset.y)) distance=\(Int(current.distanceFromBottom))")
                 let wasUserScrolling = scrolling.userIsScrolling
                 // Capture growth before publishing this sample: the coalesced
                 // geometry action below compares against scrolling.viewport,
@@ -201,8 +202,8 @@ struct ChatTimelineView: View {
                     rows: "\(model.timeline.rows.count):\(model.timeline.rows.first?.id.prefix(8) ?? "-")…\(model.timeline.rows.last?.id.prefix(8) ?? "-") act=\(model.timeline.subagentActivity?.id.prefix(8) ?? "-")")
                 scrolling.noteUpwardMovement(from: previous, to: value)
                 viewportUpdates.submit(value) { value in
-                    // Offset samples are needed for restoration, but do not change
-                    // the rendered page. Publish only dimensions used by following.
+                    // Keep every sample for restoration, but publish offset changes
+                    // only when they cross a threshold used by the scroll state.
                     viewportSample.value = value
                     let previous = scrolling.viewport
                     let contentHeightChanged = abs(previous.contentHeight - value.contentHeight) > 0.5
@@ -210,7 +211,12 @@ struct ChatTimelineView: View {
                     let bottomEdgeChanged = abs(previous.bottomEdge - value.bottomEdge) > 0.5
                     let topInsetChanged = abs(previous.topInset - value.topInset) > 0.5
                     let layoutChanged = contentHeightChanged || visibleHeightChanged || bottomEdgeChanged || topInsetChanged
-                    if layoutChanged {
+                    let thresholds: [CGFloat] = [TimelineScrollState.bottomTolerance,
+                        TimelineScrollState.bottomButtonTolerance]
+                    let crossedThreshold = thresholds.contains {
+                        (previous.distanceFromBottom <= $0) != (value.distanceFromBottom <= $0)
+                    }
+                    if layoutChanged || previous.isMeasured != value.isMeasured || crossedThreshold {
                         scrolling.geometryChanged(value)
                     }
                     // Follow content growth with the animated return; an
@@ -420,7 +426,10 @@ struct ChatTimelineView: View {
                 }
             }
         }
-        .onDisappear { viewportUpdates.cancel(); historyUpdates.cancel() }
+        .onDisappear {
+            viewportUpdates.cancel(); historyUpdates.cancel(); prewarmUpdates.cancel()
+            prewarmCursor.cancel()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             // Typing is a reason to bring the tail back only for a reader who
             // is still there. Someone reading history keeps their position.
@@ -459,9 +468,11 @@ struct ChatTimelineView: View {
               let index = rows.firstIndex(where: { $0.id == topID }) else { return }
         guard abs(index - prewarmCursor.index) >= 4 else { return }
         prewarmCursor.index = index
-        let lower = max(0, index - 100)
-        let upper = min(rows.count, index + 16)
-        ChatMarkdownView.prewarm(rows[lower..<upper].map(\.text))
+        let lower = max(0, index - 24)
+        let upper = min(rows.count, index + 8)
+        let previous = prewarmCursor.task
+        previous?.cancel()
+        prewarmCursor.task = ChatMarkdownView.prewarm(rows[lower..<upper].map(\.text), after: previous)
     }
     private func loadOlder() {
         guard model.session.isValid, model.session.hasOlderItems,
@@ -501,15 +512,14 @@ struct ChatTimelineView: View {
     private func scrollToBottom(_ command: TimelineScrollState.BottomCommand, using proxy: ScrollViewProxy) {
         // A non-animated pin (keyboard/composer inset tracking) writes the
         // offset directly. proxy.scrollTo("tail") made SwiftUI resolve the
-        // anchor against a viewport whose insets double-count the keyboard
-        // mid-transition; the alternating targets fought another writer in a
-        // ±367 pt loop on device. Clearing the live distance is inset-agnostic.
+        // anchor during the keyboard transition; the alternating targets
+        // fought another writer in a ±367 pt loop on device. Clearing the
+        // effective live distance uses the currently measured viewport.
         if !command.request.animated {
             let target = viewport
             // Clearing the live distance lands on the system's own bottom:
-            // off + (h − visibleBottom) equals contentHeight − container +
-            // bottomInset in every inset convention, and the scroll view
-            // clamps it to the true maximum offset regardless.
+            // off + (h − visibleBottom) moves the content tail to the
+            // effective visible bottom; the scroll view clamps the result.
             let y = target.offsetY + target.distanceFromBottom
             guard y.isFinite else {
                 _ = scrolling.complete(command)
@@ -809,16 +819,17 @@ private struct ChatTimelineContent: View, Equatable {
 
 private extension TimelineViewport {
     init(geometry: ScrollGeometry) {
-        // The inset formula, not visibleRect: during a keyboard transition the
-        // reported visibleRect keeps its pre-keyboard height (con+top+bot,
-        // larger than the container), which broke every at-bottom decision.
-        // The clamped value is used for following decisions and traces;
-        // non-animated pins track keyboard and composer inset changes.
+        // The scroll container is already reduced by the composer and keyboard.
+        // Subtracting the bottom inset again made the real bottom look hundreds
+        // of points away. This is derived from device geometry traces: visible
+        // rect = container + top + bottom insets; its content bottom excludes
+        // the bottom inset, and its height excludes both insets.
         self.init(contentHeight: geometry.contentSize.height,
-            containerHeight: geometry.containerSize.height,
+            visibleHeight: max(0, geometry.visibleRect.height - geometry.contentInsets.top - geometry.contentInsets.bottom),
+            visibleBottom: geometry.visibleRect.maxY - geometry.contentInsets.bottom,
+            offsetY: geometry.contentOffset.y,
             topInset: geometry.contentInsets.top,
-            bottomInset: geometry.contentInsets.bottom,
-            offsetY: geometry.contentOffset.y)
+            measured: geometry.containerSize.height > 0)
     }
 }
 
@@ -842,6 +853,13 @@ private nonisolated struct TimelineHistoryRowFrame: Equatable, Sendable {
 /// window does not restart the parse.
 @MainActor private final class ChatPrewarmCursor {
     var index = -1
+    var task: Task<Void, Never>?
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        index = -1
+    }
 }
 
 @MainActor private final class ChatVisibleHistoryRows {
@@ -941,21 +959,21 @@ final class TimelineTrace {
     }
 
     func offsetSample(previous: TimelineViewport, value: TimelineViewport,
-                      phase: TimelineScrollState.Phase, mode: TimelineScrollState.Mode, rows: String) {
+                      phase: TimelineScrollState.Phase, mode: TimelineScrollState.Mode, rows: @autoclosure () -> String) {
         let dy = value.offsetY - previous.offsetY
         if abs(dy) > 2, phase == .idle {
             record("JUMP", "dy=\(Int(dy)) offset=\(Int(value.offsetY)) h=\(Int(value.contentHeight)) mode=\(mode)")
         }
         let dh = value.contentHeight - previous.contentHeight
         if abs(dh) > 1 {
-            record("HEIGHT", "dh=\(Int(dh)) offset=\(Int(value.offsetY)) phase=\(phase) rows=\(rows)")
+            record("HEIGHT", "dh=\(Int(dh)) offset=\(Int(value.offsetY)) phase=\(phase) rows=\(rows())")
         }
         // A quiet heartbeat, so a trace without events still shows what the
         // page was doing around the moment somebody noticed a jump.
         let now = Date.timeIntervalSinceReferenceDate
         if now - lastSampleAt > 3 {
             lastSampleAt = now
-            record("SAMPLE", "offset=\(Int(value.offsetY)) h=\(Int(value.contentHeight)) vh=\(Int(value.visibleHeight)) phase=\(phase) mode=\(mode) rows=\(rows)")
+            record("SAMPLE", "offset=\(Int(value.offsetY)) h=\(Int(value.contentHeight)) vh=\(Int(value.visibleHeight)) phase=\(phase) mode=\(mode) rows=\(rows())")
         }
     }
 

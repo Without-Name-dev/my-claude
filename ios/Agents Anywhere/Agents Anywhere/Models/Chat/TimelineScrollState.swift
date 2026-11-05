@@ -55,18 +55,9 @@ nonisolated struct TimelineScrollState: Equatable {
     }
     /// Whether the reader is parked at the live tail.
     ///
-    /// Both signals must agree. The end-marker probe reports what is actually
-    /// visible on screen (the offset math cannot know while the keyboard
-    /// resizes the scroll view, because the reported insets double-count the
-    /// keyboard for a few frames) — but the probe's callback does not refresh
-    /// while a scroll animation owns the offset, so on its own it stayed
-    /// stale-true through a streaming reply and suppressed every follow for
-    /// seconds. The live distance catches that: content growth pushes it past
-    /// the tolerance within one frame.
+    /// Use the effective content-space viewport. Tail visibility can lag
+    /// during animations, while the geometry sample tracks the offset.
     var atContentBottom: Bool {
-        if tail.isMeasured {
-            return tail.isAtBottom && viewport.distanceFromBottom <= Self.bottomTolerance * 4
-        }
         guard viewport.isMeasured else { return false }
         return viewport.distanceFromBottom <= Self.bottomTolerance
     }
@@ -76,6 +67,8 @@ nonisolated struct TimelineScrollState: Equatable {
     /// deliberate small scroll into "still at the bottom", so the next streamed
     /// token pulls the reader back down — the ratchet that made the page jump.
     static let bottomTolerance: CGFloat = 8
+    /// Keep the return control out of the way when the reader is near the tail.
+    static let bottomButtonTolerance: CGFloat = 96
     /// New content may move the viewport only when the reader is still parked
     /// at the live tail and neither a gesture nor its pending settlement owns
     /// the offset.
@@ -260,7 +253,6 @@ nonisolated struct TimelineScrollState: Equatable {
         // finger or its inertia must never be fought by a forced scroll.
         guard !userIsScrolling else { return nil }
         guard hasOpened, !navigationIsSuspended, viewport.isMeasured,
-              returningToBottom || tail.isMeasured,
               mode != .reading,
               !interactionIsPresented || returningToBottom else { return nil }
         // A return is issued once even for short content. Subsequent layout
@@ -307,11 +299,11 @@ nonisolated struct TimelineScrollState: Equatable {
     }
 
     func showsBottomButton() -> Bool {
-        // Distance, not the probe: the marker's callbacks are unreliable for a
-        // small clear overlay, and a pill that never appears removes the only
-        // manual way back to the tail.
-        hasOpened && !navigationIsSuspended && phase == .idle
-            && !atContentBottom && activeCommand == nil && pendingBottomRequest == nil
+        // The visibility probe can lag behind a scroll animation. The
+        // effective viewport distance already accounts for the safe area.
+        hasOpened && viewport.isMeasured && !navigationIsSuspended && phase == .idle
+            && viewport.distanceFromBottom > Self.bottomButtonTolerance
+            && activeCommand == nil && pendingBottomRequest == nil
     }
 
     private mutating func invalidateNavigation() {

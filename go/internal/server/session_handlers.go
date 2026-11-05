@@ -1395,7 +1395,14 @@ func (a *App) handleSessionSync(w http.ResponseWriter, r *http.Request, user sto
 		httpx.Fail(w, httpx.Conflict("connector is offline"))
 		return
 	}
-	a.maybeRequestHistory(r.Context(), session)
+	if session.ExternalID == "" {
+		httpx.Fail(w, httpx.Conflict("session has no desktop transcript"))
+		return
+	}
+	if !a.requestExplicitHistory(r.Context(), session) {
+		httpx.Fail(w, httpx.NewError(http.StatusServiceUnavailable, "could not queue history synchronization"))
+		return
+	}
 	httpx.OK(w, map[string]any{"ok": true, "result": map[string]any{"queued": true}, "error": nil})
 }
 

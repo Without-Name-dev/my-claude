@@ -50,13 +50,14 @@ nonisolated final class ChatMarkdownCache: @unchecked Sendable {
     }
 
     func store(_ value: Value, for text: String, resolvesFileReferences: Bool) {
-        guard text.count <= maximumTextLength else { return }
+        let textLength = text.count
+        guard textLength <= maximumTextLength else { return }
         let key = Key(text: text, resolvesFileReferences: resolvesFileReferences)
         lock.lock(); defer { lock.unlock() }
         if let previous = charactersByKey[key] { totalCharacters -= previous }
         entries[key] = value
-        charactersByKey[key] = text.count
-        totalCharacters += text.count
+        charactersByKey[key] = textLength
+        totalCharacters += textLength
         touch(key)
         while order.count > limit || (totalCharacters > characterBudget && order.count > 1) {
             let oldest = order.removeFirst()

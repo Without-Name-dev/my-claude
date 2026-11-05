@@ -18,7 +18,9 @@ final class AppState {
         didSet {
             guard me != oldValue else { return }
             accountAvatarSource = AccountAvatarImageSource.parse(me?.avatar)
-            if let me, let serverURL, let token = accessToken() { restoration.save(profile: me, server: serverURL, token: token) }
+            if !isRestoringProfile, let me, let serverURL, let token = accessToken() {
+                restoration.save(profile: me, server: serverURL, token: token)
+            }
         }
     }
     var chatSelection = ChatShellSelection.newSession {
@@ -62,6 +64,7 @@ final class AppState {
     /// Keychain is the durable source; view bodies and task identities read
     /// this copy instead of performing a Security framework round trip each time.
     @ObservationIgnored private var cachedToken: String?
+    @ObservationIgnored private var isRestoringProfile = false
     @ObservationIgnored private var isInBackground = false
     @ObservationIgnored private var visibleSessionID: V2SessionID?
 
@@ -95,19 +98,26 @@ final class AppState {
         // screen to a signed-in account with no explanation.
         let storedToken: String?
         do {
-            storedToken = try keychain.readString(account: tokenAccount)
+            let account = tokenAccount
+            storedToken = try await Task.detached(priority: .userInitiated) {
+                try KeychainStore().readString(account: account)
+            }.value
         } catch {
+            guard epoch == authenticationEpoch else { return }
             authError = String(localized: "无法读取保存的登录凭据，请稍后重试。")
             route = .signedOut
             return
         }
+        guard epoch == authenticationEpoch else { return }
         guard let token = storedToken, !token.isEmpty else {
             route = .signedOut; return
         }
         cachedToken = token
         serverURL = url
         if let profile = restoration.profile(server: url, token: token) {
+            isRestoringProfile = true
             me = profile
+            isRestoringProfile = false
             chatSelection = restoration.selection(in: .init(serverURL: url, accountID: profile.userId))
             if let services = makeV2Services() { await services.restoreCache(selection: chatSelection) }
         }
@@ -818,16 +828,22 @@ final class AppState {
     func sessionModel(id: V2SessionID) -> V2SessionModel? { sessionRepository?.session(id: id) }
 
     func setAppInBackground(_ background: Bool) {
+        guard isInBackground != background else { return }
         isInBackground = background
         cachedServices?.sessionReads.setActive(!background)
         cachedServices?.agentSetup.setActive(!background)
         if background {
+            cachedServices?.streamCoordinator.setActive(false)
             accountSyncID = UUID(); accountSyncTask?.cancel(); accountSyncTask = nil; isRetryingServerConnection = false
             if let services = cachedServices { Task { await services.flushCache() } }
             dashboardUpdatesTask?.cancel()
             dashboardUpdatesTask = nil
             cachedServices?.sessionRepository.suspend()
         } else {
+            // Restart the shared transport before reattaching session
+            // observers. Both previously ran in separate scene callbacks,
+            // so a session could subscribe while the transport was suspended.
+            cachedServices?.streamCoordinator.setActive(true)
             cachedServices?.sessionRepository.resume()
             startDashboardUpdates()
             beginAccountSynchronization()
@@ -883,7 +899,10 @@ final class AppState {
             }
         }
         services.sessionReads.setVisibleSession(visibleSessionID?.hasPrefix("local:") == true ? nil : visibleSessionID)
-        if isInBackground { services.sessionRepository.suspend() }
+        if isInBackground {
+            services.streamCoordinator.setActive(false)
+            services.sessionRepository.suspend()
+        }
         services.onConnectivityChange = { [weak self, weak services] status in
             guard let self, let services, self.cachedServices === services else { return }
             if status.availability == .offline {

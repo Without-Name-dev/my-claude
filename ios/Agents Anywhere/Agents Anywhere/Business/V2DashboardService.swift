@@ -37,7 +37,9 @@ struct V2DashboardService {
                 throw CancellationError()
             } catch {
                 if let urlError = error as? URLError, urlError.code == .cancelled { throw error }
-                // The coordinator already recorded the process-wide fallback.
+                // A slow or suspended unified connection is retryable, not a
+                // verdict that this server needs the legacy socket.
+                guard streamCoordinator.isUsingFallback else { throw error }
             }
         }
         let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .dashboard)

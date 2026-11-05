@@ -3,7 +3,6 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showingManualLogin = false
 
     var body: some View {
@@ -36,12 +35,6 @@ struct RootView: View {
             // swiping it away would leave a signed-in account on the login
             // screen with no way forward except signing in again.
             .interactiveDismissDisabled(appState.me != nil)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // The unified realtime socket must not stay open in the background;
-            // foregrounding reconnects and asks every open session to recover.
-            if phase == .background { appState.nativeChatServices?.streamCoordinator.setActive(false) }
-            else if phase == .active { appState.nativeChatServices?.streamCoordinator.setActive(true) }
         }
         .announcementGate(
             server: appState.serverURL,

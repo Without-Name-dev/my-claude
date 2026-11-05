@@ -122,7 +122,9 @@ struct V2SessionDetailService {
                 throw CancellationError()
             } catch {
                 if let urlError = error as? URLError, urlError.code == .cancelled { throw error }
-                // The coordinator already recorded the process-wide fallback.
+                // Keep retrying the shared connection unless it has actually
+                // declared fallback. A first-connect timeout alone is not one.
+                guard streamCoordinator.isUsingFallback else { throw error }
             }
         }
         let ticket = try await realtimeAPI.ticket(clientId: clientId, scope: .session(sessionId))

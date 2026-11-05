@@ -88,21 +88,28 @@ nonisolated final class GlyphRevealLedger: @unchecked Sendable {
             let lead = start - now
             let spread = min(max(0, ReplyPresentation.hardRevealLead - lead),
                              Double(added) / ReplyPresentation.revealRate)
-            // At most ~300 groups keeps the per-frame batch walk bounded even
-            // for a large recovery chunk; two glyphs per group at typing rate
-            // reads as continuous writing.
-            let groups = max(1, min(300, Int((Double(added) / Double(ReplyPresentation.revealGroupSize)).rounded(.up))))
-            let size = max(1, Int((Double(added) / Double(groups)).rounded(.up)))
-            let interval = groups > 1 ? spread / Double(groups - 1) : 0
-            var remaining = added
-            var born = start
-            while remaining > 0 {
-                let step = min(remaining, size)
-                births.append((step, born))
-                remaining -= step
-                born += interval
+            // Bound the whole live queue, not just each individual flush. A
+            // burst of large chunks otherwise creates hundreds of blur layers
+            // per frame, especially on a high-refresh display.
+            let maximumGroups = 96
+            let availableGroups = maximumGroups - births.count
+            if availableGroups <= 0 {
+                births[births.count - 1].count += added
+            } else {
+                let groups = max(1, min(availableGroups,
+                    Int((Double(added) / Double(ReplyPresentation.revealGroupSize)).rounded(.up))))
+                let size = max(1, Int((Double(added) / Double(groups)).rounded(.up)))
+                let interval = groups > 1 ? spread / Double(groups - 1) : 0
+                var remaining = added
+                var born = start
+                while remaining > 0 {
+                    let step = min(remaining, size)
+                    births.append((step, born))
+                    remaining -= step
+                    born += interval
+                }
+                nextBirth = start + spread
             }
-            nextBirth = start + spread
         }
         // Finished batches join the settled prefix and leave the per-frame work.
         while let first = births.first, now - first.born >= duration {
