@@ -5,6 +5,7 @@ import type { ChatInputMessage, UserMessageImage } from '../../src/lib/types';
 import type { AvailableCommand } from '../../src/acp/types';
 import { CommandMenu } from './CommandMenu';
 import imageCompression from 'browser-image-compression';
+import { haptic } from '../../src/lib/view-transition';
 
 // 图片压缩配置
 const IMAGE_COMPRESSION_OPTIONS = {
@@ -58,6 +59,7 @@ export function ChatInput({
     const trimmed = text.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
 
+    haptic('light');
     onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
     setText('');
     setImages([]);

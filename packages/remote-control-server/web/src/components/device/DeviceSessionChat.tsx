@@ -363,7 +363,7 @@ export function DeviceSessionChat({
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         <MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />
         {error && (
           <div className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">

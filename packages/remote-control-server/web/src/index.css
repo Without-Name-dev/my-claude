@@ -240,6 +240,58 @@
 /* ============================================================
    Animations — Anthropic entrance effects
    ============================================================ */
+@keyframes rcs-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rcs-enter {
+  animation: rcs-enter 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes rcs-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.rcs-page-enter {
+  animation: rcs-page-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* Native-feeling push/pop between the workspace and a chat. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) {
+    animation: rcs-vt-out 0.18s ease both;
+  }
+  ::view-transition-new(root) {
+    animation: rcs-vt-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+  @keyframes rcs-vt-out {
+    to {
+      opacity: 0.35;
+      transform: translateX(-10px);
+    }
+  }
+  @keyframes rcs-vt-in {
+    from {
+      opacity: 0;
+      transform: translateX(18px);
+    }
+  }
+}
+
 @keyframes fadeUp {
   from {
     opacity: 0;

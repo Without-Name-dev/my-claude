@@ -193,7 +193,7 @@ export function Workspace({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
+    <div className="rcs-page-enter flex min-h-0 flex-1 overflow-hidden">
       <aside
         className={cn(
           'w-full shrink-0 flex-col border-r border-border bg-surface-1 md:flex md:w-[21rem]',

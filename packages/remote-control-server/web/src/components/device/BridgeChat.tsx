@@ -18,6 +18,7 @@ import { ChatView } from '../../../components/chat/ChatView';
 import { ChatInput } from '../../../components/chat/ChatInput';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
+import { haptic } from '../../lib/view-transition';
 import { ChevronDown, ShieldCheck } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
@@ -383,7 +384,7 @@ export function BridgeChat({
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         {header}
         {controlError && (
           <div className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">{controlError}</div>

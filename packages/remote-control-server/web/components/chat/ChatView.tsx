@@ -51,7 +51,7 @@ export function ChatView({
                 return (
                   <div
                     key={item.entry.type === 'tool_call' ? `tool-${item.entry.toolCall.id}` : item.entry.id}
-                    className={cn(entrySpacing(entries, item.index))}
+                    className={cn(entrySpacing(entries, item.index), 'rcs-enter')}
                   >
                     <EntryRenderer entry={item.entry} isLoading={isLoading} onPermissionRespond={onPermissionRespond} />
                   </div>
@@ -59,7 +59,7 @@ export function ChatView({
               }
               // 工具调用组 — 紧贴在助手消息下方
               return (
-                <div key={`group-${item.entries[0]?.toolCall.id ?? item.index}`} className="-mt-2">
+                <div key={`group-${item.entries[0]?.toolCall.id ?? item.index}`} className="-mt-2 rcs-enter">
                   <ToolCallGroup entries={item.entries} onPermissionRespond={onPermissionRespond} />
                 </div>
               );
