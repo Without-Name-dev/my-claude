@@ -48,6 +48,7 @@ function classifyLocalCommandText(
   }
   if (
     synthetic ||
+    /^\s*<(task-notification|system-reminder)\b/i.test(content) ||
     /<local-command-caveat>|<command-name>|<command-message>|<command-args>/.test(
       content,
     )

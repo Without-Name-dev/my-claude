@@ -17,14 +17,14 @@
 static UIColor *CCRBackgroundColor(void) {
   return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
     if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
-      return [UIColor colorWithRed:26.0 / 255.0
-                             green:25.0 / 255.0
-                              blue:23.0 / 255.0
+      return [UIColor colorWithRed:15.0 / 255.0
+                             green:16.0 / 255.0
+                              blue:18.0 / 255.0
                              alpha:1.0];
     }
-    return [UIColor colorWithRed:239.0 / 255.0
-                           green:238.0 / 255.0
-                            blue:233.0 / 255.0
+    return [UIColor colorWithRed:247.0 / 255.0
+                           green:247.0 / 255.0
+                            blue:248.0 / 255.0
                            alpha:1.0];
   }];
 }
@@ -32,14 +32,14 @@ static UIColor *CCRBackgroundColor(void) {
 static UIColor *CCRPrimaryTextColor(void) {
   return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
     if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
-      return [UIColor colorWithRed:239.0 / 255.0
-                             green:238.0 / 255.0
-                              blue:233.0 / 255.0
+      return [UIColor colorWithRed:242.0 / 255.0
+                             green:243.0 / 255.0
+                              blue:245.0 / 255.0
                              alpha:1.0];
     }
-    return [UIColor colorWithRed:26.0 / 255.0
-                           green:25.0 / 255.0
-                            blue:23.0 / 255.0
+    return [UIColor colorWithRed:20.0 / 255.0
+                           green:22.0 / 255.0
+                            blue:26.0 / 255.0
                            alpha:1.0];
   }];
 }
@@ -47,22 +47,22 @@ static UIColor *CCRPrimaryTextColor(void) {
 static UIColor *CCRMutedTextColor(void) {
   return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
     if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
-      return [UIColor colorWithRed:143.0 / 255.0
-                             green:136.0 / 255.0
-                              blue:126.0 / 255.0
+      return [UIColor colorWithRed:111.0 / 255.0
+                             green:118.0 / 255.0
+                              blue:129.0 / 255.0
                              alpha:1.0];
     }
     return [UIColor colorWithRed:139.0 / 255.0
-                           green:133.0 / 255.0
-                            blue:124.0 / 255.0
+                           green:144.0 / 255.0
+                            blue:154.0 / 255.0
                            alpha:1.0];
   }];
 }
 
 static UIColor *CCRBrandColor(void) {
-  return [UIColor colorWithRed:201.0 / 255.0
-                         green:100.0 / 255.0
-                          blue:66.0 / 255.0
+  return [UIColor colorWithRed:217.0 / 255.0
+                         green:119.0 / 255.0
+                          blue:87.0 / 255.0
                          alpha:1.0];
 }
 

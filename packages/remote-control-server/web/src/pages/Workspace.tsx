@@ -200,29 +200,32 @@ export function Workspace({
           mobileChat ? 'hidden' : 'flex',
         )}
       >
-        <div className="border-b border-border px-3 pb-2 pt-2.5">
-          <div className="flex items-center gap-1">
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
-              <input
-                value={search}
-                onChange={event => setSearch(event.target.value)}
-                placeholder="搜索项目或会话"
-                aria-label="搜索项目或会话"
-                className="h-10 w-full rounded-lg border border-border bg-surface-2 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand focus:outline-none sm:text-sm"
-              />
+        <div className="border-b border-border/70 px-3 pb-2.5 pt-1.5">
+          <div className="flex items-center justify-between pb-1.5">
+            <h1 className="px-1 text-[20px] font-semibold tracking-[-0.01em] text-text-primary">会话</h1>
+            <div className="flex items-center">
+              <DebugButton />
+              <ThemeToggle />
+              <button
+                type="button"
+                onClick={() => void refreshDevices(true)}
+                title="刷新设备"
+                aria-label="刷新设备"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+              >
+                <RefreshCw className={cn('h-4 w-4', (loadingDevices || refreshingDevices) && 'animate-spin')} />
+              </button>
             </div>
-            <DebugButton />
-            <ThemeToggle />
-            <button
-              type="button"
-              onClick={() => void refreshDevices(true)}
-              title="刷新设备"
-              aria-label="刷新设备"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
-            >
-              <RefreshCw className={cn('h-4 w-4', (loadingDevices || refreshingDevices) && 'animate-spin')} />
-            </button>
+          </div>
+          <div className="relative min-w-0">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+            <input
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              placeholder="搜索项目或会话"
+              aria-label="搜索项目或会话"
+              className="h-10 w-full rounded-xl border border-transparent bg-surface-2 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand/40 focus:outline-none sm:text-[15px]"
+            />
           </div>
           {devices.length > 0 && (
             <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
@@ -273,7 +276,7 @@ export function Workspace({
                   <button
                     type="button"
                     onClick={() => toggleProject(project)}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-text-secondary transition-colors hover:bg-surface-2/60"
+                    className="flex min-h-12 w-full items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-2/70"
                     title={project.path}
                   >
                     {expanded ? (
@@ -298,13 +301,13 @@ export function Workspace({
                           type="button"
                           onClick={() => selectSession(session.localSessionId)}
                           className={cn(
-                            'flex w-full items-center gap-2 py-2.5 pl-9 pr-3 text-left transition-colors',
+                            'flex min-h-12 w-full items-center gap-2 pl-10 pr-3 text-left transition-colors',
                             selectedLocalSessionId === session.localSessionId
                               ? 'bg-surface-2 text-text-primary'
-                              : 'text-text-secondary hover:bg-surface-2/60',
+                              : 'text-text-secondary hover:bg-surface-2/70',
                           )}
                         >
-                          <span className="min-w-0 flex-1 truncate text-sm">{session.title}</span>
+                          <span className="min-w-0 flex-1 truncate text-[14px]">{session.title}</span>
                           <span className="shrink-0 text-[10px] text-text-muted">
                             {formatRelativeTime(session.updatedAt)}
                           </span>

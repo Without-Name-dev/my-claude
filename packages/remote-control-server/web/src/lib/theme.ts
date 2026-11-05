@@ -27,6 +27,9 @@ function getSystemTheme(): 'light' | 'dark' {
 
 function getStoredTheme(): Theme {
   if (typeof window === 'undefined') return 'system'
+  // ?theme=light|dark previews a theme without touching the saved choice.
+  const forced = new URLSearchParams(window.location.search).get('theme')
+  if (forced === 'light' || forced === 'dark') return forced
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored === 'light' || stored === 'dark' || stored === 'system') {

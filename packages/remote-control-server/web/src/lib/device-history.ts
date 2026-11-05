@@ -162,6 +162,9 @@ export function transcriptToEntries(
           })
         } else if (
           !message.isMeta &&
+          // Injected machine notices are not something the person typed; a raw
+          // <task-notification> block in a right-aligned bubble reads as a bug.
+          !/^\s*<(task-notification|system-reminder)\b/i.test(message.text) &&
           !/<local-command-caveat>|<command-message>|<command-args>|<\/?local-command-std(out|err)>/.test(
             message.text,
           )

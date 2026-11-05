@@ -1,3 +1,4 @@
+import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatInput } from '../../../components/chat/ChatInput';
 import { ChatView } from '../../../components/chat/ChatView';
@@ -425,16 +426,16 @@ export function DeviceSessionChat({
 /** Mobile-only way back; the desktop sidebar already shows the selection. */
 function MobileChatHeader({ title, onBack }: { title: string; onBack: () => void }) {
   return (
-    <div className="flex items-center gap-1 border-b bg-surface-1 px-2 py-1.5 md:hidden">
+    <div className="flex h-12 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5 md:hidden">
       <button
         type="button"
         onClick={onBack}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
         aria-label="返回列表"
       >
-        &larr;
+        <ChevronLeft className="h-5 w-5" />
       </button>
-      <span className="truncate text-sm text-text-secondary">{title}</span>
+      <span className="truncate text-[15px] font-medium text-text-primary">{title}</span>
     </div>
   );
 }

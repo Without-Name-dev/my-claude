@@ -20,7 +20,7 @@ export function ToolCallGroup({ entries, onPermissionRespond }: ToolCallGroupPro
   // 单个工具调用 — 默认折叠，不展开内容详情
   if (entries.length === 1) {
     return (
-      <div className="pl-10">
+      <div>
         <SingleToolCard tool={entries[0].toolCall} compact onPermissionRespond={onPermissionRespond} />
       </div>
     );
@@ -30,8 +30,8 @@ export function ToolCallGroup({ entries, onPermissionRespond }: ToolCallGroupPro
   const summary = buildSummary(entries);
 
   return (
-    <div className="pl-10">
-      <div className="rounded-lg border border-border bg-surface-2/50 overflow-hidden">
+    <div>
+      <div className="rounded-xl border border-border/70 bg-surface-1/60 overflow-hidden">
         {/* 折叠头 */}
         <button
           type="button"

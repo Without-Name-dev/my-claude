@@ -1,113 +1,124 @@
-/* Font imports must precede @import "tailwindcss" per CSS spec */
-@import url("https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Poppins:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
-
 @import "tailwindcss";
 
 /* ============================================================
-   Theme — Refined stone palette (warm gray, not beige)
-   Hue shifted from 85 (yellow-cream) to 65 (warm stone)
-   Brand orange pops harder against cleaner neutrals
+   Theme — quiet, modern product UI (Codex / DeepSeek / Doubao
+   direction): neutral cool greys, system sans, one accent.
+
+   No webfonts on purpose: the shell is used from China, where
+   fonts.googleapis.com stalls the whole stylesheet. The system
+   stack also matches the native splash and status bar.
    ============================================================ */
 @theme {
-  /* Fonts — Lora (serif body) + Poppins (sans-serif UI) + JetBrains Mono */
-  --font-sans: "Lora", Georgia, serif;
-  --font-display: "Poppins", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
+    sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
 
-  /* Brand — signature orange (unchanged) */
-  --color-brand: #c96442;
-  --color-brand-light: #b55838;
-  --color-brand-subtle: oklch(0.65 0.12 30 / 0.08);
+  /* Accent — the Claude orange, dialled back to a softer terracotta */
+  --color-brand: #d97757;
+  --color-brand-light: #c4633f;
+  --color-brand-subtle: rgba(217, 119, 87, 0.1);
 
-  /* Surfaces — warm stone gray (not yellow-beige) */
-  --color-surface-0: #efeee9;
-  --color-surface-1: #f6f5f2;
-  --color-surface-2: #fbfaf8;
-  --color-surface-3: #dfddd8;
+  /* Surfaces — page / panel / card / strong border */
+  --color-surface-0: #f7f7f8;
+  --color-surface-1: #f1f1f3;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #e3e4e8;
 
-  /* Text — warm near-black tones */
-  --color-text-primary: #1a1917;
-  --color-text-secondary: #5e5a54;
-  --color-text-muted: #969088;
+  /* Text */
+  --color-text-primary: #14161a;
+  --color-text-secondary: #5f6570;
+  --color-text-muted: #8b909a;
 
-  /* Inverted — for user message bubbles */
-  --color-bg-inverted: #2c2a27;
-  --color-text-inverted: #f6f5f2;
+  --color-bg-inverted: #1b1d21;
+  --color-text-inverted: #f7f7f8;
 
-  /* User bubble — brand-tinted surface */
-  --color-user-bubble: #c96442;
-  --color-user-bubble-border: #b55838;
+  /* User bubble — light neutral, DeepSeek-style */
+  --color-user-bubble: #eef0f3;
+  --color-user-bubble-border: #e3e5ea;
 
-  /* Warning — refined amber (less construction-zone) */
-  --color-warning-bg: oklch(0.96 0.02 85);
-  --color-warning-border: oklch(0.75 0.14 75);
-  --color-warning-text: oklch(0.4 0.08 60);
+  /* Warning */
+  --color-warning-bg: #fdf6e8;
+  --color-warning-border: #e8b95c;
+  --color-warning-text: #7a5a12;
 
   /* Status */
-  --color-status-active: #5d8a3c;
-  /* The device/connection dots use bg-status-success; without this token the
-     utility is never generated and the "online" dot was invisible. */
-  --color-status-success: #5d8a3c;
-  --color-status-running: #3d72a8;
-  --color-status-idle: #7c3aed;
-  --color-status-error: #b83b31;
-  --color-status-warning: #b88630;
+  --color-status-active: #1f9d63;
+  --color-status-success: #1f9d63;
+  --color-status-running: #3478f6;
+  --color-status-idle: #7c6cf0;
+  --color-status-error: #e5484d;
+  --color-status-warning: #c98a1b;
 
-  /* Tool card */
-  --color-tool-card: #f6f5f2;
+  --color-tool-card: #f7f7f9;
 
-  /* shadcn/ui tokens (oklch — warm stone hue ~65) */
-  --color-background: oklch(0.955 0.006 65);
-  --color-foreground: oklch(0.19 0.008 65);
-  --color-card: oklch(0.975 0.005 65);
-  --color-card-foreground: oklch(0.19 0.008 65);
-  --color-popover: oklch(0.975 0.005 65);
-  --color-popover-foreground: oklch(0.19 0.008 65);
-  --color-primary: oklch(0.19 0.008 65);
-  --color-primary-foreground: oklch(0.97 0.005 65);
-  --color-secondary: oklch(0.955 0.006 65);
-  --color-secondary-foreground: oklch(0.19 0.008 65);
-  --color-muted: oklch(0.935 0.006 65);
-  --color-muted-foreground: oklch(0.48 0.015 65);
-  --color-accent: oklch(0.955 0.006 65);
-  --color-accent-foreground: oklch(0.19 0.008 65);
-  --color-destructive: oklch(0.577 0.245 27.325);
+  /* shadcn/ui tokens */
+  --color-background: #f7f7f8;
+  --color-foreground: #14161a;
+  --color-card: #ffffff;
+  --color-card-foreground: #14161a;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #14161a;
+  --color-primary: #14161a;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f1f1f3;
+  --color-secondary-foreground: #14161a;
+  --color-muted: #f1f1f3;
+  --color-muted-foreground: #7b818b;
+  --color-accent: #f1f1f3;
+  --color-accent-foreground: #14161a;
+  --color-destructive: #e5484d;
 
   /* Border / Input / Ring */
-  --color-border: oklch(0.905 0.008 65);
-  --color-border-light: #dfddd8;
-  --color-input: oklch(0.905 0.008 65);
-  --color-ring: oklch(0.65 0.1 40);
+  --color-border: #e6e7eb;
+  --color-border-light: #eef0f3;
+  --color-input: #e6e7eb;
+  --color-ring: #d97757;
 
-  /* Default utility values */
   --default-border-color: var(--color-border);
   --default-ring-color: var(--color-ring);
 
-  /* Radius */
-  --radius: 0.625rem;
+  --radius: 0.875rem;
 }
 
 /* ============================================================
-   Dark mode — warm stone dark palette
+   Dark mode — neutral charcoal, no warm cast
    ============================================================ */
 .dark {
-  --color-surface-0: #1a1917;
-  --color-surface-1: #222120;
-  --color-surface-2: #2c2a28;
-  --color-surface-3: #3a3835;
-  --color-text-primary: #efeee9;
-  --color-text-secondary: #969088;
-  --color-text-muted: #5e5a54;
-  --color-bg-inverted: #f6f5f2;
-  --color-text-inverted: #2c2a28;
-  --color-user-bubble: #c96442;
-  --color-user-bubble-border: #b55838;
-  --color-border: #3a3835;
-  --color-border-light: #2c2a28;
-  --color-tool-card: #2c2a28;
-  --color-warning-bg: oklch(0.22 0.03 75);
-  --color-warning-border: oklch(0.62 0.12 75);
-  --color-warning-text: oklch(0.82 0.08 85);
+  --color-surface-0: #0f1012;
+  --color-surface-1: #161719;
+  --color-surface-2: #1b1d21;
+  --color-surface-3: #2a2d33;
+  --color-text-primary: #f2f3f5;
+  --color-text-secondary: #a6acb6;
+  --color-text-muted: #6f7681;
+  --color-bg-inverted: #f2f3f5;
+  --color-text-inverted: #161719;
+  --color-user-bubble: #25272c;
+  --color-user-bubble-border: #2f3238;
+  --color-border: #2a2c31;
+  --color-border-light: #232529;
+  --color-tool-card: #1b1d21;
+  --color-warning-bg: #2a2316;
+  --color-warning-border: #7a5c22;
+  --color-warning-text: #f0c877;
+
+  --color-background: #0f1012;
+  --color-foreground: #f2f3f5;
+  --color-card: #1b1d21;
+  --color-card-foreground: #f2f3f5;
+  --color-popover: #1b1d21;
+  --color-popover-foreground: #f2f3f5;
+  --color-primary: #f2f3f5;
+  --color-primary-foreground: #14161a;
+  --color-secondary: #232529;
+  --color-secondary-foreground: #f2f3f5;
+  --color-muted: #232529;
+  --color-muted-foreground: #a6acb6;
+  --color-accent: #232529;
+  --color-accent-foreground: #f2f3f5;
 }
 
 /* ============================================================
@@ -175,6 +186,10 @@
 .rcs-scroller {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  /* The library sets overflow:auto inline, which lets a wide code block make
+     the whole transcript pan sideways under the thumb. Vertical only. */
+  overflow-x: hidden !important;
+  overscroll-behavior-x: none;
 }
 
 /* Safe-area helpers for the iOS wrapper / standalone PWA. */

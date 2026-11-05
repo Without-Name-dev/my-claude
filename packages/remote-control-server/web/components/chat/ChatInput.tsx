@@ -245,9 +245,9 @@ export function ChatInput({
         )}
         <div
           className={cn(
-            'overflow-hidden rounded-2xl border border-border/70 bg-surface-2',
-            'shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-all',
-            'focus-within:border-brand/40 focus-within:shadow-[0_0_0_3px_rgba(201,100,66,0.10)]',
+            'overflow-hidden rounded-[22px] border border-border bg-surface-2',
+            'shadow-[0_2px_10px_rgba(16,18,22,0.05)] transition-all',
+            'focus-within:border-brand/50 focus-within:shadow-[0_2px_14px_rgba(217,119,87,0.12)]',
           )}
         >
           {/* 图片预览 */}
@@ -286,8 +286,8 @@ export function ChatInput({
               aria-label="消息输入框"
               className={cn(
                 'w-full resize-none border-none bg-transparent outline-none',
-                'text-base text-text-primary placeholder:text-text-muted font-display sm:text-sm',
-                'max-h-[200px] min-h-[22px] leading-6',
+                'text-base text-text-primary placeholder:text-text-muted sm:text-[15px]',
+                'max-h-[200px] min-h-[24px] leading-6',
               )}
             />
           </div>
