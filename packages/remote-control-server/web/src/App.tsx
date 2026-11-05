@@ -108,6 +108,17 @@ export default function App() {
       if (height === lastHeight) return;
       lastHeight = height;
       document.documentElement.style.setProperty('--app-height', `${height}px`);
+      // Before this resize lands iOS scrolls the document up to reveal the
+      // focused composer. The shell now fits the keyboard, so there is nothing
+      // left to scroll — reset once. Only height changes run this; doing it on
+      // every scroll event is what used to make the page shake.
+      const reset = () => {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+      };
+      reset();
+      requestAnimationFrame(reset);
     };
     sync();
     viewport.addEventListener('resize', sync);

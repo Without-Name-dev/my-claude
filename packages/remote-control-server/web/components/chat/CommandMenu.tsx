@@ -82,7 +82,12 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
 
   return (
     <div ref={containerRef} className={cn('rounded-xl border border-border bg-surface-2 shadow-lg', className)}>
-      <div className="max-h-[320px] overflow-y-auto py-1">
+      <div
+        className="max-h-[320px] overflow-y-auto py-1"
+        // Never taller than the space above the composer: with the keyboard
+        // open the menu would otherwise be clipped by the status bar.
+        style={{ maxHeight: 'min(320px, calc(var(--app-height, 100dvh) - 210px))' }}
+      >
         {filtered.length === 0 ? (
           <div className="text-xs text-text-muted font-display py-3 text-center">没有匹配的命令</div>
         ) : (

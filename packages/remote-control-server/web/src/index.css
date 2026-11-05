@@ -125,6 +125,13 @@
     /* iOS browser chrome must not resize the app under the keyboard. */
     height: -webkit-fill-available;
   }
+  /* The shell owns its own scroll areas. Never let the document scroll: when it
+     can, iOS pans the whole page up to reveal the composer and leaves the
+     layout stuck half off-screen. */
+  html,
+  body {
+    overflow: hidden;
+  }
   body {
     overscroll-behavior-y: none;
     -webkit-text-size-adjust: 100%;
