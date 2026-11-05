@@ -7,9 +7,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "2.3.0"
-    CURRENT_PROJECT_VERSION: "51"
-    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "9.9.9"
+    CURRENT_PROJECT_VERSION: "999"
     DEVELOPMENT_TEAM: ""
 
 targets:
@@ -43,3 +42,5 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
+        # Older signers do not understand Xcode 26 chained fixups.
+        OTHER_LDFLAGS: "-Wl,-no_fixup_chains"
