@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws'
 import { getEventBus } from './event-bus'
 import type { SessionEvent } from './event-bus'
 import { publishSessionEvent } from '../services/transport'
+import { updateSessionStatus } from '../services/session'
 import { log, error as logError } from '../logger'
 import { toClientPayload } from './client-payload'
 import { config } from '../config'
@@ -248,6 +249,21 @@ function deriveEventType(msg: Record<string, unknown>): string {
 /**
  * Parse a single SDK message from bridge -> publish to EventBus as inbound.
  */
+/**
+ * Last status published per session, so the bus is not flooded with a
+ * session_status event for every streamed assistant chunk. Derived from
+ * message types: any turn activity means running, a result means idle.
+ * This is what makes a turn started *in the terminal* show as working in
+ * the web client — the v1 transport has no worker-status channel.
+ */
+const lastStatusBySession = new Map<string, string>()
+
+function publishDerivedStatus(sessionId: string, status: string): void {
+  if (lastStatusBySession.get(sessionId) === status) return
+  lastStatusBySession.set(sessionId, status)
+  updateSessionStatus(sessionId, status)
+}
+
 export function ingestBridgeMessage(
   sessionId: string,
   msg: Record<string, unknown>,
@@ -333,6 +349,25 @@ export function ingestBridgeMessage(
   }
 
   publishSessionEvent(sessionId, eventType, payload, 'inbound')
+
+  // Synthetic replies (slash-command output, model "<synthetic>") can arrive
+  // after the turn's result; treating them as activity would flip the status
+  // back to running and leave the web spinner stuck on a finished turn.
+  const isSyntheticReply =
+    (eventType === 'assistant' || eventType === 'partial_assistant') &&
+    (msg.message as Record<string, unknown> | undefined)?.model ===
+      '<synthetic>'
+  if (
+    !isSyntheticReply &&
+    (eventType === 'assistant' ||
+      eventType === 'partial_assistant' ||
+      eventType === 'tool_use' ||
+      eventType === 'tool_result')
+  ) {
+    publishDerivedStatus(sessionId, 'running')
+  } else if (eventType === 'result' || eventType === 'result_success') {
+    publishDerivedStatus(sessionId, 'idle')
+  }
 }
 
 /**

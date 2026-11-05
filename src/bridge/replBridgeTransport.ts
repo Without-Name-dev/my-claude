@@ -95,7 +95,15 @@ export function createV1ReplTransport(
     get droppedBatchCount() {
       return hybrid.droppedBatchCount
     },
-    reportState: () => {},
+    // The v1 ingress has no dedicated worker-status endpoint (that is v2),
+    // but it happily relays a session_status event onto the server's bus, which
+    // is exactly what the web client needs to show "working" honestly.
+    reportState: state => {
+      void hybrid.write({
+        type: 'session_status',
+        status: state,
+      } as unknown as StdoutMessage)
+    },
     reportMetadata: () => {},
     reportDelivery: () => {},
     flush: () => Promise.resolve(),

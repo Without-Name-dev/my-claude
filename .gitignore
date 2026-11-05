@@ -56,3 +56,7 @@ credentials.json
 .test-progress.md
 .squash-tmp/
 .git.*-backup
+
+# Capacitor generated platform (CI runs `cap add ios`)
+apps/ios-shell/ios/
+apps/ios-shell/node_modules/

@@ -103,10 +103,13 @@ describe('ws-handler', () => {
         },
         uuid: 'u2',
       })
-      expect(events).toHaveLength(1)
+      // Turn activity also derives a session_status event.
+      expect(events).toHaveLength(2)
       expect((events[0] as any).type).toBe('assistant')
       const payload = (events[0] as any).payload as Record<string, unknown>
       expect(payload.content).toBe('response')
+      expect((events[1] as any).type).toBe('session_status')
+      expect((events[1] as any).payload.status).toBe('running')
     })
 
     test('derives type from explicit type field', () => {
@@ -131,8 +134,10 @@ describe('ws-handler', () => {
         uuid: 'u3',
         result: 'done',
       })
-      expect(events).toHaveLength(1)
+      expect(events).toHaveLength(2)
       expect((events[0] as any).type).toBe('result')
+      expect((events[1] as any).type).toBe('session_status')
+      expect((events[1] as any).payload.status).toBe('idle')
     })
 
     test('derives system type from session_id field', () => {
@@ -165,8 +170,9 @@ describe('ws-handler', () => {
         message: { content: 'partial...' },
         uuid: 'u4',
       })
-      expect(events).toHaveLength(1)
+      expect(events).toHaveLength(2)
       expect((events[0] as any).type).toBe('partial_assistant')
+      expect((events[1] as any).type).toBe('session_status')
     })
 
     test('falls back to unknown type', () => {

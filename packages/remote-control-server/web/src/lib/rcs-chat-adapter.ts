@@ -651,6 +651,14 @@ export class RCSChatAdapter {
             : event.id || generateMessageUuid()
         }`
         this.setEntries(prev => {
+          // A reconnecting bridge re-flushes its initial transcript as fresh
+          // inbound events. Anything whose id is already on screen is that
+          // replay, not a new turn — dropping it here is what stops old
+          // messages from suddenly appearing at the bottom of the chat.
+          const seen = prev.some(
+            entry => entry.type === 'assistant_message' && entry.id === assistantId,
+          )
+          if (seen) return prev
           const lastEntry = prev[prev.length - 1]
 
           // Append only to the same message; a different uuid is a distinct
@@ -932,6 +940,11 @@ export class RCSChatAdapter {
 
   setPermissionMode(mode: string): Promise<string> {
     return this.sendControlRequest({ subtype: 'set_permission_mode', mode })
+  }
+
+  /** Change the model effort level; the CLI applies it to the live session. */
+  setEffort(effort: string): Promise<string> {
+    return this.sendControlRequest({ subtype: 'set_effort', effort })
   }
 
   /** 发送用户消息 */

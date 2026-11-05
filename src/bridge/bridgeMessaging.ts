@@ -318,6 +318,8 @@ export type ServerControlRequestHandlers = {
   onSetPermissionMode?: (
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
+  /** Apply an effort level chosen from the web/iOS client. */
+  onSetEffort?: (effort: string) => { ok: true } | { ok: false; error: string }
 }
 
 const OUTBOUND_ONLY_ERROR =
@@ -344,6 +346,7 @@ export function handleServerControlRequest(
     onSetModel,
     onSetMaxThinkingTokens,
     onSetPermissionMode,
+    onSetEffort,
   } = handlers
   if (!transport) {
     logForDebugging(
@@ -362,6 +365,7 @@ export function handleServerControlRequest(
     model?: string
     max_thinking_tokens?: number | null
     mode?: string
+    effort?: string
     [key: string]: unknown
   }
   if (outboundOnly && req.subtype !== 'initialize') {
@@ -436,6 +440,33 @@ export function handleServerControlRequest(
         ok: false,
         error:
           'set_permission_mode is not supported in this context (onSetPermissionMode callback not registered)',
+      }
+      if (verdict.ok) {
+        response = {
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: request.request_id,
+          },
+        }
+      } else {
+        response = {
+          type: 'control_response',
+          response: {
+            subtype: 'error',
+            request_id: request.request_id,
+            error: (verdict as { ok: false; error: string }).error,
+          },
+        }
+      }
+      break
+    }
+
+    case 'set_effort': {
+      const verdict = onSetEffort?.(String(req.effort ?? '')) ?? {
+        ok: false,
+        error:
+          'set_effort is not supported in this context (onSetEffort callback not registered)',
       }
       if (verdict.ok) {
         response = {

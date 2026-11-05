@@ -35,7 +35,9 @@ export function ChatView({
   const hasMessages = entries.length > 0;
 
   // 检查是否正在加载（最后一个条目是用户消息）
-  const showThinking = isLoading && entries.length > 0 && entries[entries.length - 1]?.type === 'user_message';
+  // Keep the indicator visible for every busy turn, including ones started
+  // in the terminal and turns currently running a tool.
+  const showThinking = isLoading && entries.length > 0;
 
   return (
     <Conversation className="flex-1">

@@ -1280,8 +1280,10 @@ describe('V1 Session Ingress Routes (HTTP)', () => {
     expect(res.status).toBe(200)
 
     const events = getEventBus(id).getEventsSince(0)
-    expect(events).toHaveLength(1)
+    // Assistant activity also derives a session_status 'running' event.
+    expect(events).toHaveLength(2)
     expect(events[0]?.type).toBe('assistant')
+    expect(events[1]?.type).toBe('session_status')
   })
 
   test('GET /v2/session_ingress/ws/:sessionId — accepts small payload into handler', async () => {

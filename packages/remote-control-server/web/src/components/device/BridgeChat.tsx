@@ -134,6 +134,12 @@ export function BridgeChat({
           }
         },
         onTurnComplete: () => setIsLoading(false),
+        // The CLI reports the authoritative turn state. Without this, a turn
+        // started in the terminal looked idle in the browser, and the first
+        // streamed assistant chunk cleared the spinner prematurely.
+        onStatusChange: status => {
+          setIsLoading(status === 'running' || status === 'requires_action');
+        },
         onStreamOpen: controlled
           ? () => onBridgeReadyRef.current?.()
           : undefined,
@@ -171,20 +177,57 @@ export function BridgeChat({
     };
   }, [adapter]);
 
-  useEffect(() => {
-    if (entries.length === 0) return;
-    const last = entries[entries.length - 1];
-    if (last?.type === 'assistant_message') setIsLoading(false);
-    if (last?.type === 'tool_call' && last.toolCall.status !== 'running') {
-      setIsLoading(false);
-    }
-  }, [entries]);
+
+  const appendCommandOutput = useCallback(
+    (text: string) => {
+      const id = `command-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+      setEntries(prev => [
+        ...prev,
+        { type: 'command_output', id, text },
+      ]);
+    },
+    [setEntries],
+  );
 
   const submit = useCallback(
     async (message: ChatInputMessage) => {
       const text = message.text.trim();
       if (!text) return;
       setError('');
+
+      // /effort is a local-jsx command in the CLI, so it cannot be sent as a
+      // chat turn. Route the useful text form through the bridge control
+      // channel instead.
+      const effortMatch = text.match(/^\/effort(?:\s+(.*))?$/i);
+      if (effortMatch) {
+        const arg = (effortMatch[1] ?? '').trim().toLowerCase();
+        if (!arg || arg === 'status' || arg === 'current') {
+          appendCommandOutput(
+            'effort 由终端会话管理。可用 /effort low|medium|high|xhigh|max|auto 设置。',
+          );
+          return;
+        }
+        const levels = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'];
+        if (!levels.includes(arg)) {
+          appendCommandOutput('用法：/effort low|medium|high|xhigh|max|auto');
+          return;
+        }
+        if (!connected) {
+          setError('终端已关闭，请重新打开终端');
+          return;
+        }
+        setControlPending(true);
+        setControlError('');
+        try {
+          await adapter.setEffort(arg);
+          appendCommandOutput(`已设置 effort：${arg}`);
+        } catch (err) {
+          setControlError(err instanceof Error ? err.message : '切换 effort 失败');
+        } finally {
+          setControlPending(false);
+        }
+        return;
+      }
       // `connected` is maintained by the server's bridge_state SSE event, so
       // sending costs no extra request. If the terminal is gone, hand the
       // text to the parent, which queues it and reopens the terminal.
@@ -201,7 +244,7 @@ export function BridgeChat({
         setError(err instanceof Error ? err.message : '发送失败');
       }
     },
-    [adapter, connected, onTerminalUnavailable],
+    [adapter, appendCommandOutput, connected, onTerminalUnavailable],
   );
 
   const changeModel = useCallback(
@@ -380,9 +423,13 @@ export function BridgeChat({
               <span
                 className={cn(
                   'ml-1 mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full',
-                  connected ? 'bg-status-success' : 'animate-pulse bg-status-error',
+                  isLoading
+                    ? 'animate-pulse bg-brand'
+                    : connected
+                      ? 'bg-status-success'
+                      : 'bg-status-error',
                 )}
-                title={connected ? '已连接' : '连接断开'}
+                title={isLoading ? '处理中' : connected ? '已连接' : '连接断开'}
               />
               <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
                 <ShieldCheck

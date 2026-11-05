@@ -11,7 +11,7 @@ on:
     branches:
       - main
     paths:
-      - "packages/ios-shell/**"
+      - "apps/ios-shell/**"
       - ".github/workflows/ios-unsigned-ipa.yml"
   workflow_dispatch:
     inputs:
@@ -55,17 +55,17 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         run: npm install --no-audit --no-fund
 
       - name: Add the iOS platform
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         run: |
           test -d ios || npx cap add ios
           npx cap sync ios
 
       - name: Allow the HTTP server
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         run: |
           set -euo pipefail
           PLIST="ios/App/App/Info.plist"
@@ -76,7 +76,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$PLIST"
 
       - name: Build unsigned archive
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         run: |
           set -uo pipefail
           BUILD_LOG="$RUNNER_TEMP/ios-archive.log"
@@ -110,7 +110,7 @@ jobs:
             --notes "Diagnostics from the most recent failed iOS build"
 
       - name: Package IPA
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         run: |
           set -euo pipefail
           APP="build/App.xcarchive/Products/Applications/App.app"
@@ -125,12 +125,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClaudeRemote-unsigned-ipa
-          path: packages/ios-shell/out/ClaudeRemote-unsigned.ipa
+          path: apps/ios-shell/out/ClaudeRemote-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
       - name: Publish IPA as a public release asset
-        working-directory: packages/ios-shell
+        working-directory: apps/ios-shell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

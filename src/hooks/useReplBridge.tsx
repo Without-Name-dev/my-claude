@@ -25,6 +25,8 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
 import type { Message } from '../types/message.js';
 import { getCwd } from '../utils/cwd.js';
+import { isEffortLevel, toPersistableEffort } from '../utils/effort.js';
+import { updateSettingsForSource } from '../utils/settings/settings.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
 import { enqueue } from '../utils/messageQueueManager.js';
@@ -475,6 +477,29 @@ export function useReplBridge(
                 if (prev.mainLoopModelForSession === resolved) return prev;
                 return { ...prev, mainLoopModelForSession: resolved };
               });
+            },
+            onSetEffort(effort) {
+              const value = effort.trim().toLowerCase();
+              if (value === 'auto') {
+                const result = updateSettingsForSource('userSettings', {
+                  effortLevel: undefined,
+                });
+                if (result.error) return { ok: false, error: result.error.message };
+                setAppState(prev => ({ ...prev, effortValue: undefined }));
+                return { ok: true };
+              }
+              if (!isEffortLevel(value)) {
+                return {
+                  ok: false,
+                  error: 'Invalid effort. Valid options are: low, medium, high, xhigh, max, auto',
+                };
+              }
+              const result = updateSettingsForSource('userSettings', {
+                effortLevel: toPersistableEffort(value),
+              });
+              if (result.error) return { ok: false, error: result.error.message };
+              setAppState(prev => ({ ...prev, effortValue: value }));
+              return { ok: true };
             },
             onSetMaxThinkingTokens(maxTokens) {
               const enabled = maxTokens !== null;
