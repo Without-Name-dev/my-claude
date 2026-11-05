@@ -59,9 +59,23 @@ jobs:
           # Tolerate pre-existing flaky tests (Bun mock pollution / order-dependent state).
           # We still require lcov.info to be generated and contain real coverage data.
           set -o pipefail
-          bun test --coverage --coverage-reporter lcov --coverage-dir coverage 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
+          bun test --coverage --coverage-reporter lcov --coverage-dir coverage > test.log 2>&1 || test_code=$?
+          grep -vE '^\s*(\(pass\)|\(skip\))' test.log | sed '/^.*\/__tests__\/.*:$/d' | cat -s
           test -s coverage/lcov.info
           grep -q '^SF:' coverage/lcov.info
+          exit ${test_code:-0}
+
+      - name: Publish test failures
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "commit ${GITHUB_SHA}"
+            grep -E '^\(fail\)|^error:' test.log | head -n 120 || true
+          } > test-errors.txt
+          gh release delete ci-type-errors --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ci-type-errors test-errors.txt             --title "CI diagnostics" --notes "Failing tests from the latest run"
 
       # codecov 坏了，老是失败，先注释掉
       # - name: Upload coverage to Codecov
