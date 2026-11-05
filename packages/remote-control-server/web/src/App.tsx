@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { ThemeProvider } from './lib/theme';
-import { haptic, withViewTransition } from './lib/view-transition';
+import { haptic } from './lib/view-transition';
 import { getUuid, setUuid, apiBind } from './api/client';
 import { DebugPanel } from './components/DebugPanel';
 import { enableDebug } from './lib/debug-log';
@@ -143,11 +143,9 @@ export default function App() {
 
   const goWorkspace = useCallback(() => {
     haptic('light');
-    withViewTransition(() => {
-      window.history.pushState(null, '', '/code/');
-      setBridgeSessionId(null);
-      setWorkspace({});
-    });
+    window.history.pushState(null, '', '/code/');
+    setBridgeSessionId(null);
+    setWorkspace({});
   }, []);
 
   const navigateSession = useCallback((deviceId: string, localSessionId?: string) => {
@@ -155,11 +153,9 @@ export default function App() {
     const path = localSessionId
       ? `/code/d/${encodeURIComponent(deviceId)}/s/${encodeURIComponent(localSessionId)}`
       : `/code/d/${encodeURIComponent(deviceId)}`;
-    withViewTransition(() => {
-      window.history.pushState(null, '', path);
-      setBridgeSessionId(null);
-      setWorkspace(localSessionId ? { deviceId, localSessionId } : { deviceId });
-    });
+    window.history.pushState(null, '', path);
+    setBridgeSessionId(null);
+    setWorkspace(localSessionId ? { deviceId, localSessionId } : { deviceId });
   }, []);
 
   return (

@@ -465,7 +465,9 @@ static NSString *const CCRAppearanceChangedNotification =
                                      configuration:configuration];
   web.autoresizingMask =
       UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-  web.allowsBackForwardNavigationGestures = YES;
+  // The page implements its own edge swipe so it can animate the panel
+  // (and avoid the system snapshot flash); keep WebKit's from doubling it.
+  web.allowsBackForwardNavigationGestures = NO;
   web.navigationDelegate = self;
   // Without a WKUIDelegate, window.confirm() returns false and
   // window.alert() does nothing — the "restart terminal" confirmation in the

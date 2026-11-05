@@ -57,6 +57,17 @@ export function Workspace({
     setMobileChat(Boolean(routeSessionId));
   }
 
+  // Panel-level slide instead of a full-page snapshot: the chat slides in over
+  // the list, and returning fades the list in. Snapshot transitions flashed
+  // white inside the WKWebView.
+  const [navDir, setNavDir] = useState<'push' | 'pop' | null>(null);
+  const playNav = useCallback((dir: 'push' | 'pop') => setNavDir(dir), []);
+  useEffect(() => {
+    if (!navDir) return;
+    const timer = window.setTimeout(() => setNavDir(null), 340);
+    return () => window.clearTimeout(timer);
+  }, [navDir]);
+
   const refreshDevices = useCallback(
     async (manual = false) => {
       if (manual) setRefreshingDevices(true);
@@ -167,12 +178,104 @@ export function Workspace({
 
   const selectSession = useCallback(
     (localSessionId: string) => {
+      playNav('push');
       setSelectedLocalSessionId(localSessionId);
       setMobileChat(true);
       onNavigate(activeDeviceId, localSessionId);
     },
-    [activeDeviceId, onNavigate],
+    [activeDeviceId, onNavigate, playNav],
   );
+
+  // Closing the chat: the header button plays the list fade-in, the gesture
+  // has already slid the panel away and must not animate again.
+  const closeChat = useCallback(
+    (withAnimation = true) => {
+      if (withAnimation) playNav('pop');
+      setMobileChat(false);
+      setSelectedLocalSessionId('');
+      onNavigate(activeDeviceId);
+    },
+    [activeDeviceId, onNavigate, playNav],
+  );
+
+  // Edge-swipe back with the finger: the panel follows the thumb, then either
+  // finishes off-screen or springs back. Replaces the system snapshot gesture,
+  // which flashed inside the WKWebView.
+  const chatPanelRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const panel = chatPanelRef.current;
+    if (!panel || !mobileChat) return;
+    let tracking = false;
+    let horizontal = false;
+    let dx = 0;
+    let startX = 0;
+    let startY = 0;
+    let startedAt = 0;
+
+    const settle = (to: number, then?: () => void) => {
+      panel.style.transition = 'transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1)';
+      panel.style.transform = `translate3d(${to}px, 0, 0)`;
+      window.setTimeout(() => {
+        panel.style.transition = '';
+        panel.style.transform = '';
+        then?.();
+      }, 220);
+    };
+
+    const onStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      if (touch.clientX > 28) return;
+      tracking = true;
+      horizontal = false;
+      dx = 0;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startedAt = performance.now();
+    };
+
+    const onMove = (event: TouchEvent) => {
+      if (!tracking) return;
+      const touch = event.touches[0];
+      const moveX = touch.clientX - startX;
+      const moveY = touch.clientY - startY;
+      if (!horizontal) {
+        if (Math.abs(moveX) < 6 && Math.abs(moveY) < 6) return;
+        if (Math.abs(moveX) <= Math.abs(moveY)) {
+          tracking = false;
+          return;
+        }
+        horizontal = true;
+        panel.style.transition = 'none';
+      }
+      dx = Math.max(0, moveX);
+      event.preventDefault();
+      panel.style.transform = `translate3d(${dx}px, 0, 0)`;
+    };
+
+    const onEnd = () => {
+      if (!tracking) return;
+      tracking = false;
+      if (!horizontal) return;
+      const fast = dx / Math.max(performance.now() - startedAt, 1) > 0.5;
+      if (dx > panel.offsetWidth * 0.28 || fast) {
+        settle(panel.offsetWidth, () => closeChat(false));
+      } else {
+        settle(0);
+      }
+    };
+
+    panel.addEventListener('touchstart', onStart, { passive: true });
+    panel.addEventListener('touchmove', onMove, { passive: false });
+    panel.addEventListener('touchend', onEnd);
+    panel.addEventListener('touchcancel', onEnd);
+    return () => {
+      panel.removeEventListener('touchstart', onStart);
+      panel.removeEventListener('touchmove', onMove);
+      panel.removeEventListener('touchend', onEnd);
+      panel.removeEventListener('touchcancel', onEnd);
+    };
+  }, [mobileChat, closeChat]);
 
   const activeDevice = devices.find(device => device.id === activeDeviceId);
   const query = search.trim().toLowerCase();
@@ -207,8 +310,8 @@ export function Workspace({
     <div className="rcs-page-enter flex min-h-0 flex-1 overflow-hidden">
       <aside
         className={cn(
-          'w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem]',
-          mobileChat ? 'hidden' : 'flex',
+          'w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
+          navDir === 'pop' && 'rcs-nav-pop',
         )}
       >
         <div className="border-b border-border/70 px-3 pb-2.5 pt-1.5">
@@ -352,18 +455,21 @@ export function Workspace({
         </div>
       </aside>
 
-      <main className={cn('min-h-0 min-w-0 flex-1 flex-col bg-surface-0', mobileChat ? 'flex' : 'hidden md:flex')}>
+      <main
+        ref={chatPanelRef}
+        className={cn(
+          'min-h-0 min-w-0 flex-1 flex-col bg-surface-0 max-md:absolute max-md:inset-0 max-md:z-10',
+          mobileChat ? 'flex' : 'hidden md:flex',
+          navDir === 'push' && 'rcs-nav-push',
+        )}
+      >
         {selectedLocalSessionId && activeDeviceId ? (
           <DeviceSessionChat
             key={`${activeDeviceId}:${selectedLocalSessionId}`}
             deviceId={activeDeviceId}
             localSessionId={selectedLocalSessionId}
             deviceName={activeDevice?.name}
-            onBack={() => {
-              setMobileChat(false);
-              setSelectedLocalSessionId('');
-              onNavigate(activeDeviceId);
-            }}
+            onBack={() => closeChat(true)}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center">
