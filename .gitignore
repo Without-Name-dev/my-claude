@@ -60,3 +60,8 @@ credentials.json
 # Capacitor generated platform (CI runs `cap add ios`)
 apps/ios-shell/ios/
 apps/ios-shell/node_modules/
+
+# XcodeGen output
+apps/ios-native/*.xcodeproj/
+apps/ios-native/build/
+apps/ios-native/out/

@@ -1,0 +1,85 @@
+name: iOS native shell IPA
+
+# A dependency-free WKWebView shell. No CocoaPods and no nested frameworks, so
+# sideloading tools only have one binary to re-sign.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/ios-native/**"
+      - ".github/workflows/ios-native.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-native
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then sudo xcode-select -s "$NEWEST"; fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the project
+        working-directory: apps/ios-native
+        run: xcodegen generate
+
+      - name: Build unsigned
+        working-directory: apps/ios-native
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ClaudeRemote.xcodeproj \
+            -target ClaudeRemote \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee "$RUNNER_TEMP/native-build.log"
+          tail -n 20 "$RUNNER_TEMP/native-build.log"
+
+      - name: Package IPA
+        working-directory: apps/ios-native
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/ClaudeRemote.app"
+          test -d "$APP"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          (cd out && zip -qry ClaudeRemote-native.ipa Payload)
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "out/Payload/ClaudeRemote.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "out/Payload/ClaudeRemote.app/Info.plist"
+          ls -lh out/ClaudeRemote-native.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeRemote-native-ipa
+          path: apps/ios-native/out/ClaudeRemote-native.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        working-directory: apps/ios-native
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete ios-native-latest --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create ios-native-latest out/ClaudeRemote-native.ipa \
+            --title "iOS native shell (latest)" \
+            --notes "Built from ${GITHUB_SHA}. Unsigned: sign it with Sideloadly/AltStore."
