@@ -33,7 +33,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Lint and format check
-        run: bunx biome ci .
+        # Pin the version the codebase is formatted against; a floating bunx
+        # resolution pulls the latest biome whose new rules (and markdown/yml
+        # formatting) fail this repo.
+        run: bunx @biomejs/biome@2.4.12 ci .
 
       - name: Type check
         run: bun run typecheck

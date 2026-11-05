@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Capacitor iOS shell for the Remote Control Server web UI",
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0"
+    "@capacitor/cli": "^7.0.0",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@capacitor/core": "^7.0.0",
