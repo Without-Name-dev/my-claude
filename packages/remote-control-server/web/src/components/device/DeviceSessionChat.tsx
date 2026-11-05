@@ -16,6 +16,9 @@ import {
 } from '../../api/devices';
 import { BridgeChat } from './BridgeChat';
 
+/** One screenful plus context; older pages are fetched on demand. */
+const HISTORY_PAGE = 30;
+
 function isBridgeFresh(detail: DeviceSessionDetail): boolean {
   if (!detail.bridgeSessionId) return false;
   // A stale mapping must never mount the live chat: the SSE endpoint answers
@@ -70,7 +73,9 @@ export function DeviceSessionChat({
   const loadHistory = useCallback(
     async (before?: string) => {
       const page = await fetchHistory(deviceId, localSessionId, {
-        limit: 100,
+        // A phone screen shows ~3 messages. Pulling 100 and rendering them all
+        // made the first paint expensive; older pages load on demand.
+        limit: HISTORY_PAGE,
         ...(before ? { before } : {}),
       });
       const converted = transcriptToEntries(page.messages);
@@ -106,7 +111,7 @@ export function DeviceSessionChat({
    */
   const syncHistory = useCallback(async () => {
     try {
-      const page = await fetchHistory(deviceId, localSessionId, { limit: 100 });
+      const page = await fetchHistory(deviceId, localSessionId, { limit: HISTORY_PAGE });
       const converted = transcriptToEntries(page.messages);
       setEntries(previous => mergeHistoryPage(previous, converted));
     } catch {

@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { cn } from '../../src/lib/utils';
 import { ArrowDownIcon, UserIcon } from 'lucide-react';
 import type { ComponentProps } from 'react';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -12,17 +12,27 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 const reduceMotion =
   typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 
-export const Conversation = ({ className, ...props }: ConversationProps) => (
-  <StickToBottom
-    className={cn('relative min-h-0 flex-1 overflow-y-hidden overflow-x-hidden', className)}
-    // A long transcript used to glide for a second on open, and every keyboard
-    // resize re-animated the scroll. Respect the system motion setting.
-    initial={reduceMotion ? 'instant' : 'smooth'}
-    resize={reduceMotion ? 'instant' : 'smooth'}
-    role="log"
-    {...props}
-  />
-);
+export const Conversation = ({ className, ...props }: ConversationProps) => {
+  // The first history page lands a beat after mount. Letting the scroller
+  // "smoothly" travel that distance animated the whole transcript past the
+  // eye (and dropped frames); keep it instant during startup, then animate
+  // small growth (streaming text) afterwards.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(true), 1500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <StickToBottom
+      className={cn('relative min-h-0 flex-1 overflow-y-hidden overflow-x-hidden', className)}
+      initial="instant"
+      resize={settled && !reduceMotion ? 'smooth' : 'instant'}
+      role="log"
+      {...props}
+    />
+  );
+};
 
 export type ConversationContentProps = ComponentProps<typeof StickToBottom.Content>;
 

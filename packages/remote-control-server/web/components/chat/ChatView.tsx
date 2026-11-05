@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { ThreadEntry, ToolCallEntry, PlanDisplayEntry } from '../../src/lib/types';
 import { cn } from '../../src/lib/utils';
 import { UserBubble, AssistantBubble } from './MessageBubble';
@@ -34,6 +35,30 @@ export function ChatView({
   const grouped = groupToolCalls(entries);
   const hasMessages = entries.length > 0;
 
+  // Entrance animation belongs to messages that arrive while you are watching.
+  // A history page can drop 30-100 entries in at once; animating all of them
+  // turned the first screen into a frame-dropping wall of motion.
+  const animatedKeys = useRef<Set<string>>(new Set());
+  const previousCount = useRef(entries.length);
+  const added = entries.length - previousCount.current;
+  if (added > 0 && added <= 2) {
+    for (const entry of entries.slice(previousCount.current)) {
+      animatedKeys.current.add(entryDomKey(entry));
+    }
+  }
+  previousCount.current = entries.length;
+
+  // Paint the newest few messages first, then fill the rest of the page in on
+  // the next tick. The transcript is pinned to the bottom either way, so the
+  // extra rows appear above the thumb instead of flashing a wall of text.
+  const [revealAll, setRevealAll] = useState(false);
+  useEffect(() => {
+    if (revealAll || entries.length === 0) return;
+    const timer = window.setTimeout(() => setRevealAll(true), 80);
+    return () => window.clearTimeout(timer);
+  }, [entries.length, revealAll]);
+  const visibleGroups = revealAll ? grouped : grouped.slice(-6);
+
   // 检查是否正在加载（最后一个条目是用户消息）
   // Keep the indicator visible for every busy turn, including ones started
   // in the terminal and turns currently running a tool.
@@ -53,12 +78,15 @@ export function ChatView({
           )
         ) : (
           <>
-            {grouped.map(item => {
+            {visibleGroups.map(item => {
               if (item.type === 'single') {
                 return (
                   <div
-                    key={item.entry.type === 'tool_call' ? `tool-${item.entry.toolCall.id}` : item.entry.id}
-                    className={cn(entrySpacing(entries, item.index), 'rcs-enter')}
+                    key={entryDomKey(item.entry)}
+                    className={cn(
+                      entrySpacing(entries, item.index),
+                      animatedKeys.current.has(entryDomKey(item.entry)) && 'rcs-enter',
+                    )}
                   >
                     <EntryRenderer entry={item.entry} isLoading={isLoading} onPermissionRespond={onPermissionRespond} />
                   </div>
@@ -66,7 +94,13 @@ export function ChatView({
               }
               // 工具调用组 — 紧贴在助手消息下方
               return (
-                <div key={`group-${item.entries[0]?.toolCall.id ?? item.index}`} className="-mt-2 rcs-enter">
+                <div
+                  key={`group-${item.entries[0]?.toolCall.id ?? item.index}`}
+                  className={cn(
+                    '-mt-2',
+                    item.entries.some(entry => animatedKeys.current.has(entryDomKey(entry))) && 'rcs-enter',
+                  )}
+                >
                   <ToolCallGroup entries={item.entries} onPermissionRespond={onPermissionRespond} />
                 </div>
               );
@@ -88,6 +122,11 @@ export function ChatView({
       </ConversationContent>
     </Conversation>
   );
+}
+
+/** Stable key shared by the React list and the entrance-animation ledger. */
+function entryDomKey(entry: ThreadEntry): string {
+  return entry.type === 'tool_call' ? `tool-${entry.toolCall.id}` : `${entry.type}-${entry.id}`;
 }
 
 // =============================================================================
