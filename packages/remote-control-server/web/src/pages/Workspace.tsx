@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Folder, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { formatRelativeTime } from '../lib/device-history';
@@ -45,6 +45,17 @@ export function Workspace({
   const [selectedLocalSessionId, setSelectedLocalSessionId] = useState(initialLocalSessionId || '');
   const [mobileChat, setMobileChat] = useState(Boolean(initialLocalSessionId));
   const [search, setSearch] = useState('');
+
+  // Route changes (the iOS edge swipe, browser back) must land in the same
+  // commit. Doing this in an effect painted the chat for one frame after the
+  // gesture had already slid to the list, which read as a flash.
+  const routeSessionId = initialLocalSessionId || '';
+  const lastRouteSessionId = useRef(routeSessionId);
+  if (lastRouteSessionId.current !== routeSessionId) {
+    lastRouteSessionId.current = routeSessionId;
+    setSelectedLocalSessionId(routeSessionId);
+    setMobileChat(Boolean(routeSessionId));
+  }
 
   const refreshDevices = useCallback(
     async (manual = false) => {

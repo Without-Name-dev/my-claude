@@ -133,7 +133,9 @@ export default function App() {
     parseRoute();
     const onPop = () => {
       haptic('light');
-      withViewTransition(parseRoute);
+      // Back/forward already animate: iOS plays its own interactive swipe, and
+      // a View Transition on top of it flashes the snapshot mid-gesture.
+      parseRoute();
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
