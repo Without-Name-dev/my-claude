@@ -19,9 +19,17 @@ export function PermissionPromptView({
   toolName: string;
   toolInput: unknown;
   description: string;
-  onApprove: () => void;
-  onReject: () => void;
+  onApprove: () => void | Promise<void>;
+  onReject: () => void | Promise<void>;
 }) {
+  // Both buttons must never fire: the first tap is authoritative and a second
+  // one used to send a contradictory "allow" after "reject".
+  const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
+  const run = (kind: 'approve' | 'reject', action: () => void | Promise<void>) => {
+    if (pending) return;
+    setPending(kind);
+    void Promise.resolve(action()).finally(() => setPending(null));
+  };
   const inputStr = typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput, null, 2);
 
   return (
@@ -32,7 +40,7 @@ export function PermissionPromptView({
         </span>
         <span className="text-sm font-semibold text-warning-text">权限请求</span>
       </div>
-      {description && <div className="mb-2 text-sm text-text-secondary">{esc(description)}</div>}
+      {description && <div className="mb-2 text-[14px] leading-relaxed text-text-secondary">{esc(description)}</div>}
       <div className="mb-2 font-mono text-xs font-bold text-text-primary">{esc(toolName)}</div>
       {toolName !== 'AskUserQuestion' && (
         <pre className="mb-3 max-h-40 overflow-auto rounded-lg bg-surface-1 p-2 text-xs text-text-secondary font-mono">
@@ -42,17 +50,19 @@ export function PermissionPromptView({
       <div className="flex gap-2">
         <button
           type="button"
-          onClick={onApprove}
-          className="min-h-11 min-w-24 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:opacity-85"
+          onClick={() => run('approve', onApprove)}
+          disabled={pending !== null}
+          className="min-h-11 min-w-24 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:scale-[0.98] active:bg-brand-light disabled:opacity-60"
         >
-          允许
+          {pending === 'approve' ? '处理中…' : '允许'}
         </button>
         <button
           type="button"
-          onClick={onReject}
-          className="min-h-11 min-w-24 rounded-lg border border-status-error/30 px-4 text-sm font-medium text-status-error transition-colors hover:bg-status-error/10 active:opacity-85"
+          onClick={() => run('reject', onReject)}
+          disabled={pending !== null}
+          className="min-h-11 min-w-24 rounded-lg border border-status-error/30 px-4 text-sm font-medium text-status-error transition-colors hover:bg-status-error/10 active:scale-[0.98] active:bg-status-error/15 disabled:opacity-60"
         >
-          拒绝
+          {pending === 'reject' ? '处理中…' : '拒绝'}
         </button>
       </div>
     </div>
@@ -256,7 +266,7 @@ function QuestionTab({
 
   return (
     <div>
-      <div className="mb-2 text-sm text-text-secondary">{esc(question.question)}</div>
+      <div className="mb-2 text-[14px] leading-relaxed text-text-secondary">{esc(question.question)}</div>
       <div className="space-y-2">
         {(question.options || []).map((opt, j) => {
           const isSelected = multiSelect ? ((answers[qIdx] as number[]) || []).includes(j) : answers[qIdx] === j;

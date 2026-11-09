@@ -179,7 +179,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={goWorkspace}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-lg text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                    className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-text-muted transition-colors active:bg-surface-1"
                     aria-label="返回"
                   >
                     &larr;

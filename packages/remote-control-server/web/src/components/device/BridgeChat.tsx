@@ -69,11 +69,27 @@ export function BridgeChat({
   const controlled = controlledEntries !== undefined;
   const [isLoading, setIsLoading] = useState(false);
   const [permissions, setPermissions] = useState<PendingPermission[]>([]);
+  // Request ids whose answer is on the wire; the card shows "处理中…".
+  const [answering, setAnswering] = useState<Set<string>>(() => new Set());
+  const withAnswering = useCallback(async (requestId: string, action: () => Promise<void>) => {
+    setAnswering(previous => new Set(previous).add(requestId));
+    try {
+      await action();
+    } finally {
+      setAnswering(previous => {
+        const next = new Set(previous);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }, []);
   const [error, setError] = useState('');
   const [sessionInfo, setSessionInfo] = useState<BridgeSessionInfo | null>(null);
   const [modelId, setModelId] = useState('');
   const [permissionMode, setPermissionMode] = useState('');
   const [controlError, setControlError] = useState('');
+  /** False until the bridge handshake (init) returns; sending is held until then. */
+  const [ready, setReady] = useState(false);
   const [controlPending, setControlPending] = useState(false);
   const [connected, setConnected] = useState(true);
   const adapterRef = useRef<RCSChatAdapter | null>(null);
@@ -179,9 +195,17 @@ export function BridgeChat({
 
   useEffect(() => {
     adapterRef.current = adapter;
-    void adapter.init().catch(err => {
-      setError(err instanceof Error ? err.message : '无法连接会话');
-    });
+    setReady(false);
+    void adapter
+      .init()
+      .catch(err => {
+        setError(err instanceof Error ? err.message : '无法连接会话');
+      })
+      .finally(() => {
+        // The banner above tells the user what went wrong; the composer stays
+        // usable either way so typing is never silently swallowed.
+        setReady(true);
+      });
     return () => {
       adapter.disconnect();
       adapterRef.current = null;
@@ -242,6 +266,9 @@ export function BridgeChat({
         else throw new Error('终端已关闭，请重新打开终端');
         return;
       }
+      if (!ready) {
+        throw new Error('正在连接终端，请稍候…');
+      }
       setIsLoading(true);
       try {
         await adapter.sendMessage(text, message.images);
@@ -259,7 +286,7 @@ export function BridgeChat({
         throw err;
       }
     },
-    [adapter, appendCommandOutput, connected, onTerminalUnavailable],
+    [adapter, appendCommandOutput, connected, onTerminalUnavailable, ready],
   );
 
   const changeModel = useCallback(
@@ -279,7 +306,7 @@ export function BridgeChat({
         pendingModel.current = null;
         setModelId(previous);
         setControlPending(false);
-        setControlError(err instanceof Error ? err.message : '切换模型失败');
+        setControlError(`切换模型失败，已保持原模型：${err instanceof Error ? err.message : '未知原因'}`);
       }
     },
     [adapter, modelId],
@@ -300,7 +327,7 @@ export function BridgeChat({
         pendingMode.current = null;
         setPermissionMode(previous);
         setControlPending(false);
-        setControlError(err instanceof Error ? err.message : '切换权限模式失败');
+        setControlError(`切换权限模式失败，已保持原模式：${err instanceof Error ? err.message : '未知原因'}`);
       }
     },
     [adapter, permissionMode],
@@ -402,13 +429,35 @@ export function BridgeChat({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         {header}
         {controlError && (
-          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
-            {controlError}
+          <div
+            role="alert"
+            className="flex items-start gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive"
+          >
+            <span className="min-w-0 flex-1">{controlError}</span>
+            <button
+              type="button"
+              onClick={() => setControlError('')}
+              aria-label="关闭提示"
+              className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
+            >
+              ×
+            </button>
           </div>
         )}
         {error && (
-          <div role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
-            {error}
+          <div
+            role="alert"
+            className="flex items-start gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive"
+          >
+            <span className="min-w-0 flex-1">{error}</span>
+            <button
+              type="button"
+              onClick={() => setError('')}
+              aria-label="关闭提示"
+              className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
+            >
+              ×
+            </button>
           </div>
         )}
         <ChatView
@@ -426,10 +475,14 @@ export function BridgeChat({
                 <PermissionEventView
                   key={request.requestId}
                   request={request}
-                  onApprove={() => void approve(request.requestId)}
-                  onReject={() => void reject(request.requestId)}
-                  onSubmitAnswers={submitAnswers}
-                  onSubmitPlan={submitPlan}
+                  onApprove={() => withAnswering(request.requestId, () => approve(request.requestId))}
+                  onReject={() => withAnswering(request.requestId, () => reject(request.requestId))}
+                  onSubmitAnswers={(requestId, answers, questions) =>
+                    void withAnswering(requestId, () => submitAnswers(requestId, answers, questions))
+                  }
+                  onSubmitPlan={(requestId, value, feedback) =>
+                    void withAnswering(requestId, () => submitPlan(requestId, value, feedback))
+                  }
                 />
               ))}
             </div>

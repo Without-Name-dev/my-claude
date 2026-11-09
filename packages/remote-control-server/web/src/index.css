@@ -20,6 +20,8 @@
   /* Accent — the Claude orange, dialled back to a softer terracotta */
   --color-brand: #d97757;
   --color-brand-light: #c4633f;
+  /* Text/links need AA contrast on surface-0; the base brand is a fill colour. */
+  --color-brand-dark: #a94e2c;
   --color-brand-subtle: rgba(217, 119, 87, 0.1);
 
   /* Surfaces — page / panel / card / strong border */

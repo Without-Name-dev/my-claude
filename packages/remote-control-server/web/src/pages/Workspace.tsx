@@ -36,6 +36,8 @@ export function Workspace({
   const [projects, setProjects] = useState<DeviceProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectsError, setProjectsError] = useState('');
+  const [catalogNonce, setCatalogNonce] = useState(0);
+  const refreshCatalog = useCallback(() => setCatalogNonce(n => n + 1), []);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
   // Load every session for the device once and filter locally: expanding a
   // project used to trigger a multi-second disk scan on the PC.
@@ -169,7 +171,7 @@ export function Workspace({
     return () => {
       cancelled = true;
     };
-  }, [activeDeviceId]);
+  }, [activeDeviceId, catalogNonce]);
 
   const sessionsByProject = useMemo(() => {
     const grouped: Record<string, DeviceSessionSummary[]> = {};
@@ -391,7 +393,18 @@ export function Workspace({
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {projectsError && <p className="px-4 py-2 text-xs text-status-error">{projectsError}</p>}
+          {projectsError && (
+            <div className="mx-3 mb-1 flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-status-error">
+              <span className="min-w-0 flex-1">{projectsError}</span>
+              <button
+                type="button"
+                onClick={() => void refreshCatalog()}
+                className="shrink-0 font-medium text-brand-dark active:opacity-70 dark:text-brand"
+              >
+                重试
+              </button>
+            </div>
+          )}
           <div className="pb-[calc(1rem+env(safe-area-inset-bottom))]">
             {filteredProjects.map(project => {
               const expanded = expandedProjectId === project.projectId;
@@ -433,7 +446,7 @@ export function Workspace({
                           )}
                         >
                           <span className="min-w-0 flex-1 truncate text-[14px]">{session.title}</span>
-                          <span className="shrink-0 text-[10px] text-text-muted">
+                          <span className="shrink-0 text-[12px] text-text-muted">
                             {formatRelativeTime(session.updatedAt)}
                           </span>
                         </button>
@@ -441,7 +454,18 @@ export function Workspace({
                       {sessions.length === 0 && !sessionsLoading && (
                         <p className="px-9 py-1 text-xs text-text-muted">没有匹配的会话</p>
                       )}
-                      {sessionsError && <p className="px-9 py-1 text-xs text-status-error">{sessionsError}</p>}
+                      {sessionsError && (
+                        <div className="mx-3 my-1 flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-status-error">
+                          <span className="min-w-0 flex-1">{sessionsError}</span>
+                          <button
+                            type="button"
+                            onClick={() => void refreshCatalog()}
+                            className="shrink-0 font-medium text-brand-dark active:opacity-70 dark:text-brand"
+                          >
+                            重试
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -468,9 +492,11 @@ export function Workspace({
 
       <main
         ref={chatPanelRef}
+        aria-hidden={!mobileChat ? true : undefined}
         className={cn(
           'min-h-0 min-w-0 flex-1 flex-col bg-surface-0 max-md:absolute max-md:inset-0 max-md:z-10',
           mobileChat ? 'flex' : 'hidden md:flex',
+          !mobileChat && 'max-md:pointer-events-none',
           navDir === 'push' && 'rcs-nav-push',
         )}
       >

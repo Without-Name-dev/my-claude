@@ -35,6 +35,12 @@ if (container) {
 
   // App fires this once the real (lazily loaded) screen is committed.
   window.addEventListener('ccremote:ready', revealApp, { once: true });
+  // The splash is decorative for sighted users; announce it for VoiceOver.
+  const boot = document.getElementById('boot');
+  if (boot) {
+    boot.setAttribute('role', 'status');
+    boot.setAttribute('aria-live', 'polite');
+  }
   // Never leave a stuck splash if the bundle half-loads.
   window.setTimeout(revealApp, 12000);
 }

@@ -23,9 +23,20 @@ jobs:
           GIT_CONFIG_KEY_1: advice.defaultBranchName
           GIT_CONFIG_VALUE_1: "false"
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+      # The action's install step has flaked; retry once before failing the
+      # whole run (it aborts before lint/typecheck/tests ever execute).
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
         with:
           bun-version: latest
+        continue-on-error: true
+
+      - name: Set up Bun (fallback installer)
+        if: steps.bun.outcome == 'failure'
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          "$HOME/.bun/bin/bun" --version
 
       - name: Install dependencies
         env:

@@ -3,6 +3,7 @@
 // =============================================================================
 
 import type { ToolCallContent, PermissionOption, PlanEntry } from '../acp/types'
+export type { PermissionOption }
 
 // 工具调用状态
 export type ToolCallStatus =

@@ -15,6 +15,7 @@ import {
   type OpenOperation,
 } from '../../api/devices';
 import { BridgeChat } from './BridgeChat';
+import { apiSendControl } from '../../api/client';
 
 /**
  * The 10s poll rebuilds the detail object on every tick; pushing an identical
@@ -270,6 +271,28 @@ export function DeviceSessionChat({
 
   const bridgeId = forcedBridgeId;
 
+  // Tool cards can ask for permission while the terminal is live but the view
+  // is showing cached history. Route the answer through the bridge control
+  // channel; without a live bridge there is nothing to answer.
+  const respondToolPermission = useCallback(
+    (requestId: string, optionId: string | null, optionKind: string | null) => {
+      if (!forcedBridgeId) {
+        setNotice('终端未连接，无法在这里处理权限请求，请发送一条消息重新打开终端。');
+        return;
+      }
+      const approved = !optionId || (optionKind !== 'reject_once' && optionKind !== 'reject_always');
+      void apiSendControl(forcedBridgeId, {
+        type: 'permission_response',
+        approved,
+        request_id: requestId,
+        ...(optionId ? { option_id: optionId } : {}),
+      }).catch(err => {
+        setError(err instanceof Error ? err.message : '处理权限请求失败');
+      });
+    },
+    [forcedBridgeId],
+  );
+
   const forceRestart = useCallback(async () => {
     if (!window.confirm('重启会中断该终端里正在执行的任务，但会话记录会保留。确定重启并启用远程控制吗？')) {
       return;
@@ -440,13 +463,26 @@ export function DeviceSessionChat({
             className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive"
           >
             <span className="min-w-0 flex-1">{error}</span>
-            <button type="button" onClick={() => void reload()} className="shrink-0 text-xs text-brand hover:underline">
+            <button
+              type="button"
+              onClick={() => void reload()}
+              className="shrink-0 text-xs font-medium text-brand-dark hover:underline dark:text-brand"
+            >
               重试
+            </button>
+            <button
+              type="button"
+              onClick={() => setError('')}
+              aria-label="关闭提示"
+              className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
+            >
+              ×
             </button>
           </div>
         )}
         <ChatView
           entries={entries}
+          onPermissionRespond={respondToolPermission}
           isLoading={sending || starting || loadingDetail || historyLoading}
           hasOlder={historyHasMore}
           loadingOlder={loadingEarlier}
@@ -471,7 +507,11 @@ export function DeviceSessionChat({
           </div>
         )}
         {statusText && (
-          <div aria-live="polite" className="mx-auto w-full max-w-3xl px-4 pt-1 text-xs leading-snug text-text-muted">
+          <div
+            role="status"
+            aria-live="polite"
+            className="mx-auto w-full max-w-3xl px-4 pt-1 text-[13px] leading-snug text-text-secondary"
+          >
             {statusText}
           </div>
         )}
@@ -499,7 +539,7 @@ function MobileChatHeader({ title, onBack }: { title: string; onBack: () => void
       >
         <ChevronLeft className="h-5 w-5" />
       </button>
-      <span className="truncate text-[15px] font-medium text-text-primary">{title}</span>
+      <h2 className="truncate text-[15px] font-medium text-text-primary">{title}</h2>
     </div>
   );
 }

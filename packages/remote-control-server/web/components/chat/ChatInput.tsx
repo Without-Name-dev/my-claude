@@ -1,6 +1,7 @@
 import {
   useState,
   useRef,
+  useEffect,
   useCallback,
   useMemo,
   useLayoutEffect,
@@ -64,25 +65,40 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState('');
+
   const handleSubmit = useCallback(async () => {
     const trimmed = text.trim();
-    if ((!trimmed && images.length === 0) || disabled) return;
+    // Explain instead of ignoring the tap: a disabled-looking composer that
+    // swallows input reads as a broken app.
+    if (disabled) {
+      setNotice('正在加载，请稍候…');
+      return;
+    }
+    if (!trimmed && images.length === 0) return;
+    if (sending) return;
     const sentText = text;
     const sentImages = images;
+    setNotice('');
 
     haptic('light');
     setShowCommandMenu(false);
     setCommandFilter('');
+    setSending(true);
     try {
       await onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
       setText('');
       setImages([]);
-    } catch {
+    } catch (error) {
       // A failed send must not eat the draft; put it back if it is untouched.
       setText(current => (current === '' ? sentText : current));
       setImages(current => (current.length === 0 ? sentImages : current));
+      setNotice(error instanceof Error ? error.message : '发送失败，请重试');
+    } finally {
+      setSending(false);
     }
-  }, [text, images, disabled, onSubmit]);
+  }, [text, images, disabled, onSubmit, sending]);
 
   // The menu only owns the keyboard while it actually has matches; otherwise
   // Enter must submit normally.
@@ -172,7 +188,24 @@ export function ChatInput({
     const files = fileInputRef.current.files;
     if (!files || files.length === 0) return;
 
-    const newImages = await processImageFiles(Array.from(files));
+    const imagesOnly = Array.from(files).filter(file => file.type.startsWith('image/'));
+    if (imagesOnly.length !== files.length) {
+      setNotice('只能发送图片附件');
+    }
+    if (imagesOnly.length === 0) {
+      fileInputRef.current.value = '';
+      return;
+    }
+    const tooBig = imagesOnly.filter(file => file.size > 25 * 1024 * 1024);
+    if (tooBig.length > 0) {
+      setNotice('图片超过 25MB，已跳过');
+    }
+    const accepted = imagesOnly.filter(file => file.size <= 25 * 1024 * 1024);
+    if (accepted.length === 0) {
+      fileInputRef.current.value = '';
+      return;
+    }
+    const newImages = await processImageFiles(accepted);
     setImages(prev => [...prev, ...newImages]);
     // 清空 input 以便重复选择
     fileInputRef.current.value = '';
@@ -225,6 +258,26 @@ export function ChatInput({
   // A stop button with no handler is a lie: only show it when interrupting is
   // actually wired up (e.g. the device-open flow cannot interrupt).
   const canInterrupt = isLoading && Boolean(onInterrupt);
+  // Interrupting is destructive and used to happen on the same tap that was
+  // "send" a moment earlier; require a deliberate second tap on touch.
+  const [confirmStop, setConfirmStop] = useState(false);
+  useEffect(() => {
+    if (!canInterrupt) setConfirmStop(false);
+  }, [canInterrupt]);
+  const handlePrimary = () => {
+    if (!canInterrupt) {
+      void handleSubmit();
+      return;
+    }
+    if (!confirmStop) {
+      setConfirmStop(true);
+      haptic('warning');
+      window.setTimeout(() => setConfirmStop(false), 2500);
+      return;
+    }
+    setConfirmStop(false);
+    onInterrupt?.();
+  };
 
   return (
     <div
@@ -233,6 +286,11 @@ export function ChatInput({
         className,
       )}
     >
+      {notice && (
+        <div role="status" className="mb-1.5 px-2 text-xs text-text-secondary">
+          {notice}
+        </div>
+      )}
       <div className="relative">
         {/* Slash command menu — floating above input */}
         {showCommandMenu && commands && commands.length > 0 && (
@@ -347,23 +405,23 @@ export function ChatInput({
               {toolbarRight}
               <button
                 type="button"
-                onClick={() => {
-                  if (canInterrupt) onInterrupt?.();
-                  else void handleSubmit();
-                }}
-                disabled={canInterrupt ? false : !canSend}
-                aria-label={canInterrupt ? '停止生成' : '发送消息'}
+                onClick={handlePrimary}
+                disabled={canInterrupt ? false : !canSend || sending}
+                aria-label={canInterrupt ? (confirmStop ? '再点一次停止生成' : '停止生成') : '发送消息'}
                 className={cn(
-                  'ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all',
-                  canInterrupt
-                    ? 'bg-text-primary text-surface-2 hover:opacity-90'
-                    : canSend
-                      ? 'bg-brand text-white hover:bg-brand-light active:scale-95'
-                      : 'bg-surface-1 text-text-muted',
+                  'ml-1 flex h-10 shrink-0 items-center justify-center rounded-full transition-all',
+                  canInterrupt ? 'gap-1.5 bg-brand px-3 text-white active:scale-95' : 'w-10',
+                  !canInterrupt && (canSend ? 'bg-brand text-white active:scale-95' : 'bg-surface-1 text-text-muted'),
+                  sending && !canInterrupt && 'opacity-70',
                 )}
               >
                 {canInterrupt ? (
-                  <Square className="h-3 w-3" fill="currentColor" />
+                  <>
+                    <Square className="h-3 w-3" fill="currentColor" />
+                    <span className="text-xs font-medium">{confirmStop ? '确认停止' : '停止'}</span>
+                  </>
+                ) : sending ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                 ) : (
                   <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
                 )}

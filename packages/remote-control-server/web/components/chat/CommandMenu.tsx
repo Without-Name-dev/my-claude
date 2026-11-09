@@ -85,7 +85,12 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
   }, [activeIndex]);
 
   return (
-    <div ref={containerRef} className={cn('rounded-xl border border-border bg-surface-2 shadow-lg', className)}>
+    <div
+      ref={containerRef}
+      role="listbox"
+      aria-label="斜杠命令"
+      className={cn('rounded-xl border border-border bg-surface-2 shadow-lg', className)}
+    >
       <div
         className="max-h-[320px] overflow-y-auto py-1"
         // Never taller than the space above the composer: with the keyboard
@@ -101,6 +106,8 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
             <button
               key={cmd.name}
               type="button"
+              role="option"
+              aria-selected={index === activeIndex}
               data-active={index === activeIndex}
               onClick={() => onSelect(cmd)}
               onMouseEnter={() => setActiveIndex(index)}

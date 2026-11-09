@@ -93,12 +93,35 @@ export function ChatView({
         ) : null}
         {!hasMessages ? (
           isLoading ? (
-            <div role="status" className="flex flex-1 flex-col items-center justify-center gap-4 py-24 text-center">
-              <span className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-brand" />
-              <p className="text-sm text-text-muted">{emptyTitle}</p>
+            <div role="status" aria-live="polite" className="flex w-full flex-col gap-3 py-6">
+              <span className="sr-only">{emptyTitle}</span>
+              {[72, 55, 84].map((width, i) => (
+                <div key={i} className="flex flex-col gap-2">
+                  <div className="h-3 animate-pulse rounded-full bg-surface-1" style={{ width: `${width}%` }} />
+                  <div
+                    className="h-3 animate-pulse rounded-full bg-surface-1"
+                    style={{ width: `${Math.max(28, width - 22)}%`, animationDelay: `${i * 120}ms` }}
+                  />
+                </div>
+              ))}
             </div>
           ) : (
-            <ConversationEmptyState title={emptyTitle} description={emptyDescription} />
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 py-20 text-center">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-surface-1 text-text-muted">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8A2.5 2.5 0 0 1 17.5 17H9l-5 3v-3.5A2.5 2.5 0 0 1 4 14.5z"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <p className="text-[15px] font-medium text-text-primary">{emptyTitle}</p>
+              {emptyDescription ? (
+                <p className="max-w-xs text-[13px] leading-relaxed text-text-muted">{emptyDescription}</p>
+              ) : null}
+            </div>
           )
         ) : (
           <>
@@ -136,7 +159,12 @@ export function ChatView({
 
             {/* 思考指示器 — 三个点 */}
             {showThinking && (
-              <div className="flex items-center gap-2 py-1" aria-label="Claude 正在回复">
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 py-1"
+                aria-label="Claude 正在回复"
+              >
                 <span className="chat-typing-indicator" aria-hidden="true">
                   <span></span>
                   <span></span>

@@ -21,6 +21,7 @@ import type {
   ToolCallEntry,
   UserMessageImage,
   PendingPermission,
+  PermissionOption,
 } from './types'
 
 // SSE Event Bus — 复用自 rcs-transport.ts，仅保留连接管理
@@ -57,6 +58,23 @@ function classifyLocalCommandText(
   }
   const text = content.replace(/<\/?[a-z][\w-]*>/gi, '').trim()
   return text ? { kind: 'text', text } : { kind: 'drop' }
+}
+
+/** CLI permission options, normalised for the UI buttons. */
+function permissionOptions(req: Record<string, unknown>): PermissionOption[] {
+  const raw = Array.isArray(req.options)
+    ? (req.options as Array<Record<string, unknown>>)
+    : []
+  return raw
+    .filter(o => o && typeof o === 'object')
+    .map(o => ({
+      optionId: String(o.optionId ?? o.option_id ?? o.id ?? ''),
+      name: String(o.name ?? o.label ?? ''),
+      kind: (typeof o.kind === 'string'
+        ? o.kind
+        : 'allow_once') as PermissionOption['kind'],
+    }))
+    .filter(o => o.optionId)
 }
 
 class SSEBus {
@@ -687,7 +705,9 @@ export class RCSChatAdapter {
     const payload = event.payload || ({} as EventPayload)
 
     // Skip bridge init noise
-    const serialized = JSON.stringify(event)
+    // Only the short connect banner matters here; stringifying a whole
+    // history event was pure overhead on every event.
+    const serialized = JSON.stringify(event).slice(0, 400)
     if (/Remote Control connecting/i.test(serialized)) return
 
     switch (type) {
@@ -927,7 +947,10 @@ export class RCSChatAdapter {
                         toolCall: {
                           ...entry.toolCall,
                           status: 'waiting_for_confirmation' as ToolCallStatus,
-                          permissionRequest: { requestId, options: [] },
+                          permissionRequest: {
+                            requestId,
+                            options: permissionOptions(req),
+                          },
                         },
                       }
                     : e,
@@ -943,6 +966,7 @@ export class RCSChatAdapter {
             toolName,
             toolInput,
             description,
+            options: permissionOptions(req),
           })
         }
         break
