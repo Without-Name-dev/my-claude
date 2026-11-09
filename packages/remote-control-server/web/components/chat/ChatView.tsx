@@ -88,7 +88,11 @@ export function ChatView({
                       animatedKeys.current.has(entryDomKey(item.entry)) && 'rcs-enter',
                     )}
                   >
-                    <EntryRenderer entry={item.entry} isLoading={isLoading} onPermissionRespond={onPermissionRespond} />
+                    <EntryRenderer
+                      entry={item.entry}
+                      isStreaming={isLoading && item.index === entries.length - 1}
+                      onPermissionRespond={onPermissionRespond}
+                    />
                   </div>
                 );
               }
@@ -169,18 +173,18 @@ function CommandOutput({ text }: { text: string }) {
 
 function EntryRenderer({
   entry,
-  isLoading,
+  isStreaming,
   onPermissionRespond,
 }: {
   entry: ThreadEntry;
-  isLoading: boolean;
+  isStreaming: boolean;
   onPermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
 }) {
   switch (entry.type) {
     case 'user_message':
       return <UserBubble entry={entry} />;
     case 'assistant_message':
-      return <AssistantBubble entry={entry} isStreaming={isLoading} />;
+      return <AssistantBubble entry={entry} isStreaming={isStreaming} />;
     case 'tool_call':
       return <ToolCallGroup entries={[entry as ToolCallEntry]} onPermissionRespond={onPermissionRespond} />;
     case 'command_output':

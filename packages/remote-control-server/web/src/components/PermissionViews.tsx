@@ -41,14 +41,16 @@ export function PermissionPromptView({
       )}
       <div className="flex gap-2">
         <button
+          type="button"
           onClick={onApprove}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
+          className="min-h-11 min-w-24 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:opacity-85"
         >
           允许
         </button>
         <button
+          type="button"
           onClick={onReject}
-          className="rounded-lg bg-status-error/20 px-4 py-2 text-sm font-medium text-status-error hover:bg-status-error/30 transition-colors"
+          className="min-h-11 min-w-24 rounded-lg border border-status-error/30 px-4 text-sm font-medium text-status-error transition-colors hover:bg-status-error/10 active:opacity-85"
         >
           拒绝
         </button>
@@ -119,10 +121,11 @@ export function AskUserPanelView({
             const isSelected = multiSelect ? ((answers[0] as number[]) || []).includes(j) : answers[0] === j;
             return (
               <button
+                type="button"
                 key={j}
                 onClick={() => handleSelect(0, j, multiSelect)}
                 className={cn(
-                  'w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
+                  'min-h-11 w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
                   isSelected
                     ? 'border-brand bg-brand/10 text-text-primary'
                     : 'border-border bg-surface-2 text-text-secondary hover:border-border-light',
@@ -143,8 +146,9 @@ export function AskUserPanelView({
               onKeyDown={e => e.key === 'Enter' && handleOtherSubmit(0)}
             />
             <button
+              type="button"
               onClick={() => handleOtherSubmit(0)}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
+              className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
             >
               发送
             </button>
@@ -152,14 +156,16 @@ export function AskUserPanelView({
         </div>
         <div className="mt-4 flex gap-2">
           <button
+            type="button"
             onClick={handleSubmit}
-            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
+            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light"
           >
             提交
           </button>
           <button
+            type="button"
             onClick={onSkip}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
+            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
           >
             跳过
           </button>
@@ -177,6 +183,7 @@ export function AskUserPanelView({
       <div className="mb-3 flex gap-1 overflow-x-auto">
         {questions.map((q, i) => (
           <button
+            type="button"
             key={i}
             onClick={() => setActiveTab(i)}
             className={cn(
@@ -207,14 +214,16 @@ export function AskUserPanelView({
         </span>
         <div className="flex gap-2">
           <button
+            type="button"
             onClick={handleSubmit}
-            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light transition-colors"
+            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light"
           >
             全部提交
           </button>
           <button
+            type="button"
             onClick={onSkip}
-            className="rounded-lg border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
+            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
           >
             跳过
           </button>
@@ -251,10 +260,11 @@ function QuestionTab({
           const isSelected = multiSelect ? ((answers[qIdx] as number[]) || []).includes(j) : answers[qIdx] === j;
           return (
             <button
+              type="button"
               key={j}
               onClick={() => onSelect(qIdx, j, multiSelect)}
               className={cn(
-                'w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
+                'min-h-11 w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
                 isSelected
                   ? 'border-brand bg-brand/10 text-text-primary'
                   : 'border-border bg-surface-2 text-text-secondary hover:border-border-light',
@@ -275,6 +285,7 @@ function QuestionTab({
             onKeyDown={e => e.key === 'Enter' && onOtherSubmit(qIdx)}
           />
           <button
+            type="button"
             onClick={() => onOtherSubmit(qIdx)}
             className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
           >
@@ -364,6 +375,7 @@ export function PlanPanelView({
       )}
       <div className="mt-4">
         <button
+          type="button"
           onClick={handleSubmit}
           disabled={!selected}
           className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light disabled:opacity-50 transition-colors"
@@ -388,9 +400,10 @@ function PlanOption({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={cn(
-        'w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
+        'min-h-11 w-full rounded-lg border px-4 py-2.5 text-left text-sm transition-colors',
         selected
           ? 'border-brand bg-brand/10 text-text-primary'
           : 'border-border bg-surface-2 text-text-secondary hover:border-border-light',

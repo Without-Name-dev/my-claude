@@ -76,7 +76,7 @@ class SSEBus {
     sessionId: string,
     onSseError?: (message: string) => void,
     onStreamOpen?: () => void,
-  ): void {
+  ): EventSource {
     this.disconnect()
     this.onError = onSseError ?? null
     this.onOpen = onStreamOpen ?? null
@@ -134,6 +134,7 @@ class SSEBus {
         }
       })()
     }
+    return es
   }
 
   private fail(es: EventSource, sessionId: string, message: string): void {
@@ -142,6 +143,11 @@ class SSEBus {
     if (this.eventSource === es) this.eventSource = null
     this.onError?.(message)
     this.onError = null
+  }
+
+  /** True while `es` is still the connection this bus owns. */
+  owns(es: EventSource | null): boolean {
+    return es !== null && this.eventSource === es
   }
 
   disconnect(): void {
@@ -182,6 +188,81 @@ function extractEventText(payload: EventPayload): string {
   return ''
 }
 
+/** SDK tool_result blocks (top-level tool_call_id only exists on legacy v1). */
+function toolResultBlocks(
+  p: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const msg = p.message as Record<string, unknown> | undefined
+  const blocks = Array.isArray(msg?.content)
+    ? (msg.content as Array<Record<string, unknown>>)
+    : []
+  const found = blocks.filter(b => b && b.type === 'tool_result')
+  if (found.length > 0) return found
+  // Legacy flat shape.
+  if (typeof p.tool_call_id === 'string' && p.tool_call_id) {
+    return [
+      {
+        tool_use_id: p.tool_call_id,
+        content: p.content ?? p.output ?? '',
+        is_error: p.is_error === true,
+      },
+    ]
+  }
+  return []
+}
+
+function blockText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return (value as Array<Record<string, unknown>>)
+      .filter(b => b && b.type === 'text')
+      .map(b => String(b.text ?? ''))
+      .join('')
+  }
+  return ''
+}
+
+/** Fold tool_result blocks into their tool cards (live stream and history). */
+function applyToolResult(
+  entries: ThreadEntry[],
+  p: Record<string, unknown>,
+): ThreadEntry[] {
+  let next = entries
+  for (const block of toolResultBlocks(p)) {
+    const id = typeof block.tool_use_id === 'string' ? block.tool_use_id : ''
+    if (!id) continue
+    const idx = findToolCallIndex(next, id)
+    if (idx < 0) continue
+    const entry = next[idx] as ToolCallEntry
+    const output = blockText(block.content)
+    const failed = block.is_error === true
+    next = next.map((e, i) =>
+      i === idx
+        ? {
+            type: 'tool_call',
+            toolCall: {
+              ...entry.toolCall,
+              status: (failed ? 'error' : 'complete') as ToolCallStatus,
+              rawOutput: { output },
+            },
+          }
+        : e,
+    )
+  }
+  return next
+}
+
+/** Embedded tool_use blocks of an assistant message, in SDK order. */
+function toolUseBlocks(
+  payload: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const msg = payload.message as Record<string, unknown> | undefined
+  if (!msg || !Array.isArray(msg.content)) return []
+  return (msg.content as Array<Record<string, unknown>>).filter(
+    b => b && b.type === 'tool_use',
+  )
+}
+
 function findToolCallIndex(entries: ThreadEntry[], toolCallId: string): number {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i]
@@ -213,6 +294,8 @@ export class RCSChatAdapter {
   private sessionId: string
   private setEntries: React.Dispatch<SetStateAction<ThreadEntry[]>>
   private unsub: (() => void) | null = null
+  /** The EventSource this adapter opened on the shared bus. */
+  private es: EventSource | null = null
   private onStatusChange?: (status: string) => void
   private onError?: (error: string) => void
   private onPermissionRequest?: (permission: PendingPermission) => void
@@ -398,6 +481,15 @@ export class RCSChatAdapter {
       if (event.type === 'user') {
         if (event.direction === 'outbound') continue // skip echoed user messages
         flushAssistant()
+        // Tool results arrive as user turns with no text; fold them into the
+        // tool cards instead of dropping them.
+        const asRecord = payload as Record<string, unknown>
+        if (toolResultBlocks(asRecord).length > 0) {
+          const updated = applyToolResult(historyEntries, asRecord)
+          historyEntries.length = 0
+          historyEntries.push(...updated)
+          continue
+        }
         const text = extractEventText(payload)
         if (text) {
           const synthetic =
@@ -479,22 +571,12 @@ export class RCSChatAdapter {
         }
         historyEntries.push(tc)
       } else if (event.type === 'tool_result') {
-        const p = payload as Record<string, unknown>
-        // Find last tool call and update with output
-        const idx = findToolCallIndex(
+        const updated = applyToolResult(
           historyEntries,
-          (p.tool_call_id as string) || '',
+          payload as Record<string, unknown>,
         )
-        if (idx >= 0) {
-          const entry = historyEntries[idx] as ToolCallEntry
-          historyEntries[idx] = {
-            type: 'tool_call',
-            toolCall: {
-              ...entry.toolCall,
-              rawOutput: { output: p.content || p.output || '' },
-            },
-          }
-        }
+        historyEntries.length = 0
+        historyEntries.push(...updated)
       } else if (event.type === 'system') {
         const record = payload as Record<string, unknown>
         if (record.subtype === 'local_command') {
@@ -559,7 +641,7 @@ export class RCSChatAdapter {
   /** 连接 SSE 事件流 */
   connectSSE(): void {
     if (this.disposed) return
-    sseBus.connect(
+    this.es = sseBus.connect(
       this.sessionId,
       message => {
         // The bridge is gone; a dead SSE must also flip the connection state
@@ -581,7 +663,12 @@ export class RCSChatAdapter {
       this.unsub()
       this.unsub = null
     }
-    sseBus.disconnect()
+    // The bus is shared and session-scoped. React may mount the next session's
+    // adapter before this stale one's cleanup runs, so only the adapter whose
+    // stream is still live may close it — otherwise switching between two
+    // running terminals left the new one with a dead, silent SSE.
+    if (this.es && sseBus.owns(this.es)) sseBus.disconnect()
+    this.es = null
   }
 
   /** 处理 SSE 事件 */
@@ -604,6 +691,13 @@ export class RCSChatAdapter {
       // adding those a second time.
       case 'user': {
         if (event.direction === 'outbound') break
+        // The SDK delivers tool results as user turns; they carry no text and
+        // used to be dropped, leaving every tool card spinning forever.
+        const asRecord = payload as Record<string, unknown>
+        if (toolResultBlocks(asRecord).length > 0) {
+          this.setEntries(prev => applyToolResult(prev, asRecord))
+          break
+        }
         const content = extractEventText(payload)
         if (!content) break
         const synthetic =
@@ -731,25 +825,44 @@ export class RCSChatAdapter {
 
         // Check for embedded tool_use blocks
         const msg = payload.message as Record<string, unknown> | undefined
-        if (msg && typeof msg === 'object' && Array.isArray(msg.content)) {
-          const toolBlocks = (
-            msg.content as Array<Record<string, unknown>>
-          ).filter(b => b.type === 'tool_use')
-          for (const block of toolBlocks) {
-            const toolCallId =
-              (block.id as string) ||
-              `call-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
-            const toolData: ToolCallData = {
-              id: toolCallId,
-              title: (block.name as string) || 'tool',
-              status: 'running',
-              rawInput: (block.input as Record<string, unknown>) || {},
+        // Every streamed chunk repeats the message's full content, so only add
+        // tool cards this message has not produced yet.
+        const blocks = msg
+          ? toolUseBlocks(payload as Record<string, unknown>)
+          : []
+        for (const block of blocks) {
+          const toolCallId =
+            (block.id as string) ||
+            `call-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+          const rawInput = (block.input as Record<string, unknown>) || {}
+          this.setEntries(prev => {
+            const idx = findToolCallIndex(prev, toolCallId)
+            if (idx >= 0) {
+              // The final assistant message carries the complete input; the
+              // first partial chunk often only had a fragment of it.
+              const existing = prev[idx] as ToolCallEntry
+              const hasInput = Object.keys(rawInput).length > 0
+              if (!hasInput) return prev
+              const next = [...prev]
+              next[idx] = {
+                type: 'tool_call',
+                toolCall: { ...existing.toolCall, rawInput },
+              }
+              return next
             }
-            this.setEntries(prev => [
+            return [
               ...prev,
-              { type: 'tool_call', toolCall: toolData },
-            ])
-          }
+              {
+                type: 'tool_call',
+                toolCall: {
+                  id: toolCallId,
+                  title: (block.name as string) || 'tool',
+                  status: 'running',
+                  rawInput,
+                },
+              },
+            ]
+          })
         }
         break
       }
@@ -764,34 +877,18 @@ export class RCSChatAdapter {
           status: 'running',
           rawInput: (p.tool_input as Record<string, unknown>) || {},
         }
-        this.setEntries(prev => [
-          ...prev,
-          { type: 'tool_call', toolCall: toolData },
-        ])
+        this.setEntries(prev =>
+          findToolCallIndex(prev, toolCallId) >= 0
+            ? prev
+            : [...prev, { type: 'tool_call', toolCall: toolData }],
+        )
         break
       }
 
       // ---- 工具结果 ----
       case 'tool_result': {
         const p = payload as Record<string, unknown>
-        const callId = (p.tool_call_id as string) || ''
-        this.setEntries(prev => {
-          const idx = findToolCallIndex(prev, callId)
-          if (idx < 0) return prev
-          const entry = prev[idx] as ToolCallEntry
-          return prev.map((e, i) =>
-            i === idx
-              ? {
-                  type: 'tool_call',
-                  toolCall: {
-                    ...entry.toolCall,
-                    status: 'complete' as ToolCallStatus,
-                    rawOutput: { output: p.content || p.output || '' },
-                  },
-                }
-              : e,
-          )
-        })
+        this.setEntries(prev => applyToolResult(prev, p))
         break
       }
 

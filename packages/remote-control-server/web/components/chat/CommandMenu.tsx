@@ -54,6 +54,10 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       if (filtered.length === 0) return;
+      // Only the composer owns the arrows/Enter; a focused select in the footer
+      // must keep its own native keyboard behaviour.
+      const target = e.target as HTMLElement | null;
+      if (target && target !== document.body && target.tagName !== 'TEXTAREA') return;
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();

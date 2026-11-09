@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { ToolCallEntry, ToolCallData } from '../../src/lib/types';
 import { cn } from '../../src/lib/utils';
 import { ToolPermissionButtons } from '../ai-elements/permission-request';
+import { Check, Clock, Loader2, X } from 'lucide-react';
 
 // =============================================================================
 // 工具调用折叠组 — Anthropic: subtle card, left-border accent, compact layout
@@ -78,19 +79,22 @@ interface SingleToolCardProps {
   onPermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
 }
 
-function SingleToolCard({ tool, compact, onPermissionRespond }: SingleToolCardProps) {
+const SingleToolCard = memo(function SingleToolCard({ tool, compact, onPermissionRespond }: SingleToolCardProps) {
   const [expanded, setExpanded] = useState(!compact);
+  // Stringifying a large tool payload on every streamed token was pure waste;
+  // the body only renders when the card is open.
+  const inputJson = useMemo(() => (expanded ? JSON.stringify(tool.rawInput, null, 2) : ''), [expanded, tool.rawInput]);
 
   const statusIcon = (() => {
     switch (tool.status) {
       case 'running':
-        return <span className="text-status-running text-[10px]">&#9654;</span>;
+        return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-status-running" aria-label="运行中" />;
       case 'complete':
-        return <span className="text-status-active text-[10px]">&#10003;</span>;
+        return <Check className="h-3.5 w-3.5 shrink-0 text-status-success" aria-label="已完成" />;
       case 'error':
-        return <span className="text-status-error text-[10px]">&#10005;</span>;
+        return <X className="h-3.5 w-3.5 shrink-0 text-status-error" aria-label="失败" />;
       case 'waiting_for_confirmation':
-        return <span className="text-brand text-[10px]">&#9083;</span>;
+        return <Clock className="h-3.5 w-3.5 shrink-0 text-brand" aria-label="等待确认" />;
       case 'canceled':
         return <span className="text-text-muted text-[10px]">&#8212;</span>;
       case 'rejected':
@@ -135,7 +139,7 @@ function SingleToolCard({ tool, compact, onPermissionRespond }: SingleToolCardPr
           {tool.rawInput && Object.keys(tool.rawInput).length > 0 && (
             <div>
               <pre className="text-[11px] bg-surface-1 rounded-md p-2 overflow-x-auto font-mono max-h-36 text-text-secondary">
-                {truncate(JSON.stringify(tool.rawInput, null, 2), 2000)}
+                {truncate(inputJson, 2000)}
               </pre>
             </div>
           )}
@@ -155,7 +159,7 @@ function SingleToolCard({ tool, compact, onPermissionRespond }: SingleToolCardPr
       )}
     </div>
   );
-}
+});
 
 // =============================================================================
 // 工具函数

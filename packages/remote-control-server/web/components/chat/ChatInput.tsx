@@ -64,19 +64,23 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     const trimmed = text.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
+    const sentText = text;
+    const sentImages = images;
 
     haptic('light');
-    onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
-    setText('');
-    setImages([]);
     setShowCommandMenu(false);
     setCommandFilter('');
-    // 重置 textarea 高度
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+    try {
+      await onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
+      setText('');
+      setImages([]);
+    } catch {
+      // A failed send must not eat the draft; put it back if it is untouched.
+      setText(current => (current === '' ? sentText : current));
+      setImages(current => (current.length === 0 ? sentImages : current));
     }
   }, [text, images, disabled, onSubmit]);
 
@@ -118,7 +122,7 @@ export function ChatInput({
         if (isLoading) {
           onInterrupt?.();
         } else {
-          handleSubmit();
+          void handleSubmit();
         }
       }
     },
@@ -257,14 +261,14 @@ export function ChatInput({
                 <div key={i} className="relative group">
                   <img
                     src={`data:${img.mimeType};base64,${img.data}`}
-                    alt={`Attached image ${i + 1}`}
+                    alt={`附件图片 ${i + 1}`}
                     className="h-14 w-14 rounded-lg border border-border object-cover"
                   />
                   <button
                     type="button"
                     onClick={() => removeImage(i)}
                     className="absolute -right-1.5 -top-1.5 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface-2 text-xs text-text-muted opacity-100 transition-opacity hover:text-text-primary sm:opacity-0 sm:group-hover:opacity-100"
-                    aria-label={`Remove image ${i + 1}`}
+                    aria-label={`移除附件 ${i + 1}`}
                   >
                     {'×'}
                   </button>
@@ -287,7 +291,10 @@ export function ChatInput({
               className={cn(
                 'w-full resize-none border-none bg-transparent outline-none',
                 'text-base text-text-primary placeholder:text-text-muted sm:text-[15px]',
-                'max-h-[200px] min-h-[24px] leading-6',
+                // Never taller than the visible shell minus the footer, so a
+                // long draft cannot push the send row off a small screen.
+                'min-h-[24px] leading-6',
+                'max-h-[min(200px,calc(var(--app-height,100dvh)-220px))]',
               )}
             />
           </div>
@@ -340,7 +347,10 @@ export function ChatInput({
               {toolbarRight}
               <button
                 type="button"
-                onClick={canInterrupt ? onInterrupt : handleSubmit}
+                onClick={() => {
+                  if (canInterrupt) onInterrupt?.();
+                  else void handleSubmit();
+                }}
                 disabled={canInterrupt ? false : !canSend}
                 aria-label={canInterrupt ? '停止生成' : '发送消息'}
                 className={cn(

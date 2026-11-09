@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { UserMessageEntry, AssistantMessageEntry, UserMessageImage } from '../../src/lib/types';
 import { cn } from '../../src/lib/utils';
 import { MessageResponse } from '../ai-elements/message';
@@ -16,7 +16,7 @@ interface UserBubbleProps {
   entry: UserMessageEntry;
 }
 
-export function UserBubble({ entry }: UserBubbleProps) {
+export const UserBubble = memo(function UserBubble({ entry }: UserBubbleProps) {
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -73,7 +73,7 @@ export function UserBubble({ entry }: UserBubbleProps) {
       </div>
     </div>
   );
-}
+});
 
 // =============================================================================
 // 助手消息 — 左对齐，无背景卡片，编辑式排版
@@ -84,7 +84,7 @@ interface AssistantBubbleProps {
   isStreaming?: boolean;
 }
 
-export function AssistantBubble({ entry, isStreaming }: AssistantBubbleProps) {
+export const AssistantBubble = memo(function AssistantBubble({ entry, isStreaming }: AssistantBubbleProps) {
   return (
     <div className="flex items-start">
       {/* 内容 — 无头像、无卡片，干净的回答流 */}
@@ -112,7 +112,7 @@ export function AssistantBubble({ entry, isStreaming }: AssistantBubbleProps) {
       </div>
     </div>
   );
-}
+});
 
 // =============================================================================
 // 图片缩略图 — 点击放大

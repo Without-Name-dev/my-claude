@@ -103,6 +103,9 @@ export class DeviceApiError extends Error {
   }
 }
 
+/** Generous enough for a cold terminal scan, short enough to fail visibly. */
+const REQUEST_TIMEOUT_MS = 30_000
+
 async function request<T>(
   method: string,
   path: string,
@@ -113,11 +116,32 @@ async function request<T>(
   if (token) headers.Authorization = `Bearer ${token}`
   const uuid = getUuid()
   const sep = path.includes('?') ? '&' : '?'
-  const res = await fetch(`${path}${sep}uuid=${encodeURIComponent(uuid)}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  })
+  // Without a timeout a stalled request hangs the spinner forever (the
+  // terminal poll, the history load, and send all share this path).
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(`${path}${sep}uuid=${encodeURIComponent(uuid)}`, {
+      method,
+      headers,
+      signal: controller.signal,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === 'AbortError'
+    debugLog(
+      'api',
+      `${method} ${path} → ${aborted ? 'timeout' : 'network error'}`,
+    )
+    throw new DeviceApiError(
+      0,
+      aborted ? 'timeout' : 'network_error',
+      aborted ? '请求超时，请检查网络后重试' : '网络异常，请检查连接',
+    )
+  } finally {
+    clearTimeout(timer)
+  }
   const data: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const record =

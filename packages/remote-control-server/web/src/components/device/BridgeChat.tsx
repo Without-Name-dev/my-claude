@@ -213,8 +213,7 @@ export function BridgeChat({
           return;
         }
         if (!connected) {
-          setError('终端已关闭，请重新打开终端');
-          return;
+          throw new Error('终端已关闭，请重新打开终端');
         }
         setControlPending(true);
         setControlError('');
@@ -222,7 +221,9 @@ export function BridgeChat({
           await adapter.setEffort(arg);
           appendCommandOutput(`已设置 effort：${arg}`);
         } catch (err) {
-          setControlError(err instanceof Error ? err.message : '切换 effort 失败');
+          const message = err instanceof Error ? err.message : '切换 effort 失败';
+          setControlError(message);
+          throw new Error(message);
         } finally {
           setControlPending(false);
         }
@@ -233,7 +234,7 @@ export function BridgeChat({
       // text to the parent, which queues it and reopens the terminal.
       if (!connected) {
         if (onTerminalUnavailable) onTerminalUnavailable(text);
-        else setError('终端已关闭，请重新打开终端');
+        else throw new Error('终端已关闭，请重新打开终端');
         return;
       }
       setIsLoading(true);
@@ -241,7 +242,16 @@ export function BridgeChat({
         await adapter.sendMessage(text, message.images);
       } catch (err) {
         setIsLoading(false);
-        setError(err instanceof Error ? err.message : '发送失败');
+        const message = err instanceof Error ? err.message : '发送失败';
+        // The terminal vanished between the last bridge_state and this send:
+        // hand it to the parent, which reopens the terminal and queues it.
+        if (/terminal|终端/i.test(message) && onTerminalUnavailable) {
+          onTerminalUnavailable(text);
+          return;
+        }
+        setError(message);
+        // Let the composer restore the draft the user just typed.
+        throw err;
       }
     },
     [adapter, appendCommandOutput, connected, onTerminalUnavailable],

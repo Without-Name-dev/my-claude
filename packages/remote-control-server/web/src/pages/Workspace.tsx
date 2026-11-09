@@ -94,8 +94,19 @@ export function Workspace({
 
   useEffect(() => {
     void refreshDevices();
-    const timer = setInterval(() => void refreshDevices(), 10_000);
-    return () => clearInterval(timer);
+    // Polling while the app is in the background only burns battery; catch up
+    // on the first frame after it comes back.
+    const timer = setInterval(() => {
+      if (!document.hidden) void refreshDevices();
+    }, 10_000);
+    const onVisible = () => {
+      if (!document.hidden) void refreshDevices();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [refreshDevices]);
 
   // The URL (via these props) is authoritative: back/forward and the header

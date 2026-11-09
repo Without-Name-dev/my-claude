@@ -5,8 +5,12 @@ import type {
   SessionEvent,
 } from '../types'
 import { generateMessageUuid } from '../lib/utils'
+import { debugLog } from '../lib/debug-log'
 
 const BASE = ''
+
+/** Same ceiling as the device API: a hung request must surface, not spin. */
+const REQUEST_TIMEOUT_MS = 30_000
 
 export function getUuid(): string {
   let uuid = localStorage.getItem('rcs_uuid')
@@ -49,7 +53,23 @@ async function api<T>(
   const opts: RequestInit = { method, headers }
   if (body !== undefined) opts.body = JSON.stringify(body)
 
-  const res = await fetch(url, opts)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(url, { ...opts, signal: controller.signal })
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === 'AbortError'
+    debugLog(
+      'api',
+      `${method} ${path} → ${aborted ? 'timeout' : 'network error'}`,
+    )
+    throw new Error(
+      aborted ? '请求超时，请检查网络后重试' : '网络异常，请检查连接',
+    )
+  } finally {
+    clearTimeout(timer)
+  }
   let raw = ''
   let data: unknown = null
   if (typeof res.text === 'function') {

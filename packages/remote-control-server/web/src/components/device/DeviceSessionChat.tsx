@@ -16,6 +16,31 @@ import {
 } from '../../api/devices';
 import { BridgeChat } from './BridgeChat';
 
+/**
+ * The 10s poll rebuilds the detail object on every tick; pushing an identical
+ * value into state re-rendered the whole chat twice a minute for nothing.
+ */
+function shallowEqualSession(a: DeviceSessionDetail | null, b: DeviceSessionDetail): boolean {
+  if (!a) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const left = (a as Record<string, unknown>)[key];
+    const right = (b as Record<string, unknown>)[key];
+    if (left === right) continue;
+    if (
+      left &&
+      right &&
+      typeof left === 'object' &&
+      typeof right === 'object' &&
+      JSON.stringify(left) === JSON.stringify(right)
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 /** One screenful plus context; older pages are fetched on demand. */
 const HISTORY_PAGE = 30;
 
@@ -189,9 +214,17 @@ export function DeviceSessionChat({
   useEffect(() => {
     if (!operationId) return;
     let cancelled = false;
+    let failures = 0;
+    let running = false;
     const tick = async () => {
+      // A slow request used to overlap the next tick; one hung request also
+      // ended the loop for good. Serialise ticks and give up only after a
+      // run of consecutive failures.
+      if (running) return;
+      running = true;
       try {
         const next = await fetchOperation(operationId);
+        failures = 0;
         if (cancelled) return;
         setOperation(next);
         if (next.state === 'ready') {
@@ -215,12 +248,16 @@ export function DeviceSessionChat({
         }
       } catch (err) {
         if (cancelled) return;
+        failures += 1;
+        if (failures < 5) return;
         setOperationId(null);
         setError(err instanceof Error ? err.message : '无法读取启动进度');
+      } finally {
+        running = false;
       }
     };
     void tick();
-    const timer = setInterval(tick, 1500);
+    const timer = setInterval(() => void tick(), 1500);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -274,6 +311,8 @@ export function DeviceSessionChat({
       } catch (err) {
         setEntries(previous => previous.filter(entry => !(entry.type === 'user_message' && entry.id === pendingId)));
         setError(err instanceof Error ? err.message : '发送失败');
+        // The composer puts the text back, so a failed send is never silent.
+        throw err;
       } finally {
         setSending(false);
       }
@@ -286,11 +325,22 @@ export function DeviceSessionChat({
   // failure, and what updates device/terminal state in the transcript view.
   useEffect(() => {
     let cancelled = false;
+    let running = false;
     const tick = async () => {
+      // Skip while the previous tick is still in flight: a slow request used
+      // to stack up on a flaky network.
+      if (running) return;
+      running = true;
+      // Nothing to report while the app is in the background; the visibility
+      // handler below catches up as soon as it returns.
+      if (document.hidden) {
+        running = false;
+        return;
+      }
       try {
         const next = await fetchSession(deviceId, localSessionId);
         if (cancelled) return;
-        setDetail(next);
+        setDetail(previous => (shallowEqualSession(previous, next) ? previous : next));
         if (next.bridgeConnected && next.bridgeSessionId) {
           if (forcedBridgeId !== next.bridgeSessionId) {
             // Entering the live view after a reconnect: catch up on anything
@@ -298,6 +348,8 @@ export function DeviceSessionChat({
             void syncHistory();
             setForcedBridgeId(next.bridgeSessionId);
           }
+          // While the bridge is live the SSE is the source of truth; re-reading
+          // history every 10s just re-parsed and re-merged the transcript.
           return;
         }
         if (forcedBridgeId) {
@@ -313,13 +365,20 @@ export function DeviceSessionChat({
         }
       } catch {
         // Keep the current view; the next tick retries.
+      } finally {
+        running = false;
       }
     };
     const timer = setInterval(() => void tick(), 10_000);
+    const onVisible = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     void tick();
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [forcedBridgeId, deviceId, localSessionId, syncHistory]);
 

@@ -88,17 +88,46 @@ export function mergeHistoryPage(
 ): ThreadEntry[] {
   if (page.length === 0) return onScreen
   const pageKeys = new Set(page.map(entryKey))
-  const base = onScreen.map(entry => {
+  // Each pending bubble adopts the NEWEST page row with its text that has not
+  // been claimed yet. Pairing against any row made a repeat of an old message
+  // ("好") adopt the old echo, and two pending sends collapsed together.
+  const usedEcho = new Set<number>()
+  const seenPending = new Set<string>()
+  const base: ThreadEntry[] = []
+  for (const entry of onScreen) {
     if (entry.type !== 'user_message' || !entry.id.startsWith('pending-')) {
-      return entry
+      base.push(entry)
+      continue
     }
-    const echo = page.find(
-      candidate =>
-        candidate.type === 'user_message' &&
-        candidate.content === entry.content,
-    )
-    return echo ?? entry
-  })
+    if (seenPending.has(entry.content)) continue
+    seenPending.add(entry.content)
+    // Only adopt a row that is not already on screen under another id;
+    // otherwise the merge below would dedupe one of the two copies away.
+    const onScreenKeys = new Set(onScreen.map(entryKey))
+    let echoIndex = -1
+    for (let i = page.length - 1; i >= 0; i--) {
+      const candidate = page[i]
+      if (
+        !usedEcho.has(i) &&
+        candidate?.type === 'user_message' &&
+        candidate.content === entry.content &&
+        !onScreenKeys.has(entryKey(candidate))
+      ) {
+        echoIndex = i
+        break
+      }
+    }
+    if (echoIndex >= 0) {
+      usedEcho.add(echoIndex)
+      const echo = page[echoIndex]
+      if (echo) base.push(echo)
+    } else if (
+      !page.some(c => c.type === 'user_message' && c.content === entry.content)
+    ) {
+      // The terminal has not echoed it yet; keep showing it (once).
+      base.push(entry)
+    }
+  }
   if (base.length === 0) return page
 
   const anchor = base.findIndex(entry => pageKeys.has(entryKey(entry)))
