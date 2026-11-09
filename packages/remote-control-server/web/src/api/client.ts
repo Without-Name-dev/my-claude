@@ -95,7 +95,11 @@ async function api<T>(
     const message =
       typeof err.message === 'string'
         ? err.message
-        : raw.trim().slice(0, 200) || res.statusText || '请求失败'
+        : res.status >= 500 || /^\s*</.test(raw)
+          ? res.status === 404
+            ? '找不到这个会话，终端可能已关闭'
+            : '服务器暂时不可用，请稍后重试'
+          : raw.trim().slice(0, 200) || res.statusText || '请求失败'
     throw new Error(message)
   }
   return data as T

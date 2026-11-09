@@ -27,7 +27,12 @@ beforeEach(() => {
 const fetchMock = {
   lastUrl: '',
   lastOpts: {} as RequestInit,
-  response: { ok: true, status: 200, statusText: 'OK' },
+  response: { ok: true, status: 200, statusText: 'OK', text: '' } as {
+    ok: boolean
+    status: number
+    statusText: string
+    text?: string
+  },
   responseData: {} as any,
 }
 
@@ -161,7 +166,7 @@ describe('api functions', () => {
     await expect(client.apiFetchSessions()).rejects.toThrow('Invalid UUID')
   })
 
-  test('throws with statusText when error message is missing', async () => {
+  test('falls back to a readable message when the error body has none', async () => {
     store['rcs_uuid'] = 'test-uuid'
     fetchMock.response = {
       ok: false,
@@ -169,8 +174,18 @@ describe('api functions', () => {
       statusText: 'Internal Server Error',
     }
     fetchMock.responseData = {}
-    await expect(client.apiFetchSessions()).rejects.toThrow(
-      'Internal Server Error',
-    )
+    // A bare statusText is English implementation detail; 5xx gets guidance.
+    await expect(client.apiFetchSessions()).rejects.toThrow('服务器暂时不可用')
+  })
+
+  test('never surfaces a raw HTML error page as the message', async () => {
+    store['rcs_uuid'] = 'test-uuid'
+    fetchMock.response = {
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway',
+      text: '<!DOCTYPE HTML><p>Error code: 502</p>',
+    }
+    await expect(client.apiFetchSessions()).rejects.toThrow('服务器暂时不可用')
   })
 })

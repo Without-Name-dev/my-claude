@@ -142,7 +142,13 @@ async function request<T>(
   } finally {
     clearTimeout(timer)
   }
-  const data: unknown = await res.json().catch(() => null)
+  const text = await res.text().catch(() => '')
+  let data: unknown = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    // Proxy / nginx error pages are HTML; never render that markup to a user.
+  }
   if (!res.ok) {
     const record =
       data && typeof data === 'object' && !Array.isArray(data)
@@ -158,7 +164,11 @@ async function request<T>(
     const message =
       typeof error.message === 'string'
         ? error.message
-        : res.statusText || '请求失败'
+        : res.status >= 500
+          ? '服务器暂时不可用，请稍后重试'
+          : res.status === 404
+            ? '找不到这个会话或设备'
+            : res.statusText || '请求失败'
     debugLog('api', `${method} ${path} → ${res.status} ${code}: ${message}`)
     throw new DeviceApiError(res.status, code, message)
   }

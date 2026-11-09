@@ -5,12 +5,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Escape text for React JSX text nodes. (Despite the name it is used as
+ * `{esc(x)}` everywhere.) It must NOT HTML-encode: React renders the result
+ * literally, so entity-encoding turned ordinary quotes into `&quot;`.
+ */
 export function esc(str: string | null | undefined): string {
   if (!str) return ''
-  const value = String(str)
-  const div = document.createElement('div')
-  div.textContent = value
-  return div.innerHTML
+  return String(str)
 }
 
 export function formatTime(ts: number | null | undefined): string {

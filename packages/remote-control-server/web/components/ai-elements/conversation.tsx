@@ -12,7 +12,11 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 const reduceMotion =
   typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
 
-export const Conversation = ({ className, ...props }: ConversationProps) => {
+export const Conversation = ({
+  className,
+  outerRef,
+  ...props
+}: ConversationProps & { outerRef?: React.Ref<HTMLDivElement> }) => {
   // The first history page lands a beat after mount. Letting the scroller
   // "smoothly" travel that distance animated the whole transcript past the
   // eye (and dropped frames); keep it instant during startup, then animate
@@ -25,6 +29,7 @@ export const Conversation = ({ className, ...props }: ConversationProps) => {
 
   return (
     <StickToBottom
+      {...({ ref: outerRef } as object)}
       className={cn('relative min-h-0 flex-1 overflow-y-hidden overflow-x-hidden', className)}
       initial="instant"
       resize={settled && !reduceMotion ? 'smooth' : 'instant'}

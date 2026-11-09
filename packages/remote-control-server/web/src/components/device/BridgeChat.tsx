@@ -97,6 +97,11 @@ export function BridgeChat({
     () =>
       new RCSChatAdapter(sessionId, setEntries, {
         onError: message => setError(message),
+        // Answering on the PC (or another device) resolves the request there;
+        // the prompt must not linger on this phone.
+        onPermissionResolved: requestId => {
+          setPermissions(previous => previous.filter(item => item.requestId !== requestId));
+        },
         onPermissionRequest: permission => {
           setPermissions(previous =>
             previous.some(item => item.requestId === permission.requestId) ? previous : [...previous, permission],
@@ -431,6 +436,7 @@ export function BridgeChat({
           </div>
         )}
         <ChatInput
+          key={sessionId}
           onSubmit={submit}
           isLoading={isLoading}
           onInterrupt={interrupt}

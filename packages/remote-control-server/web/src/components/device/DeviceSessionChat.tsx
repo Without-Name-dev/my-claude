@@ -76,6 +76,8 @@ export function DeviceSessionChat({
   const [forcedBridgeId, setForcedBridgeId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  /** True until the first history page has been painted (never an empty flash). */
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [blockedSession, setBlockedSession] = useState(false);
   const [notice, setNotice] = useState('');
@@ -191,6 +193,7 @@ export function DeviceSessionChat({
     setNotice('');
     setError('');
     setLoadingDetail(true);
+    setHistoryLoading(true);
 
     void (async () => {
       try {
@@ -207,6 +210,7 @@ export function DeviceSessionChat({
         setHistoryError(err instanceof Error ? err.message : '加载历史失败');
       } finally {
         setLoadingDetail(false);
+        setHistoryLoading(false);
       }
     })();
   }, [deviceId, localSessionId, loadDetail, loadHistory]);
@@ -441,24 +445,19 @@ export function DeviceSessionChat({
             </button>
           </div>
         )}
-        {historyHasMore && (
-          <div className="py-1 text-center">
-            <button
-              type="button"
-              className="text-[11px] text-text-muted transition-colors hover:text-brand disabled:opacity-50"
-              disabled={loadingEarlier}
-              onClick={() => void loadEarlier()}
-            >
-              {loadingEarlier ? '加载中…' : '加载更早的消息'}
-            </button>
-          </div>
-        )}
         <ChatView
           entries={entries}
-          isLoading={sending || starting || loadingDetail}
-          emptyTitle={loadingDetail ? '正在加载会话…' : '暂无消息'}
+          isLoading={sending || starting || loadingDetail || historyLoading}
+          hasOlder={historyHasMore}
+          loadingOlder={loadingEarlier}
+          onLoadOlder={() => void loadEarlier()}
+          emptyTitle={loadingDetail || historyLoading ? '正在加载会话…' : '暂无消息'}
           emptyDescription={
-            loadingDetail ? '' : detail?.online ? '发送消息后会自动打开终端' : '设备离线，发送的消息会在上线后发出'
+            loadingDetail || historyLoading
+              ? ''
+              : detail?.online
+                ? '发送消息后会自动打开终端'
+                : '设备离线，发送的消息会在上线后发出'
           }
         />
         {blockedSession && (
@@ -477,6 +476,7 @@ export function DeviceSessionChat({
           </div>
         )}
         <ChatInput
+          key={localSessionId}
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail}

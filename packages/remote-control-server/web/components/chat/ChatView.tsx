@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { OlderMessagesRow, usePullToLoadOlder } from './PullOlder';
 import type { ThreadEntry, ToolCallEntry, PlanDisplayEntry } from '../../src/lib/types';
 import { cn } from '../../src/lib/utils';
 import { UserBubble, AssistantBubble } from './MessageBubble';
@@ -22,6 +23,10 @@ interface ChatViewProps {
   onPermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
   emptyTitle?: string;
   emptyDescription?: string;
+  /** Older transcript pages (history view only). */
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
 export function ChatView({
@@ -30,6 +35,9 @@ export function ChatView({
   onPermissionRespond,
   emptyTitle = '开始对话',
   emptyDescription = '输入消息开始聊天',
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
 }: ChatViewProps) {
   // 将相邻的 ToolCallEntry 合并为一组
   const grouped = groupToolCalls(entries);
@@ -64,9 +72,25 @@ export function ChatView({
   // in the terminal and turns currently running a tool.
   const showThinking = isLoading && entries.length > 0;
 
+  // Pull down at the top of the transcript to fetch the previous page.
+  const { containerRef, pull, hint } = usePullToLoadOlder({
+    enabled: hasOlder && Boolean(onLoadOlder),
+    loading: loadingOlder,
+    onLoad: () => onLoadOlder?.(),
+  });
+
   return (
-    <Conversation className="flex-1">
+    <Conversation className="flex-1" outerRef={containerRef}>
       <ConversationContent>
+        {hasOlder && onLoadOlder ? (
+          <OlderMessagesRow
+            hasMore={hasOlder}
+            loading={loadingOlder}
+            hint={hint}
+            pull={pull}
+            onLoad={() => onLoadOlder()}
+          />
+        ) : null}
         {!hasMessages ? (
           isLoading ? (
             <div role="status" className="flex flex-1 flex-col items-center justify-center gap-4 py-24 text-center">

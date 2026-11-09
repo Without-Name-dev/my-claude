@@ -299,6 +299,7 @@ export class RCSChatAdapter {
   private onStatusChange?: (status: string) => void
   private onError?: (error: string) => void
   private onPermissionRequest?: (permission: PendingPermission) => void
+  private onPermissionResolved?: (requestId: string) => void
   private onSessionInfo?: (info: BridgeSessionInfo) => void
   private onControlResponse?: (response: BridgeControlResponse) => void
   private onBridgeState?: (connected: boolean) => void
@@ -318,6 +319,8 @@ export class RCSChatAdapter {
       onStatusChange?: (status: string) => void
       onError?: (error: string) => void
       onPermissionRequest?: (permission: PendingPermission) => void
+      /** The request was answered elsewhere (the terminal, another device). */
+      onPermissionResolved?: (requestId: string) => void
       onSessionInfo?: (info: BridgeSessionInfo) => void
       onControlResponse?: (response: BridgeControlResponse) => void
       onBridgeState?: (connected: boolean) => void
@@ -336,6 +339,7 @@ export class RCSChatAdapter {
     this.onStatusChange = options?.onStatusChange
     this.onError = options?.onError
     this.onPermissionRequest = options?.onPermissionRequest
+    this.onPermissionResolved = options?.onPermissionResolved
     this.onSessionInfo = options?.onSessionInfo
     this.onControlResponse = options?.onControlResponse
     this.onBridgeState = options?.onBridgeState
@@ -620,6 +624,7 @@ export class RCSChatAdapter {
           .response as Record<string, unknown> | undefined
         if (typeof response?.request_id === 'string') {
           answeredPermissions.add(response.request_id)
+          this.onPermissionResolved?.(response.request_id)
         }
       }
     }
