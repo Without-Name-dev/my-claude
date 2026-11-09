@@ -115,7 +115,9 @@ export function AskUserPanelView({
 
     return (
       <div className="rounded-xl border border-brand/30 bg-surface-1 p-4">
-        <div className="mb-3 text-sm font-semibold text-text-primary">{esc(description || q.question || '问题')}</div>
+        <div className="mb-3 text-sm font-semibold text-text-primary">
+          {esc(description || q.question || 'Claude 需要一个回答')}
+        </div>
         <div className="space-y-2">
           {(q.options || []).map((opt, j) => {
             const isSelected = multiSelect ? ((answers[0] as number[]) || []).includes(j) : answers[0] === j;
