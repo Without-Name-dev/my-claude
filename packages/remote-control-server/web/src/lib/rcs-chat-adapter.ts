@@ -24,8 +24,60 @@ import type {
   PermissionOption,
 } from './types'
 
-// SSE Event Bus — 复用自 rcs-transport.ts，仅保留连接管理
+// SSE Event Bus — connection management for the bridge event stream.
 type SSEEventHandler = (event: SessionEvent) => void
+
+/** Reject after `ms` so a stalled request cannot freeze the chat forever. */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+/**
+ * Cheap text probe for the bridge's connect banner. Stringifying every event
+ * (including multi-KB payloads) just to run one regex was measurable on a
+ * history replay.
+ */
+function eventText(payload: EventPayload): string {
+  const record = payload as Record<string, unknown>
+  const parts: string[] = []
+  for (const candidate of [record.content, record.message, record.raw]) {
+    if (typeof candidate === 'string') {
+      parts.push(candidate)
+    } else if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        if (typeof item === 'string') parts.push(item)
+        else if (
+          item &&
+          typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).text === 'string'
+        ) {
+          parts.push(String((item as Record<string, unknown>).text))
+        }
+      }
+    } else if (candidate && typeof candidate === 'object') {
+      const value = candidate as Record<string, unknown>
+      if (typeof value.content === 'string') parts.push(value.content)
+      else if (typeof value.text === 'string') parts.push(value.text)
+    }
+  }
+  return parts.join('\n')
+}
 
 /**
  * The REPL emits its own bookkeeping as user messages when a slash command
@@ -84,6 +136,9 @@ class SSEBus {
   private onOpen: (() => void) | null = null
   private failures = 0
   private lastProbe = 0
+  /** Server sequence cursor: a reconnect may replay events we already have. */
+  private lastSeqNum = 0
+  private seqSessionId = ''
 
   onEvent(handler: SSEEventHandler): () => void {
     this.listeners.add(handler)
@@ -100,6 +155,12 @@ class SSEBus {
     this.onOpen = onStreamOpen ?? null
     this.failures = 0
     this.lastProbe = 0
+    // Keep the cursor across reconnects of the same session; reset it when the
+    // bus is reused for a different one.
+    if (this.seqSessionId !== sessionId) {
+      this.lastSeqNum = 0
+      this.seqSessionId = sessionId
+    }
     const uuid = getUuid()
     const url = `/web/sessions/${sessionId}/events?uuid=${encodeURIComponent(uuid)}`
     const es = new EventSource(url)
@@ -109,6 +170,12 @@ class SSEBus {
       this.failures = 0
       try {
         const data = JSON.parse(e.data) as SessionEvent
+        // Auto-replay after a reconnect re-sends everything since the cursor;
+        // without this the duplicate assistant text/tool cards piled up.
+        if (typeof data.seqNum === 'number') {
+          if (data.seqNum <= this.lastSeqNum) return
+          this.lastSeqNum = data.seqNum
+        }
         for (const handler of this.listeners) {
           handler(data)
         }
@@ -455,13 +522,15 @@ export class RCSChatAdapter {
     this.bufferedEvents = []
     this.connectSSE()
     try {
-      await apiBind(this.sessionId)
+      // A stalled bind/history fetch used to leave historyReady false forever:
+      // the live view stayed empty while bufferedEvents grew without bound.
+      await withTimeout(apiBind(this.sessionId), 10_000, '连接会话超时')
     } catch {
-      // may already be bound
+      // may already be bound, or offline — carry on with the live stream
     }
     if (this.disposed) return
     try {
-      await this.loadHistory()
+      await withTimeout(this.loadHistory(), 12_000, '加载历史超时')
     } catch (error) {
       // A failed history fetch must not disable live messaging.
       this.onError?.(error instanceof Error ? error.message : '加载历史失败')
@@ -704,11 +773,9 @@ export class RCSChatAdapter {
     const type = event.type
     const payload = event.payload || ({} as EventPayload)
 
-    // Skip bridge init noise
-    // Only the short connect banner matters here; stringifying a whole
-    // history event was pure overhead on every event.
-    const serialized = JSON.stringify(event).slice(0, 400)
-    if (/Remote Control connecting/i.test(serialized)) return
+    // Skip bridge init noise. Only the short connect banner matters here;
+    // serialising a whole history event was pure overhead on every event.
+    if (/Remote Control connecting/i.test(eventText(payload))) return
 
     switch (type) {
       // Messages entered in the terminal also need to appear in the browser.

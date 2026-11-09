@@ -65,6 +65,13 @@ export function ChatView({
     const timer = window.setTimeout(() => setRevealAll(true), 80);
     return () => window.clearTimeout(timer);
   }, [entries.length, revealAll]);
+
+  // Warm the lazily loaded markdown chunk while the transcript is still
+  // small: otherwise the first streamed reply swaps from raw text to
+  // rendered markdown mid-stream, reflowing the whole bubble.
+  useEffect(() => {
+    void import('streamdown').catch(() => {});
+  }, []);
   const visibleGroups = revealAll ? grouped : grouped.slice(-6);
 
   // 检查是否正在加载（最后一个条目是用户消息）
@@ -82,6 +89,11 @@ export function ChatView({
   return (
     <Conversation className="flex-1" outerRef={containerRef}>
       <ConversationContent>
+        {/* Always mounted: a live region inserted at the same moment the text
+            appears is unreliable in VoiceOver. Only its content changes. */}
+        <span role="status" aria-live="polite" className="sr-only">
+          {showThinking ? 'Claude 正在回复' : ''}
+        </span>
         {hasOlder && onLoadOlder ? (
           <OlderMessagesRow
             hasMore={hasOlder}
@@ -159,13 +171,8 @@ export function ChatView({
 
             {/* 思考指示器 — 三个点 */}
             {showThinking && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex items-center gap-2 py-1"
-                aria-label="Claude 正在回复"
-              >
-                <span className="chat-typing-indicator" aria-hidden="true">
+              <div className="flex items-center gap-2 py-1" aria-hidden="true">
+                <span className="chat-typing-indicator">
                   <span></span>
                   <span></span>
                   <span></span>
@@ -217,7 +224,7 @@ function entrySpacing(entries: ThreadEntry[], index: number): string {
 function CommandOutput({ text }: { text: string }) {
   return (
     <div className="rounded-lg border border-border/60 bg-surface-1/50 px-3 py-2">
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-text-muted">命令输出</div>
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-text-muted">命令输出</div>
       <div className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-text-secondary">{text}</div>
     </div>
   );

@@ -60,7 +60,7 @@ export function SessionSidebar({ sessions, activeId, onSelect, onNew, className 
           {groups.map(group => (
             <div key={group.label}>
               <div className="px-3 py-1.5">
-                <span className="text-[10px] font-display font-medium uppercase tracking-widest text-text-muted">
+                <span className="text-[11px] font-display font-medium uppercase tracking-widest text-text-muted">
                   {group.label}
                 </span>
               </div>

@@ -17,7 +17,7 @@ export function DebugButton() {
       onClick={() => {
         window.dispatchEvent(new CustomEvent('cc:toggle-debug-panel'));
       }}
-      className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary active:bg-surface-2 active:text-text-secondary"
       aria-label="打开日志"
       title="客户端日志"
     >
@@ -48,7 +48,7 @@ export function DebugPanel() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            className="text-brand hover:underline"
+            className="text-brand-text hover:underline"
             onClick={() => {
               void navigator.clipboard
                 ?.writeText(entries.map(e => `${new Date(e.at).toISOString()} [${e.tag}] ${e.message}`).join('\n'))

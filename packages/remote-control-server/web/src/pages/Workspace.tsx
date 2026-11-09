@@ -325,6 +325,9 @@ export function Workspace({
         className={cn(
           'w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
           navDir === 'pop' && 'rcs-nav-pop',
+          // The chat panel covers the list on phones; leaving the list in the
+          // accessibility tree let VoiceOver swipe into invisible rows.
+          mobileChat && 'max-md:hidden',
         )}
       >
         <div className="border-b border-border/70 px-3 pb-2.5 pt-1.5">
@@ -338,7 +341,7 @@ export function Workspace({
                 onClick={() => void refreshDevices(true)}
                 title="刷新设备"
                 aria-label="刷新设备"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary active:bg-surface-2 active:text-text-secondary"
               >
                 <RefreshCw className={cn('h-4 w-4', (loadingDevices || refreshingDevices) && 'animate-spin')} />
               </button>
@@ -387,9 +390,7 @@ export function Workspace({
           {devices.length === 0 && !loadingDevices && (
             <p className="mt-2 px-1 text-xs text-text-muted">{devicesError || '还没有设备连接'}</p>
           )}
-          {devices.length > 0 && devicesError && (
-            <p className="mt-1 px-1 text-[11px] text-status-error">{devicesError}</p>
-          )}
+          {devices.length > 0 && devicesError && <p className="mt-1 px-1 text-xs text-status-error">{devicesError}</p>}
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -405,7 +406,7 @@ export function Workspace({
               </button>
             </div>
           )}
-          <div className="pb-[calc(1rem+env(safe-area-inset-bottom))]">
+          <div className="list-safe pb-[calc(1rem+env(safe-area-inset-bottom))]">
             {filteredProjects.map(project => {
               const expanded = expandedProjectId === project.projectId;
               const sessions = filteredSessions(project);

@@ -43,7 +43,7 @@ export function PlanDisplay({ entry }: PlanDisplayProps) {
 
           <span className="text-xs font-display font-medium text-text-secondary">执行计划</span>
 
-          <span className="text-[10px] text-text-muted font-mono">
+          <span className="text-[11px] text-text-muted font-mono">
             {completed}/{total}
           </span>
 
@@ -55,7 +55,7 @@ export function PlanDisplay({ entry }: PlanDisplayProps) {
             />
           </div>
 
-          <span className="text-[10px] text-text-muted font-mono">{percentage}%</span>
+          <span className="text-[11px] text-text-muted font-mono">{percentage}%</span>
         </button>
 
         {/* Entry list */}
@@ -131,7 +131,7 @@ function PriorityBadge({ priority }: { priority: PlanEntryPriority }) {
 
   return (
     <span
-      className={cn('text-[9px] font-display rounded-full px-1.5 py-0.5 flex-shrink-0 leading-none', styles[priority])}
+      className={cn('text-[11px] font-display rounded-full px-1.5 py-0.5 flex-shrink-0 leading-none', styles[priority])}
     >
       {labels[priority]}
     </span>

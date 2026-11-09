@@ -87,6 +87,7 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
   return (
     <div
       ref={containerRef}
+      id="composer-command-menu"
       role="listbox"
       aria-label="斜杠命令"
       className={cn('rounded-xl border border-border bg-surface-2 shadow-lg', className)}
@@ -120,7 +121,7 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
             >
               <span className="text-sm font-display font-medium text-brand">/{cmd.name}</span>
               <span className="text-xs text-text-muted truncate flex-1">{cmd.description}</span>
-              {cmd.input?.hint && <span className="text-[10px] text-text-muted italic">{cmd.input.hint}</span>}
+              {cmd.input?.hint && <span className="text-[11px] text-text-muted italic">{cmd.input.hint}</span>}
             </button>
           ))
         )}

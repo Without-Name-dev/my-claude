@@ -84,6 +84,11 @@ export function DeviceSessionChat({
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const loadedKey = useRef('');
+  // A second send while the first is still on the wire used to be dropped
+  // silently. Queue it and flush once the first settles.
+  const sendingRef = useRef(false);
+  const queuedMessage = useRef<ChatInputMessage | null>(null);
+  const sendRef = useRef<(message: ChatInputMessage) => Promise<void>>(async () => {});
 
   const loadDetail = useCallback(async () => {
     const next = await fetchSession(deviceId, localSessionId);
@@ -316,7 +321,12 @@ export function DeviceSessionChat({
   const send = useCallback(
     async (message: ChatInputMessage) => {
       const text = message.text.trim();
-      if (!text || sending) return;
+      if (!text) return;
+      if (sendingRef.current) {
+        queuedMessage.current = message;
+        return;
+      }
+      sendingRef.current = true;
       setSending(true);
       setError('');
       setNotice('');
@@ -341,11 +351,21 @@ export function DeviceSessionChat({
         // The composer puts the text back, so a failed send is never silent.
         throw err;
       } finally {
+        sendingRef.current = false;
         setSending(false);
+        const next = queuedMessage.current;
+        if (next) {
+          queuedMessage.current = null;
+          window.setTimeout(() => void sendRef.current(next), 0);
+        }
       }
     },
-    [deviceId, localSessionId, sending, loadDetail],
+    [deviceId, localSessionId, loadDetail],
   );
+
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
 
   // Always keep the session state fresh, not only while the live view is up.
   // This is what re-enters the bridge after an RCS restart or a transient SSE
@@ -450,7 +470,7 @@ export function DeviceSessionChat({
   const statusText = starting
     ? operation?.state === 'waiting_for_user'
       ? operation.detail || '终端已打开，等待你在电脑上确认（信任目录、权限或模型配置）。'
-      : '正在启动终端…'
+      : '正在电脑上打开终端…'
     : historyError || notice;
 
   return (
@@ -480,10 +500,12 @@ export function DeviceSessionChat({
             </button>
           </div>
         )}
+        {/* "Starting the terminal" is not Claude typing: the dots made it look
+            like a reply was already streaming. The status row explains it. */}
         <ChatView
           entries={entries}
           onPermissionRespond={respondToolPermission}
-          isLoading={sending || starting || loadingDetail || historyLoading}
+          isLoading={sending || historyLoading}
           hasOlder={historyHasMore}
           loadingOlder={loadingEarlier}
           onLoadOlder={() => void loadEarlier()}
@@ -500,7 +522,11 @@ export function DeviceSessionChat({
           <div className="mx-auto w-full max-w-3xl px-4 pt-2">
             <div className="flex items-center gap-3 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs">
               <span className="min-w-0 flex-1 text-text-secondary">这个会话在终端里运行，但没有启用远程控制。</span>
-              <button type="button" onClick={() => void forceRestart()} className="shrink-0 text-brand hover:underline">
+              <button
+                type="button"
+                onClick={() => void forceRestart()}
+                className="shrink-0 text-brand-text hover:underline"
+              >
                 重启终端并启用
               </button>
             </div>
@@ -534,7 +560,7 @@ function MobileChatHeader({ title, onBack }: { title: string; onBack: () => void
       <button
         type="button"
         onClick={onBack}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
         aria-label="返回列表"
       >
         <ChevronLeft className="h-5 w-5" />

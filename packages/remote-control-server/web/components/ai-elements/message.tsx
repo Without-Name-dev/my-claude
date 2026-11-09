@@ -256,7 +256,11 @@ export type MessageResponseProps = {
 
 export const MessageResponse = memo(
   ({ className, children, ...props }: MessageResponseProps) => (
-    <Suspense fallback={<div className={cn('whitespace-pre-wrap break-words', className)}>{children}</div>}>
+    <Suspense
+      fallback={
+        <div className={cn('whitespace-pre-wrap break-words [overflow-wrap:anywhere]', className)}>{children}</div>
+      }
+    >
       <LazyStreamdown
         className={cn(
           'size-full break-words [overflow-wrap:anywhere] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0',

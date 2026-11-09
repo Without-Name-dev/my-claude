@@ -103,7 +103,7 @@ export function OlderMessagesRow({
         <button
           type="button"
           onClick={onLoad}
-          className="min-h-9 rounded-full px-3 text-xs text-text-muted transition-colors active:bg-surface-1"
+          className="min-h-11 rounded-full px-3 text-xs text-text-muted transition-colors active:bg-surface-1"
         >
           查看更早的消息
         </button>

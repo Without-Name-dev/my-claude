@@ -160,7 +160,7 @@ export function AskUserPanelView({
             <button
               type="button"
               onClick={() => handleOtherSubmit(0)}
-              className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
+              className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2 active:bg-surface-2"
             >
               发送
             </button>
@@ -170,14 +170,14 @@ export function AskUserPanelView({
           <button
             type="button"
             onClick={handleSubmit}
-            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light"
+            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:bg-brand-light"
           >
             提交
           </button>
           <button
             type="button"
             onClick={onSkip}
-            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
+            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2 active:bg-surface-2"
           >
             跳过
           </button>
@@ -228,14 +228,14 @@ export function AskUserPanelView({
           <button
             type="button"
             onClick={handleSubmit}
-            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light"
+            className="min-h-11 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:bg-brand-light"
           >
             全部提交
           </button>
           <button
             type="button"
             onClick={onSkip}
-            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2"
+            className="min-h-11 rounded-lg border border-border px-4 text-sm text-text-secondary transition-colors hover:bg-surface-2 active:bg-surface-2"
           >
             跳过
           </button>
@@ -299,9 +299,9 @@ function QuestionTab({
           <button
             type="button"
             onClick={() => onOtherSubmit(qIdx)}
-            className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 transition-colors"
+            className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 active:bg-surface-2 transition-colors"
           >
-            Send
+            发送
           </button>
         </div>
       </div>
@@ -390,9 +390,9 @@ export function PlanPanelView({
           type="button"
           onClick={handleSubmit}
           disabled={!selected}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light disabled:opacity-50 transition-colors"
+          className="min-h-11 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-light active:bg-brand-light disabled:opacity-50 transition-colors"
         >
-          Submit
+          提交
         </button>
       </div>
     </div>
@@ -442,9 +442,9 @@ function formatPlanContent(content: string): string {
   html = html.replace(
     /```(\w*)\n?([\s\S]*?)```/g,
     (_, _l, code) =>
-      `<pre class="my-2 overflow-x-auto rounded-lg bg-tool-card p-3 font-mono text-xs">${code.trim()}</pre>`,
+      `<pre class="my-2 overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs">${code.trim()}</pre>`,
   );
-  html = html.replace(/`([^`]+)`/g, '<code class="rounded bg-tool-card px-1.5 py-0.5 font-mono text-xs">$1</code>');
+  html = html.replace(/`([^`]+)`/g, '<code class="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs">$1</code>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   return html;
 }

@@ -108,6 +108,35 @@ export function BridgeChat({
   const userChangedMode = useRef(false);
   const pendingModel = useRef<{ previous: string } | null>(null);
   const pendingMode = useRef<{ previous: string } | null>(null);
+  const controlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * A CLI build that ignores a control request must not leave the pickers
+   * disabled forever — and the optimistic value in the <select> must roll
+   * back, or the user believes a switch happened that never did.
+   */
+  const armControlTimeout = useCallback(() => {
+    if (controlTimer.current) clearTimeout(controlTimer.current);
+    controlTimer.current = setTimeout(() => {
+      controlTimer.current = null;
+      setControlPending(false);
+      if (pendingModel.current) {
+        setModelId(pendingModel.current.previous);
+        pendingModel.current = null;
+      }
+      if (pendingMode.current) {
+        setPermissionMode(pendingMode.current.previous);
+        pendingMode.current = null;
+      }
+      setControlError('切换超时，已保持原来的设置');
+    }, 8000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (controlTimer.current) clearTimeout(controlTimer.current);
+    };
+  }, []);
 
   const adapter = useMemo(
     () =>
@@ -130,6 +159,10 @@ export function BridgeChat({
           if (info.permissionMode && !userChangedMode.current) setPermissionMode(info.permissionMode);
         },
         onControlResponse: response => {
+          if (controlTimer.current) {
+            clearTimeout(controlTimer.current);
+            controlTimer.current = null;
+          }
           setControlPending(false);
           setControlError(response.error ?? '');
           if (response.error) {
@@ -297,19 +330,21 @@ export function BridgeChat({
       setModelId(id);
       setControlError('');
       setControlPending(true);
-      // A CLI build that ignores the control request must not leave the
-      // pickers disabled forever.
-      window.setTimeout(() => setControlPending(false), 8000);
+      armControlTimeout();
       try {
         await adapter.setModel(id);
       } catch (err) {
+        if (controlTimer.current) {
+          clearTimeout(controlTimer.current);
+          controlTimer.current = null;
+        }
         pendingModel.current = null;
         setModelId(previous);
         setControlPending(false);
         setControlError(`切换模型失败，已保持原模型：${err instanceof Error ? err.message : '未知原因'}`);
       }
     },
-    [adapter, modelId],
+    [adapter, armControlTimeout, modelId],
   );
 
   const changePermissionMode = useCallback(
@@ -320,26 +355,32 @@ export function BridgeChat({
       setPermissionMode(mode);
       setControlError('');
       setControlPending(true);
-      window.setTimeout(() => setControlPending(false), 8000);
+      armControlTimeout();
       try {
         await adapter.setPermissionMode(mode);
       } catch (err) {
+        if (controlTimer.current) {
+          clearTimeout(controlTimer.current);
+          controlTimer.current = null;
+        }
         pendingMode.current = null;
         setPermissionMode(previous);
         setControlPending(false);
         setControlError(`切换权限模式失败，已保持原模式：${err instanceof Error ? err.message : '未知原因'}`);
       }
     },
-    [adapter, permissionMode],
+    [adapter, armControlTimeout, permissionMode],
   );
 
   const interrupt = useCallback(async () => {
     try {
       await adapter.interrupt();
+      // Only claim idle once the interrupt really landed. The old `finally`
+      // cleared the spinner after a failed POST, so the UI looked idle while
+      // the turn was still running.
+      setIsLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '中断失败');
-    } finally {
-      setIsLoading(false);
     }
   }, [adapter]);
 
@@ -383,6 +424,20 @@ export function BridgeChat({
       }
     },
     [sessionId],
+  );
+
+  // Tool cards in the transcript carry their own permission buttons. Without
+  // a handler they rendered as dead controls; route them through the same
+  // control channel as the cards below the composer.
+  const respondFromCard = useCallback(
+    (requestId: string, optionId: string | null, optionKind: string | null) => {
+      const rejected = optionKind === 'reject_once' || optionKind === 'reject_always';
+      const approved = !optionId || !rejected;
+      void adapter.respondPermission(requestId, approved, optionId ? { option_id: optionId } : undefined).catch(err => {
+        setError(err instanceof Error ? err.message : '处理权限请求失败');
+      });
+    },
+    [adapter],
   );
 
   const submitPlan = useCallback(
@@ -463,6 +518,7 @@ export function BridgeChat({
         <ChatView
           entries={entries}
           isLoading={isLoading}
+          onPermissionRespond={respondFromCard}
           emptyTitle="开始对话"
           emptyDescription="输入消息继续这个会话"
         />
@@ -503,7 +559,11 @@ export function BridgeChat({
                   isLoading ? 'animate-pulse bg-brand' : connected ? 'bg-status-success' : 'bg-status-error',
                 )}
                 title={isLoading ? '处理中' : connected ? '已连接' : '连接断开'}
+                aria-hidden="true"
               />
+              <span role="status" aria-live="polite" className="sr-only">
+                {isLoading ? 'Claude 正在处理' : connected ? '已连接终端' : '终端连接已断开'}
+              </span>
               <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
                 <ShieldCheck
                   className={cn(

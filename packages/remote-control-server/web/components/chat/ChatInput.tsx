@@ -25,6 +25,11 @@ const IMAGE_COMPRESSION_OPTIONS = {
   fileType: 'image/jpeg' as const,
 };
 
+/** More than this in one message freezes WKWebView long before the server cares. */
+const MAX_IMAGES = 9;
+/** Refuse absurd files before decoding; the canvas copy would be worse. */
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
 // =============================================================================
 // Anthropic 风格聊天输入框 — 底部居中浮动卡片，橙色焦点环
 // =============================================================================
@@ -109,12 +114,23 @@ export function ChatInput({
     return commands.filter(command => command.name.toLowerCase().startsWith(filter));
   }, [commands, commandFilter]);
 
+  // Closing without choosing used to leave "/mod" in the box, which Enter
+  // then sent to Claude as a chat message. Only drop it when the whole draft
+  // is still a bare slash token (never when the user kept typing arguments).
+  const closeCommandMenu = useCallback((clearDetached: boolean) => {
+    setShowCommandMenu(false);
+    setCommandFilter('');
+    if (clearDetached) {
+      setText(previous => (previous.startsWith('/') && !/\s/.test(previous) ? '' : previous));
+    }
+  }, []);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (showCommandMenu) {
         if (e.key === 'Escape') {
           e.preventDefault();
-          setShowCommandMenu(false);
+          closeCommandMenu(true);
           return;
         }
         // Arrow keys and Enter are handled by CommandMenu via document-level
@@ -125,7 +141,8 @@ export function ChatInput({
         }
         if (e.key === 'Tab') {
           e.preventDefault();
-          setShowCommandMenu(false);
+          // Tab moves focus intentionally; keep what was typed.
+          closeCommandMenu(false);
           return;
         }
       }
@@ -135,14 +152,23 @@ export function ChatInput({
         // keyboards keep the desktop behaviour.
         if (window.matchMedia?.('(pointer: coarse)').matches) return;
         e.preventDefault();
-        if (isLoading) {
-          onInterrupt?.();
-        } else {
+        if (text.trim() || images.length > 0) {
           void handleSubmit();
+        } else if (isLoading) {
+          onInterrupt?.();
         }
       }
     },
-    [commandMatches.length, handleSubmit, isLoading, onInterrupt, showCommandMenu],
+    [
+      closeCommandMenu,
+      commandMatches.length,
+      handleSubmit,
+      images.length,
+      isLoading,
+      onInterrupt,
+      showCommandMenu,
+      text,
+    ],
   );
 
   const handleInput = useCallback(
@@ -176,10 +202,21 @@ export function ChatInput({
       if (files.length === 0) return;
 
       e.preventDefault();
-      const newImages = await processImageFiles(files);
-      setImages(prev => [...prev, ...newImages]);
+      const room = Math.max(0, MAX_IMAGES - images.length);
+      if (room === 0) {
+        setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+        return;
+      }
+      const { images: newImages, failed } = await processImageFiles(files);
+      const accepted = newImages.slice(0, room);
+      setImages(prev => [...prev, ...accepted].slice(0, MAX_IMAGES));
+      if (failed > 0) {
+        setNotice(`${failed} 张图片无法读取，已跳过`);
+      } else if (newImages.length > room) {
+        setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+      }
     },
-    [supportsImages],
+    [images.length, supportsImages],
   );
 
   // 选择文件
@@ -196,20 +233,31 @@ export function ChatInput({
       fileInputRef.current.value = '';
       return;
     }
-    const tooBig = imagesOnly.filter(file => file.size > 25 * 1024 * 1024);
-    if (tooBig.length > 0) {
+    const accepted = imagesOnly.filter(file => file.size <= MAX_IMAGE_BYTES);
+    if (accepted.length !== imagesOnly.length) {
       setNotice('图片超过 25MB，已跳过');
     }
-    const accepted = imagesOnly.filter(file => file.size <= 25 * 1024 * 1024);
     if (accepted.length === 0) {
       fileInputRef.current.value = '';
       return;
     }
-    const newImages = await processImageFiles(accepted);
-    setImages(prev => [...prev, ...newImages]);
+    const room = Math.max(0, MAX_IMAGES - images.length);
+    if (room === 0) {
+      setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+      fileInputRef.current.value = '';
+      return;
+    }
+    const { images: newImages, failed } = await processImageFiles(accepted);
+    const kept = newImages.slice(0, room);
+    setImages(prev => [...prev, ...kept].slice(0, MAX_IMAGES));
+    if (failed > 0) {
+      setNotice(`${failed} 张图片无法读取，已跳过`);
+    } else if (newImages.length > room) {
+      setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+    }
     // 清空 input 以便重复选择
     fileInputRef.current.value = '';
-  }, []);
+  }, [images.length]);
 
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
@@ -230,20 +278,28 @@ export function ChatInput({
 
   const toggleCommandMenu = useCallback(() => {
     if (showCommandMenu) {
-      setShowCommandMenu(false);
-      setCommandFilter('');
+      closeCommandMenu(true);
       return;
     }
     const slashMode = text.startsWith('/');
     // Tapping "/" used to prefix the whole draft, turning "hello" into
     // "/hello". Only seed the slash when the composer is empty.
     if (!text) setText('/');
-    setShowCommandMenu(true);
     // Filter on the text that will actually be in the input; using the old
     // value made a typed prefix invisible to the menu.
     setCommandFilter(slashMode ? text.slice(1) : '');
-    textareaRef.current?.focus();
-  }, [showCommandMenu, text]);
+    // A programmatic focus() may be refused by WKWebView, which left the menu
+    // open over a closed keyboard. Only show it once the field really owns
+    // the keyboard.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      if (document.activeElement === el) setShowCommandMenu(true);
+    });
+  }, [closeCommandMenu, showCommandMenu, text]);
 
   // The textarea grows with the text — including text set programmatically by
   // the command menu, which used to leave a one-line command in a 200px box.
@@ -258,17 +314,14 @@ export function ChatInput({
   // A stop button with no handler is a lie: only show it when interrupting is
   // actually wired up (e.g. the device-open flow cannot interrupt).
   const canInterrupt = isLoading && Boolean(onInterrupt);
-  // Interrupting is destructive and used to happen on the same tap that was
-  // "send" a moment earlier; require a deliberate second tap on touch.
+  // Interrupting is destructive, so it gets its own control and a deliberate
+  // second tap. The send slot must stay "send": while a turn runs, the user
+  // can still type and send a follow-up, and that tap used to stop the turn.
   const [confirmStop, setConfirmStop] = useState(false);
   useEffect(() => {
     if (!canInterrupt) setConfirmStop(false);
   }, [canInterrupt]);
-  const handlePrimary = () => {
-    if (!canInterrupt) {
-      void handleSubmit();
-      return;
-    }
+  const handleStop = () => {
     if (!confirmStop) {
       setConfirmStop(true);
       haptic('warning');
@@ -298,10 +351,7 @@ export function ChatInput({
             commands={commands}
             filter={commandFilter}
             onSelect={handleCommandSelect}
-            onClose={() => {
-              setShowCommandMenu(false);
-              setCommandFilter('');
-            }}
+            onClose={() => closeCommandMenu(false)}
             className="absolute bottom-full left-0 right-0 mb-1 z-50"
           />
         )}
@@ -385,6 +435,7 @@ export function ChatInput({
               {commands && commands.length > 0 && (
                 <button
                   type="button"
+                  id="composer-command-trigger"
                   onClick={toggleCommandMenu}
                   className={cn(
                     'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50',
@@ -395,6 +446,8 @@ export function ChatInput({
                   disabled={disabled}
                   title="命令列表"
                   aria-label="命令列表"
+                  aria-expanded={showCommandMenu}
+                  aria-controls="composer-command-menu"
                 >
                   <Slash className="h-4 w-4" />
                 </button>
@@ -403,24 +456,34 @@ export function ChatInput({
 
             <div className="ml-auto flex min-w-0 items-center gap-0.5">
               {toolbarRight}
+              {canInterrupt && (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  aria-label={confirmStop ? '再点一次停止生成' : '停止生成'}
+                  className={cn(
+                    'ml-1 flex h-8 shrink-0 items-center justify-center rounded-full transition-all',
+                    confirmStop
+                      ? 'gap-1 bg-destructive/15 px-2.5 text-status-error'
+                      : 'w-8 bg-surface-3 text-text-primary active:scale-95',
+                  )}
+                >
+                  <Square className="h-2.5 w-2.5" fill="currentColor" strokeWidth={0} />
+                  {confirmStop && <span className="text-xs font-medium">确认停止</span>}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handlePrimary}
-                disabled={canInterrupt ? false : !canSend || sending}
-                aria-label={canInterrupt ? (confirmStop ? '再点一次停止生成' : '停止生成') : '发送消息'}
+                onClick={() => void handleSubmit()}
+                disabled={!canSend || sending}
+                aria-label="发送消息"
                 className={cn(
-                  'ml-1 flex h-10 shrink-0 items-center justify-center rounded-full transition-all',
-                  canInterrupt ? 'gap-1.5 bg-brand px-3 text-white active:scale-95' : 'w-10',
-                  !canInterrupt && (canSend ? 'bg-brand text-white active:scale-95' : 'bg-surface-1 text-text-muted'),
-                  sending && !canInterrupt && 'opacity-70',
+                  'ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all',
+                  canSend ? 'bg-brand text-white active:scale-95' : 'bg-surface-1 text-text-muted',
+                  sending && 'opacity-70',
                 )}
               >
-                {canInterrupt ? (
-                  <>
-                    <Square className="h-3 w-3" fill="currentColor" />
-                    <span className="text-xs font-medium">{confirmStop ? '确认停止' : '停止'}</span>
-                  </>
-                ) : sending ? (
+                {sending ? (
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                 ) : (
                   <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
@@ -438,15 +501,30 @@ export function ChatInput({
 // 图片处理工具
 // =============================================================================
 
-async function processImageFiles(files: File[]): Promise<UserMessageImage[]> {
+async function processImageFiles(files: File[]): Promise<{ images: UserMessageImage[]; failed: number }> {
   const results: UserMessageImage[] = [];
+  let failed = 0;
 
   for (const file of files) {
     try {
       let blob: Blob = file;
       let mimeType = file.type;
 
-      if (file.size > 2 * 1024 * 1024) {
+      // A 1.9 MB JPEG can still be 8000×6000 pixels: size alone does not
+      // decide whether the WebView can hold it in memory. Decode the header
+      // first (also rejects HEIC/invalid files instead of dropping them
+      // silently) and compress anything with a large pixel footprint.
+      let width = 0;
+      let height = 0;
+      if (typeof createImageBitmap === 'function') {
+        const bitmap = await createImageBitmap(file).catch(() => null);
+        if (!bitmap) throw new Error('无法读取图片');
+        width = bitmap.width;
+        height = bitmap.height;
+        bitmap.close?.();
+      }
+
+      if (file.size > 2 * 1024 * 1024 || width > 2048 || height > 2048) {
         const compressed = await imageCompression(file, IMAGE_COMPRESSION_OPTIONS);
         blob = compressed;
         mimeType = 'image/jpeg';
@@ -465,9 +543,10 @@ async function processImageFiles(files: File[]): Promise<UserMessageImage[]> {
 
       results.push({ mimeType, data: base64 });
     } catch (err) {
+      failed += 1;
       console.error('Failed to process image:', err);
     }
   }
 
-  return results;
+  return { images: results, failed };
 }

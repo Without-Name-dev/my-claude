@@ -22,6 +22,8 @@
   --color-brand-light: #c4633f;
   /* Text/links need AA contrast on surface-0; the base brand is a fill colour. */
   --color-brand-dark: #a94e2c;
+  /* Action/link text: brand orange is only 2.9:1 on the light surfaces. */
+  --color-brand-text: #a84a27;
   --color-brand-subtle: rgba(217, 119, 87, 0.1);
 
   /* Surfaces — page / panel / card / strong border */
@@ -92,6 +94,7 @@
 .dark {
   --color-surface-0: #0f1012;
   --color-surface-1: #161719;
+  --color-brand-text: #e8926f;
   --color-surface-2: #1b1d21;
   --color-surface-3: #2a2d33;
   --color-text-primary: #f2f3f5;
@@ -212,6 +215,12 @@
    leaves a dead strip between the composer and the keys. */
 html.kb-open .composer-safe {
   padding-bottom: 0.75rem;
+}
+
+/* Same dead strip at the bottom of the session list while the search field
+   has the keyboard. */
+html.kb-open .list-safe {
+  padding-bottom: 1rem;
 }
 
 /* ============================================================

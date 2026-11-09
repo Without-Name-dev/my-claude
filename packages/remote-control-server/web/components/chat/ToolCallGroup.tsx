@@ -2,7 +2,7 @@ import { memo, useMemo, useState } from 'react';
 import type { ToolCallEntry, ToolCallData } from '../../src/lib/types';
 import { cn } from '../../src/lib/utils';
 import { ToolPermissionButtons } from '../ai-elements/permission-request';
-import { Check, Clock, Loader2, X } from 'lucide-react';
+import { Check, Clock, Loader2, Minus, X } from 'lucide-react';
 
 // =============================================================================
 // 工具调用折叠组 — Anthropic: subtle card, left-border accent, compact layout
@@ -38,6 +38,7 @@ export function ToolCallGroup({ entries, onPermissionRespond }: ToolCallGroupPro
           type="button"
           className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-1/50 transition-colors"
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
         >
           <svg
             width="12"
@@ -96,9 +97,9 @@ const SingleToolCard = memo(function SingleToolCard({ tool, compact, onPermissio
       case 'waiting_for_confirmation':
         return <Clock className="h-3.5 w-3.5 shrink-0 text-brand" aria-label="等待确认" />;
       case 'canceled':
-        return <span className="text-text-muted text-[10px]">&#8212;</span>;
+        return <Minus className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-label="已取消" />;
       case 'rejected':
-        return <span className="text-status-error text-[10px]">&#10005;</span>;
+        return <X className="h-3.5 w-3.5 shrink-0 text-status-error" aria-label="已拒绝" />;
       default:
         return null;
     }
@@ -114,21 +115,23 @@ const SingleToolCard = memo(function SingleToolCard({ tool, compact, onPermissio
         type="button"
         className="flex w-full items-center gap-1.5 text-left group"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
       >
         {statusIcon}
         <span className="text-xs font-display font-medium text-text-secondary group-hover:text-text-primary transition-colors truncate">
           {tool.title}
         </span>
-        {tool.status === 'running' && <span className="text-[10px] text-status-running animate-pulse">运行中</span>}
+        {tool.status === 'running' && <span className="text-[11px] text-status-running animate-pulse">运行中</span>}
       </button>
 
-      {/* 权限请求按钮 */}
-      {tool.status === 'waiting_for_confirmation' && tool.permissionRequest && (
+      {/* 权限请求按钮 — only when the view can actually answer: a visible
+          button that does nothing is worse than no button at all. */}
+      {tool.status === 'waiting_for_confirmation' && tool.permissionRequest && onPermissionRespond && (
         <div className="mt-1.5 ml-4">
           <ToolPermissionButtons
             requestId={tool.permissionRequest.requestId}
             options={tool.permissionRequest.options}
-            onRespond={onPermissionRespond || (() => {})}
+            onRespond={onPermissionRespond}
           />
         </div>
       )}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { ChevronLeft } from 'lucide-react';
 import { ThemeProvider } from './lib/theme';
 import { haptic } from './lib/view-transition';
 import { getUuid, setUuid, apiBind } from './api/client';
@@ -163,8 +164,9 @@ export default function App() {
       <div className="app-shell safe-top safe-x flex flex-col overflow-hidden bg-surface-0 text-text-primary">
         <Suspense
           fallback={
-            <div className="flex flex-1 items-center justify-center">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-brand" />
+            <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-brand" aria-hidden="true" />
+              <span className="sr-only">正在加载…</span>
             </div>
           }
         >
@@ -175,16 +177,16 @@ export default function App() {
               sessionId={bridgeSessionId}
               onBack={goWorkspace}
               header={
-                <div className="flex items-center gap-2 border-b border-border bg-surface-1 px-2 py-1.5">
+                <div className="flex h-12 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5">
                   <button
                     type="button"
                     onClick={goWorkspace}
-                    className="flex h-10 w-10 items-center justify-center rounded-full text-lg text-text-muted transition-colors active:bg-surface-1"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
                     aria-label="返回"
                   >
-                    &larr;
+                    <ChevronLeft className="h-5 w-5" />
                   </button>
-                  <span className="truncate text-sm text-text-secondary">远程会话</span>
+                  <h2 className="truncate text-[15px] font-medium text-text-primary">远程会话</h2>
                 </div>
               }
             />
