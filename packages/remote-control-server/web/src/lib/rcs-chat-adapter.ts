@@ -139,6 +139,13 @@ class SSEBus {
   /** Server sequence cursor: a reconnect may replay events we already have. */
   private lastSeqNum = 0
   private seqSessionId = ''
+  /**
+   * The server's event bus is in memory, so a restart resets seqNum to 1 for
+   * the same session. The first event after every open is therefore trusted
+   * even if it looks like a replay — otherwise a restart would silently
+   * freeze the stream until the counter caught up.
+   */
+  private freshConnection = false
 
   onEvent(handler: SSEEventHandler): () => void {
     this.listeners.add(handler)
@@ -173,8 +180,9 @@ class SSEBus {
         // Auto-replay after a reconnect re-sends everything since the cursor;
         // without this the duplicate assistant text/tool cards piled up.
         if (typeof data.seqNum === 'number') {
-          if (data.seqNum <= this.lastSeqNum) return
+          if (data.seqNum <= this.lastSeqNum && !this.freshConnection) return
           this.lastSeqNum = data.seqNum
+          this.freshConnection = false
         }
         for (const handler of this.listeners) {
           handler(data)
@@ -186,6 +194,8 @@ class SSEBus {
 
     es.onopen = () => {
       this.failures = 0
+      // Includes every EventSource auto-reconnect, not just connect().
+      this.freshConnection = true
       // The server has subscribed to the bus before answering, so anything
       // produced earlier is only in the durable store. Let the view catch up.
       this.onOpen?.()

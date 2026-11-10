@@ -310,17 +310,21 @@ export function ChatInput({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [text]);
 
-  const canSend = (text.trim() || images.length > 0) && !disabled;
+  const hasDraft = Boolean(text.trim() || images.length > 0);
+  const canSend = hasDraft && !disabled;
   // A stop button with no handler is a lie: only show it when interrupting is
   // actually wired up (e.g. the device-open flow cannot interrupt).
   const canInterrupt = isLoading && Boolean(onInterrupt);
+  // While a draft exists the stop control steps aside: the row is already tight
+  // with two selects, and the user is about to send, not interrupt.
+  const showStop = canInterrupt && !hasDraft;
   // Interrupting is destructive, so it gets its own control and a deliberate
   // second tap. The send slot must stay "send": while a turn runs, the user
   // can still type and send a follow-up, and that tap used to stop the turn.
   const [confirmStop, setConfirmStop] = useState(false);
   useEffect(() => {
-    if (!canInterrupt) setConfirmStop(false);
-  }, [canInterrupt]);
+    if (!showStop) setConfirmStop(false);
+  }, [showStop]);
   const handleStop = () => {
     if (!confirmStop) {
       setConfirmStop(true);
@@ -456,7 +460,7 @@ export function ChatInput({
 
             <div className="ml-auto flex min-w-0 items-center gap-0.5">
               {toolbarRight}
-              {canInterrupt && (
+              {showStop && (
                 <button
                   type="button"
                   onClick={handleStop}
