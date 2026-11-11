@@ -217,10 +217,17 @@ export function Workspace({
       (grouped[session.projectId] ??= []).push(session);
     }
     for (const list of Object.values(grouped)) {
-      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      // Sessions with a live terminal float to the top of their project; the
+      // rest stay newest-first.
+      list.sort((a, b) => {
+        const liveDelta =
+          Number(Boolean(liveTerminals[b.localSessionId])) - Number(Boolean(liveTerminals[a.localSessionId]));
+        if (liveDelta !== 0) return liveDelta;
+        return b.updatedAt - a.updatedAt;
+      });
     }
     return grouped;
-  }, [allSessions]);
+  }, [allSessions, liveTerminals]);
 
   const toggleProject = useCallback((project: DeviceProject) => {
     setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
