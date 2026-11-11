@@ -54,21 +54,29 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
     start(controller) {
       const encoder = new TextEncoder()
 
-      // Send historical events if reconnecting
+      // Send historical events if reconnecting. When the cursor cannot be
+      // replayed in full (evicted buffer, restarted bus) say so explicitly:
+      // silently streaming the surviving tail leaves a hole in the transcript
+      // that no later event can fill.
       if (fromSeqNum > 0) {
-        const missed = bus.getEventsSince(fromSeqNum)
-        for (const event of missed) {
-          const data = JSON.stringify({
-            type: event.type,
-            payload: event.payload,
-            direction: event.direction,
-            seqNum: event.seqNum,
-          })
-          controller.enqueue(
-            encoder.encode(
-              `id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`,
-            ),
-          )
+        if (bus.hasGapFrom(fromSeqNum)) {
+          const data = JSON.stringify({ seqNum: bus.getLastSeqNum() })
+          controller.enqueue(encoder.encode(`event: resync\ndata: ${data}\n\n`))
+        } else {
+          const missed = bus.getEventsSince(fromSeqNum)
+          for (const event of missed) {
+            const data = JSON.stringify({
+              type: event.type,
+              payload: event.payload,
+              direction: event.direction,
+              seqNum: event.seqNum,
+            })
+            controller.enqueue(
+              encoder.encode(
+                `id: ${event.seqNum}\nevent: message\ndata: ${data}\n\n`,
+              ),
+            )
+          }
         }
       }
 

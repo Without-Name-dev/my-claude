@@ -59,6 +59,25 @@ export class EventBus {
     return this.seqNum
   }
 
+  getOldestSeqNum(): number {
+    return this.events.length > 0 ? this.events[0]!.seqNum : 0
+  }
+
+  /**
+   * True when a client sitting at `seqNum` cannot be replayed in full: the
+   * cursor is older than the surviving buffer (events were evicted) or newer
+   * than the bus itself (the process restarted and numbering began again).
+   * Either way the gap is permanent, so the caller must not pretend it
+   * delivered a complete stream.
+   */
+  hasGapFrom(seqNum: number): boolean {
+    if (seqNum <= 0) return false
+    if (seqNum > this.seqNum) return true
+    const oldest = this.getOldestSeqNum()
+    if (oldest === 0) return false
+    return oldest > seqNum + 1
+  }
+
   getEventsSince(seqNum: number): SessionEvent[] {
     const idx = this.events.findIndex(e => e.seqNum > seqNum)
     if (idx === -1) return []

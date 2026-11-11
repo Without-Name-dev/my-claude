@@ -222,6 +222,53 @@ describe('EventBus', () => {
     })
   })
 
+  describe('hasGapFrom', () => {
+    const publish = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        bus.publish({
+          id: `e${i}`,
+          sessionId: 's1',
+          type: 'user',
+          payload: {},
+          direction: 'outbound',
+        })
+      }
+    }
+
+    test('a fresh connection never has a gap', () => {
+      publish(3)
+      expect(bus.hasGapFrom(0)).toBe(false)
+    })
+
+    test('a cursor inside the buffer has no gap', () => {
+      publish(3)
+      expect(bus.hasGapFrom(1)).toBe(false)
+      expect(bus.hasGapFrom(3)).toBe(false)
+    })
+
+    test('a cursor ahead of the bus means it restarted', () => {
+      publish(2)
+      expect(bus.hasGapFrom(500)).toBe(true)
+    })
+
+    test('a cursor older than the oldest surviving event has a gap', () => {
+      const big: EventBus = new EventBus()
+      // Force eviction: the bus keeps the newest half once it overflows.
+      for (let i = 0; i < 5001; i++) {
+        big.publish({
+          id: `e${i}`,
+          sessionId: 's2',
+          type: 'user',
+          payload: {},
+          direction: 'outbound',
+        })
+      }
+      expect(big.getOldestSeqNum()).toBeGreaterThan(1)
+      expect(big.hasGapFrom(1)).toBe(true)
+      expect(big.hasGapFrom(big.getOldestSeqNum() - 1)).toBe(false)
+    })
+  })
+
   describe('close', () => {
     test('clears subscribers and prevents publishing', () => {
       bus.subscribe(() => {})

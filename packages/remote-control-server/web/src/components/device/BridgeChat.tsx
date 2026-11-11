@@ -19,6 +19,7 @@ import { ChatInput } from '../../../components/chat/ChatInput';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
 import { haptic } from '../../lib/view-transition';
+import { turnFinished } from '../../lib/turn-notice';
 import { ChevronDown, ShieldCheck } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
@@ -109,6 +110,12 @@ export function BridgeChat({
   const pendingModel = useRef<{ previous: string } | null>(null);
   const pendingMode = useRef<{ previous: string } | null>(null);
   const controlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the current turn began, so a finished long turn can ping quietly. */
+  const turnStartedAt = useRef(0);
+
+  useEffect(() => {
+    if (isLoading && !turnStartedAt.current) turnStartedAt.current = Date.now();
+  }, [isLoading]);
 
   /**
    * A CLI build that ignores a control request must not leave the pickers
@@ -182,6 +189,9 @@ export function BridgeChat({
         },
         onBridgeState: next => {
           setConnected(next);
+          // A disconnect is not a finished turn; do not let the elapsed time
+          // accumulate into one.
+          if (!next) turnStartedAt.current = 0;
           if (!next) setIsLoading(false);
           if (disconnectTimer.current) {
             clearTimeout(disconnectTimer.current);
@@ -195,7 +205,14 @@ export function BridgeChat({
             }, 1500);
           }
         },
-        onTurnComplete: () => setIsLoading(false),
+        onTurnComplete: () => {
+          // Only a real turn end pings: a bridge disconnect also clears the
+          // spinner, but that is not something to celebrate.
+          const startedAt = turnStartedAt.current;
+          turnStartedAt.current = 0;
+          if (startedAt) turnFinished(Date.now() - startedAt);
+          setIsLoading(false);
+        },
         // The CLI reports the authoritative turn state. Without this, a turn
         // started in the terminal looked idle in the browser, and the first
         // streamed assistant chunk cleared the spinner prematurely.
@@ -546,6 +563,7 @@ export function BridgeChat({
         )}
         <ChatInput
           key={sessionId}
+          draftKey={`bridge:${sessionId}`}
           onSubmit={submit}
           isLoading={isLoading}
           onInterrupt={interrupt}

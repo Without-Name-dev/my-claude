@@ -42,6 +42,12 @@ interface ChatInputProps {
   placeholder?: string;
   /** 是否支持图片上传 */
   supportsImages?: boolean;
+  /**
+   * Stable id for this conversation. When set, an unsent draft is kept in
+   * localStorage so switching sessions (or iOS reclaiming the web view) does
+   * not silently throw away what the user typed.
+   */
+  draftKey?: string;
   /** Agent 提供的可用 slash 命令 */
   commands?: AvailableCommand[];
   /** Controls rendered inside the composer footer, left of the attachments. */
@@ -58,12 +64,13 @@ export function ChatInput({
   disabled = false,
   placeholder = '给 Claude 发送消息…',
   supportsImages = false,
+  draftKey,
   commands,
   toolbarLeft,
   toolbarRight,
   className,
 }: ChatInputProps) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => readDraft(draftKey));
   const [images, setImages] = useState<UserMessageImage[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
@@ -72,6 +79,24 @@ export function ChatInput({
 
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState('');
+
+  // Keep the draft across a session switch and an iOS web-view reclaim. Images
+  // are deliberately not persisted: base64 attachments blow past the
+  // localStorage quota and are not worth the fragility.
+  const latestText = useRef(text);
+  useEffect(() => {
+    latestText.current = text;
+  }, [text]);
+  useEffect(() => {
+    if (!draftKey) return;
+    const timer = window.setTimeout(() => writeDraft(draftKey, text), 400);
+    return () => window.clearTimeout(timer);
+  }, [text, draftKey]);
+  // The debounce is cancelled on unmount; flush the newest value here.
+  useEffect(() => {
+    if (!draftKey) return;
+    return () => writeDraft(draftKey, latestText.current);
+  }, [draftKey]);
 
   const handleSubmit = useCallback(async () => {
     const trimmed = text.trim();
@@ -499,6 +524,37 @@ export function ChatInput({
       </div>
     </div>
   );
+}
+
+// =============================================================================
+// 草稿持久化
+// =============================================================================
+
+/** Comfortably under the 5 MB quota, and far more than a chat message needs. */
+const DRAFT_MAX_CHARS = 20_000;
+
+function draftStorageKey(key: string): string {
+  return `rcs.draft.${key}`;
+}
+
+function readDraft(key: string | undefined): string {
+  if (!key) return '';
+  try {
+    return (localStorage.getItem(draftStorageKey(key)) ?? '').slice(0, DRAFT_MAX_CHARS);
+  } catch {
+    // Private mode / disabled storage: a draft is a convenience, not a right.
+    return '';
+  }
+}
+
+function writeDraft(key: string | undefined, text: string): void {
+  if (!key) return;
+  try {
+    if (!text.trim()) localStorage.removeItem(draftStorageKey(key));
+    else localStorage.setItem(draftStorageKey(key), text.slice(0, DRAFT_MAX_CHARS));
+  } catch {
+    // Quota or disabled storage: keep typing, just do not persist.
+  }
 }
 
 // =============================================================================

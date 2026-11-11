@@ -146,6 +146,8 @@ class SSEBus {
    * freeze the stream until the counter caught up.
    */
   private freshConnection = false
+  /** The server admitted it cannot replay the gap; the transcript is stale. */
+  private onResync: (() => void) | null = null
 
   onEvent(handler: SSEEventHandler): () => void {
     this.listeners.add(handler)
@@ -156,10 +158,12 @@ class SSEBus {
     sessionId: string,
     onSseError?: (message: string) => void,
     onStreamOpen?: () => void,
+    onResync?: () => void,
   ): EventSource {
     this.disconnect()
     this.onError = onSseError ?? null
     this.onOpen = onStreamOpen ?? null
+    this.onResync = onResync ?? null
     this.failures = 0
     this.lastProbe = 0
     // Keep the cursor across reconnects of the same session; reset it when the
@@ -181,8 +185,12 @@ class SSEBus {
         // without this the duplicate assistant text/tool cards piled up.
         if (typeof data.seqNum === 'number') {
           if (data.seqNum <= this.lastSeqNum && !this.freshConnection) return
+          // A jump means the server could not replay everything. Applying the
+          // rest would leave a permanent hole, so ask for a history reload.
+          const gap = !this.freshConnection && data.seqNum > this.lastSeqNum + 1
           this.lastSeqNum = data.seqNum
           this.freshConnection = false
+          if (gap) this.onResync?.()
         }
         for (const handler of this.listeners) {
           handler(data)
@@ -190,6 +198,22 @@ class SSEBus {
       } catch {
         // ignore parse errors
       }
+    })
+
+    // The server could not bridge the gap from our cursor (evicted buffer or
+    // a restarted process). Trust its cursor, then re-read the durable store.
+    es.addEventListener('resync', (e: MessageEvent) => {
+      this.failures = 0
+      let cursor = 0
+      try {
+        const data = JSON.parse(e.data || '{}') as { seqNum?: unknown }
+        if (typeof data.seqNum === 'number') cursor = data.seqNum
+      } catch {
+        // Keep 0: the next event after the reload re-establishes the cursor.
+      }
+      this.lastSeqNum = cursor
+      this.freshConnection = false
+      this.onResync?.()
     })
 
     es.onopen = () => {
@@ -252,6 +276,7 @@ class SSEBus {
     }
     this.onError = null
     this.onOpen = null
+    this.onResync = null
   }
 }
 
@@ -754,8 +779,40 @@ export class RCSChatAdapter {
       () => {
         if (!this.disposed) this.onStreamOpen?.()
       },
+      () => this.requestResync(),
     )
     this.unsub = sseBus.onEvent(event => this.handleEvent(event))
+  }
+
+  /** Guards a history reload from stacking up behind a burst of events. */
+  private resyncing = false
+
+  /**
+   * The stream lost events that no replay can recover. Re-read the stored
+   * transcript; `mergeThreadEntries` is id-based, so whatever the live stream
+   * already applied is not duplicated. In the controlled device view the
+   * parent owns the transcript, so ask it to sync instead.
+   */
+  private requestResync(): void {
+    if (this.disposed || !this.historyReady) return
+    debugLog('sse', `事件流断档，重新同步历史: ${this.sessionId}`)
+    if (this.historyMode === 'metadata') {
+      this.onStreamOpen?.()
+      return
+    }
+    if (this.resyncing) return
+    this.resyncing = true
+    void (async () => {
+      try {
+        await this.loadHistory()
+      } catch (error) {
+        this.onError?.(
+          error instanceof Error ? error.message : '重新加载历史失败',
+        )
+      } finally {
+        this.resyncing = false
+      }
+    })()
   }
 
   /** 断开 SSE */

@@ -82,6 +82,31 @@ app.get('/code/', serveStatic({ root: webDir, path: 'index.html' }))
 app.get('/code/d/*', serveStatic({ root: webDir, path: 'index.html' }))
 app.get('/code/:sessionId', serveStatic({ root: webDir, path: 'index.html' }))
 
+// Identity of the deployed page. The client compares the entry chunk it is
+// running with this one, so a deploy is noticed without a manual relaunch —
+// the iOS shell keeps the web view alive for days.
+let buildEntry: { key: string; entry: string | null } | null = null
+app.get('/web/version', async c => {
+  try {
+    const file = Bun.file(resolve(webDir, 'index.html'))
+    const stat = await file.stat()
+    const key = `${stat.mtimeMs}:${stat.size}`
+    if (!buildEntry || buildEntry.key !== key) {
+      const html = await file.text()
+      // The module entry, not a modulepreload: those point at dependencies
+      // that change independently of the page build.
+      const src = html.match(
+        /<script[^>]+src="([^"]*\/assets\/[^"]+\.js)"/,
+      )?.[1]
+      buildEntry = { key, entry: src ?? null }
+    }
+    return c.json({ entry: buildEntry.entry })
+  } catch {
+    // No built UI on disk (dev server proxy, or a bare API deployment).
+    return c.json({ entry: null })
+  }
+})
+
 // v1 Environment routes
 app.route('/v1/environments', v1Environments)
 app.route('/v1/environments', v1EnvironmentsWork)

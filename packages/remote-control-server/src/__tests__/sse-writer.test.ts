@@ -150,6 +150,33 @@ describe('SSE Writer', () => {
       expect(text).toContain('assistant')
     })
 
+    test('asks for a resync when the cursor cannot be replayed', async () => {
+      // A restarted bus numbers events from 1 again, so the browser's cursor
+      // is ahead of everything the server has.
+      const bus = getEventBus('s4')
+      bus.publish({
+        id: 'e1',
+        sessionId: 's4',
+        type: 'user',
+        payload: {},
+        direction: 'outbound',
+      })
+
+      const app = new Hono()
+      app.get('/stream/:sessionId', c => {
+        const sessionId = c.req.param('sessionId')
+        const fromSeq = parseInt(c.req.query('fromSeq') || '0', 10)
+        return createSSEStream(c, sessionId, fromSeq)
+      })
+
+      const res = await app.request('/stream/s4?fromSeq=500')
+      const text = await readPartialStream(res)
+      expect(text).toContain('event: resync')
+      expect(text).toContain('"seqNum":1')
+      // The incomplete tail must not be sent as if the stream were whole.
+      expect(text).not.toContain('event: message')
+    })
+
     test('no historical events when fromSeqNum is 0', async () => {
       const bus = getEventBus('s5')
       bus.publish({

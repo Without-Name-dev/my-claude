@@ -4,7 +4,9 @@ import { ThemeProvider } from './lib/theme';
 import { haptic } from './lib/view-transition';
 import { getUuid, setUuid, apiBind } from './api/client';
 import { DebugPanel } from './components/DebugPanel';
+import { UpdatePrompt } from './components/UpdatePrompt';
 import { enableDebug } from './lib/debug-log';
+import { clearTurnNotice } from './lib/turn-notice';
 
 const Workspace = lazy(() => import('./pages/Workspace').then(m => ({ default: m.Workspace })));
 const BridgeChat = lazy(() => import('./components/device/BridgeChat').then(m => ({ default: m.BridgeChat })));
@@ -130,6 +132,15 @@ export default function App() {
     return () => viewport.removeEventListener('resize', sync);
   }, []);
 
+  // The turn-finished marker lives in the title while the page is hidden.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) clearTurnNotice();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
   useEffect(() => {
     parseRoute();
     const onPop = () => {
@@ -198,6 +209,7 @@ export default function App() {
             />
           ) : null}
         </Suspense>
+        <UpdatePrompt />
         <DebugPanel />
       </div>
     </ThemeProvider>

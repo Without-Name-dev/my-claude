@@ -543,6 +543,7 @@ export function DeviceSessionChat({
         )}
         <ChatInput
           key={localSessionId}
+          draftKey={`device:${deviceId}:${localSessionId}`}
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail}
