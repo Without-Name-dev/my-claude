@@ -485,11 +485,18 @@ export function Workspace({
                           )}
                         >
                           <span className="min-w-0 flex-1 truncate text-[14px]">{session.title}</span>
-                          {liveTerminals[session.localSessionId] && (
-                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-status-success" title="终端运行中">
-                              <span className="sr-only">终端运行中</span>
-                            </span>
-                          )}
+                          {/* Every row carries the dot: green when a terminal is attached right
+                              now, muted otherwise. Hiding it when offline made the whole feature
+                              invisible whenever nothing was running. */}
+                          <span
+                            className={cn(
+                              'h-1.5 w-1.5 shrink-0 rounded-full',
+                              liveTerminals[session.localSessionId] ? 'bg-status-success' : 'bg-text-muted/35',
+                            )}
+                            title={liveTerminals[session.localSessionId] ? '终端运行中' : '终端未运行'}
+                          >
+                            {liveTerminals[session.localSessionId] && <span className="sr-only">终端运行中</span>}
+                          </span>
                           <span className="shrink-0 text-[12px] text-text-muted">
                             {formatRelativeTime(session.updatedAt)}
                           </span>
