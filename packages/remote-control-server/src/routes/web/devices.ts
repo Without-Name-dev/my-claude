@@ -17,6 +17,7 @@ import {
   getMapping,
   getRuntime,
   listDevices,
+  listMappingsForDevice,
   requeueFailedOutbox,
   setCatalog,
   setMapping,
@@ -214,6 +215,28 @@ app.get('/devices/:deviceId/sessions', uuidAuth, async c => {
       warning: (error as Error).message,
     })
   }
+})
+
+/**
+ * Which sessions have a terminal attached right now. Kept separate from the
+ * session catalog on purpose: listing sessions scans the PC's disk, while this
+ * only reads in-memory state and can therefore be polled cheaply for the
+ * little presence dot in the sidebar.
+ */
+app.get('/devices/:deviceId/terminals', uuidAuth, c => {
+  const device = deviceFromParam(c)
+  if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')
+  if (!getDevice(device.id)) {
+    return errorJson(c, 404, 'device_not_found', '设备不存在')
+  }
+  const terminals = listMappingsForDevice(device.id).map(mapping => ({
+    localSessionId: mapping.localSessionId,
+    bridgeSessionId: mapping.bridgeSessionId,
+    // A live bridge connection is the honest signal: the terminal process may
+    // be alive with the CLI detached, and then messages would not arrive.
+    online: isBridgeConnected(mapping.bridgeSessionId),
+  }))
+  return c.json({ terminals })
 })
 
 function mergeCatalogSessions(

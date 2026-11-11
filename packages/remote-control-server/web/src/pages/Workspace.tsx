@@ -6,6 +6,7 @@ import {
   fetchDevices,
   fetchProjects,
   fetchSessions,
+  fetchTerminals,
   type DeviceInfo,
   type DeviceProject,
   type DeviceSessionSummary,
@@ -172,6 +173,43 @@ export function Workspace({
       cancelled = true;
     };
   }, [activeDeviceId, catalogNonce]);
+
+  // Terminal presence per session. This endpoint only reads the server's
+  // in-memory bridge state, so polling it never touches the PC — unlike the
+  // session catalog, which is a disk scan and stays on demand.
+  const [liveTerminals, setLiveTerminals] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!activeDeviceId) {
+      setLiveTerminals({});
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      if (document.hidden) return;
+      try {
+        const result = await fetchTerminals(activeDeviceId);
+        if (cancelled) return;
+        const next: Record<string, boolean> = {};
+        for (const terminal of result.terminals) {
+          if (terminal.online) next[terminal.localSessionId] = true;
+        }
+        setLiveTerminals(next);
+      } catch {
+        // Keep the last picture; the next tick retries.
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    const onVisible = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [activeDeviceId]);
 
   const sessionsByProject = useMemo(() => {
     const grouped: Record<string, DeviceSessionSummary[]> = {};
@@ -447,6 +485,11 @@ export function Workspace({
                           )}
                         >
                           <span className="min-w-0 flex-1 truncate text-[14px]">{session.title}</span>
+                          {liveTerminals[session.localSessionId] && (
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-status-success" title="终端运行中">
+                              <span className="sr-only">终端运行中</span>
+                            </span>
+                          )}
                           <span className="shrink-0 text-[12px] text-text-muted">
                             {formatRelativeTime(session.updatedAt)}
                           </span>

@@ -40,6 +40,13 @@ export type DeviceSessionSummary = {
   gitBranch?: string
 }
 
+/** Terminal presence for one local session; cheap enough to poll. */
+export type TerminalStatus = {
+  localSessionId: string
+  bridgeSessionId: string
+  online: boolean
+}
+
 export type TranscriptBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
@@ -177,6 +184,19 @@ async function request<T>(
 
 export function fetchDevices(): Promise<{ devices: DeviceInfo[] }> {
   return request('GET', '/web/devices')
+}
+
+/**
+ * Terminal presence per session, read from the server's in-memory state.
+ * Polling this does not touch the PC, unlike the session catalog.
+ */
+export function fetchTerminals(
+  deviceId: string,
+): Promise<{ terminals: TerminalStatus[] }> {
+  return request(
+    'GET',
+    `/web/devices/${encodeURIComponent(deviceId)}/terminals`,
+  )
 }
 
 export function fetchProjects(deviceId: string): Promise<{

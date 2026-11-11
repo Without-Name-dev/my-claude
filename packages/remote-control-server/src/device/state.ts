@@ -251,6 +251,13 @@ export function getMapping(
   return state.mappings[mappingKey(deviceId, localSessionId)]
 }
 
+/** Every session mapping for a device — the terminal-presence picture. */
+export function listMappingsForDevice(deviceId: string): SessionMapping[] {
+  return Object.values(state.mappings).filter(
+    mapping => mapping.deviceId === deviceId,
+  )
+}
+
 export function findMappingByBridgeId(
   bridgeSessionId: string,
 ): SessionMapping | undefined {
