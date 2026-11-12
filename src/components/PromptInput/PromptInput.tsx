@@ -33,6 +33,7 @@ import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useInputBuffer } from '../../hooks/useInputBuffer.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { usePromptSuggestion } from '../../hooks/usePromptSuggestion.js';
+import { useSettings } from '../../hooks/useSettings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTypeahead } from '../../hooks/useTypeahead.js';
 import { Box, type BorderTextOptions, type ClickEvent, type Key, stringWidth, Text, useInput } from '@anthropic/ink';
@@ -2095,10 +2096,16 @@ function PromptInput({
   // Show effort notification on startup and when effort changes.
   // Suppressed in brief/assistant mode — the value reflects the local
   // client's effort, not the connected agent's.
+  // Also suppressed when the built-in status row is on: it always renders
+  // `model · <level>` / `ultracode(<level>)`, so the toast just echoed the
+  // same level a second time (right-aligned under the row).
+  const settings = useSettings();
   const ultracodeActive = useAppState(s => s.ultracodeActive) ?? false;
-  const effortNotificationText = briefOwnsGap
-    ? undefined
-    : getEffortNotificationText(effortValue, mainLoopModel, ultracodeActive);
+  const builtinStatusShowsEffort = settings?.statusLineEnabled === true;
+  const effortNotificationText =
+    briefOwnsGap || builtinStatusShowsEffort
+      ? undefined
+      : getEffortNotificationText(effortValue, mainLoopModel, ultracodeActive);
   useEffect(() => {
     if (!effortNotificationText) {
       removeNotification('effort-level');
