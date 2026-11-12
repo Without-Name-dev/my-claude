@@ -197,6 +197,9 @@ export async function openNewSession(
       'cli',
       `new-${Date.now()}.txt`,
     ),
+    // Keep diagnostics, hide the "Debug mode enabled" banner: this terminal
+    // was opened from the phone, not started for debugging.
+    CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
   }
   delete env.CLAUDE_CODE_REMOTE
   const child = spawn('cmd.exe', ['/d', '/s', '/c', launcherPath], {

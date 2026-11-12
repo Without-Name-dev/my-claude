@@ -63,6 +63,37 @@ export type TranscriptMessage = {
   isMeta?: boolean
 }
 
+/** One row in the directory browser; files are listed but not selectable
+ *  when the picker's job is choosing a working directory. */
+export type DirectoryEntry = {
+  name: string
+  path: string
+  type: 'dir' | 'file'
+  size?: number
+  modifiedAt?: number
+}
+
+export type DirectoryRoot = {
+  name: string
+  path: string
+  kind: 'drive' | 'home' | 'volume'
+}
+
+export type DirectoryListing = {
+  path?: string
+  parent?: string
+  entries: DirectoryEntry[]
+  roots?: DirectoryRoot[]
+  truncated?: boolean
+}
+
+export type UploadFileInput = { name: string; data: string }
+
+export type UploadResult = {
+  root: string
+  files: { name: string; path: string; bytes: number }[]
+}
+
 export type SessionRuntime = {
   localSessionId: string
   cwd: string
@@ -119,6 +150,7 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = getActiveApiToken() ?? getAccessKey()
@@ -128,7 +160,7 @@ async function request<T>(
   // Without a timeout a stalled request hangs the spinner forever (the
   // terminal poll, the history load, and send all share this path).
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
   try {
     res = await fetch(`${path}${sep}uuid=${encodeURIComponent(uuid)}`, {
@@ -202,6 +234,40 @@ export function fetchTerminals(
   return request(
     'GET',
     `/web/devices/${encodeURIComponent(deviceId)}/terminals`,
+  )
+}
+
+/**
+ * List one directory on the operator machine. An empty path asks for the
+ * starting points (home directory and drives) instead of a listing.
+ */
+export function fetchDirectory(
+  deviceId: string,
+  path?: string,
+): Promise<DirectoryListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  return request(
+    'GET',
+    `/web/devices/${encodeURIComponent(deviceId)}/directory${query}`,
+  )
+}
+
+/**
+ * Upload files to the operator machine. Pass the same `group` for every batch
+ * of one logical upload so a folder upload stays in one folder. Uploads are
+ * slow on a phone network, so this call gets a longer timeout than the rest.
+ */
+export function uploadToDevice(
+  deviceId: string,
+  files: UploadFileInput[],
+  group?: string,
+  timeoutMs = 180_000,
+): Promise<UploadResult> {
+  return request(
+    'POST',
+    `/web/devices/${encodeURIComponent(deviceId)}/uploads`,
+    group ? { files, group } : { files },
+    timeoutMs,
   )
 }
 

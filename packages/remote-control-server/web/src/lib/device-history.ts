@@ -1,4 +1,4 @@
-import type { AssistantChunk, ThreadEntry } from './types'
+import type { AssistantChunk, ThreadEntry, UserMessageEntry } from './types'
 import type { TranscriptMessage } from '../api/devices'
 
 /**
@@ -33,11 +33,17 @@ export function mergeThreadEntries(
       const pendingIndex = merged.findIndex(
         existing =>
           existing.type === 'user_message' &&
-          existing.id.startsWith('pending-') &&
+          (existing.pending === true || existing.id.startsWith('pending-')) &&
           existing.content === entry.content,
       )
       if (pendingIndex >= 0) {
-        merged[pendingIndex] = entry
+        // Keep the optimistic attachments: history carries the text but not
+        // the photos the browser sent with it.
+        const optimistic = merged[pendingIndex] as UserMessageEntry
+        merged[pendingIndex] =
+          optimistic.images && entry.type === 'user_message'
+            ? { ...entry, images: optimistic.images }
+            : entry
         indexByKey.set(entryKey(entry), pendingIndex)
         continue
       }
@@ -95,7 +101,10 @@ export function mergeHistoryPage(
   const seenPending = new Set<string>()
   const base: ThreadEntry[] = []
   for (const entry of onScreen) {
-    if (entry.type !== 'user_message' || !entry.id.startsWith('pending-')) {
+    if (
+      entry.type !== 'user_message' ||
+      !(entry.pending === true || entry.id.startsWith('pending-'))
+    ) {
       base.push(entry)
       continue
     }

@@ -49,6 +49,7 @@ import {
   type RegistryEntry,
 } from './registry'
 import { listProjects, listSessions, readSession } from './sessions'
+import { listDirectory, uploadFiles } from './files'
 import { managedSessions, openSession } from './open'
 import { closeSession, openNewSession } from './control'
 
@@ -56,6 +57,8 @@ const CAPABILITIES: DeviceCapability[] = [
   'list_projects',
   'list_sessions',
   'read_session',
+  'list_directory',
+  'upload_files',
   'open_session',
   'open_new_session',
   'close_session',
@@ -478,6 +481,25 @@ async function handleRequest(
         const before = stringField(params, 'before', 200)
         const limit = numberField(params, 'limit')
         respond(id, await readSession({ localSessionId, cwd, before, limit }))
+        return
+      }
+      case 'list_directory': {
+        const path = stringField(params, 'path', 4096)
+        respond(id, await listDirectory(config, path))
+        return
+      }
+      case 'upload_files': {
+        const files = Array.isArray(params.files)
+          ? params.files.map(entry => {
+              const file = record(entry) ?? {}
+              return {
+                name: typeof file.name === 'string' ? file.name : '',
+                data: typeof file.data === 'string' ? file.data : '',
+              }
+            })
+          : []
+        const group = stringField(params, 'group', 64)
+        respond(id, await uploadFiles(files, group))
         return
       }
       case 'open_new_session': {

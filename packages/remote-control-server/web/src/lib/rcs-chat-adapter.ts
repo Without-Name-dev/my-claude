@@ -1033,12 +1033,16 @@ export class RCSChatAdapter {
             next[echoed] = { ...entry, pending: false }
             return next
           }
-          // A message sent from the device view is shown optimistically with
-          // a temporary id; adopt the echo instead of adding a second bubble.
+          // A message shown optimistically with a local id adopts the echo
+          // instead of adding a second bubble. Both the bridge composer
+          // (`user-…`, pending:true) and the device view (`pending-…`) take
+          // this path: the echo's uuid can differ from the one the browser
+          // generated, and matching only `pending-` ids split one prompt into
+          // two bubbles.
           const pending = prev.findIndex(
             entry =>
               entry.type === 'user_message' &&
-              entry.id.startsWith('pending-') &&
+              (entry.pending === true || entry.id.startsWith('pending-')) &&
               entry.content === cleanContent,
           )
           if (pending >= 0) {

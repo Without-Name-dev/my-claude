@@ -504,6 +504,7 @@ export function DeviceSessionChat({
           void send({ text });
         }}
         onCloseTerminal={detail?.bridgeConnected ? () => void closeTerminal() : undefined}
+        deviceId={deviceId}
         onBack={onBack}
         header={<MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />}
       />

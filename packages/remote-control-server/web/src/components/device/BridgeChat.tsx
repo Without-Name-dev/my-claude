@@ -50,6 +50,7 @@ export function BridgeChat({
   onBridgeReady,
   toolbarExtraLeft,
   onCloseTerminal,
+  deviceId,
 }: {
   sessionId: string;
   onBack?: () => void;
@@ -70,6 +71,8 @@ export function BridgeChat({
   toolbarExtraLeft?: ReactNode;
   /** Close the PC terminal; offered inside the settings sheet. */
   onCloseTerminal?: () => void;
+  /** Enables attaching files from this phone or from the PC. */
+  deviceId?: string;
 }) {
   const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
@@ -104,6 +107,8 @@ export function BridgeChat({
   const [ready, setReady] = useState(false);
   const [controlPending, setControlPending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Single-flight for the actual send; duplicate taps must not run a prompt twice. */
+  const sendInFlight = useRef(false);
   const [connected, setConnected] = useState(true);
   const adapterRef = useRef<RCSChatAdapter | null>(null);
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -329,6 +334,8 @@ export function BridgeChat({
       if (!ready) {
         throw new Error('正在连接终端，请稍候…');
       }
+      if (sendInFlight.current) return;
+      sendInFlight.current = true;
       setIsLoading(true);
       try {
         await adapter.sendMessage(text, message.images);
@@ -344,6 +351,8 @@ export function BridgeChat({
         setError(message);
         // Let the composer restore the draft the user just typed.
         throw err;
+      } finally {
+        sendInFlight.current = false;
       }
     },
     [adapter, appendCommandOutput, connected, onTerminalUnavailable, ready],
@@ -622,6 +631,7 @@ export function BridgeChat({
           onInterrupt={interrupt}
           placeholder="和 Claude 一起工作"
           supportsImages
+          deviceId={deviceId}
           commands={commands}
           toolbarLeft={
             <>

@@ -163,7 +163,7 @@ export function LogoV2(): React.ReactNode {
         <VoiceModeNotice />
         <Opus1mMergeNotice />
         {ChannelsNoticeModule && <ChannelsNoticeModule.ChannelsNotice />}
-        {isDebugMode() && (
+        {isDebugMode() && !isEnvTruthy(process.env.CLAUDE_CODE_HIDE_DEBUG_NOTICE) && (
           <Box paddingLeft={2} flexDirection="column">
             <Text color="warning">Debug mode enabled</Text>
             <Text dimColor>Logging to: {isDebugToStdErr() ? 'stderr' : getDebugLogPath()}</Text>
@@ -363,7 +363,7 @@ export function LogoV2(): React.ReactNode {
       <VoiceModeNotice />
       <Opus1mMergeNotice />
       {ChannelsNoticeModule && <ChannelsNoticeModule.ChannelsNotice />}
-      {isDebugMode() && (
+      {isDebugMode() && !isEnvTruthy(process.env.CLAUDE_CODE_HIDE_DEBUG_NOTICE) && (
         <Box paddingLeft={2} flexDirection="column">
           <Text color="warning">Debug mode enabled</Text>
           <Text dimColor>Logging to: {isDebugToStdErr() ? 'stderr' : getDebugLogPath()}</Text>

@@ -804,6 +804,87 @@ app.post(
   },
 )
 
+/**
+ * Browse the operator machine's filesystem. Used by the new-session picker
+ * (directories only) and by the attachment picker (files too). Read-only.
+ */
+app.get('/devices/:deviceId/directory', uuidAuth, async c => {
+  const device = deviceFromParam(c)
+  if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')
+  if (!getDevice(device.id)) {
+    return errorJson(c, 404, 'device_not_found', '设备不存在')
+  }
+  if (!isDeviceOnline(device.id)) {
+    return errorJson(c, 503, 'device_offline', '设备离线，无法浏览目录')
+  }
+  const path = c.req.query('path')?.trim() || undefined
+  if (path && (path.length > 4096 || !/^(\/|[A-Za-z]:[\\/])/.test(path))) {
+    return errorJson(c, 400, 'bad_request', '路径不合法')
+  }
+  try {
+    const result = await requestDevice(
+      device.id,
+      'list_directory',
+      path ? { path } : {},
+    )
+    return c.json(result)
+  } catch (error) {
+    return errorJson(c, 503, 'device_unavailable', (error as Error).message)
+  }
+})
+
+/**
+ * Push browser files onto the operator machine. The Spawner confines every
+ * write to a fresh folder under its own data directory and answers with the
+ * absolute paths, which the client references in the next message.
+ */
+app.post('/devices/:deviceId/uploads', uuidAuth, async c => {
+  const device = deviceFromParam(c)
+  if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')
+  if (!getDevice(device.id)) {
+    return errorJson(c, 404, 'device_not_found', '设备不存在')
+  }
+  if (!isDeviceOnline(device.id)) {
+    return errorJson(c, 503, 'device_offline', '设备离线，无法上传')
+  }
+  const body = (await c.req.json().catch(() => null)) as {
+    files?: unknown
+    group?: unknown
+  } | null
+  const files: { name: string; data: string }[] = []
+  if (Array.isArray(body?.files)) {
+    for (const item of body.files) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const entry = item as Record<string, unknown>
+      if (typeof entry.name !== 'string' || typeof entry.data !== 'string') {
+        return errorJson(c, 400, 'bad_request', '上传参数不完整')
+      }
+      files.push({ name: entry.name, data: entry.data })
+    }
+  }
+  if (files.length === 0) {
+    return errorJson(c, 400, 'bad_request', '没有要上传的文件')
+  }
+  if (files.length > 200) {
+    return errorJson(c, 400, 'bad_request', '一次最多上传 200 个文件')
+  }
+  const group =
+    typeof body?.group === 'string' && /^[a-z0-9-]{8,64}$/i.test(body.group)
+      ? body.group
+      : undefined
+  try {
+    const result = await requestDevice(
+      device.id,
+      'upload_files',
+      group ? { files, group } : { files },
+      180_000,
+    )
+    return c.json(result)
+  } catch (error) {
+    return errorJson(c, 503, 'device_unavailable', (error as Error).message)
+  }
+})
+
 app.get('/operations/:operationId', uuidAuth, c => {
   const id = c.req.param('operationId')
   if (!id) return errorJson(c, 400, 'bad_request', '缺少操作 ID')

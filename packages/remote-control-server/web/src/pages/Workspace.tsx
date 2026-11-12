@@ -14,6 +14,7 @@ import {
   type DeviceSessionSummary,
 } from '../api/devices';
 import { DeviceSessionChat } from '../components/device/DeviceSessionChat';
+import { DirectoryPicker } from '../components/device/DirectoryPicker';
 import { DebugButton } from '../components/DebugPanel';
 import { ThemeToggle } from '../components/ThemeToggle';
 
@@ -365,22 +366,23 @@ export function Workspace({
   const activeDevice = devices.find(device => device.id === activeDeviceId);
   const query = search.trim().toLowerCase();
 
-  // One new-terminal operation at a time, keyed by project so the row that
-  // started it shows the progress instead of a global overlay.
-  const [newSessionProject, setNewSessionProject] = useState<string | null>(null);
+  // One new-terminal operation at a time. The directory was picked in the
+  // folder browser, so progress lives next to the single "新会话" button.
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [newSessionState, setNewSessionState] = useState('');
   useEffect(() => {
-    if (!newSessionProject) return;
+    if (!newSessionCwd) return;
     let cancelled = false;
     const tick = async (operationId: string | null, attempt = 0) => {
       if (cancelled) return;
       try {
         if (!operationId) {
-          const started = await openNewSession(activeDeviceId, newSessionProject);
+          const started = await openNewSession(activeDeviceId, newSessionCwd);
           if (cancelled) return;
           if (!started.operationId) {
             setNewSessionState(started.detail || '无法启动新终端');
-            window.setTimeout(() => !cancelled && setNewSessionProject(null), 4000);
+            window.setTimeout(() => !cancelled && setNewSessionCwd(null), 4000);
             return;
           }
           setNewSessionState('正在电脑上打开新终端…');
@@ -394,17 +396,18 @@ export function Workspace({
           if (target) {
             refreshCatalog();
             selectSession(target);
-            setNewSessionProject(null);
+            setNewSessionCwd(null);
+            setNewSessionState('');
           } else {
             // Ready without an id should not happen; let the timeout poll out.
             setNewSessionState('终端已就绪，但未能确定新会话 ID');
-            setNewSessionProject(null);
+            setNewSessionCwd(null);
           }
           return;
         }
         if (operation.state === 'failed') {
           setNewSessionState(operation.detail || '新终端启动失败');
-          window.setTimeout(() => !cancelled && setNewSessionProject(null), 6000);
+          window.setTimeout(() => !cancelled && setNewSessionCwd(null), 6000);
           return;
         }
         if (operation.state === 'waiting_for_user') {
@@ -412,14 +415,14 @@ export function Workspace({
         }
         if (attempt > 90) {
           setNewSessionState('等待新终端超时，请稍后在列表中刷新');
-          setNewSessionProject(null);
+          setNewSessionCwd(null);
           return;
         }
         window.setTimeout(() => void tick(operationId, attempt + 1), 1500);
       } catch (error) {
         if (cancelled) return;
         setNewSessionState(error instanceof Error ? error.message : '启动新终端失败');
-        window.setTimeout(() => !cancelled && setNewSessionProject(null), 5000);
+        window.setTimeout(() => !cancelled && setNewSessionCwd(null), 5000);
       }
     };
     void tick(null);
@@ -429,19 +432,20 @@ export function Workspace({
     // selectSession/refreshCatalog are stable per device; activeDeviceId is the
     // scope of the whole operation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newSessionProject, activeDeviceId]);
+  }, [newSessionCwd, activeDeviceId]);
 
   const startNewSession = useCallback(
-    (project: DeviceProject) => {
+    (cwd: string) => {
       if (!activeDevice?.online) {
         setSessionsError('设备离线，无法打开新终端');
         return;
       }
-      if (newSessionProject) return;
+      if (newSessionCwd) return;
+      setNewSessionOpen(false);
       setNewSessionState('正在电脑上打开新终端…');
-      setNewSessionProject(project.path);
+      setNewSessionCwd(cwd);
     },
-    [activeDevice?.online, newSessionProject],
+    [activeDevice?.online, newSessionCwd],
   );
 
   const filteredProjects = useMemo(() => {
@@ -542,6 +546,39 @@ export function Workspace({
             <p className="mt-2 px-1 text-xs text-text-muted">{devicesError || '还没有设备连接'}</p>
           )}
           {devices.length > 0 && devicesError && <p className="mt-1 px-1 text-xs text-status-error">{devicesError}</p>}
+
+          {/* One entry point for a new terminal: pick a folder on the PC, then
+              start it there. The old per-project "+" only worked for folders
+              that already had history. */}
+          <button
+            type="button"
+            onClick={() => setNewSessionOpen(true)}
+            disabled={!activeDevice || !activeDevice.online || Boolean(newSessionCwd)}
+            className={cn(
+              'mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium transition-colors disabled:opacity-50',
+              'border-brand/35 bg-brand/10 text-brand-dark active:bg-brand/15 dark:text-brand',
+            )}
+          >
+            {newSessionCwd ? (
+              <RefreshCw className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" strokeWidth={2.25} />
+            )}
+            {newSessionCwd ? '正在打开新终端…' : '新会话'}
+          </button>
+          {!activeDevice?.online && activeDevice && (
+            <p className="mt-1.5 px-1 text-[11px] text-text-muted">设备离线，无法新建会话</p>
+          )}
+          {newSessionState && (
+            <p
+              className={cn(
+                'mt-1.5 px-1 text-[11px] leading-relaxed',
+                newSessionCwd ? 'text-text-secondary' : 'text-status-error',
+              )}
+            >
+              {newSessionState}
+            </p>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -561,7 +598,6 @@ export function Workspace({
             {filteredProjects.map(project => {
               const expanded = expandedProjectId === project.projectId;
               const sessions = filteredSessions(project);
-              const starting = newSessionProject === project.path;
               return (
                 <div key={project.projectId}>
                   <div className="flex items-center">
@@ -579,24 +615,7 @@ export function Workspace({
                       <Folder className="h-4 w-4 shrink-0 text-text-muted" />
                       <span className="min-w-0 flex-1 truncate">{project.name}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => startNewSession(project)}
-                      disabled={Boolean(newSessionProject)}
-                      title="在这个项目里打开一个新终端"
-                      aria-label={`在 ${project.name} 打开新终端`}
-                      className="mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
-                    >
-                      {starting ? (
-                        <RefreshCw className="h-4 w-4 animate-spin text-brand" />
-                      ) : (
-                        <Plus className="h-4 w-4" />
-                      )}
-                    </button>
                   </div>
-                  {starting && newSessionState && (
-                    <p className="px-9 pb-1 text-xs text-text-secondary">{newSessionState}</p>
-                  )}
                   {expanded && (
                     <div className="pb-1">
                       {sessionsLoading && allSessions.length === 0 && (
@@ -718,6 +737,16 @@ export function Workspace({
           </div>
         )}
       </main>
+
+      <DirectoryPicker
+        open={newSessionOpen}
+        deviceId={activeDeviceId}
+        deviceName={activeDevice?.name}
+        mode="directory"
+        title="新建会话"
+        onClose={() => setNewSessionOpen(false)}
+        onPickDirectory={startNewSession}
+      />
     </div>
   );
 }

@@ -10,12 +10,15 @@ import {
   type ReactNode,
 } from 'react';
 import { cn } from '../../src/lib/utils';
-import { ArrowUp, Square, Plus } from 'lucide-react';
+import { ArrowUp, Square, Plus, Loader2 } from 'lucide-react';
 import type { ChatInputMessage, UserMessageImage } from '../../src/lib/types';
 import type { AvailableCommand } from '../../src/acp/types';
 import { CommandMenu } from './CommandMenu';
 import imageCompression from 'browser-image-compression';
 import { haptic } from '../../src/lib/view-transition';
+import { uploadToDevice } from '../../src/api/devices';
+import { AttachmentMenu, type AttachmentChoice } from '../../src/components/device/AttachmentMenu';
+import { DirectoryPicker } from '../../src/components/device/DirectoryPicker';
 
 // 图片压缩配置
 const IMAGE_COMPRESSION_OPTIONS = {
@@ -54,6 +57,11 @@ interface ChatInputProps {
   toolbarLeft?: ReactNode;
   /** Controls rendered inside the composer footer, right of the textarea. */
   toolbarRight?: ReactNode;
+  /**
+   * When set, the attachment sheet also offers the machine this device runs
+   * on: local files are uploaded there, machine files are referenced by path.
+   */
+  deviceId?: string;
   className?: string;
 }
 
@@ -68,6 +76,7 @@ export function ChatInput({
   commands,
   toolbarLeft,
   toolbarRight,
+  deviceId,
   className,
 }: ChatInputProps) {
   const [text, setText] = useState(() => readDraft(draftKey));
@@ -76,9 +85,17 @@ export function ChatInput({
   const [commandFilter, setCommandFilter] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const [sending, setSending] = useState(false);
+  // State alone is not enough: two taps in the same tick both read the old
+  // closure and sent the prompt twice. The ref closes that window.
+  const sendingRef = useRef(false);
   const [notice, setNotice] = useState('');
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'file' | 'directory' | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   // Keep the draft across a session switch and an iOS web-view reclaim. Images
   // are deliberately not persisted: base64 attachments blow past the
@@ -107,7 +124,7 @@ export function ChatInput({
       return;
     }
     if (!trimmed && images.length === 0) return;
-    if (sending) return;
+    if (sendingRef.current) return;
     const sentText = text;
     const sentImages = images;
     setNotice('');
@@ -115,20 +132,24 @@ export function ChatInput({
     haptic('light');
     setShowCommandMenu(false);
     setCommandFilter('');
+    sendingRef.current = true;
     setSending(true);
+    // Clear before the request settles: the bubble is already on screen, and
+    // leaving the text in the box invited a second tap on the same prompt.
+    setText('');
+    setImages([]);
     try {
       await onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
-      setText('');
-      setImages([]);
     } catch (error) {
       // A failed send must not eat the draft; put it back if it is untouched.
       setText(current => (current === '' ? sentText : current));
       setImages(current => (current.length === 0 ? sentImages : current));
       setNotice(error instanceof Error ? error.message : '发送失败，请重试');
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
-  }, [text, images, disabled, onSubmit, sending]);
+  }, [text, images, disabled, onSubmit]);
 
   // The menu only owns the keyboard while it actually has matches; otherwise
   // Enter must submit normally.
@@ -288,6 +309,143 @@ export function ChatInput({
     setImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
+  /** Drop absolute paths into the draft; Claude reads them with its tools. */
+  const insertReferences = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    const lines = paths.map(path => formatMention(path)).join('\n');
+    setText(previous => (previous.trim() ? `${previous.replace(/\s+$/, '')}\n${lines}` : lines));
+    textareaRef.current?.focus();
+  }, []);
+
+  /**
+   * Push phone files to the device and reference the landing path. Batches
+   * keep each request small enough for a phone uplink; one group id keeps a
+   * folder's batches in the same folder on the PC.
+   */
+  const uploadLocalFiles = useCallback(
+    async (files: File[], asFolder: boolean) => {
+      if (!deviceId) return;
+      const accepted: File[] = [];
+      let bytes = 0;
+      let skipped = 0;
+      for (const file of files) {
+        if (accepted.length >= MAX_UPLOAD_FILES) {
+          skipped += 1;
+          continue;
+        }
+        if (file.size > MAX_UPLOAD_FILE_BYTES || bytes + file.size > MAX_UPLOAD_TOTAL_BYTES) {
+          skipped += 1;
+          continue;
+        }
+        bytes += file.size;
+        accepted.push(file);
+      }
+      if (accepted.length === 0) {
+        setNotice(`没有可上传的文件（单个最大 20MB，总共 30MB）`);
+        return;
+      }
+
+      setUploading(true);
+      setNotice(`正在上传 ${accepted.length} 个文件到电脑…`);
+      try {
+        const group = generateGroupId();
+        let root = '';
+        let done = 0;
+        const uploadedPaths: string[] = [];
+        let batch: { name: string; data: string }[] = [];
+        let batchBytes = 0;
+
+        const flush = async () => {
+          if (batch.length === 0) return;
+          const result = await uploadToDevice(deviceId, batch, group);
+          if (!root) root = result.root;
+          uploadedPaths.push(...result.files.map(file => file.path));
+          done += batch.length;
+          setNotice(`正在上传 ${done}/${accepted.length} 个文件…`);
+          batch = [];
+          batchBytes = 0;
+        };
+
+        for (const file of accepted) {
+          const data = await fileToBase64(file);
+          if (batch.length > 0 && batchBytes + file.size > UPLOAD_BATCH_BYTES) {
+            await flush();
+          }
+          batch.push({ name: file.webkitRelativePath || file.name, data });
+          batchBytes += file.size;
+        }
+        await flush();
+
+        if (asFolder && root) {
+          // The browser keeps the chosen folder's own name in the relative
+          // paths; pointing at it means Claude sees the tree, not one flat bag.
+          const top = accepted[0]?.webkitRelativePath?.split('/')[0];
+          const separator = root.includes('\\') ? '\\' : '/';
+          insertReferences([top ? `${root}${separator}${top}` : root]);
+        } else {
+          insertReferences(uploadedPaths);
+        }
+        setNotice(
+          skipped > 0
+            ? `已上传 ${accepted.length} 个文件，${skipped} 个因大小超限已跳过`
+            : `已上传 ${accepted.length} 个文件`,
+        );
+        window.setTimeout(() => setNotice(''), 4000);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : '上传失败，请重试');
+      } finally {
+        setUploading(false);
+      }
+    },
+    [deviceId, insertReferences],
+  );
+
+  const handleLocalFiles = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>, asFolder: boolean) => {
+      const list = event.target.files;
+      if (!list || list.length === 0) return;
+      const files = Array.from(list);
+      event.target.value = '';
+      const allImages = !asFolder && files.every(file => file.type.startsWith('image/'));
+      if (allImages) {
+        // Images stay inline: Claude sees them directly, no upload needed.
+        const room = Math.max(0, MAX_IMAGES - images.length);
+        if (room === 0) {
+          setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+          return;
+        }
+        const { images: newImages, failed } = await processImageFiles(files.slice(0, room));
+        setImages(previous => [...previous, ...newImages].slice(0, MAX_IMAGES));
+        if (failed > 0) setNotice(`${failed} 张图片无法读取，已跳过`);
+        return;
+      }
+      await uploadLocalFiles(files, asFolder);
+    },
+    [images.length, uploadLocalFiles],
+  );
+
+  const handleAttachChoice = useCallback(async (choice: AttachmentChoice) => {
+    setAttachOpen(false);
+    setNotice('');
+    switch (choice) {
+      case 'photos':
+        fileInputRef.current?.click();
+        break;
+      case 'files':
+        filesInputRef.current?.click();
+        break;
+      case 'folder':
+        folderInputRef.current?.click();
+        break;
+      case 'device-files':
+        setPickerMode('file');
+        break;
+      case 'device-folder':
+        setPickerMode('directory');
+        break;
+    }
+  }, []);
+
   const handleCommandSelect = useCallback(
     (command: AvailableCommand) => {
       // Keep anything the user already typed instead of throwing the draft
@@ -421,12 +579,19 @@ export function ChatInput({
                 <>
                   <button
                     type="button"
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => {
+                      setNotice('');
+                      setAttachOpen(true);
+                    }}
                     className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
-                    disabled={disabled}
-                    aria-label="添加附件"
+                    disabled={disabled || uploading}
+                    aria-label={uploading ? '正在上传附件' : '添加附件'}
                   >
-                    <Plus className="h-5 w-5" strokeWidth={1.75} />
+                    {uploading ? (
+                      <Loader2 className="h-[18px] w-[18px] animate-spin" strokeWidth={1.75} />
+                    ) : (
+                      <Plus className="h-5 w-5" strokeWidth={1.75} />
+                    )}
                   </button>
                   <input
                     ref={fileInputRef}
@@ -436,6 +601,25 @@ export function ChatInput({
                     className="hidden"
                     onChange={handleFileSelect}
                   />
+                  {deviceId && (
+                    <>
+                      <input
+                        ref={filesInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={event => void handleLocalFiles(event, false)}
+                      />
+                      <input
+                        ref={folderInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+                        onChange={event => void handleLocalFiles(event, true)}
+                      />
+                    </>
+                  )}
                 </>
               )}
               {/* The "/" trigger button was removed: the command list still
@@ -482,6 +666,30 @@ export function ChatInput({
           </div>
         </div>
       </div>
+
+      <AttachmentMenu
+        open={attachOpen}
+        onClose={() => setAttachOpen(false)}
+        onChoose={choice => void handleAttachChoice(choice)}
+        showDeviceOptions={Boolean(deviceId)}
+      />
+      {deviceId && pickerMode && (
+        <DirectoryPicker
+          open
+          deviceId={deviceId}
+          mode={pickerMode}
+          title={pickerMode === 'file' ? '添加电脑上的文件' : '添加电脑上的目录'}
+          onClose={() => setPickerMode(null)}
+          onPickFiles={paths => {
+            setPickerMode(null);
+            insertReferences(paths);
+          }}
+          onPickDirectory={path => {
+            setPickerMode(null);
+            insertReferences([path]);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -515,6 +723,41 @@ function writeDraft(key: string | undefined, text: string): void {
   } catch {
     // Quota or disabled storage: keep typing, just do not persist.
   }
+}
+
+// =============================================================================
+// 上传到电脑（本机文件/文件夹）
+// =============================================================================
+
+/** Ceilings that keep one message from melting a WKWebView or the uplink. */
+const MAX_UPLOAD_FILES = 100;
+const MAX_UPLOAD_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_UPLOAD_TOTAL_BYTES = 30 * 1024 * 1024;
+/** One request stays around 8 MB once base64-encoded. */
+const UPLOAD_BATCH_BYTES = 6 * 1024 * 1024;
+
+function generateGroupId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** `@path` is how the terminal names a file; quote paths that contain spaces. */
+function formatMention(path: string): string {
+  return /[\s"'()]/.test(path) ? `@"${path}"` : `@${path}`;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error(`无法读取文件：${file.name}`));
+    reader.readAsDataURL(file);
+  });
 }
 
 // =============================================================================

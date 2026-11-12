@@ -1,5 +1,40 @@
 import { randomUUID } from 'node:crypto'
-import { getEventBus } from '../transport/event-bus'
+import { getEventBus, type SessionEvent } from '../transport/event-bus'
+
+/**
+ * Duplicate-tap guard.
+ *
+ * A phone that sends the same prompt twice within a couple of seconds — rapid
+ * taps on the send button, a retried fetch, two clients finishing the same
+ * draft — used to arrive as two distinct outbound events and run the prompt
+ * twice. Identical user content inside this window with no reply in between
+ * is the same send, not a new one.
+ */
+const USER_DEDUPE_WINDOW_MS = 2_500
+const recentUserSends = new Map<
+  string,
+  { key: string; at: number; event: SessionEvent }
+>()
+
+/** FNV-1a over the full content; enough to compare two bursts cheaply. */
+function hashContent(text: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function userContentKey(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  const message = record.message as Record<string, unknown> | undefined
+  const content = message?.content ?? record.content
+  if (typeof content === 'string') return `s:${hashContent(content)}`
+  if (Array.isArray(content)) return `a:${hashContent(JSON.stringify(content))}`
+  return undefined
+}
 
 /**
  * Extract plain text from various message payload formats.
@@ -100,6 +135,27 @@ export function publishSessionEvent(
   direction: 'inbound' | 'outbound',
 ) {
   const bus = getEventBus(sessionId)
+
+  // A reply from the CLI ends the burst: the next identical prompt is a new
+  // instruction, not a duplicate tap.
+  if (direction === 'inbound') recentUserSends.delete(sessionId)
+
+  if (type === 'user' && direction === 'outbound') {
+    const key = userContentKey(payload)
+    const previous = recentUserSends.get(sessionId)
+    if (
+      key !== undefined &&
+      previous &&
+      previous.key === key &&
+      Date.now() - previous.at < USER_DEDUPE_WINDOW_MS
+    ) {
+      // Slide the window: a burst of taps must not leak one through just
+      // because it happened more than the window after the first one.
+      previous.at = Date.now()
+      return previous.event
+    }
+  }
+
   const eventId = randomUUID()
 
   const normalized = normalizePayload(type, payload)
@@ -111,6 +167,13 @@ export function publishSessionEvent(
     payload: normalized,
     direction,
   })
+
+  if (type === 'user' && direction === 'outbound') {
+    const key = userContentKey(payload)
+    if (key !== undefined) {
+      recentUserSends.set(sessionId, { key, at: Date.now(), event })
+    }
+  }
 
   return event
 }

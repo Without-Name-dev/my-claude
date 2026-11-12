@@ -174,6 +174,9 @@ function launchSession(
     CLAUDE_CONFIG_DIR: config.claudeConfigDir,
     DEBUG: '1',
     CLAUDE_CODE_DEBUG_LOGS_DIR: cliLogFile,
+    // Debug logging is on for diagnostics, but the banner is noise in a
+    // terminal the user opened from their phone.
+    CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
   }
   // Never inherit a stale remote-execution marker from whatever launched the
   // Spawner; this child is a normal interactive CLI.
