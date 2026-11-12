@@ -43,15 +43,22 @@ export function getActiveApiToken(): string | null {
  */
 const ACCESS_KEY_STORAGE = 'rcs.access_key'
 
+// Mirrors the stored key for this page lifetime. localStorage can throw or be
+// cleared (private mode, storage-blocking extensions); without this fallback
+// the gate would accept the key, reload, and then send no Authorization header
+// at all — an endless 401 loop that looks like "login is broken".
+let _memoryAccessKey: string | null = null
+
 export function getAccessKey(): string | null {
   try {
-    return localStorage.getItem(ACCESS_KEY_STORAGE) || null
+    return localStorage.getItem(ACCESS_KEY_STORAGE) || _memoryAccessKey
   } catch {
-    return null
+    return _memoryAccessKey
   }
 }
 
 export function setAccessKey(key: string): void {
+  _memoryAccessKey = key
   try {
     localStorage.setItem(ACCESS_KEY_STORAGE, key)
   } catch {
@@ -61,6 +68,7 @@ export function setAccessKey(key: string): void {
 }
 
 export function clearAccessKey(): void {
+  _memoryAccessKey = null
   try {
     localStorage.removeItem(ACCESS_KEY_STORAGE)
   } catch {

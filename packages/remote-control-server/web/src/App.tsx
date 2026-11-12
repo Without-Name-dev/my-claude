@@ -20,6 +20,8 @@ type WorkspaceRoute = { deviceId?: string; localSessionId?: string };
 function AccessGate() {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     const onUnauthorized = () => setOpen(true);
     window.addEventListener('rcs:unauthorized', onUnauthorized);
@@ -35,12 +37,34 @@ function AccessGate() {
     >
       <form
         className="w-full max-w-sm rounded-2xl border border-border bg-surface-1 p-5 shadow-xl"
-        onSubmit={event => {
+        onSubmit={async event => {
           event.preventDefault();
           const key = value.trim();
-          if (!key) return;
+          if (!key || busy) return;
+          setBusy(true);
+          setError(null);
           setAccessKey(key);
-          window.location.reload();
+          // Verify before reloading: a silent reload on a wrong key just showed
+          // this dialog again with no explanation, which read as "login broken".
+          try {
+            const res = await fetch('/web/devices', {
+              headers: { Authorization: `Bearer ${key}` },
+            });
+            if (res.status === 401) {
+              setBusy(false);
+              setError('密钥不正确，请重新输入');
+              return;
+            }
+            if (!res.ok) {
+              setBusy(false);
+              setError(`服务器错误（${res.status}），请稍后重试`);
+              return;
+            }
+            window.location.reload();
+          } catch {
+            setBusy(false);
+            setError('网络异常，请检查连接后重试');
+          }
         }}
       >
         <p className="text-[15px] font-medium text-text-primary">需要访问密钥</p>
@@ -50,18 +74,26 @@ function AccessGate() {
         <input
           type="password"
           value={value}
-          onChange={event => setValue(event.target.value)}
+          onChange={event => {
+            setValue(event.target.value);
+            setError(null);
+          }}
           placeholder="访问密钥"
           aria-label="访问密钥"
           autoFocus
           className="mt-3 h-11 w-full rounded-xl border border-border bg-surface-2 px-3 text-base text-text-primary outline-none focus:border-brand/50"
         />
+        {error && (
+          <p role="alert" className="mt-2 text-[12px] leading-relaxed text-destructive">
+            {error}
+          </p>
+        )}
         <button
           type="submit"
-          disabled={!value.trim()}
+          disabled={!value.trim() || busy}
           className="mt-3 h-11 w-full rounded-xl bg-brand text-sm font-medium text-white active:scale-[0.98] disabled:opacity-50"
         >
-          保存并重试
+          {busy ? '验证中…' : '保存并重试'}
         </button>
       </form>
     </div>

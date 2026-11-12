@@ -185,6 +185,14 @@ export async function uuidAuth(c: Context, next: Next) {
       presented.length === accessKey.length &&
       timingSafeEqual(Buffer.from(presented), Buffer.from(accessKey))
     if (!matches) {
+      // Diagnostic only — never log the value, just whether one arrived and
+      // how long it is. This is how we tell "browser sent nothing" apart from
+      // "browser sent the wrong key" when the gate loops.
+      console.warn(
+        `[auth] 401 ${c.req.method} ${c.req.path} bearer=${
+          bearer ? `len:${bearer.length}` : 'none'
+        } cookie=${c.req.header('Cookie') ? 'yes' : 'no'} expectedLen:${accessKey.length}`,
+      )
       return c.json(
         {
           error: {
