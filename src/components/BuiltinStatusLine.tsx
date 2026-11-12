@@ -21,8 +21,6 @@ type BuiltinStatusLineProps = {
   totalInputTokens: number;
   /** Cumulative session output tokens (all requests so far). */
   totalOutputTokens: number;
-  /** Latest cache hit rate in percent, null before the first response. */
-  cacheHitRate: number | null;
   rateLimits: {
     five_hour?: RateLimitBucket;
     seven_day?: RateLimitBucket;
@@ -87,7 +85,6 @@ function BuiltinStatusLineInner({
   contextWindowSize,
   totalInputTokens,
   totalOutputTokens,
-  cacheHitRate,
   rateLimits,
 }: BuiltinStatusLineProps) {
   const { columns } = useTerminalSize();
@@ -115,14 +112,12 @@ function BuiltinStatusLineInner({
   const contextCore = `${contextBar(contextUsedPct)} ${contextUsedPct}%`;
   const contextDetail = ` (${formatTokens(usedTokens)}/${formatTokens(contextWindowSize)})`;
 
-  // Tokens: total, optionally with the in/out/cache breakdown.
+  // Tokens: session totals plus the in/out breakdown. No cache percentage —
+  // it would be a per-request rate sitting among session totals, which reads
+  // as an average of the conversation.
   const tokenTotal = formatTokens(totalInputTokens + totalOutputTokens);
   const tokenCore = `Tokens ${tokenTotal}`;
-  // Always rendered, zeros included: the row should be complete the moment the
-  // session opens, not fill in after the first reply.
-  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
-    cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
-  })`;
+  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)})`;
 
   const limits: string[] = [];
   if (rateLimits.five_hour != null) {
@@ -141,27 +136,26 @@ function BuiltinStatusLineInner({
   }
 
   // Assemble: shed detail right-to-left until the line fits the terminal.
-  // The cache TTL pill (StatusLine's CachePill) sits to the right of this row,
-  // so reserve room for it (~13 cols) whenever a cache session is active.
-  const budget = Math.max(20, columns - 14);
+  const budget = Math.max(20, columns - 4);
   let line = modelWithMode;
   let ctx = contextCore + contextDetail;
   let tokens = tokenCore + tokenDetail;
   let limitText = limits.join(SEP);
   const fits = (candidate: string) => candidate.length <= budget;
+  const joined = () => [line, ctx, tokens, limitText].filter(Boolean).join(SEP);
 
-  if (!fits([line, ctx, tokens, limitText].filter(Boolean).join(SEP))) {
+  if (!fits(joined())) {
     // Drop the claude.ai rate-limit segments first (absent on self-hosted anyway).
     limitText = '';
   }
-  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+  if (!fits(joined())) {
     // Then the token breakdown parens.
-    tokens = tokens ? tokenCore : '';
+    tokens = tokenCore;
   }
-  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+  if (!fits(joined())) {
     ctx = contextCore;
   }
-  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+  if (!fits(joined())) {
     tokens = '';
   }
   if (!fits([line, ctx].join(SEP))) {

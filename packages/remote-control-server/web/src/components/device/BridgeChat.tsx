@@ -758,7 +758,6 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
     contextWindow && contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : null;
   // 10 cells, matching the terminal's ███░░░░░░░ bar.
   const filled = pct === null ? 0 : Math.round(pct / 10);
-  const cache = usage && usage.cacheHitRate !== null ? `${Math.round(usage.cacheHitRate * 100)}%` : '—';
   return (
     <div
       role="status"
@@ -772,7 +771,7 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
       )}
       <span>
         Tokens {formatTokenCount(totals.input + totals.output)} (in {formatTokenCount(totals.input)}, out{' '}
-        {formatTokenCount(totals.output)}, cache {cache})
+        {formatTokenCount(totals.output)})
       </span>
     </div>
   );

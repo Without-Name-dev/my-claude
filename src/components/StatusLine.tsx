@@ -43,8 +43,6 @@ import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
-import { computeHitRate, tokenSignature } from '../utils/cacheStats.js';
-import { onResponse as cacheOnResponse, getCacheStatsState, initCacheStatsState } from '../utils/cacheStatsState.js';
 import { BuiltinStatusLine } from './BuiltinStatusLine.js';
 import { formatTokens } from 'src/utils/format.js';
 
@@ -463,9 +461,6 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             contextWindowSize={builtinContextWindowSize}
             totalInputTokens={getTotalInputTokens()}
             totalOutputTokens={getTotalOutputTokens()}
-            cacheHitRate={
-              builtinCurrentUsage !== null ? computeHitRate(builtinCurrentUsage) : getCacheStatsState().lastHitRate
-            }
             rateLimits={builtinRateLimits}
           />
           <GoalPill />
