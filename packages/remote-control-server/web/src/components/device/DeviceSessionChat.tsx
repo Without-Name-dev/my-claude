@@ -1,4 +1,4 @@
-import { ChevronLeft, Power } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatInput } from '../../../components/chat/ChatInput';
 import { ChatView } from '../../../components/chat/ChatView';
@@ -503,19 +503,7 @@ export function DeviceSessionChat({
           setNotice('终端已关闭，正在重新打开…');
           void send({ text });
         }}
-        toolbarExtraLeft={
-          detail?.bridgeConnected ? (
-            <button
-              type="button"
-              onClick={() => void closeTerminal()}
-              title="关闭电脑上的终端"
-              aria-label="关闭终端"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-status-error"
-            >
-              <Power className="h-4 w-4" />
-            </button>
-          ) : undefined
-        }
+        onCloseTerminal={detail?.bridgeConnected ? () => void closeTerminal() : undefined}
         onBack={onBack}
         header={<MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />}
       />
@@ -615,19 +603,6 @@ export function DeviceSessionChat({
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail || blockedSession}
-          toolbarLeft={
-            detail?.bridgeConnected ? (
-              <button
-                type="button"
-                onClick={() => void closeTerminal()}
-                title="关闭电脑上的终端"
-                aria-label="关闭终端"
-                className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-status-error"
-              >
-                <Power className="h-4 w-4" />
-              </button>
-            ) : undefined
-          }
           placeholder={
             loadingDetail
               ? '正在加载…'

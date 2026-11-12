@@ -16,17 +16,15 @@ import type { ChatInputMessage } from '../../lib/types';
 import { apiSendControl } from '../../api/client';
 import { ChatView } from '../../../components/chat/ChatView';
 import { ChatInput } from '../../../components/chat/ChatInput';
+import { ComposerSettings } from './ComposerSettings';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
 import { haptic } from '../../lib/view-transition';
 import { turnFinished } from '../../lib/turn-notice';
-import { ChevronDown } from 'lucide-react';
+import { SlidersHorizontal } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
 import type { AvailableCommand } from '../../acp/types';
-
-/** Mirrors the CLI's effort levels; 'auto' clears the pinned level. */
-const EFFORT_LEVELS = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const PERMISSION_MODES = [
   { id: 'default', label: '默认' },
@@ -51,6 +49,7 @@ export function BridgeChat({
   onBridgeDisconnected,
   onBridgeReady,
   toolbarExtraLeft,
+  onCloseTerminal,
 }: {
   sessionId: string;
   onBack?: () => void;
@@ -69,6 +68,8 @@ export function BridgeChat({
   onBridgeReady?: () => void;
   /** Extra controls at the far left of the composer (e.g. close-terminal). */
   toolbarExtraLeft?: ReactNode;
+  /** Close the PC terminal; offered inside the settings sheet. */
+  onCloseTerminal?: () => void;
 }) {
   const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
@@ -102,6 +103,7 @@ export function BridgeChat({
   /** False until the bridge handshake (init) returns; sending is held until then. */
   const [ready, setReady] = useState(false);
   const [controlPending, setControlPending] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [connected, setConnected] = useState(true);
   const adapterRef = useRef<RCSChatAdapter | null>(null);
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -421,23 +423,6 @@ export function BridgeChat({
     );
   }, [adapter, runControl, ultracode]);
 
-  /**
-   * One control for "how hard to think": the effort levels plus Ultracode.
-   * Picking a level while Ultracode is on switches the session mode off
-   * first, so the two can never disagree (previously two separate controls).
-   */
-  const changeEffortOrUltracode = useCallback(
-    async (value: string) => {
-      if (value === 'ultracode') {
-        if (!ultracode) await toggleUltracode();
-        return;
-      }
-      if (ultracode) await toggleUltracode();
-      if (value !== effort) await changeEffort(value);
-    },
-    [changeEffort, effort, toggleUltracode, ultracode],
-  );
-
   const interrupt = useCallback(async () => {
     try {
       await adapter.interrupt();
@@ -558,6 +543,7 @@ export function BridgeChat({
     : permissionMode
       ? [...PERMISSION_MODES, { id: permissionMode, label: permissionMode }]
       : PERMISSION_MODES;
+  const activeModelName = shortModelName(models.find(model => model.id === modelId)?.name ?? '');
 
   return (
     <TooltipProvider>
@@ -640,75 +626,52 @@ export function BridgeChat({
           toolbarLeft={
             <>
               {toolbarExtraLeft}
-              {/* One "thinking strength" control: effort levels + Ultracode,
-                  so the composer keeps a single, narrow select instead of a
-                  separate Ultra toggle plus a level select. */}
-              <label className="relative inline-flex min-w-0 items-center rounded-full transition-colors hover:bg-surface-1">
-                <select
-                  value={ultracode ? 'ultracode' : effort}
-                  onChange={event => void changeEffortOrUltracode(event.target.value)}
-                  disabled={controlPending}
+              {/* One settings entry point: the thinking level, Ultracode,
+                  permission mode and model live in the settings sheet so the
+                  composer row stays readable on a phone. */}
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                disabled={controlPending}
+                aria-label="会话设置"
+                className="flex h-8 min-w-0 shrink items-center gap-1 rounded-full px-1.5 text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-60 sm:h-9 sm:px-2"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+                <span
                   className={cn(
-                    'h-9 max-w-[7.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-5 text-xs outline-none disabled:opacity-60',
+                    'min-w-0 truncate text-[11px] sm:text-xs',
                     ultracode || (effort && effort !== 'auto') ? 'text-brand' : 'text-text-secondary',
                   )}
-                  aria-label="思考强度"
-                  title="思考强度（含 Ultracode）"
                 >
-                  {EFFORT_LEVELS.map(level => (
-                    <option key={level} value={level}>
-                      {level}
-                    </option>
-                  ))}
-                  {ultracodeUsable && (
-                    <option value="ultracode">{ultracode ? `ultracode(${effort})` : 'ultracode'}</option>
-                  )}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-1 h-3.5 w-3.5 text-text-muted" />
-              </label>
-              <label className="relative inline-flex min-w-0 items-center rounded-full transition-colors hover:bg-surface-1">
-                <select
-                  value={permissionMode}
-                  onChange={event => void changePermissionMode(event.target.value)}
-                  disabled={controlPending}
-                  className={cn(
-                    'h-9 max-w-[8.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-5 text-xs outline-none disabled:opacity-60',
-                    permissionMode && permissionMode !== 'default' ? 'text-brand' : 'text-text-secondary',
-                  )}
-                  aria-label="切换权限模式"
-                >
-                  {permissionOptions.map(option => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-1 h-3.5 w-3.5 text-text-muted" />
-              </label>
+                  {effort}
+                  {ultracode ? ' · Ultra' : ''}
+                  {activeModelName && <span className="hidden sm:inline">{` · ${activeModelName}`}</span>}
+                </span>
+              </button>
             </>
           }
-          toolbarRight={
-            models.length > 0 ? (
-              <label className="relative inline-flex min-w-0 items-center rounded-full transition-colors hover:bg-surface-1">
-                <select
-                  value={modelId}
-                  onChange={event => void changeModel(event.target.value)}
-                  disabled={controlPending}
-                  className="h-9 w-[9.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-6 text-xs text-text-secondary outline-none disabled:opacity-60 sm:w-[11rem]"
-                  aria-label="切换模型"
-                >
-                  {models.map(model => (
-                    <option key={model.id} value={model.id} title={model.name}>
-                      {/* Provider prefixes make the closed select truncate to
-                          "deepseek/deeps…" on a phone; show the model itself. */}
-                      {shortModelName(model.name)}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-1.5 h-3.5 w-3.5 text-text-muted" />
-              </label>
-            ) : null
-          }
+        />
+        <ComposerSettings
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          pending={controlPending}
+          controlError={controlError}
+          effort={effort}
+          ultracode={ultracode}
+          ultracodeUsable={ultracodeUsable}
+          permissionMode={permissionMode}
+          permissionOptions={permissionOptions}
+          modelId={modelId}
+          models={models.map(model => ({
+            id: model.id,
+            label: shortModelName(model.name),
+            title: model.name,
+          }))}
+          onCloseTerminal={onCloseTerminal}
+          onChangeEffort={changeEffort}
+          onToggleUltracode={toggleUltracode}
+          onChangePermissionMode={changePermissionMode}
+          onChangeModel={changeModel}
         />
       </div>
     </TooltipProvider>

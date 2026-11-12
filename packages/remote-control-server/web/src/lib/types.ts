@@ -48,6 +48,12 @@ export interface UserMessageEntry {
   id: string
   content: string
   images?: UserMessageImage[]
+  /**
+   * Sent, but the terminal has not picked it up yet (queued behind the running
+   * turn). Rendered muted with a "排队中" hint until the CLI echoes the message
+   * back — the same state the terminal shows for queued input.
+   */
+  pending?: boolean
 }
 
 // 助手消息条目

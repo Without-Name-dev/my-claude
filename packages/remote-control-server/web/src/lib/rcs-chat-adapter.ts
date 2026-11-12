@@ -1021,10 +1021,17 @@ export class RCSChatAdapter {
           ? `user-${payload.uuid}`
           : event.id || `user-${generateMessageUuid()}`
         this.setEntries(prev => {
-          if (
-            prev.some(entry => entry.type === 'user_message' && entry.id === id)
-          ) {
-            return prev
+          // The echo means the CLI has actually taken the message off its
+          // queue — clear the "排队中" state on the optimistic bubble.
+          const echoed = prev.findIndex(
+            entry => entry.type === 'user_message' && entry.id === id,
+          )
+          if (echoed >= 0) {
+            const entry = prev[echoed] as UserMessageEntry
+            if (!entry.pending) return prev
+            const next = [...prev]
+            next[echoed] = { ...entry, pending: false }
+            return next
           }
           // A message sent from the device view is shown optimistically with
           // a temporary id; adopt the echo instead of adding a second bubble.
@@ -1424,6 +1431,9 @@ export class RCSChatAdapter {
       id: `user-${uuid}`,
       content: text,
       images: images && images.length > 0 ? images : undefined,
+      // The CLI queues a message that arrives mid-turn; until it echoes the
+      // message back the bubble stays muted ("排队中"), matching the terminal.
+      pending: true,
     }
     this.setEntries(prev => [...prev, userEntry])
 

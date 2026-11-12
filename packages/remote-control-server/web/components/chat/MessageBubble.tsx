@@ -42,13 +42,19 @@ export const UserBubble = memo(function UserBubble({ entry }: UserBubbleProps) {
             ))}
           </div>
         )}
-        {/* 文本内容 — 品牌色淡底 + 折叠 */}
+        {/* 文本内容 — 品牌色淡底 + 折叠；排队中的消息用灰色表示还没被终端取走 */}
         {entry.content && (
-          <div className="relative overflow-hidden rounded-[18px] rounded-br-[6px] border border-user-bubble-border bg-user-bubble">
+          <div
+            className={cn(
+              'relative overflow-hidden rounded-[18px] rounded-br-[6px] border',
+              entry.pending ? 'border-border bg-surface-2' : 'border-user-bubble-border bg-user-bubble',
+            )}
+          >
             <div
               ref={contentRef}
               className={cn(
-                'px-4 py-2.5 text-[15px] leading-[1.65] text-text-primary whitespace-pre-wrap break-words',
+                'px-4 py-2.5 text-[15px] leading-[1.65] whitespace-pre-wrap break-words',
+                entry.pending ? 'text-text-muted' : 'text-text-primary',
                 !expanded && overflowing && `max-h-[${COLLAPSED_MAX_HEIGHT}px]`,
               )}
               style={!expanded && overflowing ? { maxHeight: `${COLLAPSED_MAX_HEIGHT}px` } : undefined}
@@ -69,6 +75,9 @@ export const UserBubble = memo(function UserBubble({ entry }: UserBubbleProps) {
               </div>
             )}
           </div>
+        )}
+        {entry.pending && (
+          <div className="mt-1 pr-1 text-right text-[11px] text-text-muted">排队中 · 当前任务结束后发送</div>
         )}
       </div>
     </div>

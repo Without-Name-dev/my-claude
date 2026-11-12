@@ -3,6 +3,7 @@ import { ChevronLeft } from 'lucide-react';
 import { ThemeProvider } from './lib/theme';
 import { haptic } from './lib/view-transition';
 import { getUuid, setUuid, apiBind, setAccessKey } from './api/client';
+import { AppMark } from './components/AppMark';
 import { DebugPanel } from './components/DebugPanel';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { enableDebug } from './lib/debug-log';
@@ -300,7 +301,7 @@ export default function App() {
           <Suspense
             fallback={
               <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-brand" aria-hidden="true" />
+                <AppMark className="h-14 w-14" />
                 <span className="sr-only">正在加载…</span>
               </div>
             }
