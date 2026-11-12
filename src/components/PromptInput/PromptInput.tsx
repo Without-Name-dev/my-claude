@@ -33,7 +33,6 @@ import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useInputBuffer } from '../../hooks/useInputBuffer.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { usePromptSuggestion } from '../../hooks/usePromptSuggestion.js';
-import { useSettings } from '../../hooks/useSettings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTypeahead } from '../../hooks/useTypeahead.js';
 import { Box, type BorderTextOptions, type ClickEvent, type Key, stringWidth, Text, useInput } from '@anthropic/ink';
@@ -112,7 +111,6 @@ import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
-import { getEffortNotificationText } from '../EffortIndicator.js';
 import { getFastIconString } from '../FastIcon.js';
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../HistorySearchDialog.js';
@@ -354,7 +352,6 @@ function PromptInput({
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession);
   const thinkingEnabled = useAppState(s => s.thinkingEnabled);
   const isFastMode = useAppState(s => (isFastModeEnabled() ? s.fastMode : false));
-  const effortValue = useAppState(s => s.effortValue);
   const viewedTeammate = getViewedTeammateTask(store.getState());
   const viewingAgentName = viewedTeammate?.identity.agentName;
   // identity.color is typed as `string | undefined` (not AgentColorName) because
@@ -2093,31 +2090,10 @@ function PromptInput({
 
   const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
-  // Show effort notification on startup and when effort changes.
-  // Suppressed in brief/assistant mode — the value reflects the local
-  // client's effort, not the connected agent's.
-  // Also suppressed when the built-in status row is on: it always renders
-  // `model · <level>` / `ultracode(<level>)`, so the toast just echoed the
-  // same level a second time (right-aligned under the row).
-  const settings = useSettings();
-  const ultracodeActive = useAppState(s => s.ultracodeActive) ?? false;
-  const builtinStatusShowsEffort = settings?.statusLineEnabled === true;
-  const effortNotificationText =
-    briefOwnsGap || builtinStatusShowsEffort
-      ? undefined
-      : getEffortNotificationText(effortValue, mainLoopModel, ultracodeActive);
-  useEffect(() => {
-    if (!effortNotificationText) {
-      removeNotification('effort-level');
-      return;
-    }
-    addNotification({
-      key: 'effort-level',
-      text: effortNotificationText,
-      priority: 'high',
-      timeoutMs: 12_000,
-    });
-  }, [effortNotificationText, addNotification, removeNotification]);
+  // The "◎ <level> · /effort" toast was removed outright: the status row
+  // always shows the effective level (and ultracode) already, so the toast
+  // was a second copy of the same value. Nothing else depended on it — the
+  // 'effort-level' key is not read anywhere.
 
   useBuddyNotification();
 
