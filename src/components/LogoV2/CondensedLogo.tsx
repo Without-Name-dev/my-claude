@@ -52,11 +52,16 @@ export function CondensedLogo(): ReactNode {
   const versionPrefix = 'Claude Code v';
   const truncatedVersion = truncate(version, Math.max(textWidth - versionPrefix.length, 6));
 
-  const effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
-  // Same rule as LogoV2: shrink the model name so the effort level survives
-  // the width fit instead of being the part that gets truncated.
-  const modelWithSuffix =
-    truncate(modelDisplayName, Math.max(textWidth - stringWidth(effortSuffix), 10)) + effortSuffix;
+  // Same cascade as LogoV2: full phrase, then compact, then shrink the name.
+  let effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
+  let displayModel = modelDisplayName;
+  if (stringWidth(displayModel + effortSuffix) > textWidth) {
+    effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive, { compact: true });
+  }
+  if (stringWidth(displayModel + effortSuffix) > textWidth) {
+    displayModel = truncate(displayModel, Math.max(textWidth - stringWidth(effortSuffix), 10));
+  }
+  const modelWithSuffix = displayModel + effortSuffix;
   const { shouldSplit, truncatedModel, truncatedBilling } = formatModelAndBilling(
     modelWithSuffix,
     billingType,

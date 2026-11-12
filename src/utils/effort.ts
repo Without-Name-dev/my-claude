@@ -217,14 +217,29 @@ export function getEffortSuffix(
   model: string,
   effortValue: EffortValue | undefined,
   ultracodeActive?: boolean,
+  options?: {
+    /**
+     * Short form for narrow headers: " · high" instead of " with high effort".
+     * Third-party model ids can be 25+ chars, and the phrase used to be the
+     * part that fell off the end of the logo's fixed-width line.
+     */
+    compact?: boolean
+  },
 ): string {
+  const ultracode = ultracodeActive
+    ? options?.compact
+      ? ' · Ultra'
+      : ' · Ultracode'
+    : ''
   if (!modelSupportsEffort(model)) {
-    return ultracodeActive ? ' · Ultracode' : ''
+    return ultracode
   }
   const resolved = resolveAppliedEffort(model, effortValue)
   const level =
     resolved === undefined ? 'high' : convertEffortValueToLevel(resolved)
-  return ` with ${level} effort${ultracodeActive ? ' · Ultracode' : ''}`
+  return options?.compact
+    ? ` · ${level}${ultracode}`
+    : ` with ${level} effort${ultracode}`
 }
 
 export function isValidNumericEffort(value: number): boolean {

@@ -141,13 +141,19 @@ export function LogoV2(): React.ReactNode {
   // Prefer AppState.agent (set from --agent CLI flag) over settings
   const agentName = agent ?? agentNameFromSettings;
   // -20 to account for the max length of subscription name " · Claude Enterprise".
-  const effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
-  // Truncate the model name, never the suffix: appending first meant a long
-  // third-party model id (deepseek/deepseek-flash[1m]) pushed the effort level
-  // past the 30-char cut, so it vanished exactly when a resumed conversation
-  // applied its stored model on the first message.
-  const modelDisplayName =
-    truncate(fullModelDisplayName, Math.max(LEFT_PANEL_MAX_WIDTH - 20 - stringWidth(effortSuffix), 8)) + effortSuffix;
+  // Model names vary in length (third-party ids run 25+ chars), so the level
+  // must never be what gets cut. Cascade: full phrase → compact form →
+  // truncate the name itself, so the suffix always survives.
+  const logoBudget = LEFT_PANEL_MAX_WIDTH - 20;
+  let effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
+  let displayModel = fullModelDisplayName;
+  if (stringWidth(displayModel + effortSuffix) > logoBudget) {
+    effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive, { compact: true });
+  }
+  if (stringWidth(displayModel + effortSuffix) > logoBudget) {
+    displayModel = truncate(displayModel, Math.max(logoBudget - stringWidth(effortSuffix), 8));
+  }
+  const modelDisplayName = displayModel + effortSuffix;
 
   // Show condensed logo if no new changelog and not showing onboarding and not forcing full logo
   if (!hasReleaseNotes && !showOnboarding && !isEnvTruthy(process.env.CLAUDE_CODE_FORCE_FULL_LOGO)) {
