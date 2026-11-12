@@ -679,6 +679,7 @@ export function ChatInput({
           deviceId={deviceId}
           mode={pickerMode}
           title={pickerMode === 'file' ? '添加电脑上的文件' : '添加电脑上的目录'}
+          directoryConfirmLabel="添加这个目录"
           onClose={() => setPickerMode(null)}
           onPickFiles={paths => {
             setPickerMode(null);

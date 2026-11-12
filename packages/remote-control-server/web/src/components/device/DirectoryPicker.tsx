@@ -28,6 +28,8 @@ type DirectoryPickerProps = {
    */
   mode: DirectoryPickerMode;
   title?: string;
+  /** Footer label in directory mode; defaults to the new-session wording. */
+  directoryConfirmLabel?: string;
   onClose: () => void;
   onPickDirectory?: (path: string) => void;
   onPickFiles?: (paths: string[]) => void;
@@ -62,6 +64,7 @@ export function DirectoryPicker({
   deviceName,
   mode,
   title,
+  directoryConfirmLabel,
   onClose,
   onPickDirectory,
   onPickFiles,
@@ -366,7 +369,7 @@ export function DirectoryPicker({
             {loading && <Loader2 className="h-4 w-4 animate-spin" />}
             {mode === 'directory'
               ? listing?.path
-                ? '在此目录新建会话'
+                ? directoryConfirmLabel || '在此目录新建会话'
                 : '先选择一个目录'
               : selected.length > 0
                 ? `添加 ${selected.length} 个文件`

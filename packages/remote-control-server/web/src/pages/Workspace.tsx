@@ -743,7 +743,7 @@ export function Workspace({
         deviceId={activeDeviceId}
         deviceName={activeDevice?.name}
         mode="directory"
-        title="新建会话"
+        title="新会话"
         onClose={() => setNewSessionOpen(false)}
         onPickDirectory={startNewSession}
       />

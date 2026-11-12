@@ -192,11 +192,12 @@ export function ComposerSettings({
               ultracode ? 'bg-brand' : 'bg-surface-3',
             )}
           >
+            {/* Explicit left + transform: a bare translate-x utility
+                depends on the button's static position, which centered the
+                knob even when the switch was off. */}
             <span
-              className={cn(
-                'absolute top-[3px] h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
-                ultracode ? 'translate-x-[23px]' : 'translate-x-[3px]',
-              )}
+              className="absolute left-[3px] top-[3px] h-5 w-5 rounded-full bg-white shadow-sm transition-transform"
+              style={{ transform: ultracode ? 'translateX(20px)' : 'translateX(0px)' }}
             />
           </button>
         </div>
