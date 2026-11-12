@@ -11,10 +11,10 @@ import {
   moveRight,
   PANEL_POSITIONS,
 } from './effortPanelState.js';
-import { executeEffort, setUltracode } from '../../commands/effort/effort.js';
+import { executeEffort } from '../../commands/effort/effort.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
-import { isUltracodeAvailable, ultracodeUnavailableReason } from '../../utils/ultracode.js';
+import { isUltracodeAvailable } from '../../utils/ultracode.js';
 
 /**
  * 每档最小宽度（保证档位名可读）。
@@ -58,6 +58,9 @@ export function EffortPanel({ appStateEffort, onDone }: Props): React.ReactNode 
 
   const [cursor, setCursor] = React.useState<PanelPosition>(initialCursor);
   const [done, setDone] = React.useState(false);
+  // Whether ultracode was flipped while this panel was open, so the confirm
+  // message can report it (official appends "· Ultracode on/off" on confirm).
+  const [ultracodeToggled, setUltracodeToggled] = React.useState(false);
 
   const handleConfirm = React.useCallback(() => {
     if (done) return;
@@ -69,25 +72,17 @@ export function EffortPanel({ appStateEffort, onDone }: Props): React.ReactNode 
         effortValue: outcome.effortUpdate!.value,
       }));
     }
-    onDone(outcome.message);
-  }, [cursor, done, onDone, setAppState]);
+    const suffix = ultracodeToggled ? ` · Ultracode ${ultracodeActive ? 'on' : 'off'}` : '';
+    onDone(outcome.message + suffix);
+  }, [cursor, done, onDone, setAppState, ultracodeToggled, ultracodeActive]);
 
-  // Tab toggles ultracode — a session-only switch, exactly like the official
-  // CLI: effort stays untouched, nothing is persisted.
+  // Tab toggles ultracode in place — the panel stays open and the row flips
+  // between ○ off and ● on (official behaviour). Only Enter closes.
   const handleToggleUltracode = React.useCallback(() => {
-    if (done) return;
-    if (!ultracodeUsable) {
-      onDone(ultracodeUnavailableReason(model));
-      setDone(true);
-      return;
-    }
-    const next = !ultracodeActive;
-    setAppState(prev => ({ ...prev, ultracodeActive: next }));
-    const result = setUltracode(next, model, appStateEffort);
-    // setUltracode repeats the state for the message; it is already applied.
-    setDone(true);
-    onDone(result.message);
-  }, [done, ultracodeUsable, ultracodeActive, model, appStateEffort, onDone, setAppState]);
+    if (done || !ultracodeUsable) return;
+    setAppState(prev => ({ ...prev, ultracodeActive: !prev.ultracodeActive }));
+    setUltracodeToggled(true);
+  }, [done, ultracodeUsable, setAppState]);
 
   const handleCancel = React.useCallback(() => {
     if (done) return;
