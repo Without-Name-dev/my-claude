@@ -563,6 +563,11 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             usedTokens={builtinUsedTokens}
             contextWindowSize={builtinContextWindowSize}
             totalCostUsd={getTotalCost()}
+            totalInputTokens={getTotalInputTokens()}
+            totalOutputTokens={getTotalOutputTokens()}
+            cacheHitRate={
+              builtinCurrentUsage !== null ? computeHitRate(builtinCurrentUsage) : getCacheStatsState().lastHitRate
+            }
             rateLimits={builtinRateLimits}
           />
           <GoalPill />

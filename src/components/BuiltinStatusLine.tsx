@@ -15,11 +15,23 @@ type BuiltinStatusLineProps = {
   usedTokens: number;
   contextWindowSize: number;
   totalCostUsd: number;
+  /** Cumulative session input tokens (all requests so far). */
+  totalInputTokens: number;
+  /** Cumulative session output tokens (all requests so far). */
+  totalOutputTokens: number;
+  /** Latest cache hit rate in percent, null before the first response. */
+  cacheHitRate: number | null;
   rateLimits: {
     five_hour?: RateLimitBucket;
     seven_day?: RateLimitBucket;
   };
 };
+
+/** 10-cell usage bar: ███░░░░░░░ */
+function contextBar(pct: number): string {
+  const filled = Math.min(10, Math.max(0, Math.round(pct / 10)));
+  return '█'.repeat(filled) + '░'.repeat(10 - filled);
+}
 
 /**
  * Format a countdown from now until the given epoch time (in seconds).
@@ -48,6 +60,9 @@ function BuiltinStatusLineInner({
   usedTokens,
   contextWindowSize,
   totalCostUsd,
+  totalInputTokens,
+  totalOutputTokens,
+  cacheHitRate,
   rateLimits,
 }: BuiltinStatusLineProps) {
   const { columns } = useTerminalSize();
@@ -84,11 +99,28 @@ function BuiltinStatusLineInner({
       {/* Model name */}
       <Text>{shortModel}</Text>
 
-      {/* Context usage with token counts */}
+      {/* Context usage: bar + percentage + used/window */}
       <Separator />
       <Text dimColor>Context </Text>
+      {!narrow && <Text>{contextBar(contextUsedPct)} </Text>}
       <Text>{contextUsedPct}%</Text>
       {!narrow && <Text dimColor> ({tokenDisplay})</Text>}
+
+      {/* Session token totals: in / out / cache hit rate */}
+      {(totalInputTokens > 0 || totalOutputTokens > 0) && (
+        <>
+          <Separator />
+          <Text dimColor>Tokens </Text>
+          <Text>{formatTokens(totalInputTokens + totalOutputTokens)}</Text>
+          {!narrow && (
+            <Text dimColor>
+              {' '}
+              (in: {formatTokens(totalInputTokens)}, out: {formatTokens(totalOutputTokens)}
+              {cacheHitRate !== null ? `, cache: ${cacheHitRate}%` : ''})
+            </Text>
+          )}
+        </>
+      )}
 
       {/* 5-hour session rate limit */}
       {hasFiveHour && (
