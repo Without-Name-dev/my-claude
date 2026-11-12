@@ -33,6 +33,7 @@ import type { Message } from '../types/message.js';
 import type { StatusLineCommandInput } from '../types/statusLine.js';
 import type { VimMode } from '../types/textInputTypes.js';
 import { checkHasTrustDialogAccepted } from '../utils/config.js';
+import { hydrateUsageFromTranscript } from '../utils/usageHydration.js';
 import { getDisplayedEffortLevel } from '../utils/effort.js';
 import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js';
 import { getCwd } from '../utils/cwd.js';
@@ -235,6 +236,16 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
   // re-reads settings.json on every call, so another session's /model write
   // would leak into this session's statusline (anthropics/claude-code#37596).
   const mainLoopModel = useMainLoopModel();
+
+  // A resumed session starts with this process's counters at zero; seed them
+  // from the transcript once so Tokens and the cache average are right before
+  // the first new message. The second state value forces the re-render.
+  const [, setHydratedTick] = useState(0);
+  useEffect(() => {
+    void hydrateUsageFromTranscript(getSessionId()).then(applied => {
+      if (applied) setHydratedTick(tick => tick + 1);
+    });
+  }, []);
 
   // Keep latest values in refs for stable callback access
   const settingsRef = useRef(settings);
