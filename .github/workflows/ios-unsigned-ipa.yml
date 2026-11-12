@@ -65,6 +65,17 @@ jobs:
           test -d ios || npx cap add ios 2>&1 | tee "$RUNNER_TEMP/cap-add.log"
           npx cap sync ios 2>&1 | tee "$RUNNER_TEMP/cap-sync.log"
 
+      - name: Apply the app icon and splash
+        # `cap add ios` generates a platform with the default artwork. The
+        # custom icon and static splash live in a tracked folder so rebuilds
+        # keep them instead of silently reverting to Capacitor's defaults.
+        working-directory: apps/ios-shell
+        run: |
+          set -euo pipefail
+          test -d native/Assets.xcassets
+          cp -R native/Assets.xcassets/. ios/App/App/Assets.xcassets/
+          ls -l ios/App/App/Assets.xcassets/AppIcon.appiconset
+
       - name: Continue the version numbering
         # The phone already has app.jade5197.gypsum9420 at 2.2.0 (49) from the
         # previous Swift app. iOS refuses to install a lower version over it,
