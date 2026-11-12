@@ -113,7 +113,8 @@ export async function callTui(args: string): Promise<LocalCommandResult> {
     } else if (envVal === '0' || envVal === 'false') {
       envLine = 'CLAUDE_CODE_NO_FLICKER=0 (forced off via env var)'
     } else {
-      envLine = 'CLAUDE_CODE_NO_FLICKER not set'
+      envLine =
+        'CLAUDE_CODE_NO_FLICKER not set (fullscreen is on by default in this fork)'
     }
     return {
       type: 'text',

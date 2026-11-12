@@ -464,8 +464,10 @@ export function FullscreenLayout({
 // text (the rest of the row shows ScrollBox content). Scroll-smear from
 // DECSTBM shifting the pill's pixels is repaired at the Ink layer
 // (absoluteRectsPrev third-pass in render-node-to-output.ts, #23939). Shows
-// "Jump to bottom" when count is 0 (scrolled away but no new messages yet —
-// the dead zone where users previously thought chat stalled).
+// "Jump to bottom (ctrl+End)" when count is 0 (scrolled away but no new
+// messages yet — the dead zone where users previously thought chat stalled).
+// The keybinding hint is part of the label so the affordance is discoverable
+// from the keyboard alone (defaultBindings: ctrl+end → scroll:bottom).
 function NewMessagesPill({ count, onClick }: { count: number; onClick?: () => void }): React.ReactNode {
   const [hover, setHover] = useState(false);
   return (
@@ -473,7 +475,9 @@ function NewMessagesPill({ count, onClick }: { count: number; onClick?: () => vo
       <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
         <Text backgroundColor={hover ? 'userMessageBackgroundHover' : 'userMessageBackground'} dimColor>
           {' '}
-          {count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom'} {figures.arrowDown}{' '}
+          {count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom (ctrl+End)'} {
+            figures.arrowDown
+          }{' '}
         </Text>
       </Box>
     </Box>

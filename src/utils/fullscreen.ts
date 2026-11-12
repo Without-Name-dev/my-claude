@@ -105,9 +105,11 @@ export function _resetTmuxControlModeProbeForTesting(): void {
 }
 
 /**
- * Runtime env-var check only. Ants default to on (CLAUDE_CODE_NO_FLICKER=0
- * to opt out); external users default to off (CLAUDE_CODE_NO_FLICKER=1 to
- * opt in).
+ * Runtime env-var check only. This fork enables the alt-screen layout for
+ * everyone by default (upstream: ants only). The virtualized scrollback it
+ * brings — wheel/PgUp history, the "Jump to bottom (ctrl+End)" pill, the
+ * sticky prompt header — was otherwise unreachable for external users.
+ * CLAUDE_CODE_NO_FLICKER=0 restores the old native-scrollback behaviour.
  */
 export function isFullscreenEnvEnabled(): boolean {
   // Explicit user opt-out always wins.
@@ -125,7 +127,7 @@ export function isFullscreenEnvEnabled(): boolean {
     }
     return false
   }
-  return process.env.USER_TYPE === 'ant'
+  return true
 }
 
 /**
