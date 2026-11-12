@@ -1,4 +1,4 @@
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, Power } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatInput } from '../../../components/chat/ChatInput';
 import { ChatView } from '../../../components/chat/ChatView';
@@ -6,6 +6,7 @@ import { TooltipProvider } from '../../../components/ui/tooltip';
 import type { ChatInputMessage, ThreadEntry } from '../../lib/types';
 import { mergeHistoryPage, mergeThreadEntries, transcriptToEntries } from '../../lib/device-history';
 import {
+  closeSession,
   fetchHistory,
   fetchOperation,
   fetchSession,
@@ -429,6 +430,30 @@ export function DeviceSessionChat({
     };
   }, [forcedBridgeId, deviceId, localSessionId, syncHistory]);
 
+  /**
+   * Stop the terminal on the PC. Destructive: the user confirms here, and the
+   * spawner independently re-verifies the PID before killing it. The transcript
+   * stays; sending a message will open a fresh terminal again.
+   */
+  const closeTerminal = useCallback(async () => {
+    if (!window.confirm('关闭电脑上的这个终端？正在执行的任务会被中断（会话记录会保留）。')) {
+      return;
+    }
+    setNotice('正在关闭终端…');
+    try {
+      const result = await closeSession(deviceId, localSessionId);
+      if (result.closed) {
+        setForcedBridgeId(null);
+        setNotice(result.detail || '终端已关闭，发送消息会重新打开终端。');
+        void loadDetail();
+      } else {
+        setError(result.detail || '无法关闭终端');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '关闭终端失败');
+    }
+  }, [deviceId, localSessionId, loadDetail]);
+
   const leaveBridge = useCallback(
     (message: string) => {
       setForcedBridgeId(null);
@@ -460,6 +485,19 @@ export function DeviceSessionChat({
           setNotice('终端已关闭，正在重新打开…');
           void send({ text });
         }}
+        toolbarExtraLeft={
+          detail?.bridgeConnected ? (
+            <button
+              type="button"
+              onClick={() => void closeTerminal()}
+              title="关闭电脑上的终端"
+              aria-label="关闭终端"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-status-error"
+            >
+              <Power className="h-4 w-4" />
+            </button>
+          ) : undefined
+        }
         onBack={onBack}
         header={<MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />}
       />
@@ -547,6 +585,19 @@ export function DeviceSessionChat({
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail}
+          toolbarLeft={
+            detail?.bridgeConnected ? (
+              <button
+                type="button"
+                onClick={() => void closeTerminal()}
+                title="关闭电脑上的终端"
+                aria-label="关闭终端"
+                className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-status-error"
+              >
+                <Power className="h-4 w-4" />
+              </button>
+            ) : undefined
+          }
           placeholder={loadingDetail ? '正在加载…' : detail?.online ? '输入消息…' : '设备离线，消息会在上线后发送'}
         />
       </div>

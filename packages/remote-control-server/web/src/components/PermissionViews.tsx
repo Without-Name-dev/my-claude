@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Question } from '../types';
+import type { PermissionOption } from '../lib/types';
 import { esc, cn, truncate } from '../lib/utils';
 import { TriangleAlert, Check } from 'lucide-react';
 
@@ -12,25 +13,31 @@ export function PermissionPromptView({
   toolName,
   toolInput,
   description,
+  options,
   onApprove,
   onReject,
+  onRespond,
 }: {
   requestId: string;
   toolName: string;
   toolInput: unknown;
   description: string;
+  /** The CLI's own option list (allow once/always, reject once/always…). */
+  options?: PermissionOption[];
   onApprove: () => void | Promise<void>;
   onReject: () => void | Promise<void>;
+  onRespond?: (optionId: string, kind: string) => void | Promise<void>;
 }) {
   // Both buttons must never fire: the first tap is authoritative and a second
   // one used to send a contradictory "allow" after "reject".
-  const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
-  const run = (kind: 'approve' | 'reject', action: () => void | Promise<void>) => {
+  const [pending, setPending] = useState<string | null>(null);
+  const run = (key: string, action: () => void | Promise<void>) => {
     if (pending) return;
-    setPending(kind);
+    setPending(key);
     void Promise.resolve(action()).finally(() => setPending(null));
   };
   const inputStr = typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput, null, 2);
+  const hasOptions = Boolean(onRespond && options && options.length > 0);
 
   return (
     <div className="rounded-xl border border-warning-border/30 bg-surface-1 p-4">
@@ -47,24 +54,50 @@ export function PermissionPromptView({
           {truncate(inputStr, 500)}
         </pre>
       )}
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => run('approve', onApprove)}
-          disabled={pending !== null}
-          className="min-h-11 min-w-24 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:scale-[0.98] active:bg-brand-light disabled:opacity-60"
-        >
-          {pending === 'approve' ? '处理中…' : '允许'}
-        </button>
-        <button
-          type="button"
-          onClick={() => run('reject', onReject)}
-          disabled={pending !== null}
-          className="min-h-11 min-w-24 rounded-lg border border-status-error/30 px-4 text-sm font-medium text-status-error transition-colors hover:bg-status-error/10 active:scale-[0.98] active:bg-status-error/15 disabled:opacity-60"
-        >
-          {pending === 'reject' ? '处理中…' : '拒绝'}
-        </button>
-      </div>
+      {hasOptions ? (
+        // Answer with the CLI's real option ids: "always allow" was impossible
+        // from this card before, so every approval had to be repeated.
+        <div className="flex flex-wrap gap-2">
+          {options!.map(option => {
+            const rejected = option.kind === 'reject_once' || option.kind === 'reject_always';
+            return (
+              <button
+                key={option.optionId}
+                type="button"
+                onClick={() => run(option.optionId, () => onRespond!(option.optionId, option.kind))}
+                disabled={pending !== null}
+                className={cn(
+                  'min-h-11 rounded-lg px-4 text-sm font-medium transition-colors active:scale-[0.98] disabled:opacity-60',
+                  rejected
+                    ? 'border border-status-error/30 text-status-error hover:bg-status-error/10'
+                    : 'bg-brand text-white hover:bg-brand-light',
+                )}
+              >
+                {pending === option.optionId ? '处理中…' : option.name || option.kind}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => run('approve', onApprove)}
+            disabled={pending !== null}
+            className="min-h-11 min-w-24 rounded-lg bg-brand px-4 text-sm font-medium text-white transition-colors hover:bg-brand-light active:scale-[0.98] active:bg-brand-light disabled:opacity-60"
+          >
+            {pending === 'approve' ? '处理中…' : '允许'}
+          </button>
+          <button
+            type="button"
+            onClick={() => run('reject', onReject)}
+            disabled={pending !== null}
+            className="min-h-11 min-w-24 rounded-lg border border-status-error/30 px-4 text-sm font-medium text-status-error transition-colors hover:bg-status-error/10 active:scale-[0.98] active:bg-status-error/15 disabled:opacity-60"
+          >
+            {pending === 'reject' ? '处理中…' : '拒绝'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

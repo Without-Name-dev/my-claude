@@ -12,6 +12,7 @@
 import { Hono } from 'hono'
 import type { WSContext, WSMessageReceive } from 'hono/ws'
 import { validateApiKey } from '../auth/api-key'
+import { DEVICE_METHODS } from '../device/protocol'
 import { apiKeyAuth, extractWebSocketAuthToken } from '../auth/middleware'
 import { log } from '../logger'
 import { upgradeWebSocket } from '../transport/ws-shared'
@@ -99,14 +100,10 @@ function validRuntimeState(value: unknown): value is SessionRuntimeState {
 
 function parseCapabilities(value: unknown): DeviceCapability[] {
   if (!Array.isArray(value)) return []
-  const allowed = new Set<string>([
-    'list_projects',
-    'list_sessions',
-    'read_session',
-    'open_session',
-    'verify_state',
-    'heartbeat',
-  ])
+  // Derived from the protocol so new device methods are accepted here without
+  // a second list to forget (open_new_session/close_session were dropped by
+  // the hardcoded version).
+  const allowed = new Set<string>([...DEVICE_METHODS, 'heartbeat'])
   const result: DeviceCapability[] = []
   for (const item of value.slice(0, MAX_CAPABILITIES)) {
     if (typeof item === 'string' && allowed.has(item)) {

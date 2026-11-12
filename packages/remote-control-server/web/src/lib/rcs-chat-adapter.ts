@@ -129,6 +129,36 @@ function permissionOptions(req: Record<string, unknown>): PermissionOption[] {
     .filter(o => o.optionId)
 }
 
+/**
+ * Reconnect cursor, persisted per session. EventSource sends Last-Event-ID on
+ * its own retries, but a page reload starts a fresh source with none — which
+ * used to replay the whole in-memory bus (up to thousands of events) on every
+ * refresh, on top of the history the device view had already loaded.
+ */
+function cursorStorageKey(sessionId: string): string {
+  return `rcs.seq.${sessionId}`
+}
+
+function readStoredCursor(sessionId: string): number {
+  try {
+    const raw = sessionStorage.getItem(cursorStorageKey(sessionId))
+    const value = raw ? Number(raw) : 0
+    return Number.isFinite(value) && value > 0 ? value : 0
+  } catch {
+    return 0
+  }
+}
+
+function storeCursor(sessionId: string, seqNum: number): void {
+  try {
+    if (seqNum > 0)
+      sessionStorage.setItem(cursorStorageKey(sessionId), String(seqNum))
+    else sessionStorage.removeItem(cursorStorageKey(sessionId))
+  } catch {
+    // Private mode: the in-memory cursor still covers this page's lifetime.
+  }
+}
+
 class SSEBus {
   private listeners: Set<SSEEventHandler> = new Set()
   private eventSource: EventSource | null = null
@@ -167,13 +197,16 @@ class SSEBus {
     this.failures = 0
     this.lastProbe = 0
     // Keep the cursor across reconnects of the same session; reset it when the
-    // bus is reused for a different one.
+    // bus is reused for a different one. A reload restores it from storage.
     if (this.seqSessionId !== sessionId) {
-      this.lastSeqNum = 0
+      this.lastSeqNum = readStoredCursor(sessionId)
       this.seqSessionId = sessionId
+    } else {
+      this.lastSeqNum = Math.max(this.lastSeqNum, readStoredCursor(sessionId))
     }
     const uuid = getUuid()
-    const url = `/web/sessions/${sessionId}/events?uuid=${encodeURIComponent(uuid)}`
+    const since = this.lastSeqNum > 0 ? `&since=${this.lastSeqNum}` : ''
+    const url = `/web/sessions/${sessionId}/events?uuid=${encodeURIComponent(uuid)}${since}`
     const es = new EventSource(url)
     this.eventSource = es
 
@@ -190,6 +223,7 @@ class SSEBus {
           const gap = !this.freshConnection && data.seqNum > this.lastSeqNum + 1
           this.lastSeqNum = data.seqNum
           this.freshConnection = false
+          storeCursor(sessionId, this.lastSeqNum)
           if (gap) this.onResync?.()
         }
         for (const handler of this.listeners) {
@@ -213,6 +247,7 @@ class SSEBus {
       }
       this.lastSeqNum = cursor
       this.freshConnection = false
+      storeCursor(sessionId, cursor)
       this.onResync?.()
     })
 
@@ -400,8 +435,30 @@ function findToolCallIndex(entries: ThreadEntry[], toolCallId: string): number {
 export type BridgeSessionInfo = {
   model?: string
   permissionMode?: string
+  /** Current session effort ('auto' when the user has not pinned a level). */
+  effort?: string
+  /** Whether the current model can enable Ultracode at all. */
+  ultracodeAvailable?: boolean
+  ultracodeActive?: boolean
+  /** Context window of the current model, for the context bar. */
+  contextWindow?: number
   commands: Array<{ name: string; description: string }>
   models: Array<{ id: string; name: string; description?: string }>
+}
+
+/** Token usage of the live session, mirroring the terminal status line. */
+export type SessionUsage = {
+  /** Latest assistant message's usage — this is the current context size. */
+  current: {
+    input: number
+    output: number
+    cacheCreation: number
+    cacheRead: number
+  } | null
+  /** Sum of the newest usage per assistant message (stream chunks repeat). */
+  totals: { input: number; output: number }
+  /** cache_read / (input + cache_creation + cache_read) across messages. */
+  cacheHitRate: number | null
 }
 
 export type BridgeControlResponse = {
@@ -424,9 +481,17 @@ export class RCSChatAdapter {
   private onControlResponse?: (response: BridgeControlResponse) => void
   private onBridgeState?: (connected: boolean) => void
   private onTurnComplete?: () => void
+  private onUsage?: (usage: SessionUsage) => void
   private onStreamOpen?: () => void
   private historyMode: 'full' | 'metadata'
   private disposed = false
+  /**
+   * Newest usage per assistant message id. Stream chunks repeat a message's
+   * usage (cumulative within that message), so totals must sum one value per
+   * message, not one per chunk.
+   */
+  private usageByMessage = new Map<string, SessionUsage['current'] & object>()
+  private usageOrder: string[] = []
   // Direct handleEvent() calls (and tests) work without init(); init() flips
   // this off while the history snapshot is being merged.
   private historyReady = true
@@ -445,6 +510,8 @@ export class RCSChatAdapter {
       onControlResponse?: (response: BridgeControlResponse) => void
       onBridgeState?: (connected: boolean) => void
       onTurnComplete?: () => void
+      /** Live token usage, after each assistant chunk that carries it. */
+      onUsage?: (usage: SessionUsage) => void
       /** Fired once the live SSE stream is actually open. */
       onStreamOpen?: () => void
       /**
@@ -464,6 +531,7 @@ export class RCSChatAdapter {
     this.onControlResponse = options?.onControlResponse
     this.onBridgeState = options?.onBridgeState
     this.onTurnComplete = options?.onTurnComplete
+    this.onUsage = options?.onUsage
     this.onStreamOpen = options?.onStreamOpen
     this.historyMode = options?.historyMode ?? 'full'
   }
@@ -537,6 +605,19 @@ export class RCSChatAdapter {
       permissionMode:
         typeof record.permissionMode === 'string'
           ? record.permissionMode
+          : undefined,
+      effort: typeof record.effort === 'string' ? record.effort : undefined,
+      ultracodeAvailable:
+        typeof record.ultracode_available === 'boolean'
+          ? record.ultracode_available
+          : undefined,
+      ultracodeActive:
+        typeof record.ultracode_active === 'boolean'
+          ? record.ultracode_active
+          : undefined,
+      contextWindow:
+        typeof record.context_window === 'number' && record.context_window > 0
+          ? record.context_window
           : undefined,
       commands: commands.filter(command => !unsupported.has(command.name)),
       models,
@@ -765,6 +846,50 @@ export class RCSChatAdapter {
     this.setEntries(prev => mergeThreadEntries(prev, historyEntries))
   }
 
+  /**
+   * Fold the usage of an assistant message into the session ledger and
+   * publish the aggregate. Each streamed chunk of one message repeats that
+   * message's (cumulative) usage; only the newest value per message counts.
+   */
+  private trackUsage(assistantId: string, payload: EventPayload): void {
+    const message = (payload as Record<string, unknown>).message as
+      | Record<string, unknown>
+      | undefined
+    const usage = message?.usage
+    if (!usage || typeof usage !== 'object') return
+    const record = usage as Record<string, unknown>
+    const entry = {
+      input: Number(record.input_tokens) || 0,
+      output: Number(record.output_tokens) || 0,
+      cacheCreation: Number(record.cache_creation_input_tokens) || 0,
+      cacheRead: Number(record.cache_read_input_tokens) || 0,
+    }
+    if (!this.usageByMessage.has(assistantId)) this.usageOrder.push(assistantId)
+    this.usageByMessage.set(assistantId, entry)
+    // Bound the ledger: totals drift slightly once old messages drop off,
+    // which is the same trade-off the terminal status line makes.
+    while (this.usageOrder.length > 200) {
+      const dropped = this.usageOrder.shift()
+      if (dropped) this.usageByMessage.delete(dropped)
+    }
+    let input = 0
+    let output = 0
+    let cacheCreation = 0
+    let cacheRead = 0
+    for (const item of this.usageByMessage.values()) {
+      input += item.input
+      output += item.output
+      cacheCreation += item.cacheCreation
+      cacheRead += item.cacheRead
+    }
+    const readTotal = input + cacheCreation + cacheRead
+    this.onUsage?.({
+      current: entry,
+      totals: { input: readTotal, output },
+      cacheHitRate: readTotal > 0 ? cacheRead / readTotal : null,
+    })
+  }
+
   /** 连接 SSE 事件流 */
   connectSSE(): void {
     if (this.disposed) return
@@ -907,7 +1032,16 @@ export class RCSChatAdapter {
           )
           if (pending >= 0) {
             const next = [...prev]
-            next[pending] = { type: 'user_message', id, content: cleanContent }
+            const optimistic = prev[pending] as UserMessageEntry
+            // Adopt the real id but keep the images: the echo's text is the
+            // same string, and dropping the optimistic entry's attachments
+            // made sent photos vanish from the transcript.
+            next[pending] = {
+              type: 'user_message',
+              id,
+              content: cleanContent,
+              ...(optimistic.images ? { images: optimistic.images } : {}),
+            }
             return next
           }
           return [...prev, { type: 'user_message', id, content: cleanContent }]
@@ -927,59 +1061,87 @@ export class RCSChatAdapter {
             ? payload.uuid
             : event.id || generateMessageUuid()
         }`
+        this.trackUsage(assistantId, payload)
         this.setEntries(prev => {
-          // A reconnecting bridge re-flushes its initial transcript as fresh
-          // inbound events. Anything whose id is already on screen is that
-          // replay, not a new turn — dropping it here is what stops old
-          // messages from suddenly appearing at the bottom of the chat.
-          const seen = prev.some(
+          // Thinking blocks are part of the assistant message, not a separate
+          // event. Reading only the server-extracted text (a string) dropped
+          // them from the live view while the transcript/history path showed
+          // them — the same conversation looked different after a reload.
+          const message = payload.message as Record<string, unknown> | undefined
+          const messageBlocks =
+            message && Array.isArray(message.content)
+              ? (message.content as Array<Record<string, unknown>>)
+              : []
+          const thoughts: string[] = []
+          for (const block of messageBlocks) {
+            if (block?.type !== 'thinking') continue
+            const text =
+              typeof block.thinking === 'string'
+                ? block.thinking
+                : typeof block.text === 'string'
+                  ? block.text
+                  : ''
+            if (text.trim()) thoughts.push(text)
+          }
+
+          const existingIndex = prev.findIndex(
             entry =>
               entry.type === 'assistant_message' && entry.id === assistantId,
           )
-          if (seen) return prev
-          const lastEntry = prev[prev.length - 1]
 
-          // Append only to the same message; a different uuid is a distinct
-          // assistant turn (e.g. after a tool call).
-          if (
-            lastEntry?.type === 'assistant_message' &&
-            lastEntry.id === assistantId
-          ) {
-            const lastChunk = lastEntry.chunks[lastEntry.chunks.length - 1]
-            if (lastChunk?.type === 'message') {
-              return [
-                ...prev.slice(0, -1),
-                {
-                  ...lastEntry,
-                  chunks: [
-                    ...lastEntry.chunks.slice(0, -1),
-                    { type: 'message', text: lastChunk.text + content },
-                  ],
-                },
-              ]
-            }
-            return [
-              ...prev.slice(0, -1),
-              {
-                ...lastEntry,
-                chunks: [
-                  ...lastEntry.chunks,
-                  { type: 'message', text: content },
-                ],
-              },
-            ]
-          }
-
-          // Create new AssistantMessage
-          if (content && content.trim()) {
+          if (existingIndex < 0) {
+            if (!thoughts.length && !content.trim()) return prev
             const newEntry: AssistantMessageEntry = {
               type: 'assistant_message',
               id: assistantId,
-              chunks: [{ type: 'message', text: content }],
+              chunks: [
+                ...thoughts.map(text => ({ type: 'thought' as const, text })),
+                ...(content.trim()
+                  ? [{ type: 'message' as const, text: content }]
+                  : []),
+              ],
             }
             return [...prev, newEntry]
           }
-          return prev
+
+          // Same message seen again: a bridge reattach replay, or a growing
+          // message. Merge only what is new — replacing wholesale would let a
+          // replay truncate text the stream had already shown.
+          const existing = prev[existingIndex] as AssistantMessageEntry
+          const chunks: AssistantMessageEntry['chunks'] = [...existing.chunks]
+          let changed = false
+          for (const text of thoughts) {
+            if (
+              chunks.some(
+                chunk => chunk.type === 'thought' && chunk.text === text,
+              )
+            )
+              continue
+            chunks.push({ type: 'thought', text })
+            changed = true
+          }
+          if (content.trim()) {
+            const last = chunks[chunks.length - 1]
+            if (last?.type === 'message') {
+              if (content !== last.text) {
+                chunks[chunks.length - 1] = content.startsWith(last.text)
+                  ? { type: 'message', text: content }
+                  : { type: 'message', text: last.text + content }
+                changed = true
+              }
+            } else if (
+              !chunks.some(
+                chunk => chunk.type === 'message' && chunk.text === content,
+              )
+            ) {
+              chunks.push({ type: 'message', text: content })
+              changed = true
+            }
+          }
+          if (!changed) return prev
+          const next = [...prev]
+          next[existingIndex] = { ...existing, chunks }
+          return next
         })
 
         // Check for embedded tool_use blocks
@@ -1174,6 +1336,12 @@ export class RCSChatAdapter {
             : root
         const response = record.response as Record<string, unknown> | undefined
         if (response) {
+          // Answering on the PC (or another device) also produces a
+          // control_response. Without this the permission card stayed on
+          // screen until a reload, long after the terminal had moved on.
+          if (typeof response.request_id === 'string') {
+            this.onPermissionResolved?.(response.request_id)
+          }
           if (typeof response.error === 'string' && response.error) {
             debugLog(
               'control',
@@ -1236,6 +1404,11 @@ export class RCSChatAdapter {
     return this.sendControlRequest({ subtype: 'set_effort', effort })
   }
 
+  /** Toggle session-only Ultracode. */
+  setUltracode(enabled: boolean): Promise<string> {
+    return this.sendControlRequest({ subtype: 'set_ultracode', enabled })
+  }
+
   /** 发送用户消息 */
   async sendMessage(text: string, images?: UserMessageImage[]): Promise<void> {
     if (!text.trim() && (!images || images.length === 0)) return
@@ -1250,14 +1423,31 @@ export class RCSChatAdapter {
     }
     this.setEntries(prev => [...prev, userEntry])
 
+    // Images travel as Anthropic content blocks: the CLI's bridge inbound
+    // path already normalizes them (inboundMessages.normalizeImageBlocks), and
+    // the server forwards the original block array for user turns.
+    const content =
+      images && images.length > 0
+        ? [
+            ...(text.trim() ? [{ type: 'text' as const, text }] : []),
+            ...images.map(image => ({
+              type: 'image' as const,
+              source: {
+                type: 'base64' as const,
+                media_type: image.mimeType,
+                data: image.data,
+              },
+            })),
+          ]
+        : text
     // Send to backend; a failed POST must not leave a phantom message that
     // never reached the terminal.
     try {
       await apiSendEvent(this.sessionId, {
         type: 'user',
         uuid,
-        content: text,
-        message: { content: text },
+        content,
+        message: { content },
       })
     } catch (error) {
       this.setEntries(prev =>

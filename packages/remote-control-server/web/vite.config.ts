@@ -22,18 +22,13 @@ export default defineConfig({
       },
       output: {
         manualChunks(id) {
-          if (
-            id.includes('node_modules/shiki') ||
-            id.includes('node_modules/@shikijs')
-          ) {
-            return 'shiki'
-          }
-          if (
-            id.includes('node_modules/motion') ||
-            id.includes('node_modules/framer-motion')
-          ) {
-            return 'motion'
-          }
+          // shiki/motion used to be split into their own chunks. Vite injects
+          // its `__vitePreload` helper into whichever chunk it lands in, and
+          // that put the 9 MB shiki chunk (oniguruma wasm included) into the
+          // entry's *static* import graph — every page load paid for a syntax
+          // highlighter most conversations never use. Leaving them to Rollup
+          // keeps them inside the lazily-imported markdown chunk (~59 KB) and
+          // the first paint drops to ~85 KB gzipped.
           if (
             id.includes('node_modules/react') ||
             id.includes('node_modules/react-dom')

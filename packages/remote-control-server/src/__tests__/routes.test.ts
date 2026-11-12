@@ -596,7 +596,15 @@ describe('Web Auth Routes', () => {
   })
 
   test('POST /web/bind — 400 when missing params', async () => {
-    const res = await app.request('/web/bind', {
+    // uuidAuth runs before param validation now: binding a session to an
+    // anonymous identity must not be reachable, so a bare request is 401.
+    const anonymous = await app.request('/web/bind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(anonymous.status).toBe(401)
+    const res = await app.request('/web/bind?uuid=test-uuid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),

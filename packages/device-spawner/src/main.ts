@@ -50,12 +50,15 @@ import {
 } from './registry'
 import { listProjects, listSessions, readSession } from './sessions'
 import { managedSessions, openSession } from './open'
+import { closeSession, openNewSession } from './control'
 
 const CAPABILITIES: DeviceCapability[] = [
   'list_projects',
   'list_sessions',
   'read_session',
   'open_session',
+  'open_new_session',
+  'close_session',
   'verify_state',
   'heartbeat',
 ]
@@ -475,6 +478,52 @@ async function handleRequest(
         const before = stringField(params, 'before', 200)
         const limit = numberField(params, 'limit')
         respond(id, await readSession({ localSessionId, cwd, before, limit }))
+        return
+      }
+      case 'open_new_session': {
+        const operationId = stringField(params, 'operationId', 200)
+        const cwd = stringField(params, 'cwd', 2048)
+        const configDir = stringField(params, 'configDir', 2048)
+        if (!operationId || !cwd || !configDir) {
+          respondError(id, 'invalid_params', '启动参数不完整')
+          return
+        }
+        respond(id, { accepted: true })
+        const emit = (event: Extract<DeviceEvent, { type: 'operation' }>) => {
+          if (event.state === 'ready') {
+            trackedSessions.add(event.localSessionId)
+          }
+          sendEvent(event)
+        }
+        void openNewSession(
+          config,
+          { operationId, cwd, configDir },
+          emit,
+        ).catch(error => {
+          errorLog(`[spawner] open_new_session crashed`, error)
+          emit({
+            type: 'operation',
+            operationId,
+            localSessionId: `pending-${operationId}`,
+            state: 'failed',
+            failureCode: 'spawn_failed',
+            detail: (error as Error).message,
+          })
+        })
+        return
+      }
+      case 'close_session': {
+        const localSessionId = stringField(params, 'localSessionId', 64)
+        if (!localSessionId || !isLocalSessionId(localSessionId)) {
+          respondError(id, 'invalid_params', '无效的会话 ID')
+          return
+        }
+        const cwd = stringField(params, 'cwd', 2048)
+        const bridgeSessionId = stringField(params, 'bridgeSessionId', 200)
+        respond(
+          id,
+          await closeSession(config, { localSessionId, cwd, bridgeSessionId }),
+        )
         return
       }
       case 'verify_state': {

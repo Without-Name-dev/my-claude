@@ -1,6 +1,30 @@
 import type { SessionEvent } from './event-bus'
 
 /**
+ * The content the CLI should receive for a user turn.
+ *
+ * `normalizePayload` flattens every payload to a text `content` and keeps the
+ * original under `raw`. That is fine for plain text, but an image turn is an
+ * array of content blocks with an empty text field — the flattened form would
+ * deliver an empty prompt. Prefer the original array whenever one exists.
+ */
+function userContent(payload: Record<string, unknown> | null): unknown {
+  const raw = payload?.raw
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>
+    if (Array.isArray(record.content) && record.content.length > 0) {
+      return record.content
+    }
+    const message = record.message
+    if (message && typeof message === 'object' && !Array.isArray(message)) {
+      const nested = (message as Record<string, unknown>).content
+      if (Array.isArray(nested) && nested.length > 0) return nested
+    }
+  }
+  return payload?.content ?? payload?.message ?? ''
+}
+
+/**
  * Convert an internal session event into the SDK/control message shape that
  * bridge workers consume on both the legacy WS path and the v2 worker SSE path.
  */
@@ -17,7 +41,7 @@ export function toClientPayload(event: SessionEvent): Record<string, unknown> {
       ...(payload?.isSynthetic === true ? { isSynthetic: true } : {}),
       message: {
         role: 'user',
-        content: payload?.content ?? payload?.message ?? '',
+        content: userContent(payload),
       },
     }
   }

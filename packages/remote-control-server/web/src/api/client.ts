@@ -36,6 +36,39 @@ export function getActiveApiToken(): string | null {
   return _activeToken
 }
 
+/**
+ * Server access key (RCS_WEB_ACCESS_KEY), entered once when the server asks
+ * for it. Kept in localStorage for fetches and mirrored into a cookie so the
+ * SSE EventSource — which cannot send headers — passes too.
+ */
+const ACCESS_KEY_STORAGE = 'rcs.access_key'
+
+export function getAccessKey(): string | null {
+  try {
+    return localStorage.getItem(ACCESS_KEY_STORAGE) || null
+  } catch {
+    return null
+  }
+}
+
+export function setAccessKey(key: string): void {
+  try {
+    localStorage.setItem(ACCESS_KEY_STORAGE, key)
+  } catch {
+    // Private mode: the cookie below still authenticates this page lifetime.
+  }
+  document.cookie = `rcs_access_key=${encodeURIComponent(key)}; path=/; max-age=31536000; samesite=strict`
+}
+
+export function clearAccessKey(): void {
+  try {
+    localStorage.removeItem(ACCESS_KEY_STORAGE)
+  } catch {
+    // ignore
+  }
+  document.cookie = 'rcs_access_key=; path=/; max-age=0; samesite=strict'
+}
+
 async function api<T>(
   method: string,
   path: string,
@@ -43,8 +76,9 @@ async function api<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
 
-  if (_activeToken) {
-    headers['Authorization'] = `Bearer ${_activeToken}`
+  const token = _activeToken ?? getAccessKey()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
 
   const uuid = getUuid()
@@ -84,6 +118,10 @@ async function api<T>(
     data = await res.json()
   }
   if (!res.ok) {
+    // A 401 from the access-key gate surfaces the pairing prompt.
+    if (res.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('rcs:unauthorized'))
+    }
     const record =
       data && typeof data === 'object' && !Array.isArray(data)
         ? (data as Record<string, unknown>)

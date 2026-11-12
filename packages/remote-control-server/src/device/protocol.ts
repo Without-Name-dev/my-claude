@@ -22,6 +22,8 @@ export const DEVICE_METHODS = [
   'list_sessions',
   'read_session',
   'open_session',
+  'open_new_session',
+  'close_session',
   'verify_state',
 ] as const
 
@@ -132,6 +134,18 @@ export type DeviceMethodParams = {
      */
     force?: boolean
   }
+  open_new_session: {
+    /** Fresh terminal: no --resume; the CLI mints a new session id. */
+    cwd: string
+    configDir: string
+    operationId: string
+  }
+  close_session: {
+    localSessionId: string
+    cwd?: string
+    /** Bridge id the server associates with the session, for matching. */
+    bridgeSessionId?: string
+  }
   verify_state: {
     localSessionId: string
     cwd?: string
@@ -156,6 +170,13 @@ export type DeviceMethodResults = {
     total?: number
   }
   open_session: { accepted: true }
+  open_new_session: { accepted: true }
+  close_session: {
+    closed: boolean
+    pid?: number
+    /** Why it was not closed (already gone is still "closed"). */
+    detail?: string
+  }
   verify_state: { state: SessionRuntimeState }
 }
 

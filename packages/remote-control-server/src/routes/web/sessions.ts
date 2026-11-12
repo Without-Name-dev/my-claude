@@ -145,8 +145,12 @@ app.get('/sessions/:id/events', uuidAuth, async c => {
     )
   }
 
-  const lastEventId = c.req.header('Last-Event-ID')
-  const fromSeqNum = lastEventId ? parseInt(lastEventId, 10) : 0
+  // Prefer the header (a native EventSource auto-reconnect), then the query
+  // parameter: a page reload starts a brand-new EventSource with no header,
+  // and replaying the whole in-memory bus on every reload is wasted work.
+  const cursorRaw = c.req.header('Last-Event-ID') ?? c.req.query('since')
+  const parsed = cursorRaw ? parseInt(cursorRaw, 10) : 0
+  const fromSeqNum = Number.isFinite(parsed) && parsed > 0 ? parsed : 0
   return createSSEStream(c, sessionId, fromSeqNum)
 })
 

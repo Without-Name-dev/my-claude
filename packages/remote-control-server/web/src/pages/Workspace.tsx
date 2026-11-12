@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Folder, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Folder, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { formatRelativeTime } from '../lib/device-history';
 import {
   fetchDevices,
+  fetchOperation,
   fetchProjects,
   fetchSessions,
   fetchTerminals,
+  openNewSession,
   type DeviceInfo,
   type DeviceProject,
   type DeviceSessionSummary,
@@ -45,6 +47,10 @@ export function Workspace({
   const [allSessions, setAllSessions] = useState<DeviceSessionSummary[]>([]);
   const [sessionsError, setSessionsError] = useState('');
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  // The device answers one page at a time; older sessions used to be dropped
+  // silently once a machine had more than the first page.
+  const [sessionsHasMore, setSessionsHasMore] = useState(false);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
   const [selectedLocalSessionId, setSelectedLocalSessionId] = useState(initialLocalSessionId || '');
   const [mobileChat, setMobileChat] = useState(Boolean(initialLocalSessionId));
   const [search, setSearch] = useState('');
@@ -145,6 +151,7 @@ export function Workspace({
     setProjectsLoading(true);
     setExpandedProjectId(null);
     setAllSessions([]);
+    setSessionsHasMore(false);
     setSessionsLoading(true);
     void (async () => {
       // Projects and the session index are independent scans on the PC; run
@@ -163,6 +170,7 @@ export function Workspace({
       }
       if (sessionResult.status === 'fulfilled') {
         setAllSessions(sessionResult.value.sessions);
+        setSessionsHasMore(Boolean(sessionResult.value.hasMore));
       } else {
         setSessionsError(sessionResult.reason instanceof Error ? sessionResult.reason.message : '无法读取会话');
       }
@@ -233,6 +241,25 @@ export function Workspace({
     setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
     setSessionsError('');
   }, []);
+
+  // Fetch the next page of the session index. Sessions are merged by id so a
+  // refresh that raced with this call cannot produce duplicates.
+  const loadMoreSessions = useCallback(async () => {
+    if (!activeDeviceId || !sessionsHasMore || loadingMoreSessions) return;
+    setLoadingMoreSessions(true);
+    try {
+      const page = await fetchSessions(activeDeviceId, undefined, 500, allSessions.length);
+      setAllSessions(previous => {
+        const seen = new Set(previous.map(session => session.localSessionId));
+        return [...previous, ...page.sessions.filter(session => !seen.has(session.localSessionId))];
+      });
+      setSessionsHasMore(Boolean(page.hasMore));
+    } catch (error) {
+      setSessionsError(error instanceof Error ? error.message : '加载更多会话失败');
+    } finally {
+      setLoadingMoreSessions(false);
+    }
+  }, [activeDeviceId, allSessions.length, loadingMoreSessions, sessionsHasMore]);
 
   const selectSession = useCallback(
     (localSessionId: string) => {
@@ -337,6 +364,85 @@ export function Workspace({
 
   const activeDevice = devices.find(device => device.id === activeDeviceId);
   const query = search.trim().toLowerCase();
+
+  // One new-terminal operation at a time, keyed by project so the row that
+  // started it shows the progress instead of a global overlay.
+  const [newSessionProject, setNewSessionProject] = useState<string | null>(null);
+  const [newSessionState, setNewSessionState] = useState('');
+  useEffect(() => {
+    if (!newSessionProject) return;
+    let cancelled = false;
+    const tick = async (operationId: string | null, attempt = 0) => {
+      if (cancelled) return;
+      try {
+        if (!operationId) {
+          const started = await openNewSession(activeDeviceId, newSessionProject);
+          if (cancelled) return;
+          if (!started.operationId) {
+            setNewSessionState(started.detail || '无法启动新终端');
+            window.setTimeout(() => !cancelled && setNewSessionProject(null), 4000);
+            return;
+          }
+          setNewSessionState('正在电脑上打开新终端…');
+          void tick(started.operationId);
+          return;
+        }
+        const operation = await fetchOperation(operationId);
+        if (cancelled) return;
+        if (operation.state === 'ready') {
+          const target = operation.resolvedLocalSessionId;
+          if (target) {
+            refreshCatalog();
+            selectSession(target);
+            setNewSessionProject(null);
+          } else {
+            // Ready without an id should not happen; let the timeout poll out.
+            setNewSessionState('终端已就绪，但未能确定新会话 ID');
+            setNewSessionProject(null);
+          }
+          return;
+        }
+        if (operation.state === 'failed') {
+          setNewSessionState(operation.detail || '新终端启动失败');
+          window.setTimeout(() => !cancelled && setNewSessionProject(null), 6000);
+          return;
+        }
+        if (operation.state === 'waiting_for_user') {
+          setNewSessionState(operation.detail || '终端已打开，等待你在电脑上确认。');
+        }
+        if (attempt > 90) {
+          setNewSessionState('等待新终端超时，请稍后在列表中刷新');
+          setNewSessionProject(null);
+          return;
+        }
+        window.setTimeout(() => void tick(operationId, attempt + 1), 1500);
+      } catch (error) {
+        if (cancelled) return;
+        setNewSessionState(error instanceof Error ? error.message : '启动新终端失败');
+        window.setTimeout(() => !cancelled && setNewSessionProject(null), 5000);
+      }
+    };
+    void tick(null);
+    return () => {
+      cancelled = true;
+    };
+    // selectSession/refreshCatalog are stable per device; activeDeviceId is the
+    // scope of the whole operation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newSessionProject, activeDeviceId]);
+
+  const startNewSession = useCallback(
+    (project: DeviceProject) => {
+      if (!activeDevice?.online) {
+        setSessionsError('设备离线，无法打开新终端');
+        return;
+      }
+      if (newSessionProject) return;
+      setNewSessionState('正在电脑上打开新终端…');
+      setNewSessionProject(project.path);
+    },
+    [activeDevice?.online, newSessionProject],
+  );
 
   const filteredProjects = useMemo(() => {
     if (!query) return projects;
@@ -455,22 +561,42 @@ export function Workspace({
             {filteredProjects.map(project => {
               const expanded = expandedProjectId === project.projectId;
               const sessions = filteredSessions(project);
+              const starting = newSessionProject === project.path;
               return (
                 <div key={project.projectId}>
-                  <button
-                    type="button"
-                    onClick={() => toggleProject(project)}
-                    className="flex min-h-12 w-full items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-1"
-                    title={project.path}
-                  >
-                    {expanded ? (
-                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
-                    )}
-                    <Folder className="h-4 w-4 shrink-0 text-text-muted" />
-                    <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                  </button>
+                  <div className="flex items-center">
+                    <button
+                      type="button"
+                      onClick={() => toggleProject(project)}
+                      className="flex min-h-12 min-w-0 flex-1 items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-1"
+                      title={project.path}
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                      )}
+                      <Folder className="h-4 w-4 shrink-0 text-text-muted" />
+                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startNewSession(project)}
+                      disabled={Boolean(newSessionProject)}
+                      title="在这个项目里打开一个新终端"
+                      aria-label={`在 ${project.name} 打开新终端`}
+                      className="mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
+                    >
+                      {starting ? (
+                        <RefreshCw className="h-4 w-4 animate-spin text-brand" />
+                      ) : (
+                        <Plus className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  {starting && newSessionState && (
+                    <p className="px-9 pb-1 text-xs text-text-secondary">{newSessionState}</p>
+                  )}
                   {expanded && (
                     <div className="pb-1">
                       {sessionsLoading && allSessions.length === 0 && (
@@ -529,6 +655,18 @@ export function Workspace({
                 </div>
               );
             })}
+            {sessionsHasMore && !query && (
+              <div className="px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => void loadMoreSessions()}
+                  disabled={loadingMoreSessions}
+                  className="w-full rounded-lg border border-border bg-surface-1 py-2 text-xs text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-60"
+                >
+                  {loadingMoreSessions ? '正在加载…' : '加载更早的会话'}
+                </button>
+              </div>
+            )}
             {projectsLoading && projects.length === 0 && (
               <div className="space-y-1.5 px-4 py-2">
                 <div className="h-7 animate-pulse rounded bg-surface-1" />

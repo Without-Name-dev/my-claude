@@ -9,6 +9,7 @@ import {
 } from '../../services/session'
 import { publishSessionEvent } from '../../services/transport'
 import { getEventBus } from '../../transport/event-bus'
+import { isBridgeConnected } from '../../transport/ws-handler'
 
 const app = new Hono()
 
@@ -63,6 +64,9 @@ app.post('/sessions/:id/events', uuidAuth, async c => {
 
   const body = await c.req.json()
   const eventType = body.type || 'user'
+  // Everything published here (messages, slash commands, control frames) is
+  // replayed to the bridge on its next attach — see handleWebSocketOpen — so
+  // accepting while the transport is briefly down is queueing, not losing.
   log(
     `[RC-DEBUG] web -> server: POST /web/sessions/${sessionId}/events type=${eventType} content=${JSON.stringify(body).slice(0, 200)}`,
   )
@@ -90,6 +94,9 @@ app.post('/sessions/:id/control', uuidAuth, async c => {
   }
   const { sessionId } = ownership
 
+  // Permission answers queue like everything else: the bridge attach replay
+  // delivers them, and a late answer to an expired request is ignored by the
+  // CLI without side effects.
   const body = await c.req.json()
   const event = publishSessionEvent(
     sessionId,
@@ -117,13 +124,18 @@ app.post('/sessions/:id/interrupt', uuidAuth, async c => {
   }
   const { sessionId } = ownership
 
+  // The interrupt itself queues like any other control frame (the attach
+  // replay delivers it). But claiming "idle" with no live bridge was a lie the
+  // status indicator inherited — the session state must reflect evidence.
   publishSessionEvent(
     sessionId,
     'interrupt',
     { action: 'interrupt' },
     'outbound',
   )
-  updateSessionStatus(sessionId, 'idle')
+  if (isBridgeConnected(sessionId)) {
+    updateSessionStatus(sessionId, 'idle')
+  }
   return c.json({ status: 'ok' }, 200)
 })
 

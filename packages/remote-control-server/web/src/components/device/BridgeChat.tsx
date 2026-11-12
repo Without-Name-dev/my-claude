@@ -9,7 +9,7 @@ import {
   type SetStateAction,
 } from 'react';
 import { RCSChatAdapter } from '../../lib/rcs-chat-adapter';
-import type { BridgeSessionInfo } from '../../lib/rcs-chat-adapter';
+import type { BridgeSessionInfo, SessionUsage } from '../../lib/rcs-chat-adapter';
 import { mergeThreadEntries } from '../../lib/device-history';
 import type { PendingPermission, ThreadEntry } from '../../lib/types';
 import type { ChatInputMessage } from '../../lib/types';
@@ -20,10 +20,13 @@ import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
 import { haptic } from '../../lib/view-transition';
 import { turnFinished } from '../../lib/turn-notice';
-import { ChevronDown, ShieldCheck } from 'lucide-react';
+import { ChevronDown, Gauge, ShieldCheck, Zap } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
 import type { AvailableCommand } from '../../acp/types';
+
+/** Mirrors the CLI's effort levels; 'auto' clears the pinned level. */
+const EFFORT_LEVELS = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const PERMISSION_MODES = [
   { id: 'default', label: '默认' },
@@ -47,6 +50,7 @@ export function BridgeChat({
   onTerminalUnavailable,
   onBridgeDisconnected,
   onBridgeReady,
+  toolbarExtraLeft,
 }: {
   sessionId: string;
   onBack?: () => void;
@@ -63,6 +67,8 @@ export function BridgeChat({
   onBridgeDisconnected?: () => void;
   /** The SSE stream is open; catch up on anything produced before it. */
   onBridgeReady?: () => void;
+  /** Extra controls at the far left of the composer (e.g. close-terminal). */
+  toolbarExtraLeft?: ReactNode;
 }) {
   const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
@@ -88,6 +94,10 @@ export function BridgeChat({
   const [sessionInfo, setSessionInfo] = useState<BridgeSessionInfo | null>(null);
   const [modelId, setModelId] = useState('');
   const [permissionMode, setPermissionMode] = useState('');
+  const [effort, setEffort] = useState('auto');
+  const [ultracode, setUltracode] = useState(false);
+  const [ultracodeUsable, setUltracodeUsable] = useState(false);
+  const [usage, setUsage] = useState<SessionUsage | null>(null);
   const [controlError, setControlError] = useState('');
   /** False until the bridge handshake (init) returns; sending is held until then. */
   const [ready, setReady] = useState(false);
@@ -107,8 +117,12 @@ export function BridgeChat({
   }, [onBridgeReady]);
   const userChangedModel = useRef(false);
   const userChangedMode = useRef(false);
-  const pendingModel = useRef<{ previous: string } | null>(null);
-  const pendingMode = useRef<{ previous: string } | null>(null);
+  /**
+   * Rollbacks keyed by control request id. Keying by id (instead of "whatever
+   * is pending") means two controls in flight can no longer roll back each
+   * other, which used to revert the model when a permission answer landed.
+   */
+  const pendingControls = useRef(new Map<string, () => void>());
   const controlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** When the current turn began, so a finished long turn can ping quietly. */
   const turnStartedAt = useRef(0);
@@ -127,15 +141,10 @@ export function BridgeChat({
     controlTimer.current = setTimeout(() => {
       controlTimer.current = null;
       setControlPending(false);
-      if (pendingModel.current) {
-        setModelId(pendingModel.current.previous);
-        pendingModel.current = null;
-      }
-      if (pendingMode.current) {
-        setPermissionMode(pendingMode.current.previous);
-        pendingMode.current = null;
-      }
-      setControlError('切换超时，已保持原来的设置');
+      const rollbacks = [...pendingControls.current.values()];
+      pendingControls.current.clear();
+      for (const rollback of rollbacks) rollback();
+      if (rollbacks.length > 0) setControlError('切换超时，已保持原来的设置');
     }, 8000);
   }, []);
 
@@ -164,28 +173,26 @@ export function BridgeChat({
           // A replayed system/init must not undo a model the user just chose.
           if (info.model && !userChangedModel.current) setModelId(info.model);
           if (info.permissionMode && !userChangedMode.current) setPermissionMode(info.permissionMode);
+          // Effort/ultracode are republished by the CLI whenever they change —
+          // including changes made in the terminal — so these are authoritative.
+          if (typeof info.effort === 'string' && info.effort) setEffort(info.effort);
+          if (typeof info.ultracodeAvailable === 'boolean') setUltracodeUsable(info.ultracodeAvailable);
+          if (typeof info.ultracodeActive === 'boolean') setUltracode(info.ultracodeActive);
         },
         onControlResponse: response => {
-          if (controlTimer.current) {
-            clearTimeout(controlTimer.current);
-            controlTimer.current = null;
+          if (response.requestId) {
+            const rollback = pendingControls.current.get(response.requestId);
+            pendingControls.current.delete(response.requestId);
+            if (response.error) rollback?.();
           }
-          setControlPending(false);
+          if (pendingControls.current.size === 0) {
+            if (controlTimer.current) {
+              clearTimeout(controlTimer.current);
+              controlTimer.current = null;
+            }
+            setControlPending(false);
+          }
           setControlError(response.error ?? '');
-          if (response.error) {
-            // Roll the pickers back to what the CLI is actually using.
-            if (pendingModel.current) {
-              setModelId(pendingModel.current.previous);
-              pendingModel.current = null;
-            }
-            if (pendingMode.current) {
-              setPermissionMode(pendingMode.current.previous);
-              pendingMode.current = null;
-            }
-          } else {
-            pendingModel.current = null;
-            pendingMode.current = null;
-          }
         },
         onBridgeState: next => {
           setConnected(next);
@@ -213,6 +220,7 @@ export function BridgeChat({
           if (startedAt) turnFinished(Date.now() - startedAt);
           setIsLoading(false);
         },
+        onUsage: next => setUsage(next),
         // The CLI reports the authoritative turn state. Without this, a turn
         // started in the terminal looked idle in the browser, and the first
         // streamed assistant chunk cleared the spinner prematurely.
@@ -339,55 +347,79 @@ export function BridgeChat({
     [adapter, appendCommandOutput, connected, onTerminalUnavailable, ready],
   );
 
-  const changeModel = useCallback(
-    async (id: string) => {
-      const previous = modelId;
-      userChangedModel.current = true;
-      pendingModel.current = { previous };
-      setModelId(id);
+  /** Send a control request and remember how to undo its optimistic value. */
+  const runControl = useCallback(
+    async (send: () => Promise<string>, rollback: () => void, failure: string) => {
       setControlError('');
       setControlPending(true);
       armControlTimeout();
       try {
-        await adapter.setModel(id);
+        const requestId = await send();
+        pendingControls.current.set(requestId, rollback);
       } catch (err) {
         if (controlTimer.current) {
           clearTimeout(controlTimer.current);
           controlTimer.current = null;
         }
-        pendingModel.current = null;
-        setModelId(previous);
+        rollback();
+        pendingControls.current.clear();
         setControlPending(false);
-        setControlError(`切换模型失败，已保持原模型：${err instanceof Error ? err.message : '未知原因'}`);
+        setControlError(`${failure}：${err instanceof Error ? err.message : '未知原因'}`);
       }
     },
-    [adapter, armControlTimeout, modelId],
+    [armControlTimeout],
+  );
+
+  const changeModel = useCallback(
+    async (id: string) => {
+      const previous = modelId;
+      userChangedModel.current = true;
+      setModelId(id);
+      await runControl(
+        () => adapter.setModel(id),
+        () => setModelId(previous),
+        '切换模型失败，已保持原模型',
+      );
+    },
+    [adapter, modelId, runControl],
   );
 
   const changePermissionMode = useCallback(
     async (mode: string) => {
       const previous = permissionMode;
       userChangedMode.current = true;
-      pendingMode.current = { previous };
       setPermissionMode(mode);
-      setControlError('');
-      setControlPending(true);
-      armControlTimeout();
-      try {
-        await adapter.setPermissionMode(mode);
-      } catch (err) {
-        if (controlTimer.current) {
-          clearTimeout(controlTimer.current);
-          controlTimer.current = null;
-        }
-        pendingMode.current = null;
-        setPermissionMode(previous);
-        setControlPending(false);
-        setControlError(`切换权限模式失败，已保持原模式：${err instanceof Error ? err.message : '未知原因'}`);
-      }
+      await runControl(
+        () => adapter.setPermissionMode(mode),
+        () => setPermissionMode(previous),
+        '切换权限模式失败，已保持原模式',
+      );
     },
-    [adapter, armControlTimeout, permissionMode],
+    [adapter, permissionMode, runControl],
   );
+
+  const changeEffort = useCallback(
+    async (value: string) => {
+      const previous = effort;
+      setEffort(value);
+      await runControl(
+        () => adapter.setEffort(value),
+        () => setEffort(previous),
+        '切换思考等级失败，已保持原等级',
+      );
+    },
+    [adapter, effort, runControl],
+  );
+
+  const toggleUltracode = useCallback(async () => {
+    const next = !ultracode;
+    setUltracode(next);
+    await runControl(
+      () => adapter.setUltracode(next),
+      () => setUltracode(!next),
+      '切换 Ultracode 失败',
+    );
+  }, [adapter, runControl, ultracode]);
 
   const interrupt = useCallback(async () => {
     try {
@@ -418,6 +450,20 @@ export function BridgeChat({
     async (requestId: string) => {
       try {
         await adapter.respondPermission(requestId, false);
+        setPermissions(prev => prev.filter(item => item.requestId !== requestId));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '操作失败');
+      }
+    },
+    [adapter],
+  );
+
+  /** Answer with one of the CLI's own permission options (allow always…). */
+  const respondOption = useCallback(
+    async (requestId: string, optionId: string, kind: string) => {
+      const rejected = kind === 'reject_once' || kind === 'reject_always';
+      try {
+        await adapter.respondPermission(requestId, !rejected, { option_id: optionId });
         setPermissions(prev => prev.filter(item => item.requestId !== requestId));
       } catch (err) {
         setError(err instanceof Error ? err.message : '操作失败');
@@ -550,6 +596,9 @@ export function BridgeChat({
                   request={request}
                   onApprove={() => withAnswering(request.requestId, () => approve(request.requestId))}
                   onReject={() => withAnswering(request.requestId, () => reject(request.requestId))}
+                  onRespondOption={(requestId, optionId, kind) =>
+                    void withAnswering(requestId, () => respondOption(requestId, optionId, kind))
+                  }
                   onSubmitAnswers={(requestId, answers, questions) =>
                     void withAnswering(requestId, () => submitAnswers(requestId, answers, questions))
                   }
@@ -561,6 +610,7 @@ export function BridgeChat({
             </div>
           </div>
         )}
+        {usage && usage.current && <ContextStats usage={usage} contextWindow={sessionInfo?.contextWindow} />}
         <ChatInput
           key={sessionId}
           draftKey={`bridge:${sessionId}`}
@@ -568,9 +618,11 @@ export function BridgeChat({
           isLoading={isLoading}
           onInterrupt={interrupt}
           placeholder="和 Claude 一起工作"
+          supportsImages
           commands={commands}
           toolbarLeft={
             <>
+              {toolbarExtraLeft}
               <span
                 className={cn(
                   'ml-1 mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full',
@@ -582,6 +634,48 @@ export function BridgeChat({
               <span role="status" aria-live="polite" className="sr-only">
                 {isLoading ? 'Claude 正在处理' : connected ? '已连接终端' : '终端连接已断开'}
               </span>
+              {ultracodeUsable && (
+                <button
+                  type="button"
+                  onClick={() => void toggleUltracode()}
+                  disabled={controlPending}
+                  aria-pressed={ultracode}
+                  title="Ultracode：每个任务都启用动态工作流（仅本会话）"
+                  className={cn(
+                    'inline-flex h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium transition-colors disabled:opacity-60',
+                    ultracode ? 'bg-brand/15 text-brand' : 'text-text-muted hover:bg-surface-1',
+                  )}
+                >
+                  <Zap className={cn('h-3.5 w-3.5', ultracode && 'fill-current')} />
+                  {ultracode ? 'Ultra' : 'ultra'}
+                </button>
+              )}
+              <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
+                <Gauge
+                  className={cn(
+                    'ml-1 h-3.5 w-3.5 shrink-0',
+                    effort && effort !== 'auto' ? 'text-brand' : 'text-text-muted',
+                  )}
+                />
+                <select
+                  value={effort}
+                  onChange={event => void changeEffort(event.target.value)}
+                  disabled={controlPending}
+                  className={cn(
+                    'h-9 w-[4.4rem] appearance-none truncate bg-transparent py-0 pl-1 pr-5 text-xs outline-none disabled:opacity-60',
+                    effort && effort !== 'auto' ? 'text-brand' : 'text-text-secondary',
+                  )}
+                  aria-label="切换思考等级"
+                  title="思考等级（/effort）"
+                >
+                  {EFFORT_LEVELS.map(level => (
+                    <option key={level} value={level}>
+                      {level === 'auto' ? 'auto' : level}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-1 h-3.5 w-3.5 text-text-muted" />
+              </label>
               <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
                 <ShieldCheck
                   className={cn(
@@ -643,16 +737,58 @@ function shortModelName(name: string): string {
   return tail || name;
 }
 
+/** 1234567 -> "1.2M"; 45600 -> "45.6K". */
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+/**
+ * One-line session stats above the composer, mirroring the terminal's status
+ * line: context fill, accumulated tokens and cache hit rate. Only appears
+ * once the session has actually produced usage.
+ */
+function ContextStats({ usage, contextWindow }: { usage: SessionUsage; contextWindow?: number }) {
+  const current = usage.current;
+  if (!current) return null;
+  const contextTokens = current.input + current.cacheCreation + current.cacheRead;
+  const pct =
+    contextWindow && contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : null;
+  // 10 cells, matching the terminal's ███░░░░░░░ bar.
+  const filled = pct === null ? 0 : Math.round(pct / 10);
+  const cache = usage.cacheHitRate !== null ? `${Math.round(usage.cacheHitRate * 100)}%` : '—';
+  return (
+    <div
+      role="status"
+      className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-2 gap-y-0.5 px-4 pb-0.5 text-[11px] leading-4 text-text-muted"
+    >
+      {pct !== null && (
+        <span className="font-mono tracking-tight" title={`上下文 ${contextWindow?.toLocaleString()} tokens`}>
+          <span className="text-text-secondary">{'█'.repeat(filled)}</span>
+          {'░'.repeat(10 - filled)} {pct}%
+        </span>
+      )}
+      <span>
+        Tokens {formatTokenCount(usage.totals.input + usage.totals.output)} (in: {formatTokenCount(usage.totals.input)},
+        out: {formatTokenCount(usage.totals.output)}, cache: {cache})
+      </span>
+    </div>
+  );
+}
+
 function PermissionEventView({
   request,
   onApprove,
   onReject,
+  onRespondOption,
   onSubmitAnswers,
   onSubmitPlan,
 }: {
   request: PendingPermission;
   onApprove: () => void;
   onReject: () => void;
+  onRespondOption: (requestId: string, optionId: string, kind: string) => void;
   onSubmitAnswers: (requestId: string, answers: Record<string, unknown>, questions: Question[]) => void;
   onSubmitPlan: (requestId: string, value: string, feedback?: string) => void;
 }) {
@@ -691,8 +827,10 @@ function PermissionEventView({
       toolName={toolName}
       toolInput={toolInput}
       description={description}
+      options={request.options}
       onApprove={onApprove}
       onReject={onReject}
+      onRespond={(optionId, kind) => onRespondOption(request.requestId, optionId, kind)}
     />
   );
 }

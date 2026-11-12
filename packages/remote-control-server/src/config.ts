@@ -22,6 +22,14 @@ export const config = {
     process.env.RCS_WS_KEEPALIVE_INTERVAL || '20',
     10,
   ),
+  /**
+   * Shared secret for the /web routes. Without it every /web endpoint accepts
+   * any ?uuid= — fine on a loopback dev server, not on a public one: the device
+   * APIs expose full conversation history and can queue prompts the Spawner
+   * will execute when the machine wakes. When set, web clients must present it
+   * as a Bearer token (a valid server API key also passes).
+   */
+  webAccessKey: process.env.RCS_WEB_ACCESS_KEY || '',
 } as const
 
 export function getBaseUrl(): string {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { uuidAuth } from '../../auth/middleware'
 import { storeBindSession } from '../../store'
 import {
   resolveExistingWebSessionId,
@@ -7,8 +8,9 @@ import {
 
 const app = new Hono()
 
-/** POST /web/bind — Bind a session to a UUID (no-login auth) */
-app.post('/bind', async c => {
+/** POST /web/bind — Bind a session to a UUID. Gated by uuidAuth like every
+ *  other /web route: claiming arbitrary sessions must not be anonymous. */
+app.post('/bind', uuidAuth, async c => {
   const body = await c.req.json()
   const sessionId = body.sessionId
   // UUID can come from query param (api.js sends it in URL) or body

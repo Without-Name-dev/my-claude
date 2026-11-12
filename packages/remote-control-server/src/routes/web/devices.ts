@@ -34,8 +34,10 @@ import {
   saveWebUserMessage,
 } from '../../device/conversation-store'
 import {
+  closeTerminal,
   deliverNow,
   ensureOpen,
+  ensureOpenNew,
   flushOutbox,
   getOperation,
   getOperationForSession,
@@ -161,6 +163,9 @@ app.get('/devices/:deviceId/sessions', uuidAuth, async c => {
   const limit = Number.isFinite(limitRaw)
     ? Math.min(Math.max(Math.trunc(limitRaw), 1), 500)
     : 200
+  const offsetRaw = Number(c.req.query('offset') ?? '0')
+  const offset =
+    Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.trunc(offsetRaw) : 0
 
   if (!isDeviceOnline(device.id)) {
     const catalog = getCatalog(device.id)
@@ -176,7 +181,8 @@ app.get('/devices/:deviceId/sessions', uuidAuth, async c => {
       ? catalog.sessions.filter(session => session.projectId === projectId)
       : catalog.sessions
     return c.json({
-      sessions: sessions.slice(0, limit),
+      sessions: sessions.slice(offset, offset + limit),
+      hasMore: sessions.length > offset + limit,
       cached: true,
       updatedAt: catalog.updatedAt,
     })
@@ -186,6 +192,7 @@ app.get('/devices/:deviceId/sessions', uuidAuth, async c => {
     const result = (await requestDevice(device.id, 'list_sessions', {
       projectId,
       limit,
+      ...(offset ? { offset } : {}),
     })) as { sessions?: SessionSummary[]; hasMore?: boolean }
     const sessions = Array.isArray(result.sessions) ? result.sessions : []
     const catalog = getCatalog(device.id)
@@ -209,7 +216,8 @@ app.get('/devices/:deviceId/sessions', uuidAuth, async c => {
       ? catalog.sessions.filter(session => session.projectId === projectId)
       : catalog.sessions
     return c.json({
-      sessions: sessions.slice(0, limit),
+      sessions: sessions.slice(offset, offset + limit),
+      hasMore: sessions.length > offset + limit,
       cached: true,
       updatedAt: catalog.updatedAt,
       warning: (error as Error).message,
@@ -725,6 +733,73 @@ app.post(
         operationId: null,
         detail: `消息已保存，但启动终端失败：${(error as Error).message}`,
       })
+    }
+  },
+)
+
+/**
+ * Open a brand-new terminal in a project's cwd. The local session id is minted
+ * by the CLI; the web follows the returned operation and navigates once the
+ * ready event resolves it (see resolvedLocalSessionId on the record).
+ */
+app.post('/devices/:deviceId/sessions/new', uuidAuth, async c => {
+  const device = deviceFromParam(c)
+  if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')
+  const record = getDevice(device.id)
+  if (!record) return errorJson(c, 404, 'device_not_found', '设备不存在')
+  if (!isDeviceOnline(device.id)) {
+    return errorJson(c, 503, 'device_offline', '设备离线，无法启动终端')
+  }
+  const body = (await c.req.json().catch(() => null)) as {
+    cwd?: unknown
+  } | null
+  const cwd = typeof body?.cwd === 'string' ? body.cwd : ''
+  if (
+    !cwd ||
+    cwd.length > 2048 ||
+    (!cwd.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(cwd))
+  ) {
+    return errorJson(c, 400, 'bad_request', '需要有效的工作目录（cwd）')
+  }
+  try {
+    const operation = await ensureOpenNew(device.id, cwd, record.configDir)
+    return c.json({
+      state: operation.state,
+      operationId: operation.id,
+      detail: operation.detail ?? null,
+    })
+  } catch (error) {
+    return errorJson(c, 503, 'device_unavailable', (error as Error).message)
+  }
+})
+
+/**
+ * Stop the terminal of one local session. Destructive by design (it kills the
+ * verified process), so the client must have asked the user explicitly; the
+ * spawner independently re-verifies the PID before killing it.
+ */
+app.post(
+  '/devices/:deviceId/sessions/:localSessionId/close',
+  uuidAuth,
+  async c => {
+    const device = deviceFromParam(c)
+    const localSessionId = c.req.param('localSessionId')
+    if (!device || !localSessionId) {
+      return errorJson(c, 400, 'bad_request', '缺少设备或会话 ID')
+    }
+    if (!isLocalSessionId(localSessionId)) {
+      return errorJson(c, 400, 'bad_request', '无效的会话 ID')
+    }
+    const record = getDevice(device.id)
+    if (!record) return errorJson(c, 404, 'device_not_found', '设备不存在')
+    if (!isDeviceOnline(device.id)) {
+      return errorJson(c, 503, 'device_offline', '设备离线，无法关闭终端')
+    }
+    try {
+      const result = await closeTerminal(device.id, localSessionId)
+      return c.json(result)
+    } catch (error) {
+      return errorJson(c, 503, 'device_unavailable', (error as Error).message)
     }
   },
 )

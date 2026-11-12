@@ -6,7 +6,7 @@
  * at the last known snapshot.
  */
 
-import { getActiveApiToken, getUuid } from './client'
+import { getAccessKey, getActiveApiToken, getUuid } from './client'
 import { debugLog } from '../lib/debug-log'
 
 export type DeviceInfo = {
@@ -86,6 +86,8 @@ export type OpenOperation = {
   pid?: number
   createdAt: number
   updatedAt: number
+  /** open_new_session: the session id the CLI minted, once known. */
+  resolvedLocalSessionId?: string
 }
 
 export type DeviceSessionDetail = {
@@ -119,7 +121,7 @@ async function request<T>(
   body?: unknown,
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const token = getActiveApiToken()
+  const token = getActiveApiToken() ?? getAccessKey()
   if (token) headers.Authorization = `Bearer ${token}`
   const uuid = getUuid()
   const sep = path.includes('?') ? '&' : '?'
@@ -157,6 +159,10 @@ async function request<T>(
     // Proxy / nginx error pages are HTML; never render that markup to a user.
   }
   if (!res.ok) {
+    // A 401 from the access-key gate surfaces the pairing prompt.
+    if (res.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('rcs:unauthorized'))
+    }
     const record =
       data && typeof data === 'object' && !Array.isArray(data)
         ? (data as Record<string, unknown>)
@@ -212,14 +218,17 @@ export function fetchSessions(
   deviceId: string,
   projectId?: string,
   limit = 200,
+  offset = 0,
 ): Promise<{
   sessions: DeviceSessionSummary[]
+  hasMore?: boolean
   cached?: boolean
   updatedAt?: number
   warning?: string
 }> {
   const query = new URLSearchParams({ limit: String(limit) })
   if (projectId) query.set('projectId', projectId)
+  if (offset > 0) query.set('offset', String(offset))
   return request(
     'GET',
     `/web/devices/${encodeURIComponent(deviceId)}/sessions?${query.toString()}`,
@@ -271,6 +280,34 @@ export function openSession(
     'POST',
     `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/open`,
     force ? { force: true } : {},
+  )
+}
+
+/** Open a brand-new terminal in a project cwd; follow the operation to learn
+ *  the minted session id (resolvedLocalSessionId on the record). */
+export function openNewSession(
+  deviceId: string,
+  cwd: string,
+): Promise<{
+  state: string
+  operationId: string | null
+  detail?: string | null
+}> {
+  return request(
+    'POST',
+    `/web/devices/${encodeURIComponent(deviceId)}/sessions/new`,
+    { cwd },
+  )
+}
+
+/** Stop the terminal of one local session (destructive; ask the user first). */
+export function closeSession(
+  deviceId: string,
+  localSessionId: string,
+): Promise<{ closed: boolean; detail?: string }> {
+  return request(
+    'POST',
+    `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/close`,
   )
 }
 

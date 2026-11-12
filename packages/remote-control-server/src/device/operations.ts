@@ -14,6 +14,7 @@ import { isBridgeConnected, onBridgeAttached } from '../transport/ws-handler'
 import { publishSessionEvent } from '../services/transport'
 import { requestDevice } from './hub'
 import {
+  clearMapping,
   enqueueOutbox,
   findMappingByBridgeId,
   getCatalog,
@@ -22,6 +23,7 @@ import {
   listQueuedSessionIds,
   requeueFailedOutbox,
   setMapping,
+  setRuntime,
   updateOutbox,
   type OutboxEntry,
 } from './state'
@@ -46,6 +48,12 @@ export type OperationRecord = {
   pid?: number
   createdAt: number
   updatedAt: number
+  /**
+   * For open_new_session: the real local session id the CLI minted, once the
+   * spawner's ready event reports it. The web follows the operation until it
+   * can navigate to /d/<device>/s/<this>.
+   */
+  resolvedLocalSessionId?: string
 }
 
 const operations = new Map<string, OperationRecord>()
@@ -200,6 +208,98 @@ export async function ensureOpen(
   return record
 }
 
+/**
+ * Open a brand-new terminal (`--remote-control`, no --resume) in a project
+ * cwd. The local session id is unknown until the CLI registers itself, so the
+ * operation runs under a placeholder id; the spawner's ready event carries the
+ * real one (also stored as resolvedLocalSessionId for the web to follow).
+ */
+export async function ensureOpenNew(
+  deviceId: string,
+  cwd: string,
+  configDir: string,
+): Promise<OperationRecord> {
+  const placeholder = randomUUID()
+  const record: OperationRecord = {
+    id: randomUUID(),
+    deviceId,
+    localSessionId: placeholder,
+    cwd,
+    configDir,
+    state: 'accepted',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  operations.set(record.id, record)
+  const key = sessionKey(deviceId, placeholder)
+  activeBySession.set(key, record.id)
+
+  setTimeout(() => {
+    const current = operations.get(record.id)
+    if (!current) return
+    if (current.state === 'ready' || current.state === 'failed') return
+    current.state = 'failed'
+    current.failureCode = 'bridge_timeout'
+    current.detail = '等待新终端与 Bridge 就绪超时'
+    current.updatedAt = Date.now()
+    if (activeBySession.get(key) === record.id) activeBySession.delete(key)
+  }, OPERATION_TIMEOUT_MS).unref?.()
+
+  try {
+    await requestDevice(
+      deviceId,
+      'open_new_session',
+      { cwd, configDir, operationId: record.id },
+      10_000,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('不在线')) {
+      record.state = 'failed'
+      record.failureCode = 'spawn_failed'
+      record.detail = message
+      record.updatedAt = Date.now()
+      if (activeBySession.get(key) === record.id) activeBySession.delete(key)
+    } else {
+      record.detail = message
+      record.updatedAt = Date.now()
+    }
+  }
+  return record
+}
+
+/**
+ * Stop the terminal of one local session. The spawner only ever kills a PID it
+ * verified for this exact session; "already not running" still reports closed.
+ */
+export async function closeTerminal(
+  deviceId: string,
+  localSessionId: string,
+): Promise<{ closed: boolean; detail?: string }> {
+  const mapping = getMapping(deviceId, localSessionId)
+  const result = (await requestDevice(deviceId, 'close_session', {
+    localSessionId,
+    ...(mapping?.cwd ? { cwd: mapping.cwd } : {}),
+    ...(mapping?.bridgeSessionId
+      ? { bridgeSessionId: mapping.bridgeSessionId }
+      : {}),
+  })) as { closed?: boolean; detail?: string }
+  if (result.closed) {
+    clearMapping(deviceId, localSessionId)
+    setRuntime(deviceId, localSessionId, {
+      localSessionId,
+      cwd: mapping?.cwd ?? '',
+      processAlive: false,
+      verifiedAt: Date.now(),
+      source: 'managed',
+    })
+  }
+  return {
+    closed: result.closed === true,
+    detail: typeof result.detail === 'string' ? result.detail : undefined,
+  }
+}
+
 export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
   switch (event.type) {
     case 'operation': {
@@ -230,6 +330,14 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
       record.failureCode = event.failureCode
       if (event.bridgeSessionId) record.bridgeSessionId = event.bridgeSessionId
       if (event.pid) record.pid = event.pid
+      // A fresh terminal reports the session id the CLI minted; remember it so
+      // the web can navigate to the new conversation.
+      if (
+        event.localSessionId &&
+        event.localSessionId !== record.localSessionId
+      ) {
+        record.resolvedLocalSessionId = event.localSessionId
+      }
       record.updatedAt = Date.now()
 
       if (event.state === 'ready' && event.bridgeSessionId) {

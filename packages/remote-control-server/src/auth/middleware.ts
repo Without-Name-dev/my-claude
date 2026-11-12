@@ -1,4 +1,6 @@
 import type { Context, Next } from 'hono'
+import { timingSafeEqual } from 'node:crypto'
+import { config } from '../config'
 import { validateApiKey } from './api-key'
 import { verifyWorkerJwt } from './jwt'
 import { resolveToken } from './token'
@@ -155,6 +157,13 @@ export function getUuidFromRequest(c: Context): string | undefined {
 /**
  * UUID-based auth for Web UI routes (no-login mode).
  * Accepts UUID in query param/header, OR a valid API key via Authorization header.
+ *
+ * When `RCS_WEB_ACCESS_KEY` is configured, the UUID fallback is disabled: the
+ * request must carry the access key (or a server API key). The key travels as
+ * a Bearer token on fetches and as the `rcs_access_key` cookie on the SSE
+ * EventSource, which cannot send headers. On a publicly reachable server,
+ * trusting any self-declared uuid would hand out conversation history and
+ * remote-control capabilities to strangers.
  */
 export async function uuidAuth(c: Context, next: Next) {
   // Try API key auth via Authorization header
@@ -167,7 +176,32 @@ export async function uuidAuth(c: Context, next: Next) {
     return
   }
 
-  // Fall back to UUID auth
+  const accessKey = config.webAccessKey
+  if (accessKey) {
+    const presented =
+      bearer ?? readAccessCookie(c.req.header('Cookie') ?? undefined)
+    const matches =
+      presented !== undefined &&
+      presented.length === accessKey.length &&
+      timingSafeEqual(Buffer.from(presented), Buffer.from(accessKey))
+    if (!matches) {
+      return c.json(
+        {
+          error: {
+            type: 'unauthorized',
+            message: '需要访问密钥（Access Key）',
+          },
+        },
+        401,
+      )
+    }
+    const uuid = getUuidFromRequest(c)
+    c.set('uuid', uuid || 'web-key-holder')
+    await next()
+    return
+  }
+
+  // Fall back to UUID auth (private/loopback deployments only)
   const uuid = getUuidFromRequest(c)
   if (!uuid) {
     return c.json(
@@ -177,4 +211,24 @@ export async function uuidAuth(c: Context, next: Next) {
   }
   c.set('uuid', uuid)
   await next()
+}
+
+/** The web app mirrors the access key into this cookie so the SSE
+ *  EventSource — which cannot send headers — authenticates too. */
+const ACCESS_COOKIE = 'rcs_access_key'
+
+function readAccessCookie(header: string | undefined): string | undefined {
+  if (!header) return undefined
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() === ACCESS_COOKIE) {
+      try {
+        return decodeURIComponent(part.slice(eq + 1).trim())
+      } catch {
+        return undefined
+      }
+    }
+  }
+  return undefined
 }

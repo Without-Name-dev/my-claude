@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { Component, useState, useEffect, useCallback, lazy, Suspense, type ReactNode } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { ThemeProvider } from './lib/theme';
 import { haptic } from './lib/view-transition';
-import { getUuid, setUuid, apiBind } from './api/client';
+import { getUuid, setUuid, apiBind, setAccessKey } from './api/client';
 import { DebugPanel } from './components/DebugPanel';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { enableDebug } from './lib/debug-log';
@@ -12,6 +12,97 @@ const Workspace = lazy(() => import('./pages/Workspace').then(m => ({ default: m
 const BridgeChat = lazy(() => import('./components/device/BridgeChat').then(m => ({ default: m.BridgeChat })));
 
 type WorkspaceRoute = { deviceId?: string; localSessionId?: string };
+
+/**
+ * The server answered 401 — it has an access key configured and this client
+ * has not presented it. One input, saved to localStorage + cookie, reload.
+ */
+function AccessGate() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  useEffect(() => {
+    const onUnauthorized = () => setOpen(true);
+    window.addEventListener('rcs:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('rcs:unauthorized', onUnauthorized);
+  }, []);
+  if (!open) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="访问密钥"
+      className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 p-6"
+    >
+      <form
+        className="w-full max-w-sm rounded-2xl border border-border bg-surface-1 p-5 shadow-xl"
+        onSubmit={event => {
+          event.preventDefault();
+          const key = value.trim();
+          if (!key) return;
+          setAccessKey(key);
+          window.location.reload();
+        }}
+      >
+        <p className="text-[15px] font-medium text-text-primary">需要访问密钥</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-text-muted">
+          这台服务器开启了访问保护。输入服务器上配置的 RCS_WEB_ACCESS_KEY。
+        </p>
+        <input
+          type="password"
+          value={value}
+          onChange={event => setValue(event.target.value)}
+          placeholder="访问密钥"
+          aria-label="访问密钥"
+          autoFocus
+          className="mt-3 h-11 w-full rounded-xl border border-border bg-surface-2 px-3 text-base text-text-primary outline-none focus:border-brand/50"
+        />
+        <button
+          type="submit"
+          disabled={!value.trim()}
+          className="mt-3 h-11 w-full rounded-xl bg-brand text-sm font-medium text-white active:scale-[0.98] disabled:opacity-50"
+        >
+          保存并重试
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * A render error in a WKWebView is an unexplained white page: there is no
+ * console to open and no reload gesture. Show what happened and offer the one
+ * action that actually helps.
+ */
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: unknown) {
+    console.error('[rcs] render error', error, info);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <p className="text-[15px] font-medium text-text-primary">页面出错了</p>
+        <p className="max-w-xs break-words text-[13px] leading-relaxed text-text-muted">
+          {this.state.error.message || '未知错误'}
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-1 rounded-full bg-brand px-4 py-2 text-sm font-medium text-white active:scale-95"
+        >
+          重新加载
+        </button>
+      </div>
+    );
+  }
+}
 
 /**
  * Signals the shell to fade the boot splash. It lives inside the Suspense
@@ -173,43 +264,46 @@ export default function App() {
   return (
     <ThemeProvider defaultTheme="system">
       <div className="app-shell safe-top safe-x flex flex-col overflow-hidden bg-surface-0 text-text-primary">
-        <Suspense
-          fallback={
-            <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-brand" aria-hidden="true" />
-              <span className="sr-only">正在加载…</span>
-            </div>
-          }
-        >
-          {routeReady ? <ReadySignal /> : null}
-          {routeReady && bridgeSessionId ? (
-            <BridgeChat
-              key={bridgeSessionId}
-              sessionId={bridgeSessionId}
-              onBack={goWorkspace}
-              header={
-                <div className="flex h-12 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5">
-                  <button
-                    type="button"
-                    onClick={goWorkspace}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
-                    aria-label="返回"
-                  >
-                    <ChevronLeft className="h-5 w-5" />
-                  </button>
-                  <h2 className="truncate text-[15px] font-medium text-text-primary">远程会话</h2>
-                </div>
-              }
-            />
-          ) : routeReady && workspace ? (
-            <Workspace
-              initialDeviceId={workspace.deviceId}
-              initialLocalSessionId={workspace.localSessionId}
-              onNavigate={navigateSession}
-            />
-          ) : null}
-        </Suspense>
+        <ErrorBoundary>
+          <Suspense
+            fallback={
+              <div role="status" aria-live="polite" className="flex flex-1 items-center justify-center">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-brand" aria-hidden="true" />
+                <span className="sr-only">正在加载…</span>
+              </div>
+            }
+          >
+            {routeReady ? <ReadySignal /> : null}
+            {routeReady && bridgeSessionId ? (
+              <BridgeChat
+                key={bridgeSessionId}
+                sessionId={bridgeSessionId}
+                onBack={goWorkspace}
+                header={
+                  <div className="flex h-12 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5">
+                    <button
+                      type="button"
+                      onClick={goWorkspace}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
+                      aria-label="返回"
+                    >
+                      <ChevronLeft className="h-5 w-5" />
+                    </button>
+                    <h2 className="truncate text-[15px] font-medium text-text-primary">远程会话</h2>
+                  </div>
+                }
+              />
+            ) : routeReady && workspace ? (
+              <Workspace
+                initialDeviceId={workspace.deviceId}
+                initialLocalSessionId={workspace.localSessionId}
+                onNavigate={navigateSession}
+              />
+            ) : null}
+          </Suspense>
+        </ErrorBoundary>
         <UpdatePrompt />
+        <AccessGate />
         <DebugPanel />
       </div>
     </ThemeProvider>
