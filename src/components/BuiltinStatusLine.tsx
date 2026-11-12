@@ -21,6 +21,11 @@ type BuiltinStatusLineProps = {
   totalInputTokens: number;
   /** Cumulative session output tokens (all requests so far). */
   totalOutputTokens: number;
+  /**
+   * Conversation-average cache hit rate: total cache reads over every prompt
+   * token billed this session (input + cache write + cache read).
+   */
+  cacheHitRate: number | null;
   rateLimits: {
     five_hour?: RateLimitBucket;
     seven_day?: RateLimitBucket;
@@ -85,6 +90,7 @@ function BuiltinStatusLineInner({
   contextWindowSize,
   totalInputTokens,
   totalOutputTokens,
+  cacheHitRate,
   rateLimits,
 }: BuiltinStatusLineProps) {
   const { columns } = useTerminalSize();
@@ -112,12 +118,13 @@ function BuiltinStatusLineInner({
   const contextCore = `${contextBar(contextUsedPct)} ${contextUsedPct}%`;
   const contextDetail = ` (${formatTokens(usedTokens)}/${formatTokens(contextWindowSize)})`;
 
-  // Tokens: session totals plus the in/out breakdown. No cache percentage —
-  // it would be a per-request rate sitting among session totals, which reads
-  // as an average of the conversation.
+  // Tokens: session totals plus the in/out breakdown and the conversation's
+  // average cache hit rate (all three are cumulative, so they belong together).
   const tokenTotal = formatTokens(totalInputTokens + totalOutputTokens);
   const tokenCore = `Tokens ${tokenTotal}`;
-  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)})`;
+  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
+    cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
+  })`;
 
   const limits: string[] = [];
   if (rateLimits.five_hour != null) {

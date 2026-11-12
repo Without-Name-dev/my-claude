@@ -457,7 +457,7 @@ export type SessionUsage = {
   } | null
   /** Sum of the newest usage per assistant message (stream chunks repeat). */
   totals: { input: number; output: number }
-  /** Latest request: cache_read / (input + cache_creation + cache_read). */
+  /** Conversation average: cache_read / (input + cache_creation + cache_read). */
   cacheHitRate: number | null
 }
 
@@ -874,18 +874,23 @@ export class RCSChatAdapter {
     }
     let input = 0
     let output = 0
+    let cacheCreation = 0
+    let cacheRead = 0
     for (const item of this.usageByMessage.values()) {
       input += item.input
       output += item.output
+      cacheCreation += item.cacheCreation
+      cacheRead += item.cacheRead
     }
-    // Hit rate is per request, not a session average: the API decides caching
-    // for each call, and averaging past calls hides what the latest one did.
-    // (The terminal status line uses the same definition.)
-    const readTotal = entry.input + entry.cacheCreation + entry.cacheRead
+    // Conversation average, matching the terminal status line: cumulative
+    // cache reads over every prompt token billed this session.
+    const readTotal = input + cacheCreation + cacheRead
     this.onUsage?.({
       current: entry,
+      // `in` is the uncached prompt only, matching the terminal's totals; the
+      // cache share is reported separately as a rate.
       totals: { input, output },
-      cacheHitRate: readTotal > 0 ? entry.cacheRead / readTotal : null,
+      cacheHitRate: readTotal > 0 ? cacheRead / readTotal : null,
     })
   }
 

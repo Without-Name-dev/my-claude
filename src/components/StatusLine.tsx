@@ -18,6 +18,8 @@ import {
   getTotalAPIDuration,
   getTotalCost,
   getTotalDuration,
+  getTotalCacheCreationInputTokens,
+  getTotalCacheReadInputTokens,
   getTotalInputTokens,
   getTotalLinesAdded,
   getTotalLinesRemoved,
@@ -461,6 +463,13 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             contextWindowSize={builtinContextWindowSize}
             totalInputTokens={getTotalInputTokens()}
             totalOutputTokens={getTotalOutputTokens()}
+            cacheHitRate={(() => {
+              // Conversation average: cumulative cache reads over every prompt
+              // token billed this session (input + cache write + cache read).
+              const read = getTotalCacheReadInputTokens();
+              const denom = getTotalInputTokens() + getTotalCacheCreationInputTokens() + read;
+              return denom > 0 ? Math.round((read / denom) * 100) : null;
+            })()}
             rateLimits={builtinRateLimits}
           />
           <GoalPill />
