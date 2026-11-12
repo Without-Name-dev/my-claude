@@ -206,7 +206,8 @@ function SpinnerWithVerbInner({
   }, [mode]);
 
   const effortValue = useAppState(s => s.effortValue);
-  const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
+  const ultracodeActive = useAppState(s => s.ultracodeActive) ?? false;
+  const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue, ultracodeActive);
 
   // Check if any running in-process teammates exist (needed for both modes)
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');

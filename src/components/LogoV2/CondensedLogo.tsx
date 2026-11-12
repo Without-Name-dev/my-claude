@@ -22,6 +22,7 @@ export function CondensedLogo(): ReactNode {
   const { columns } = useTerminalSize();
   const agent = useAppState(s => s.agent);
   const effortValue = useAppState(s => s.effortValue);
+  const ultracodeActive = useAppState(s => s.ultracodeActive) ?? false;
   const model = useMainLoopModel();
   const modelDisplayName = renderModelSetting(model);
   const { version, cwd, billingType, agentName: agentNameFromSettings } = getLogoDisplayData();
@@ -51,7 +52,7 @@ export function CondensedLogo(): ReactNode {
   const versionPrefix = 'Claude Code v';
   const truncatedVersion = truncate(version, Math.max(textWidth - versionPrefix.length, 6));
 
-  const effortSuffix = getEffortSuffix(model, effortValue);
+  const effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
   const { shouldSplit, truncatedModel, truncatedBilling } = formatModelAndBilling(
     modelDisplayName + effortSuffix,
     billingType,

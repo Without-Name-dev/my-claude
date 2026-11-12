@@ -204,19 +204,27 @@ export function getDisplayedEffortLevel(
 }
 
 /**
- * Build the ` with {level} effort` suffix shown in Logo/Spinner.
- * Returns empty string if the user hasn't explicitly set an effort value.
- * Delegates to resolveAppliedEffort() so the displayed level matches what
- * the API actually receives (including max→high clamp for non-Opus models).
+ * Build the effort suffix shown in Logo/Spinner, e.g. ` with xhigh effort`
+ * plus ` · Ultracode` when the session mode is on.
+ *
+ * The applied level is ALWAYS shown for models that support effort — the
+ * header is the only persistent place the user can read what is in effect,
+ * so hiding it when nothing was explicitly set read as "no level". Still
+ * delegates to resolveAppliedEffort() so the displayed level matches what
+ * the API actually receives (including the max→high clamp).
  */
 export function getEffortSuffix(
   model: string,
   effortValue: EffortValue | undefined,
+  ultracodeActive?: boolean,
 ): string {
-  if (effortValue === undefined) return ''
+  if (!modelSupportsEffort(model)) {
+    return ultracodeActive ? ' · Ultracode' : ''
+  }
   const resolved = resolveAppliedEffort(model, effortValue)
-  if (resolved === undefined) return ''
-  return ` with ${convertEffortValueToLevel(resolved)} effort`
+  const level =
+    resolved === undefined ? 'high' : convertEffortValueToLevel(resolved)
+  return ` with ${level} effort${ultracodeActive ? ' · Ultracode' : ''}`
 }
 
 export function isValidNumericEffort(value: number): boolean {
