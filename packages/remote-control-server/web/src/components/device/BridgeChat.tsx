@@ -746,18 +746,19 @@ function formatTokenCount(value: number): string {
 
 /**
  * One-line session stats above the composer, mirroring the terminal's status
- * line: context fill, accumulated tokens and cache hit rate. Only appears
- * once the session has actually produced usage.
+ * line: context fill, accumulated tokens and cache hit rate. Shown from the
+ * moment the session opens — zeros are honest, an empty row that fills in
+ * after the first reply reads as a missing feature.
  */
-function ContextStats({ usage, contextWindow }: { usage: SessionUsage; contextWindow?: number }) {
-  const current = usage.current;
-  if (!current) return null;
+function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; contextWindow?: number }) {
+  const current = usage?.current ?? { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+  const totals = usage?.totals ?? { input: 0, output: 0 };
   const contextTokens = current.input + current.cacheCreation + current.cacheRead;
   const pct =
     contextWindow && contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : null;
   // 10 cells, matching the terminal's ███░░░░░░░ bar.
   const filled = pct === null ? 0 : Math.round(pct / 10);
-  const cache = usage.cacheHitRate !== null ? `${Math.round(usage.cacheHitRate * 100)}%` : '—';
+  const cache = usage && usage.cacheHitRate !== null ? `${Math.round(usage.cacheHitRate * 100)}%` : '—';
   return (
     <div
       role="status"
@@ -770,8 +771,8 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage; contextWi
         </span>
       )}
       <span>
-        Tokens {formatTokenCount(usage.totals.input + usage.totals.output)} (in: {formatTokenCount(usage.totals.input)},
-        out: {formatTokenCount(usage.totals.output)}, cache: {cache})
+        Tokens {formatTokenCount(totals.input + totals.output)} (in {formatTokenCount(totals.input)}, out{' '}
+        {formatTokenCount(totals.output)}, cache {cache})
       </span>
     </div>
   );

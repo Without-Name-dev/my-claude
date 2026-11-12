@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from '@anthropic/ink';
-import { formatTokens } from '../utils/format.js';
+import { formatTokens, truncate } from '../utils/format.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 
 type RateLimitBucket = {
@@ -10,6 +10,10 @@ type RateLimitBucket = {
 
 type BuiltinStatusLineProps = {
   modelName: string;
+  /** Effective effort level for this model (always shown). */
+  effortLevel?: string;
+  /** Ultracode is a session-only mode; render it next to the level. */
+  ultracodeActive?: boolean;
   contextUsedPct: number;
   usedTokens: number;
   contextWindowSize: number;
@@ -51,6 +55,21 @@ export function formatCountdown(epochSeconds: number): string {
 const SEP = ' │ ';
 
 /**
+ * Model segment of the status row: `model · xhigh`, or
+ * `model ● ultracode(xhigh)` when the session-only mode is on. Effort is
+ * always shown (the row never scrolls away) and the level always survives
+ * truncation because callers measure this whole string.
+ */
+export function formatModelWithMode(
+  modelName: string,
+  effortLevel: string | undefined,
+  ultracodeActive: boolean | undefined,
+): string {
+  if (effortLevel === undefined) return modelName;
+  return ultracodeActive ? `${modelName} ● ultracode(${effortLevel})` : `${modelName} · ${effortLevel}`;
+}
+
+/**
  * One status row, laid out as a single pre-measured line.
  *
  * The previous version rendered every segment as a flex child; when the total
@@ -61,6 +80,8 @@ const SEP = ' │ ';
  */
 function BuiltinStatusLineInner({
   modelName,
+  effortLevel,
+  ultracodeActive,
   contextUsedPct,
   usedTokens,
   contextWindowSize,
@@ -83,9 +104,12 @@ function BuiltinStatusLineInner({
   // Suppress unused-variable lint for tick (it exists only to trigger re-renders)
   void tick;
 
-  // Model display: use first two words (e.g. "Opus 4.6") instead of just first word
+  // Model display: use first two words (e.g. "Opus 4.6") instead of just first
+  // word. The effort level rides along — this row is always visible, unlike the
+  // logo that scrolls away with the transcript.
   const modelParts = modelName.split(' ');
   const shortModel = modelParts.length >= 2 ? `${modelParts[0]} ${modelParts[1]}` : modelName;
+  const modelWithMode = formatModelWithMode(shortModel, effortLevel, ultracodeActive);
 
   // Context: bar + percent, optionally with used/window.
   const contextCore = `${contextBar(contextUsedPct)} ${contextUsedPct}%`;
@@ -94,12 +118,11 @@ function BuiltinStatusLineInner({
   // Tokens: total, optionally with the in/out/cache breakdown.
   const tokenTotal = formatTokens(totalInputTokens + totalOutputTokens);
   const tokenCore = `Tokens ${tokenTotal}`;
-  const tokenDetail =
-    totalInputTokens > 0 || totalOutputTokens > 0
-      ? ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
-          cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
-        })`
-      : '';
+  // Always rendered, zeros included: the row should be complete the moment the
+  // session opens, not fill in after the first reply.
+  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
+    cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
+  })`;
 
   const limits: string[] = [];
   if (rateLimits.five_hour != null) {
@@ -121,9 +144,9 @@ function BuiltinStatusLineInner({
   // The cache TTL pill (StatusLine's CachePill) sits to the right of this row,
   // so reserve room for it (~13 cols) whenever a cache session is active.
   const budget = Math.max(20, columns - 14);
-  let line = shortModel;
+  let line = modelWithMode;
   let ctx = contextCore + contextDetail;
-  let tokens = totalInputTokens > 0 || totalOutputTokens > 0 ? tokenCore + tokenDetail : '';
+  let tokens = tokenCore + tokenDetail;
   let limitText = limits.join(SEP);
   const fits = (candidate: string) => candidate.length <= budget;
 
@@ -144,6 +167,10 @@ function BuiltinStatusLineInner({
   if (!fits([line, ctx].join(SEP))) {
     // Nothing left to drop but the bar itself.
     ctx = `${contextUsedPct}%`;
+  }
+  if (!fits(line)) {
+    // A very long model id plus mode still must not wrap the row.
+    line = truncate(line, budget);
   }
 
   const parts = [line, ctx, tokens, limitText].filter(Boolean);

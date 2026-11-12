@@ -31,6 +31,7 @@ import type { Message } from '../types/message.js';
 import type { StatusLineCommandInput } from '../types/statusLine.js';
 import type { VimMode } from '../types/textInputTypes.js';
 import { checkHasTrustDialogAccepted } from '../utils/config.js';
+import { getDisplayedEffortLevel } from '../utils/effort.js';
 import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js';
 import { getCwd } from '../utils/cwd.js';
 import { logForDebugging } from '../utils/debug.js';
@@ -220,6 +221,11 @@ export function getLastAssistantMessageId(messages: Message[]): string | null {
 function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props): React.ReactNode {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
   const permissionMode = useAppState(s => s.toolPermissionContext.mode);
+  // The bottom row is the one place that stays on screen all session (the
+  // logo scrolls away with the transcript), so the effective effort level and
+  // Ultracode state live with the model name here.
+  const effortValue = useAppState(s => s.effortValue);
+  const ultracodeActive = useAppState(s => s.ultracodeActive) === true;
   const additionalWorkingDirectories = useAppState(s => s.toolPermissionContext.additionalWorkingDirectories);
   const statusLineText = useAppState(s => s.statusLineText);
   const setAppState = useSetAppState();
@@ -450,6 +456,8 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
         <Box gap={2}>
           <BuiltinStatusLine
             modelName={renderModelName(builtinRuntimeModel)}
+            effortLevel={getDisplayedEffortLevel(builtinRuntimeModel, effortValue)}
+            ultracodeActive={ultracodeActive}
             contextUsedPct={builtinContextPct}
             usedTokens={builtinUsedTokens}
             contextWindowSize={builtinContextWindowSize}

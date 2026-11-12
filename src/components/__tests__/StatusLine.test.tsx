@@ -188,3 +188,24 @@ describe('expired display', () => {
     expect(timerColor(61, true)).toBe('inactive');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Status-row model segment
+// ---------------------------------------------------------------------------
+import { formatModelWithMode } from '../BuiltinStatusLine.js';
+
+describe('status row model segment', () => {
+  test('always shows the effective level', () => {
+    expect(formatModelWithMode('glm-5.3[1m]', 'xhigh', false)).toBe('glm-5.3[1m] · xhigh');
+  });
+
+  test('switches to the ultracode form without losing the level', () => {
+    expect(formatModelWithMode('deepseek/deepseek-flash[1m]', 'xhigh', true)).toBe(
+      'deepseek/deepseek-flash[1m] ● ultracode(xhigh)',
+    );
+  });
+
+  test('omits the level only when the caller has none', () => {
+    expect(formatModelWithMode('glm-5.3[1m]', undefined, false)).toBe('glm-5.3[1m]');
+  });
+});
