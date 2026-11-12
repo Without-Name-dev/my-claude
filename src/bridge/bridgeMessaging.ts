@@ -320,6 +320,13 @@ export type ServerControlRequestHandlers = {
   ) => { ok: true } | { ok: false; error: string }
   /** Apply an effort level chosen from the web/iOS client. */
   onSetEffort?: (effort: string) => { ok: true } | { ok: false; error: string }
+  /**
+   * Toggle session-only Ultracode from the web/iOS client. Never persisted:
+   * official semantics keep it per session and leave effortValue alone.
+   */
+  onSetUltracode?: (
+    enabled: boolean,
+  ) => { ok: true } | { ok: false; error: string }
 }
 
 const OUTBOUND_ONLY_ERROR =
@@ -347,6 +354,7 @@ export function handleServerControlRequest(
     onSetMaxThinkingTokens,
     onSetPermissionMode,
     onSetEffort,
+    onSetUltracode,
   } = handlers
   if (!transport) {
     logForDebugging(
@@ -467,6 +475,33 @@ export function handleServerControlRequest(
         ok: false,
         error:
           'set_effort is not supported in this context (onSetEffort callback not registered)',
+      }
+      if (verdict.ok) {
+        response = {
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: request.request_id,
+          },
+        }
+      } else {
+        response = {
+          type: 'control_response',
+          response: {
+            subtype: 'error',
+            request_id: request.request_id,
+            error: (verdict as { ok: false; error: string }).error,
+          },
+        }
+      }
+      break
+    }
+
+    case 'set_ultracode': {
+      const verdict = onSetUltracode?.(req.enabled !== false) ?? {
+        ok: false,
+        error:
+          'set_ultracode is not supported in this context (onSetUltracode callback not registered)',
       }
       if (verdict.ok) {
         response = {

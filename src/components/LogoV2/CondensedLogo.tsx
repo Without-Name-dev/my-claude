@@ -53,8 +53,12 @@ export function CondensedLogo(): ReactNode {
   const truncatedVersion = truncate(version, Math.max(textWidth - versionPrefix.length, 6));
 
   const effortSuffix = getEffortSuffix(model, effortValue, ultracodeActive);
+  // Same rule as LogoV2: shrink the model name so the effort level survives
+  // the width fit instead of being the part that gets truncated.
+  const modelWithSuffix =
+    truncate(modelDisplayName, Math.max(textWidth - stringWidth(effortSuffix), 10)) + effortSuffix;
   const { shouldSplit, truncatedModel, truncatedBilling } = formatModelAndBilling(
-    modelDisplayName + effortSuffix,
+    modelWithSuffix,
     billingType,
     textWidth,
   );

@@ -43,6 +43,13 @@ export type SystemInitInputs = {
   models?: ReadonlyArray<{ id: string; name: string; description?: string }>
   /** Descriptions for `slash_commands`, which the wire type leaves as names. */
   commandDetails?: ReadonlyArray<{ name: string; description: string }>
+  /** Current effort level, so a remote picker can show what is actually set. */
+  effort?: string
+  /** Whether the current model can enable Ultracode (dynamic workflows + xhigh). */
+  ultracodeAvailable?: boolean
+  ultracodeActive?: boolean
+  /** Context window of the current model, for remote context-percentage bars. */
+  contextWindow?: number
 }
 
 /**
@@ -104,8 +111,22 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   const remote = initMessage as SDKMessage & {
     models?: ReadonlyArray<{ id: string; name: string; description?: string }>
     command_details?: ReadonlyArray<{ name: string; description: string }>
+    effort?: string
+    ultracode_available?: boolean
+    ultracode_active?: boolean
+    context_window?: number
   }
   remote.models = inputs.models ?? []
   remote.command_details = inputs.commandDetails ?? []
+  if (inputs.effort !== undefined) remote.effort = inputs.effort
+  if (inputs.ultracodeAvailable !== undefined) {
+    remote.ultracode_available = inputs.ultracodeAvailable
+  }
+  if (inputs.ultracodeActive !== undefined) {
+    remote.ultracode_active = inputs.ultracodeActive
+  }
+  if (typeof inputs.contextWindow === 'number' && inputs.contextWindow > 0) {
+    remote.context_window = inputs.contextWindow
+  }
   return initMessage
 }

@@ -84,6 +84,9 @@ export type InitBridgeOptions = {
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
   onSetEffort?: (effort: string) => { ok: true } | { ok: false; error: string }
+  onSetUltracode?: (
+    enabled: boolean,
+  ) => { ok: true } | { ok: false; error: string }
   onStateChange?: (state: BridgeState, detail?: string) => void
   initialMessages?: Message[]
   // Explicit session name from `/remote-control <name>`. When set, overrides
@@ -121,6 +124,7 @@ export async function initReplBridge(
     onSetMaxThinkingTokens,
     onSetPermissionMode,
     onSetEffort,
+    onSetUltracode,
     onStateChange,
     initialMessages,
     getMessages,
@@ -456,6 +460,7 @@ export async function initReplBridge(
       onSetMaxThinkingTokens,
       onSetPermissionMode,
       onSetEffort,
+      onSetUltracode,
       onStateChange,
       outboundOnly,
       tags,
@@ -548,6 +553,7 @@ export async function initReplBridge(
     onSetMaxThinkingTokens,
     onSetPermissionMode,
     onSetEffort,
+    onSetUltracode,
     onStateChange,
     perpetual,
   })

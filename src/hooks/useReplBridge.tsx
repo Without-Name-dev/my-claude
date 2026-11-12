@@ -1,7 +1,8 @@
 import { feature } from 'bun:bundle';
 import { type FSWatcher, watch } from 'fs';
 import React, { useCallback, useEffect, useRef } from 'react';
-import { setMainLoopModelOverride } from '../bootstrap/state.js';
+import { getSdkBetas, setMainLoopModelOverride } from '../bootstrap/state.js';
+import { getContextWindowForModel } from '../utils/context.js';
 import {
   type BridgePermissionCallbacks,
   type BridgePermissionResponse,
@@ -26,6 +27,7 @@ import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState
 import type { Message } from '../types/message.js';
 import { getCwd } from '../utils/cwd.js';
 import { isEffortLevel, toPersistableEffort } from '../utils/effort.js';
+import { isUltracodeAvailable } from '../utils/ultracode.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
@@ -81,6 +83,9 @@ export function useReplBridge(
   mainLoopModel: string,
 ): { sendBridgeResult: () => void } {
   const handleRef = useRef<ReplBridgeHandle | null>(null);
+  // Re-publishes system/init after a control that changes session metadata
+  // (effort, ultracode), so remote pickers do not keep showing stale values.
+  const sendSystemInitRef = useRef<() => void>(() => {});
   const teardownPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const lastWrittenIndexRef = useRef(0);
   const pendingResultAfterFlushRef = useRef(false);
@@ -107,6 +112,12 @@ export function useReplBridge(
   const replBridgeEnabled = feature('BRIDGE_MODE') ? replBridgeEnabledRaw : false;
   const replBridgeConnectedRaw = useAppState(s => s.replBridgeConnected);
   const replBridgeConnected = feature('BRIDGE_MODE') ? replBridgeConnectedRaw : false;
+  // Session controls the remote UI mirrors. Watching them here (rather than
+  // only on the inbound control path) means a change made in the terminal —
+  // /effort, the EffortPanel, the ultracode keyword trigger — is republished
+  // too, so the phone's pickers do not drift from the session.
+  const sessionEffort = useAppState(s => s.effortValue);
+  const sessionUltracode = useAppState(s => s.ultracodeActive);
   const replBridgeSessionActiveRaw = useAppState(s => s.replBridgeSessionActive);
   const replBridgeSessionActive = feature('BRIDGE_MODE') ? replBridgeSessionActiveRaw : false;
   const replBridgeOutboundOnlyRaw = useAppState(s => s.replBridgeOutboundOnly);
@@ -336,70 +347,7 @@ export function useReplBridge(
                 // Self-hosted RCS needs this unconditionally: the web renders
                 // model/permission/command pickers from it, and GrowthBook is
                 // not consulted in self-hosted mode anyway.
-                if (isSelfHostedBridge() || getFeatureValue_CACHED_MAY_BE_STALE('tengu_bridge_system_init', false)) {
-                  void (async () => {
-                    try {
-                      if (cancelled) return;
-                      const state = store.getState();
-                      const bridgeSafeCommands = commandsRef.current.filter(isBridgeSafeCommand);
-                      // Do not block the init message on skill discovery:
-                      // the web needs model/permission/commands immediately,
-                      // and skill listing can be slow on first use.
-                      const skills: Awaited<ReturnType<typeof getSlashCommandToolSkills>> = [];
-                      logForDebugging(
-                        `[bridge:repl] sending system/init commands=${bridgeSafeCommands.length} model=${mainLoopModelRef.current}`,
-                      );
-                      handleRef.current?.writeSdkMessages([
-                        buildSystemInitMessage({
-                          // tools/mcpClients/plugins redacted for REPL-bridge:
-                          // MCP-prefixed tool names and server names leak which
-                          // integrations the user has wired up; plugin paths leak
-                          // raw filesystem paths (username, project structure).
-                          // CCR v2 persists SDK messages to Spanner — users who
-                          // tap "Connect from phone" may not expect these on
-                          // Anthropic's servers. QueryEngine (SDK) still emits
-                          // full lists — SDK consumers expect full telemetry.
-                          tools: [],
-                          mcpClients: [],
-                          model: mainLoopModelRef.current,
-                          permissionMode: state.toolPermissionContext.mode as PermissionMode, // TODO: avoid the cast
-                          // Remote clients can only invoke bridge-safe commands —
-                          // advertising unsafe ones (local-jsx, unallowed local)
-                          // would let mobile/web attempt them and hit errors.
-                          commands: bridgeSafeCommands,
-                          agents: state.agentDefinitions.activeAgents,
-                          skills,
-                          plugins: [],
-                          fastMode: state.fastMode,
-                          models: (() => {
-                            try {
-                              return getModelOptions(state.fastMode).map(option => ({
-                                id: option.value === null ? 'default' : String(option.value),
-                                name: option.label,
-                                description: option.description,
-                              }));
-                            } catch {
-                              // Settings may not be readable in every bridge
-                              // context; the picker degrades to the current
-                              // model instead of suppressing the whole init.
-                              return [];
-                            }
-                          })(),
-                          commandDetails: bridgeSafeCommands
-                            .filter(command => command.userInvocable !== false)
-                            .map(command => ({
-                              name: command.name,
-                              description: command.description,
-                            })),
-                        }),
-                      ]);
-                    } catch (err) {
-                      logForDebugging(`[bridge:repl] Failed to send system/init: ${errorMessage(err)}`, {
-                        level: 'error',
-                      });
-                    }
-                  })();
-                }
+                sendSystemInitRef.current();
                 break;
               }
               case 'reconnecting':
@@ -462,6 +410,97 @@ export function useReplBridge(
             handler(parsed);
           }
 
+          /**
+           * Publish system/init so remote clients (web/iOS/Android) get the
+           * session metadata they render pickers from. REPL uses query()
+           * directly — never hits QueryEngine's SDKMessage layer — so this is
+           * the only path to put init on the REPL-bridge wire. Skills load is
+           * async (memoized, cheap after REPL startup); fire-and-forget so a
+           * state transition is never blocked on it.
+           *
+           * Self-hosted RCS needs this unconditionally: the web renders
+           * model/permission/effort/command pickers from it, and GrowthBook is
+           * not consulted in self-hosted mode anyway.
+           */
+          const sendSystemInit = () => {
+            if (!(isSelfHostedBridge() || getFeatureValue_CACHED_MAY_BE_STALE('tengu_bridge_system_init', false))) {
+              return;
+            }
+            void (async () => {
+              try {
+                if (cancelled) return;
+                const state = store.getState();
+                const bridgeSafeCommands = commandsRef.current.filter(isBridgeSafeCommand);
+                // Do not block the init message on skill discovery: the web
+                // needs model/permission/commands immediately.
+                const skills: Awaited<ReturnType<typeof getSlashCommandToolSkills>> = [];
+                logForDebugging(
+                  `[bridge:repl] sending system/init commands=${bridgeSafeCommands.length} model=${mainLoopModelRef.current}`,
+                );
+                handleRef.current?.writeSdkMessages([
+                  buildSystemInitMessage({
+                    // tools/mcpClients/plugins redacted for REPL-bridge:
+                    // MCP-prefixed tool names and server names leak which
+                    // integrations the user has wired up; plugin paths leak
+                    // raw filesystem paths (username, project structure).
+                    // CCR v2 persists SDK messages to Spanner — users who
+                    // tap "Connect from phone" may not expect these on
+                    // Anthropic's servers. QueryEngine (SDK) still emits
+                    // full lists — SDK consumers expect full telemetry.
+                    tools: [],
+                    mcpClients: [],
+                    model: mainLoopModelRef.current,
+                    permissionMode: state.toolPermissionContext.mode as PermissionMode, // TODO: avoid the cast
+                    // Remote clients can only invoke bridge-safe commands —
+                    // advertising unsafe ones (local-jsx, unallowed local)
+                    // would let mobile/web attempt them and hit errors.
+                    commands: bridgeSafeCommands,
+                    agents: state.agentDefinitions.activeAgents,
+                    skills,
+                    plugins: [],
+                    fastMode: state.fastMode,
+                    // Session-level controls the remote UI mirrors.
+                    effort: state.effortValue != null ? String(state.effortValue) : 'auto',
+                    ultracodeAvailable: isUltracodeAvailable(mainLoopModelRef.current),
+                    ultracodeActive: state.ultracodeActive === true,
+                    contextWindow: (() => {
+                      try {
+                        return getContextWindowForModel(mainLoopModelRef.current, getSdkBetas());
+                      } catch {
+                        return undefined;
+                      }
+                    })(),
+                    models: (() => {
+                      try {
+                        return getModelOptions(state.fastMode).map(option => ({
+                          id: option.value === null ? 'default' : String(option.value),
+                          name: option.label,
+                          description: option.description,
+                        }));
+                      } catch {
+                        // Settings may not be readable in every bridge
+                        // context; the picker degrades to the current model
+                        // instead of suppressing the whole init.
+                        return [];
+                      }
+                    })(),
+                    commandDetails: bridgeSafeCommands
+                      .filter(command => command.userInvocable !== false)
+                      .map(command => ({
+                        name: command.name,
+                        description: command.description,
+                      })),
+                  }),
+                ]);
+              } catch (err) {
+                logForDebugging(`[bridge:repl] Failed to send system/init: ${errorMessage(err)}`, {
+                  level: 'error',
+                });
+              }
+            })();
+          };
+          sendSystemInitRef.current = sendSystemInit;
+
           const rawHandle = await initReplBridge({
             outboundOnly,
             tags: outboundOnly ? ['ccr-mirror'] : undefined,
@@ -499,6 +538,18 @@ export function useReplBridge(
               });
               if (result.error) return { ok: false, error: result.error.message };
               setAppState(prev => ({ ...prev, effortValue: value }));
+              return { ok: true };
+            },
+            onSetUltracode(enabled) {
+              // Session-only, exactly like the /effort panel: never persisted
+              // and never touches effortValue.
+              if (!isUltracodeAvailable(mainLoopModelRef.current)) {
+                return {
+                  ok: false,
+                  error: 'Ultracode is unavailable for this model (needs dynamic workflows and xhigh effort)',
+                };
+              }
+              setAppState(prev => ({ ...prev, ultracodeActive: enabled }));
               return { ok: true };
             },
             onSetMaxThinkingTokens(maxTokens) {
@@ -970,6 +1021,13 @@ export function useReplBridge(
       handle.sendResult();
     }
   }, [replBridgeConnected]);
+
+  // Republish init whenever a mirrored session control changes. The ref is a
+  // no-op before the bridge exists; the initial publish happens on connect.
+  useEffect(() => {
+    if (!replBridgeSessionActive) return;
+    sendSystemInitRef.current();
+  }, [sessionEffort, sessionUltracode, replBridgeSessionActive]);
 
   return { sendBridgeResult };
 }

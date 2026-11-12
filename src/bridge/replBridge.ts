@@ -208,6 +208,9 @@ export type BridgeCoreParams = {
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
   onSetEffort?: (effort: string) => { ok: true } | { ok: false; error: string }
+  onSetUltracode?: (
+    enabled: boolean,
+  ) => { ok: true } | { ok: false; error: string }
   onStateChange?: (state: BridgeState, detail?: string) => void
   /**
    * Fires on each real user message to flow through writeMessages() until
@@ -306,6 +309,7 @@ export async function initBridgeCore(
     onSetMaxThinkingTokens,
     onSetPermissionMode,
     onSetEffort,
+    onSetUltracode,
     onStateChange,
     onUserMessage,
     perpetual,
@@ -1236,6 +1240,7 @@ export async function initBridgeCore(
           onSetMaxThinkingTokens,
           onSetPermissionMode,
           onSetEffort,
+          onSetUltracode,
         })
 
       let initialFlushDone = false

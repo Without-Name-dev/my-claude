@@ -48,115 +48,6 @@ import { BuiltinStatusLine } from './BuiltinStatusLine.js';
 import { formatTokens } from 'src/utils/format.js';
 
 // ---------------------------------------------------------------------------
-// CachePill — cache hit-rate + 1-hour TTL countdown pill
-// ---------------------------------------------------------------------------
-
-const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
-
-function padTwo(n: number): string {
-  return String(Math.floor(n)).padStart(2, '0');
-}
-
-function formatCountdown(remainingMs: number): string {
-  if (remainingMs <= 0) return 'exp';
-  const mins = Math.floor(remainingMs / 60_000);
-  const secs = Math.floor((remainingMs % 60_000) / 1000);
-  return `${padTwo(mins)}:${padTwo(secs)}`;
-}
-
-type CachePillProps = {
-  messages: Message[];
-};
-
-function CachePill({ messages }: CachePillProps): React.ReactNode {
-  const [now, setNow] = useState(() => Date.now());
-  const [isFlashOn, setIsFlashOn] = useState(true);
-
-  const usage = getCurrentUsage(messages);
-
-  // Feed new responses into the in-memory singleton
-  const prevSigRef = useRef<string | null>(null);
-  if (usage !== null) {
-    const sig = tokenSignature(usage);
-    if (sig !== prevSigRef.current) {
-      prevSigRef.current = sig;
-      cacheOnResponse(usage);
-    }
-  }
-
-  const cacheState = getCacheStatsState();
-  const { lastResetAt, lastHitRate } = cacheState;
-
-  // Derived timing
-  const elapsed = lastResetAt !== null ? now - lastResetAt : null;
-  const remaining = elapsed !== null ? CACHE_TTL_MS - elapsed : null;
-  const elapsedMin = elapsed !== null ? elapsed / 60_000 : null;
-  const isExpired = remaining !== null && remaining <= 0;
-
-  // 1-second countdown ticker
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // 500ms flash in last 5 minutes
-  const inFlashZone = elapsedMin !== null && elapsedMin >= 55 && !isExpired;
-  useEffect(() => {
-    if (!inFlashZone) {
-      setIsFlashOn(true);
-      return;
-    }
-    const id = setInterval(() => setIsFlashOn(v => !v), 500);
-    return () => clearInterval(id);
-  }, [inFlashZone]);
-
-  // Load persisted fallback once on mount
-  const initDoneRef = useRef(false);
-  useEffect(() => {
-    if (initDoneRef.current) return;
-    initDoneRef.current = true;
-    const sid = getSessionId();
-    void initCacheStatsState(sid);
-  }, []);
-
-  const displayHitRate = usage !== null ? computeHitRate(usage) : lastHitRate;
-
-  // No data yet — show placeholder
-  if (displayHitRate === null && lastResetAt === null) {
-    return <Text dimColor>{' Cache --% --:--'}</Text>;
-  }
-
-  const countdownText = remaining !== null ? formatCountdown(remaining) : '--:--';
-  const hitRateText = displayHitRate !== null ? `${displayHitRate}%` : '--%';
-
-  // Timer color by elapsed bucket — using theme keys
-  type TimerThemeKey = 'success' | 'warning' | 'error' | 'inactive';
-  let timerColor: TimerThemeKey;
-  if (isExpired || elapsedMin === null) {
-    timerColor = 'inactive';
-  } else if (elapsedMin < 20) {
-    timerColor = 'success';
-  } else if (elapsedMin < 40) {
-    timerColor = 'warning';
-  } else {
-    timerColor = 'error';
-  }
-
-  // Hit-rate color — using theme keys
-  const hitRateColor: 'success' | 'inactive' = displayHitRate !== null && displayHitRate >= 50 ? 'success' : 'inactive';
-
-  return (
-    <Text>
-      <Text dimColor>{' Cache '}</Text>
-      <Text color={hitRateColor}>{hitRateText}</Text>
-      <Text color={timerColor} dimColor={inFlashZone && !isFlashOn}>
-        {' '}
-        {countdownText}
-      </Text>
-    </Text>
-  );
-}
-
 function GoalPill(): React.ReactNode {
   if (!feature('GOAL')) return null;
   const { getGoal, formatGoalStatusLabel } =
@@ -562,7 +453,6 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             contextUsedPct={builtinContextPct}
             usedTokens={builtinUsedTokens}
             contextWindowSize={builtinContextWindowSize}
-            totalCostUsd={getTotalCost()}
             totalInputTokens={getTotalInputTokens()}
             totalOutputTokens={getTotalOutputTokens()}
             cacheHitRate={
@@ -571,7 +461,6 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             rateLimits={builtinRateLimits}
           />
           <GoalPill />
-          <CachePill messages={messagesRef.current} />
         </Box>
       )}
       {/* Bottom: user-configured /statusline shell stdout (reserves row in fullscreen) */}

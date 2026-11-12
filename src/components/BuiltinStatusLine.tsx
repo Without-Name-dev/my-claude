@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { formatCost } from '../cost-tracker.js';
 import { Box, Text } from '@anthropic/ink';
 import { formatTokens } from '../utils/format.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
@@ -14,7 +13,6 @@ type BuiltinStatusLineProps = {
   contextUsedPct: number;
   usedTokens: number;
   contextWindowSize: number;
-  totalCostUsd: number;
   /** Cumulative session input tokens (all requests so far). */
   totalInputTokens: number;
   /** Cumulative session output tokens (all requests so far). */
@@ -50,16 +48,22 @@ export function formatCountdown(epochSeconds: number): string {
   return `${minutes}m`;
 }
 
-function Separator() {
-  return <Text dimColor>{' \u2502 '}</Text>;
-}
+const SEP = ' │ ';
 
+/**
+ * One status row, laid out as a single pre-measured line.
+ *
+ * The previous version rendered every segment as a flex child; when the total
+ * exceeded the terminal width Ink wrapped mid-segment and the row collapsed
+ * into intercut fragments ("Tokens33.3k", "(25.8k/1m │"). Segments are now
+ * strings measured against the available columns and dropped whole — widest
+ * tier shows everything, narrower tiers shed detail right-to-left.
+ */
 function BuiltinStatusLineInner({
   modelName,
   contextUsedPct,
   usedTokens,
   contextWindowSize,
-  totalCostUsd,
   totalInputTokens,
   totalOutputTokens,
   cacheHitRate,
@@ -83,76 +87,75 @@ function BuiltinStatusLineInner({
   const modelParts = modelName.split(' ');
   const shortModel = modelParts.length >= 2 ? `${modelParts[0]} ${modelParts[1]}` : modelName;
 
-  const narrow = columns < 60;
+  // Context: bar + percent, optionally with used/window.
+  const contextCore = `${contextBar(contextUsedPct)} ${contextUsedPct}%`;
+  const contextDetail = ` (${formatTokens(usedTokens)}/${formatTokens(contextWindowSize)})`;
 
-  const hasFiveHour = rateLimits.five_hour != null;
-  const hasSevenDay = rateLimits.seven_day != null;
+  // Tokens: total, optionally with the in/out/cache breakdown.
+  const tokenTotal = formatTokens(totalInputTokens + totalOutputTokens);
+  const tokenCore = `Tokens ${tokenTotal}`;
+  const tokenDetail =
+    totalInputTokens > 0 || totalOutputTokens > 0
+      ? ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
+          cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
+        })`
+      : '';
 
-  const fiveHourPct = hasFiveHour ? Math.round(rateLimits.five_hour!.utilization * 100) : 0;
-  const sevenDayPct = hasSevenDay ? Math.round(rateLimits.seven_day!.utilization * 100) : 0;
+  const limits: string[] = [];
+  if (rateLimits.five_hour != null) {
+    limits.push(
+      `Session ${Math.round(rateLimits.five_hour.utilization * 100)}%${
+        rateLimits.five_hour.resets_at > 0 ? ` ${formatCountdown(rateLimits.five_hour.resets_at)}` : ''
+      }`,
+    );
+  }
+  if (rateLimits.seven_day != null) {
+    limits.push(
+      `Weekly ${Math.round(rateLimits.seven_day.utilization * 100)}%${
+        rateLimits.seven_day.resets_at > 0 ? ` ${formatCountdown(rateLimits.seven_day.resets_at)}` : ''
+      }`,
+    );
+  }
 
-  // Token display: "50k/1M"
-  const tokenDisplay = `${formatTokens(usedTokens)}/${formatTokens(contextWindowSize)}`;
+  // Assemble: shed detail right-to-left until the line fits the terminal.
+  // The cache TTL pill (StatusLine's CachePill) sits to the right of this row,
+  // so reserve room for it (~13 cols) whenever a cache session is active.
+  const budget = Math.max(20, columns - 14);
+  let line = shortModel;
+  let ctx = contextCore + contextDetail;
+  let tokens = totalInputTokens > 0 || totalOutputTokens > 0 ? tokenCore + tokenDetail : '';
+  let limitText = limits.join(SEP);
+  const fits = (candidate: string) => candidate.length <= budget;
+
+  if (!fits([line, ctx, tokens, limitText].filter(Boolean).join(SEP))) {
+    // Drop the claude.ai rate-limit segments first (absent on self-hosted anyway).
+    limitText = '';
+  }
+  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+    // Then the token breakdown parens.
+    tokens = tokens ? tokenCore : '';
+  }
+  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+    ctx = contextCore;
+  }
+  if (!fits([line, ctx, tokens].filter(Boolean).join(SEP))) {
+    tokens = '';
+  }
+  if (!fits([line, ctx].join(SEP))) {
+    // Nothing left to drop but the bar itself.
+    ctx = `${contextUsedPct}%`;
+  }
+
+  const parts = [line, ctx, tokens, limitText].filter(Boolean);
 
   return (
     <Box>
-      {/* Model name */}
-      <Text>{shortModel}</Text>
-
-      {/* Context usage: bar + percentage + used/window */}
-      <Separator />
-      <Text dimColor>Context </Text>
-      {!narrow && <Text>{contextBar(contextUsedPct)} </Text>}
-      <Text>{contextUsedPct}%</Text>
-      {!narrow && <Text dimColor> ({tokenDisplay})</Text>}
-
-      {/* Session token totals: in / out / cache hit rate */}
-      {(totalInputTokens > 0 || totalOutputTokens > 0) && (
-        <>
-          <Separator />
-          <Text dimColor>Tokens </Text>
-          <Text>{formatTokens(totalInputTokens + totalOutputTokens)}</Text>
-          {!narrow && (
-            <Text dimColor>
-              {' '}
-              (in: {formatTokens(totalInputTokens)}, out: {formatTokens(totalOutputTokens)}
-              {cacheHitRate !== null ? `, cache: ${cacheHitRate}%` : ''})
-            </Text>
-          )}
-        </>
-      )}
-
-      {/* 5-hour session rate limit */}
-      {hasFiveHour && (
-        <>
-          <Separator />
-          <Text dimColor>Session </Text>
-          <Text>{fiveHourPct}%</Text>
-          {!narrow && rateLimits.five_hour!.resets_at > 0 && (
-            <Text dimColor> {formatCountdown(rateLimits.five_hour!.resets_at)}</Text>
-          )}
-        </>
-      )}
-
-      {/* 7-day weekly rate limit */}
-      {hasSevenDay && (
-        <>
-          <Separator />
-          <Text dimColor>Weekly </Text>
-          <Text>{sevenDayPct}%</Text>
-          {!narrow && rateLimits.seven_day!.resets_at > 0 && (
-            <Text dimColor> {formatCountdown(rateLimits.seven_day!.resets_at)}</Text>
-          )}
-        </>
-      )}
-
-      {/* Cost */}
-      {totalCostUsd > 0 && (
-        <>
-          <Separator />
-          <Text>{formatCost(totalCostUsd)}</Text>
-        </>
-      )}
+      {parts.map((part, index) => (
+        <React.Fragment key={index}>
+          {index > 0 && <Text dimColor>{SEP}</Text>}
+          <Text>{part}</Text>
+        </React.Fragment>
+      ))}
     </Box>
   );
 }
