@@ -125,3 +125,11 @@ export function replaceUltraplanKeyword(text: string): string {
   if (!(before + after).trim()) return ''
   return before + trigger.word.slice('ultra'.length) + after
 }
+
+export function findUltracodeTriggerPositions(text: string): TriggerPosition[] {
+  return findKeywordTriggerPositions(text, 'ultracode')
+}
+
+export function hasUltracodeKeyword(text: string): boolean {
+  return findUltracodeTriggerPositions(text).length > 0
+}

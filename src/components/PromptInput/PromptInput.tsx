@@ -2095,7 +2095,10 @@ function PromptInput({
   // Show effort notification on startup and when effort changes.
   // Suppressed in brief/assistant mode — the value reflects the local
   // client's effort, not the connected agent's.
-  const effortNotificationText = briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
+  const ultracodeActive = useAppState(s => s.ultracodeActive) ?? false;
+  const effortNotificationText = briefOwnsGap
+    ? undefined
+    : getEffortNotificationText(effortValue, mainLoopModel, ultracodeActive);
   useEffect(() => {
     if (!effortNotificationText) {
       removeNotification('effort-level');

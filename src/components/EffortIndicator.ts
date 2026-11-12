@@ -14,12 +14,15 @@ import {
 
 /**
  * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".
- * Returns undefined if the model doesn't support effort.
+ * Returns undefined if the model doesn't support effort. When ultracode is on,
+ * the marker shows that regardless of effort support (official behaviour).
  */
 export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
+  ultracodeActive?: boolean,
 ): string | undefined {
+  if (ultracodeActive) return '● Ultracode on (/effort)'
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)
   return `${effortLevelToSymbol(level)} ${level} · /effort`

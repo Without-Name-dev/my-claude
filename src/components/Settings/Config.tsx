@@ -313,6 +313,24 @@ export function Config({
       },
     },
     {
+      id: 'enableWorkflows',
+      label: 'Dynamic workflows',
+      value: settingsData?.enableWorkflows ?? true,
+      type: 'boolean' as const,
+      onChange(enableWorkflows: boolean) {
+        updateSettingsForSource('userSettings', {
+          enableWorkflows,
+        });
+        setSettingsData(prev => ({
+          ...prev,
+          enableWorkflows,
+        }));
+        logEvent('tengu_workflows_setting_changed', {
+          enabled: enableWorkflows,
+        });
+      },
+    },
+    {
       id: 'spinnerTipsEnabled',
       label: 'Show tips',
       value: settingsData?.spinnerTipsEnabled ?? true,

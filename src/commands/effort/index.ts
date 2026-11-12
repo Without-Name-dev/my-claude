@@ -4,8 +4,8 @@ import { shouldInferenceConfigCommandBeImmediate } from '../../utils/immediateCo
 export default {
   type: 'local-jsx',
   name: 'effort',
-  description: 'Set effort level for model usage',
-  argumentHint: '[low|medium|high|xhigh|max|auto]',
+  description: 'Set effort level or toggle ultracode workflows',
+  argumentHint: '[low|medium|high|xhigh|max|auto|ultracode [on|off]]',
   get immediate() {
     return shouldInferenceConfigCommandBeImmediate()
   },

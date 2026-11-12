@@ -146,4 +146,10 @@ export type WorkflowPorts = {
   permissionGate: PermissionGate
   logger: Logger
   hostFactory: HostFactory
+  /**
+   * Dynamic-workflows availability (user setting + managed kill-switch).
+   * When false the Workflow tool reports itself disabled. Optional and
+   * defaults to true so existing ports (engine tests) keep working.
+   */
+  isWorkflowsEnabled?: () => boolean
 }

@@ -710,6 +710,14 @@ export type Attachment =
       level: 'high'
     }
   | {
+      type: 'ultracode_mode'
+      /** 'full' on entry and every Nth turn, 'sparse' in between. */
+      reminderType: 'full' | 'sparse'
+    }
+  | {
+      type: 'ultracode_mode_exit'
+    }
+  | {
       type: 'deferred_tools_delta'
       addedNames: string[]
       addedLines: string[]
@@ -884,6 +892,9 @@ export async function getAttachments(
     ),
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
+    ),
+    maybe('ultracode_mode', () =>
+      Promise.resolve(getUltracodeModeAttachments(messages, toolUseContext)),
     ),
     maybe('deferred_tools_delta', () =>
       Promise.resolve(
@@ -1503,6 +1514,93 @@ function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   }
   logEvent('tengu_ultrathink', {})
   return [{ type: 'ultrathink_effort', level: 'high' }]
+}
+
+export const ULTRACODE_MODE_ATTACHMENT_CONFIG = {
+  TURNS_BETWEEN_ATTACHMENTS: 5,
+  FULL_REMINDER_EVERY_N_ATTACHMENTS: 5,
+} as const
+
+function isUltracodeAttachment(message: Message): boolean {
+  // Same envelope shape plan_mode uses: history entries are
+  // { type: 'attachment', attachment: { type, ... } }.
+  return (
+    message.type === 'attachment' &&
+    (message as unknown as { attachment?: { type?: string } }).attachment
+      ?.type === 'ultracode_mode'
+  )
+}
+
+function isUltracodeExitAttachment(message: Message): boolean {
+  return (
+    message.type === 'attachment' &&
+    (message as unknown as { attachment?: { type?: string } }).attachment
+      ?.type === 'ultracode_mode_exit'
+  )
+}
+
+/**
+ * Per-turn Ultracode reminder, following the plan_mode pattern: a full
+ * playbook pointer on entry and every Nth reminder, a sparse nudge in
+ * between, nothing while throttled, and a one-time exit notice after the
+ * flag drops. Human turns are counted (not tool-loop rounds) for the same
+ * reason as plan_mode.
+ */
+export function getUltracodeModeAttachments(
+  messages: Message[] | undefined,
+  toolUseContext: ToolUseContext,
+): Attachment[] {
+  const active = toolUseContext.getAppState().ultracodeActive === true
+
+  if (!active) {
+    if (!messages || messages.length === 0) return []
+    const lastUltracodeIndex = findLastIndex(messages, isUltracodeAttachment)
+    if (lastUltracodeIndex === -1) return []
+    const after = messages.slice(lastUltracodeIndex + 1)
+    const humanTurnsSince = after.filter(isHumanTurn).length
+    const alreadyExited = after.some(isUltracodeExitAttachment)
+    if (humanTurnsSince <= 1 && !alreadyExited) {
+      return [{ type: 'ultracode_mode_exit' }]
+    }
+    return []
+  }
+
+  // Count prior reminders (full + sparse) for throttling and full/sparse choice.
+  let count = 0
+  let lastReminderIndex = -1
+  if (messages) {
+    for (let i = 0; i < messages.length; i++) {
+      if (isUltracodeAttachment(messages[i]!)) {
+        count++
+        lastReminderIndex = i
+      }
+    }
+  }
+  if (count > 0 && messages) {
+    const humanTurnsSince = messages
+      .slice(lastReminderIndex + 1)
+      .filter(isHumanTurn).length
+    if (
+      humanTurnsSince <
+      ULTRACODE_MODE_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS
+    ) {
+      return []
+    }
+  }
+  const reminderType: 'full' | 'sparse' =
+    (count + 1) %
+      ULTRACODE_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS ===
+    1
+      ? 'full'
+      : 'sparse'
+  return [{ type: 'ultracode_mode', reminderType }]
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (predicate(items[i]!)) return i
+  }
+  return -1
 }
 
 // Exported for compact.ts — the gate must be identical at both call sites.

@@ -57,8 +57,15 @@ import { queryCheckpoint } from '../queryProfiler.js'
 import { parseSlashCommand } from '../slashCommandParsing.js'
 import {
   hasUltraplanKeyword,
+  hasUltracodeKeyword,
   replaceUltraplanKeyword,
 } from '../ultraplan/keyword.js'
+import { isUltracodeAvailable } from '../ultracode.js'
+import { getInitialSettings } from '../settings/settings.js'
+
+function isUltracodeKeywordTriggerEnabled(): boolean {
+  return getInitialSettings().workflowKeywordTriggerEnabled !== false
+}
 import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
@@ -505,6 +512,23 @@ async function processUserInputBase(
       autonomy,
     )
     return addImageMetadataMessage(slashResult, imageMetadataTexts)
+  }
+
+  // Ultracode keyword — a prompt containing "ultracode" turns the session
+  // mode on for this turn onward (official keyword-trigger semantics). It is
+  // state, not a reroute: the input flows on unchanged.
+  if (
+    mode === 'prompt' &&
+    inputString !== null &&
+    !effectiveSkipSlash &&
+    !inputString.startsWith('/') &&
+    !context.getAppState().ultracodeActive &&
+    isUltracodeAvailable(context.options.mainLoopModel) &&
+    isUltracodeKeywordTriggerEnabled() &&
+    hasUltracodeKeyword(preExpansionInput ?? inputString)
+  ) {
+    logEvent('tengu_workflow_keyword', {})
+    context.setAppState(prev => ({ ...prev, ultracodeActive: true }))
   }
 
   // For slash commands, attachments will be extracted within getMessagesForSlashCommand

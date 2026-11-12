@@ -16,12 +16,16 @@ import {
   toPersistableEffort,
 } from '../../utils/effort.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { isUltracodeAvailable, ultracodeUnavailableReason } from '../../utils/ultracode.js';
 
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 
 type EffortCommandResult = {
   message: string;
   effortUpdate?: { value: EffortValue | undefined };
+  /** Session-only: official semantics — ultracode never persists and never
+   *  changes effortValue. */
+  ultracodeUpdate?: boolean;
 };
 
 function setEffortValue(effortValue: EffortValue): EffortCommandResult {
@@ -107,15 +111,58 @@ function unsetEffortLevel(): EffortCommandResult {
   };
 }
 
-export function executeEffort(args: string): EffortCommandResult {
+/**
+ * `ultracode`, `ultracode on`, `ultracode off` — session-only toggle with
+ * official semantics: availability gated on dynamic workflows + model xhigh
+ * support, never persisted, never changes effortValue.
+ */
+export function setUltracode(
+  enabled: boolean | undefined,
+  model: string,
+  currentEffort: EffortValue | undefined,
+): EffortCommandResult {
+  if (enabled !== undefined && !isUltracodeAvailable(model)) {
+    return { message: ultracodeUnavailableReason(model) };
+  }
+  const next = enabled ?? true;
+  logEvent('tengu_effort_command', {
+    effort: (next ? 'ultracode' : 'ultracode_off') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  });
+  const effortText = getDisplayedEffortLevel(model, currentEffort);
+  return {
+    message: next
+      ? `Ultracode on (this session only): dynamic workflows on every task. Effort stays ${effortText}.`
+      : `Ultracode off. Effort stays ${effortText}.`,
+    ultracodeUpdate: next,
+  };
+}
+
+export function executeEffort(
+  args: string,
+  options?: { model?: string; currentEffort?: EffortValue },
+): EffortCommandResult {
   const normalized = args.toLowerCase();
   if (normalized === 'auto' || normalized === 'unset') {
     return unsetEffortLevel();
   }
 
+  // `ultracode` / `ultracode on` / `ultracode off`
+  if (normalized === 'ultracode' || normalized.startsWith('ultracode ')) {
+    const rest = normalized.slice('ultracode'.length).trim();
+    if (rest === '' || rest === 'on') {
+      return setUltracode(true, options?.model ?? '', options?.currentEffort);
+    }
+    if (rest === 'off') {
+      return setUltracode(false, options?.model ?? '', options?.currentEffort);
+    }
+    return {
+      message: `Invalid argument: ${args}. Use: ultracode [on|off]`,
+    };
+  }
+
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, auto`,
+      message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, auto, ultracode [on|off]`,
     };
   }
 
@@ -138,7 +185,7 @@ function ApplyEffortAndClose({
   onDone: (result: string) => void;
 }): React.ReactNode {
   const setAppState = useSetAppState();
-  const { effortUpdate, message } = result;
+  const { effortUpdate, ultracodeUpdate, message } = result;
   React.useEffect(() => {
     if (effortUpdate) {
       setAppState(prev => ({
@@ -146,8 +193,14 @@ function ApplyEffortAndClose({
         effortValue: effortUpdate.value,
       }));
     }
+    if (ultracodeUpdate !== undefined) {
+      setAppState(prev => ({
+        ...prev,
+        ultracodeActive: ultracodeUpdate,
+      }));
+    }
     onDone(message);
-  }, [setAppState, effortUpdate, message, onDone]);
+  }, [setAppState, effortUpdate, ultracodeUpdate, message, onDone]);
   return null;
 }
 
@@ -156,7 +209,7 @@ export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, arg
 
   if (COMMON_HELP_ARGS.includes(args)) {
     onDone(
-      'Usage: /effort [low|medium|high|xhigh|max|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended reasoning beyond high, short of max; including ChatGPT Codex models\n- max: Maximum capability with deepest reasoning\n- auto: Use the default effort level for your model',
+      'Usage: /effort [low|medium|high|xhigh|max|auto|ultracode [on|off]]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- xhigh: Extended reasoning beyond high, short of max; including ChatGPT Codex models\n- max: Maximum capability with deepest reasoning\n- auto: Use the default effort level for your model\n- ultracode [on|off]: dynamic workflows on every task (this session only; effort stays unchanged)',
     );
     return;
   }
@@ -169,7 +222,13 @@ export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, arg
     return <EffortPanelWrapper onDone={onDone} />;
   }
 
-  const result = executeEffort(args);
+  return <EffortWithModel args={args} onDone={onDone} />;
+}
+
+function EffortWithModel({ args, onDone }: { args: string; onDone: (result: string) => void }): React.ReactNode {
+  const effortValue = useAppState(s => s.effortValue);
+  const model = useMainLoopModel();
+  const result = executeEffort(args, { model, currentEffort: effortValue });
   return <ApplyEffortAndClose result={result} onDone={onDone} />;
 }
 

@@ -58,11 +58,11 @@ export function createWorkflowTool(
   return {
     name: WORKFLOW_TOOL_NAME,
     inputSchema: workflowInputSchema,
-    // No per-session runtime opt-in gate here: the "ultracode is on for the
-    // session" signal is injected by the harness (claude.ai/client), not held
-    // in any repo state. This tool is compiled in/out via feature('WORKFLOW_SCRIPTS')
-    // in src/tools.ts; beyond that it is always enabled when present.
-    isEnabled: () => true,
+    // Gated by the repo's dynamic-workflows availability (settings +
+    // CLAUDE_CODE_DISABLE_WORKFLOWS), resolved via the settings port so the
+    // engine stays self-contained. The session-level ultracode opt-in lives in
+    // AppState and is delivered as a per-turn system-reminder, not here.
+    isEnabled: () => ports.isWorkflowsEnabled?.() ?? true,
     isReadOnly: () => false,
 
     async description() {

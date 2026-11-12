@@ -336,6 +336,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       l: 'effortPanel:increase',
       home: 'effortPanel:home',
       end: 'effortPanel:end',
+      tab: 'effortPanel:toggleUltracode',
       enter: 'effortPanel:confirm',
       escape: 'effortPanel:cancel',
       q: 'effortPanel:cancel',

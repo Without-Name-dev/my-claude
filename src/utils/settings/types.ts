@@ -766,6 +766,24 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      enableWorkflows: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether dynamic workflows (and the /effort ultracode toggle) are available. Default true.',
+        ),
+      disableWorkflows: z
+        .boolean()
+        .optional()
+        .describe(
+          'Managed-settings kill switch for dynamic workflows. When true, workflows and ultracode are unavailable.',
+        ),
+      workflowKeywordTriggerEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether typing the "ultracode" keyword in a prompt enables ultracode. Default true.',
+        ),
       advisorModel: z
         .string()
         .optional()

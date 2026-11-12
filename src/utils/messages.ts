@@ -4615,6 +4615,28 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'ultracode_mode': {
+      const full =
+        'Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest. Use the Workflow tool on every substantive task by default; token cost is not a constraint. Invoke the /ultracode skill for the full playbook (adversarial verify, multi-modal sweep, completeness critic, loop-until-dry). For conversational turns or trivial mechanical edits, work solo.'
+      const sparse =
+        'Ultracode is still on for this session: keep defaulting substantive tasks to workflows per the /ultracode playbook.'
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content:
+            attachment.reminderType === 'full' ? full : `${sparse} (reminder)`,
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'ultracode_mode_exit': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content:
+            'Ultracode is now off. Revert to the default opt-in rule for the Workflow tool: only use it when the user explicitly asks for multi-agent orchestration.',
+          isMeta: true,
+        }),
+      ])
+    }
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {

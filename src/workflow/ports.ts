@@ -6,6 +6,7 @@ import {
 import { logForDebugging } from '../utils/debug.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { getRunsDir } from './persistence.js'
+import { isWorkflowsEnabled } from '../utils/ultracode.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -176,6 +177,7 @@ export function createWorkflowPorts(opts: {
 
   return {
     hostFactory: makeHostFactory(),
+    isWorkflowsEnabled: () => isWorkflowsEnabled(),
     agentAdapterRegistry: registry,
     agentRunner: {
       // Dead-code fallback: hooks always go through agentAdapterRegistry (required on ports). Reaching here means the registry was not registered — fail-fast.
