@@ -192,7 +192,8 @@ describe('expired display', () => {
 // ---------------------------------------------------------------------------
 // Status-row model segment
 // ---------------------------------------------------------------------------
-import { formatModelWithMode } from '../BuiltinStatusLine.js';
+import { composeStatusRow, formatModelWithMode } from '../BuiltinStatusLine.js';
+import { stringWidth } from '@anthropic/ink';
 
 describe('status row model segment', () => {
   test('always shows the effective level', () => {
@@ -207,5 +208,53 @@ describe('status row model segment', () => {
 
   test('omits the level only when the caller has none', () => {
     expect(formatModelWithMode('glm-5.3[1m]', undefined, false)).toBe('glm-5.3[1m]');
+  });
+});
+
+describe('composeStatusRow', () => {
+  const input = {
+    modelName: 'deepseek/deepseek-flash[1m]',
+    effortLevel: 'high',
+    ultracodeActive: false,
+    contextUsedPct: 3,
+    usedTokens: 27600,
+    contextWindowSize: 1_000_000,
+    totalInputTokens: 89600,
+    totalOutputTokens: 1100,
+    cacheHitRate: 76,
+  };
+
+  test('is one line that never exceeds the terminal width', () => {
+    // Every width from "absurdly narrow" to "very wide": the row must never
+    // wrap, because that is what fragmented it into "cac" / "76%)" before.
+    for (let columns = 20; columns <= 200; columns++) {
+      const row = composeStatusRow(input, columns);
+      expect(row.includes('\n')).toBe(false);
+      expect(stringWidth(row)).toBeLessThanOrEqual(Math.max(20, columns - 4));
+    }
+  });
+
+  test('wide terminal shows tokens and the cache average, no in/out split', () => {
+    const row = composeStatusRow({ ...input, limitText: 'Session 12% 3h4m' }, 160);
+    expect(row).toBe(
+      'deepseek/deepseek-flash[1m] · high │ ░░░░░░░░░░ 3% (27.6k/1m) │ Tokens 90.7k (cache 76%) │ Session 12% 3h4m',
+    );
+    expect(row).not.toContain('in ');
+    expect(row).not.toContain('out ');
+  });
+
+  test('narrow terminal sheds detail but keeps model, level, and context', () => {
+    const row = composeStatusRow(input, 60);
+    expect(row).toContain('deepseek/deepseek-flash[1m]');
+    expect(row).toContain('high');
+    expect(row).toContain('3%');
+    expect(row).not.toContain('cache');
+  });
+
+  test('long model name is truncated before the effort level is', () => {
+    const row = composeStatusRow({ ...input, modelName: 'some-vendor/an-extremely-long-model-name-2026[1m]' }, 45);
+    expect(row).toContain('· high');
+    expect(row).not.toContain('2026[1m]');
+    expect(row).toContain('…');
   });
 });

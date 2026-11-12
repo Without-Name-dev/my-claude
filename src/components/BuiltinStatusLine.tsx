@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text } from '@anthropic/ink';
+import { Text, stringWidth } from '@anthropic/ink';
 import { formatTokens, truncate } from '../utils/format.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 
@@ -72,15 +72,83 @@ export function formatModelWithMode(
   return ultracodeActive ? `${modelName} ● ultracode(${effortLevel})` : `${modelName} · ${effortLevel}`;
 }
 
+export type StatusRowInput = {
+  modelName: string;
+  effortLevel?: string;
+  ultracodeActive?: boolean;
+  contextUsedPct: number;
+  usedTokens: number;
+  contextWindowSize: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheHitRate: number | null;
+  /** Pre-formatted rate-limit segments, joined with SEP by the caller. */
+  limitText?: string;
+};
+
 /**
- * One status row, laid out as a single pre-measured line.
+ * Compose the whole status row into ONE string that fits `columns`.
  *
- * The previous version rendered every segment as a flex child; when the total
- * exceeded the terminal width Ink wrapped mid-segment and the row collapsed
- * into intercut fragments ("Tokens33.3k", "(25.8k/1m │"). Segments are now
- * strings measured against the available columns and dropped whole — widest
- * tier shows everything, narrower tiers shed detail right-to-left.
+ * The row used to be a set of flex children. When any of them was narrowed
+ * (a footer notification competing for space, a resize) Ink wrapped each child
+ * inside its own column, interleaving the row into fragments like
+ * "cac" / "76%)" on the next line. A single measured, truncating string can
+ * only ever lose tail characters — it cannot wrap.
+ *
+ * Pure and exported so the fitting rules are unit-testable.
  */
+export function composeStatusRow(input: StatusRowInput, columns: number): string {
+  // The row owns a full-width line; only the footer's paddingX={2} (both
+  // sides) is taken. Measure with stringWidth: `.length` undercounts CJK.
+  const budget = Math.max(20, columns - 4);
+
+  // Model display: first two words (e.g. "Opus 4.6"). The effort level rides
+  // along — this row is always visible, unlike the logo that scrolls away.
+  const modelParts = input.modelName.split(' ');
+  const shortModel = modelParts.length >= 2 ? `${modelParts[0]} ${modelParts[1]}` : input.modelName;
+  const modeSuffix =
+    input.effortLevel === undefined
+      ? ''
+      : input.ultracodeActive
+        ? ` ● ultracode(${input.effortLevel})`
+        : ` · ${input.effortLevel}`;
+  let line = shortModel + modeSuffix;
+
+  const contextCore = `${contextBar(input.contextUsedPct)} ${input.contextUsedPct}%`;
+  let ctx = `${contextCore} (${formatTokens(input.usedTokens)}/${formatTokens(input.contextWindowSize)})`;
+
+  // Tokens: session total plus the conversation-average cache hit rate. The
+  // in/out split was dropped — rarely actionable, and it doubled the width.
+  const tokenCore = `Tokens ${formatTokens(input.totalInputTokens + input.totalOutputTokens)}`;
+  let tokens = tokenCore + (input.cacheHitRate !== null ? ` (cache ${input.cacheHitRate}%)` : '');
+
+  let limits = input.limitText ?? '';
+
+  const sepWidth = stringWidth(SEP);
+  const fits = (candidate: string) => stringWidth(candidate) <= budget;
+  const join = () => [line, ctx, tokens, limits].filter(Boolean).join(SEP);
+
+  // Shed detail right-to-left until the row fits.
+  if (!fits(join())) limits = ''; // claude.ai rate limits first (absent self-hosted)
+  if (!fits(join())) tokens = tokenCore; // token breakdown parens
+  if (!fits(join())) ctx = contextCore; // context used/window numbers
+  if (!fits(join())) tokens = '';
+  if (!fits(join())) ctx = `${input.contextUsedPct}%`; // drop the bar itself
+  if (!fits(join())) {
+    // Shrink the model name last, keeping the effort/ultracode suffix intact —
+    // this row is the only place the effective level is visible.
+    const nameBudget = Math.max(1, budget - sepWidth - stringWidth(ctx) - stringWidth(modeSuffix));
+    line = truncate(shortModel, nameBudget) + modeSuffix;
+  }
+  if (!fits(join())) {
+    // Absurdly narrow terminal: model + mode is the floor.
+    const nameBudget = Math.max(1, budget - stringWidth(modeSuffix));
+    return truncate(shortModel, nameBudget) + modeSuffix;
+  }
+
+  return join();
+}
+
 function BuiltinStatusLineInner({
   modelName,
   effortLevel,
@@ -107,25 +175,6 @@ function BuiltinStatusLineInner({
   // Suppress unused-variable lint for tick (it exists only to trigger re-renders)
   void tick;
 
-  // Model display: use first two words (e.g. "Opus 4.6") instead of just first
-  // word. The effort level rides along — this row is always visible, unlike the
-  // logo that scrolls away with the transcript.
-  const modelParts = modelName.split(' ');
-  const shortModel = modelParts.length >= 2 ? `${modelParts[0]} ${modelParts[1]}` : modelName;
-  const modelWithMode = formatModelWithMode(shortModel, effortLevel, ultracodeActive);
-
-  // Context: bar + percent, optionally with used/window.
-  const contextCore = `${contextBar(contextUsedPct)} ${contextUsedPct}%`;
-  const contextDetail = ` (${formatTokens(usedTokens)}/${formatTokens(contextWindowSize)})`;
-
-  // Tokens: session totals plus the in/out breakdown and the conversation's
-  // average cache hit rate (all three are cumulative, so they belong together).
-  const tokenTotal = formatTokens(totalInputTokens + totalOutputTokens);
-  const tokenCore = `Tokens ${tokenTotal}`;
-  const tokenDetail = ` (in ${formatTokens(totalInputTokens)}, out ${formatTokens(totalOutputTokens)}${
-    cacheHitRate !== null ? `, cache ${cacheHitRate}%` : ''
-  })`;
-
   const limits: string[] = [];
   if (rateLimits.five_hour != null) {
     limits.push(
@@ -142,50 +191,23 @@ function BuiltinStatusLineInner({
     );
   }
 
-  // Assemble: shed detail right-to-left until the line fits the terminal.
-  const budget = Math.max(20, columns - 4);
-  let line = modelWithMode;
-  let ctx = contextCore + contextDetail;
-  let tokens = tokenCore + tokenDetail;
-  let limitText = limits.join(SEP);
-  const fits = (candidate: string) => candidate.length <= budget;
-  const joined = () => [line, ctx, tokens, limitText].filter(Boolean).join(SEP);
-
-  if (!fits(joined())) {
-    // Drop the claude.ai rate-limit segments first (absent on self-hosted anyway).
-    limitText = '';
-  }
-  if (!fits(joined())) {
-    // Then the token breakdown parens.
-    tokens = tokenCore;
-  }
-  if (!fits(joined())) {
-    ctx = contextCore;
-  }
-  if (!fits(joined())) {
-    tokens = '';
-  }
-  if (!fits([line, ctx].join(SEP))) {
-    // Nothing left to drop but the bar itself.
-    ctx = `${contextUsedPct}%`;
-  }
-  if (!fits(line)) {
-    // A very long model id plus mode still must not wrap the row.
-    line = truncate(line, budget);
-  }
-
-  const parts = [line, ctx, tokens, limitText].filter(Boolean);
-
-  return (
-    <Box>
-      {parts.map((part, index) => (
-        <React.Fragment key={index}>
-          {index > 0 && <Text dimColor>{SEP}</Text>}
-          <Text>{part}</Text>
-        </React.Fragment>
-      ))}
-    </Box>
+  const row = composeStatusRow(
+    {
+      modelName,
+      effortLevel,
+      ultracodeActive,
+      contextUsedPct,
+      usedTokens,
+      contextWindowSize,
+      totalInputTokens,
+      totalOutputTokens,
+      cacheHitRate,
+      limitText: limits.join(SEP),
+    },
+    columns,
   );
+
+  return <Text wrap="truncate">{row}</Text>;
 }
 
 export const BuiltinStatusLine = React.memo(BuiltinStatusLineInner);

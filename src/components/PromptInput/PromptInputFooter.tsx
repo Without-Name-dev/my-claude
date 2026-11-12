@@ -148,55 +148,60 @@ function PromptInputFooter({
 
   return (
     <>
-      <Box
-        flexDirection={isNarrow ? 'column' : 'row'}
-        justifyContent={isNarrow ? 'flex-start' : 'space-between'}
-        paddingX={2}
-        gap={isNarrow ? 0 : 1}
-      >
-        <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
-          {mode === 'prompt' && !isShort && !exitMessage.show && !isPasting && statusLineShouldDisplay(settings) && (
-            <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} vimMode={vimMode} />
-          )}
-          <PipeStatusInline />
-          <PromptInputFooterLeftSide
-            exitMessage={exitMessage}
-            vimMode={vimMode}
-            mode={mode}
-            toolPermissionContext={toolPermissionContext}
-            suppressHint={suppressHint}
-            isLoading={isLoading}
-            tasksSelected={pillSelected}
-            teamsSelected={teamsSelected}
-            teammateFooterIndex={teammateFooterIndex}
-            tmuxSelected={tmuxSelected}
-            isPasting={isPasting}
-            isSearching={isSearching}
-            historyQuery={historyQuery}
-            setHistoryQuery={setHistoryQuery}
-            historyFailedMatch={historyFailedMatch}
-            onOpenTasksDialog={onOpenTasksDialog}
-          />
-        </Box>
-        <Box flexShrink={1} gap={1}>
-          {isFullscreen ? null : (
-            <Notifications
-              apiKeyStatus={apiKeyStatus}
-              autoUpdaterResult={autoUpdaterResult}
-              debug={debug}
-              isAutoUpdating={isAutoUpdating}
-              verbose={verbose}
-              messages={messages}
-              onAutoUpdaterResult={onAutoUpdaterResult}
-              onChangeIsUpdating={onChangeIsUpdating}
-              ideSelection={ideSelection}
-              mcpClients={mcpClients}
-              isInputWrapped={isInputWrapped}
-              isNarrow={isNarrow}
+      <Box flexDirection="column" paddingX={2}>
+        {/* StatusLine owns a full-width row of its own. As the first child of
+            the space-between row below it was squeezed by flexShrink whenever a
+            transient footer notification ("● high · /effort") appeared, and Ink
+            then wrapped the status segments inside their columns. */}
+        {mode === 'prompt' && !isShort && !exitMessage.show && !isPasting && statusLineShouldDisplay(settings) && (
+          <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} vimMode={vimMode} />
+        )}
+        <Box
+          flexDirection={isNarrow ? 'column' : 'row'}
+          justifyContent={isNarrow ? 'flex-start' : 'space-between'}
+          gap={isNarrow ? 0 : 1}
+        >
+          <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
+            <PipeStatusInline />
+            <PromptInputFooterLeftSide
+              exitMessage={exitMessage}
+              vimMode={vimMode}
+              mode={mode}
+              toolPermissionContext={toolPermissionContext}
+              suppressHint={suppressHint}
+              isLoading={isLoading}
+              tasksSelected={pillSelected}
+              teamsSelected={teamsSelected}
+              teammateFooterIndex={teammateFooterIndex}
+              tmuxSelected={tmuxSelected}
+              isPasting={isPasting}
+              isSearching={isSearching}
+              historyQuery={historyQuery}
+              setHistoryQuery={setHistoryQuery}
+              historyFailedMatch={historyFailedMatch}
+              onOpenTasksDialog={onOpenTasksDialog}
             />
-          )}
-          {process.env.USER_TYPE === 'ant' && isUndercover() && <Text dimColor>undercover</Text>}
-          <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
+          </Box>
+          <Box flexShrink={1} gap={1}>
+            {isFullscreen ? null : (
+              <Notifications
+                apiKeyStatus={apiKeyStatus}
+                autoUpdaterResult={autoUpdaterResult}
+                debug={debug}
+                isAutoUpdating={isAutoUpdating}
+                verbose={verbose}
+                messages={messages}
+                onAutoUpdaterResult={onAutoUpdaterResult}
+                onChangeIsUpdating={onChangeIsUpdating}
+                ideSelection={ideSelection}
+                mcpClients={mcpClients}
+                isInputWrapped={isInputWrapped}
+                isNarrow={isNarrow}
+              />
+            )}
+            {process.env.USER_TYPE === 'ant' && isUndercover() && <Text dimColor>undercover</Text>}
+            <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
+          </Box>
         </Box>
       </Box>
       {process.env.USER_TYPE === 'ant' && <CoordinatorTaskPanel />}

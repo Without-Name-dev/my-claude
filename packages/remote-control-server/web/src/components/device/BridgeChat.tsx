@@ -773,9 +773,8 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
         </span>
       )}
       <span>
-        Tokens {formatTokenCount(totals.input + totals.output)} (in {formatTokenCount(totals.input)}, out{' '}
-        {formatTokenCount(totals.output)}
-        {cache !== null ? `, cache ${cache}` : ''})
+        Tokens {formatTokenCount(totals.input + totals.output)}
+        {cache !== null ? ` (cache ${cache})` : ''}
       </span>
     </div>
   );
