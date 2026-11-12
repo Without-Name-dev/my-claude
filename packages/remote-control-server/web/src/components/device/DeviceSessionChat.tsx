@@ -248,10 +248,16 @@ export function DeviceSessionChat({
           await loadDetail();
         } else if (next.state === 'failed') {
           setOperationId(null);
-          setError(next.detail || '终端启动失败');
           // A terminal that is running without `/remote-control` cannot be
-          // reused; offer the explicit (destructive) restart instead.
-          setBlockedSession(next.failureCode === 'already_running_without_bridge');
+          // reused. That is a known state with its own inline explanation and
+          // restart action — surfacing it as a red error banner too showed the
+          // same sentence twice and made a normal situation look broken.
+          if (next.failureCode === 'already_running_without_bridge') {
+            setBlockedSession(true);
+            setError('');
+          } else {
+            setError(next.detail || '终端启动失败');
+          }
         } else if (next.state === 'waiting_for_user') {
           // Keep polling, but surface the actionable instruction instead of a
           // generic spinner (the terminal is waiting on the PC).
@@ -390,6 +396,9 @@ export function DeviceSessionChat({
         if (cancelled) return;
         setDetail(previous => (shallowEqualSession(previous, next) ? previous : next));
         if (next.bridgeConnected && next.bridgeSessionId) {
+          // The user ran /remote-control in the terminal — the blocked card
+          // and disabled composer must go away on their own.
+          setBlockedSession(false);
           if (forcedBridgeId !== next.bridgeSessionId) {
             // Entering the live view after a reconnect: catch up on anything
             // produced while the SSE was down before switching.
@@ -399,6 +408,15 @@ export function DeviceSessionChat({
           // While the bridge is live the SSE is the source of truth; re-reading
           // history every 10s just re-parsed and re-merged the transcript.
           return;
+        }
+        // Running in a terminal with no bridge at all: sending cannot reach it.
+        // Say so up front instead of letting the first message queue into the
+        // void and only then explaining why.
+        if (!operationId && next.runtime?.processAlive && !next.bridgeSessionId) {
+          setBlockedSession(true);
+        } else if (next.runtime && next.runtime.processAlive === false) {
+          // The terminal exited; a send will open a fresh bridged one.
+          setBlockedSession(false);
         }
         if (forcedBridgeId) {
           // The bridge went away. Keep the transcript on screen and just
@@ -516,26 +534,28 @@ export function DeviceSessionChat({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         <MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />
         {error && (
-          <div
-            role="alert"
-            className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive"
-          >
-            <span className="min-w-0 flex-1">{error}</span>
-            <button
-              type="button"
-              onClick={() => void reload()}
-              className="shrink-0 text-xs font-medium text-brand-dark hover:underline dark:text-brand"
+          <div className="mx-auto w-full max-w-3xl px-4 pt-2">
+            <div
+              role="alert"
+              className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive"
             >
-              重试
-            </button>
-            <button
-              type="button"
-              onClick={() => setError('')}
-              aria-label="关闭提示"
-              className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
-            >
-              ×
-            </button>
+              <span className="min-w-0 flex-1 leading-relaxed">{error}</span>
+              <button
+                type="button"
+                onClick={() => void reload()}
+                className="shrink-0 text-xs font-medium text-brand-dark hover:underline dark:text-brand"
+              >
+                重试
+              </button>
+              <button
+                type="button"
+                onClick={() => setError('')}
+                aria-label="关闭提示"
+                className="-mr-1 -mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
+              >
+                ×
+              </button>
+            </div>
           </div>
         )}
         {/* "Starting the terminal" is not Claude typing: the dots made it look
@@ -558,15 +578,25 @@ export function DeviceSessionChat({
         />
         {blockedSession && (
           <div className="mx-auto w-full max-w-3xl px-4 pt-2">
-            <div className="flex items-center gap-3 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs">
-              <span className="min-w-0 flex-1 text-text-secondary">这个会话在终端里运行，但没有启用远程控制。</span>
-              <button
-                type="button"
-                onClick={() => void forceRestart()}
-                className="shrink-0 text-brand-text hover:underline"
-              >
-                重启终端并启用
-              </button>
+            <div className="rounded-xl border border-border bg-surface-1 p-3">
+              <p className="text-[13px] font-medium text-text-primary">
+                这个会话正在电脑的终端里运行，但没有开启远程控制
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+                在电脑那个终端里输入{' '}
+                <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[11px]">/remote-control</code>{' '}
+                就能把这里连上（推荐，不打断它）；或者让这里重启终端并自动开启，终端里正在跑的任务会中断。
+              </p>
+              <div className="mt-2 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void forceRestart()}
+                  className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
+                >
+                  重启终端并启用
+                </button>
+                <span className="text-[11px] text-text-muted">在终端执行后，这里会自动连上</span>
+              </div>
             </div>
           </div>
         )}
@@ -584,7 +614,7 @@ export function DeviceSessionChat({
           draftKey={`device:${deviceId}:${localSessionId}`}
           onSubmit={send}
           isLoading={sending}
-          disabled={loadingDetail}
+          disabled={loadingDetail || blockedSession}
           toolbarLeft={
             detail?.bridgeConnected ? (
               <button
@@ -598,7 +628,15 @@ export function DeviceSessionChat({
               </button>
             ) : undefined
           }
-          placeholder={loadingDetail ? '正在加载…' : detail?.online ? '输入消息…' : '设备离线，消息会在上线后发送'}
+          placeholder={
+            loadingDetail
+              ? '正在加载…'
+              : blockedSession
+                ? '终端未开启远程控制，暂时无法发送'
+                : detail?.online
+                  ? '输入消息…'
+                  : '设备离线，消息会在上线后发送'
+          }
         />
       </div>
     </TooltipProvider>
