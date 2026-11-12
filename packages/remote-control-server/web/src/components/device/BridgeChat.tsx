@@ -20,7 +20,7 @@ import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
 import { haptic } from '../../lib/view-transition';
 import { turnFinished } from '../../lib/turn-notice';
-import { ChevronDown, Gauge, ShieldCheck, Zap } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
 import type { AvailableCommand } from '../../acp/types';
@@ -421,6 +421,23 @@ export function BridgeChat({
     );
   }, [adapter, runControl, ultracode]);
 
+  /**
+   * One control for "how hard to think": the effort levels plus Ultracode.
+   * Picking a level while Ultracode is on switches the session mode off
+   * first, so the two can never disagree (previously two separate controls).
+   */
+  const changeEffortOrUltracode = useCallback(
+    async (value: string) => {
+      if (value === 'ultracode') {
+        if (!ultracode) await toggleUltracode();
+        return;
+      }
+      if (ultracode) await toggleUltracode();
+      if (value !== effort) await changeEffort(value);
+    },
+    [changeEffort, effort, toggleUltracode, ultracode],
+  );
+
   const interrupt = useCallback(async () => {
     try {
       await adapter.interrupt();
@@ -623,72 +640,39 @@ export function BridgeChat({
           toolbarLeft={
             <>
               {toolbarExtraLeft}
-              <span
-                className={cn(
-                  'ml-1 mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full',
-                  isLoading ? 'animate-pulse bg-brand' : connected ? 'bg-status-success' : 'bg-status-error',
-                )}
-                title={isLoading ? '处理中' : connected ? '已连接' : '连接断开'}
-                aria-hidden="true"
-              />
-              <span role="status" aria-live="polite" className="sr-only">
-                {isLoading ? 'Claude 正在处理' : connected ? '已连接终端' : '终端连接已断开'}
-              </span>
-              {ultracodeUsable && (
-                <button
-                  type="button"
-                  onClick={() => void toggleUltracode()}
-                  disabled={controlPending}
-                  aria-pressed={ultracode}
-                  title="Ultracode：每个任务都启用动态工作流（仅本会话）"
-                  className={cn(
-                    'inline-flex h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium transition-colors disabled:opacity-60',
-                    ultracode ? 'bg-brand/15 text-brand' : 'text-text-muted hover:bg-surface-1',
-                  )}
-                >
-                  <Zap className={cn('h-3.5 w-3.5', ultracode && 'fill-current')} />
-                  {ultracode ? 'Ultra' : 'ultra'}
-                </button>
-              )}
-              <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
-                <Gauge
-                  className={cn(
-                    'ml-1 h-3.5 w-3.5 shrink-0',
-                    effort && effort !== 'auto' ? 'text-brand' : 'text-text-muted',
-                  )}
-                />
+              {/* One "thinking strength" control: effort levels + Ultracode,
+                  so the composer keeps a single, narrow select instead of a
+                  separate Ultra toggle plus a level select. */}
+              <label className="relative inline-flex min-w-0 items-center rounded-full transition-colors hover:bg-surface-1">
                 <select
-                  value={effort}
-                  onChange={event => void changeEffort(event.target.value)}
+                  value={ultracode ? 'ultracode' : effort}
+                  onChange={event => void changeEffortOrUltracode(event.target.value)}
                   disabled={controlPending}
                   className={cn(
-                    'h-9 w-[4.4rem] appearance-none truncate bg-transparent py-0 pl-1 pr-5 text-xs outline-none disabled:opacity-60',
-                    effort && effort !== 'auto' ? 'text-brand' : 'text-text-secondary',
+                    'h-9 max-w-[7.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-5 text-xs outline-none disabled:opacity-60',
+                    ultracode || (effort && effort !== 'auto') ? 'text-brand' : 'text-text-secondary',
                   )}
-                  aria-label="切换思考等级"
-                  title="思考等级（/effort）"
+                  aria-label="思考强度"
+                  title="思考强度（含 Ultracode）"
                 >
                   {EFFORT_LEVELS.map(level => (
                     <option key={level} value={level}>
-                      {level === 'auto' ? 'auto' : level}
+                      {level}
                     </option>
                   ))}
+                  {ultracodeUsable && (
+                    <option value="ultracode">{ultracode ? `ultracode(${effort})` : 'ultracode'}</option>
+                  )}
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-1 h-3.5 w-3.5 text-text-muted" />
               </label>
-              <label className="relative inline-flex items-center rounded-full transition-colors hover:bg-surface-1">
-                <ShieldCheck
-                  className={cn(
-                    'ml-1.5 h-3.5 w-3.5 shrink-0',
-                    permissionMode && permissionMode !== 'default' ? 'text-brand' : 'text-text-muted',
-                  )}
-                />
+              <label className="relative inline-flex min-w-0 items-center rounded-full transition-colors hover:bg-surface-1">
                 <select
                   value={permissionMode}
                   onChange={event => void changePermissionMode(event.target.value)}
                   disabled={controlPending}
                   className={cn(
-                    'h-9 max-w-[9.5rem] appearance-none truncate bg-transparent py-0 pl-1 pr-6 text-xs outline-none disabled:opacity-60',
+                    'h-9 max-w-[8.5rem] appearance-none truncate bg-transparent py-0 pl-2 pr-5 text-xs outline-none disabled:opacity-60',
                     permissionMode && permissionMode !== 'default' ? 'text-brand' : 'text-text-secondary',
                   )}
                   aria-label="切换权限模式"
@@ -699,7 +683,7 @@ export function BridgeChat({
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-1.5 h-3.5 w-3.5 text-text-muted" />
+                <ChevronDown className="pointer-events-none absolute right-1 h-3.5 w-3.5 text-text-muted" />
               </label>
             </>
           }

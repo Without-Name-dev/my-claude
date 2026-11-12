@@ -34,7 +34,7 @@ import { errorMessage } from '../utils/errors.js';
 import { enqueue } from '../utils/messageQueueManager.js';
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
-import { createBridgeStatusMessage, createSystemMessage } from '../utils/messages.js';
+import { createSystemMessage } from '../utils/messages.js';
 import { buildTaskStateMessage, getTaskStateSnapshotKey } from '../utils/taskStateMessage.js';
 import {
   getAutoModeUnavailableNotification,
@@ -190,7 +190,6 @@ export function useReplBridge(
 
           // Dynamic import so the module is tree-shaken in external builds
           const { initReplBridge } = await import('../bridge/initReplBridge.js');
-          const { shouldShowAppUpgradeMessage } = await import('../bridge/envLessBridgeConfig.js');
 
           // Assistant mode: perpetual bridge session — claude.ai shows one
           // continuous conversation across CLI restarts instead of a new
@@ -760,22 +759,10 @@ export function useReplBridge(
               };
             });
 
-            // Show bridge status with URL in the transcript. perpetual (KAIROS
-            // assistant mode) falls back to v1 at initReplBridge.ts — skip the
-            // v2-only upgrade nudge for them. Own try/catch so a cosmetic
-            // GrowthBook hiccup doesn't hit the outer init-failure handler.
-            const upgradeNudge = !perpetual ? await shouldShowAppUpgradeMessage().catch(() => false) : false;
-            if (cancelled) return;
-            setMessages(prev => [
-              ...prev,
-              createBridgeStatusMessage(
-                url,
-                upgradeNudge
-                  ? 'Please upgrade to the latest version of the Claude mobile app to see your Remote Control sessions.'
-                  : undefined,
-              ),
-            ]);
-
+            // No transcript line for the bridge: the "`/remote-control` is
+            // active. Code in CLI or at …" system message was noise in every
+            // session (and it scrolled away immediately). Connection state is
+            // still available from app state for the footer/status surfaces.
             logForDebugging(`[bridge:repl] Hook initialized, session=${handle.bridgeSessionId}`);
           }
         } catch (err) {

@@ -234,6 +234,12 @@ function BridgeStatusIndicator({ bridgeSelected }: BridgeStatusProps): React.Rea
     reconnecting,
   });
 
+  // A healthy bridge is the normal state — a permanent "Remote Control
+  // active" badge in the footer is just noise. Only surface trouble
+  // (reconnecting/failed); the dialog still shows the full status.
+  if (status.label === 'Remote Control active') {
+    return null;
+  }
   // For implicit (config-driven) remote, only show the reconnecting state
   if (!explicit && status.label !== 'Remote Control reconnecting') {
     return null;

@@ -4113,12 +4113,11 @@ async function run(): Promise<CommanderCommand> {
             hasInitialPrompt,
           );
 
-          // Add remote session info as initial system message
+          // The remote session URL still goes into app state (the footer and
+          // bridge use it), but the "`/remote-control` is active. Code in CLI
+          // or at …" transcript line is gone: it landed in every session's
+          // history, and the web panel shows the same session anyway.
           const remoteSessionUrl = `${getRemoteSessionUrl(createdSession.id)}?m=0`;
-          const remoteInfoMessage = createSystemMessage(
-            `/remote-control is active. Code in CLI or at ${remoteSessionUrl}`,
-            'info',
-          );
 
           // Create initial user message from the prompt if provided (CCR echoes it back but we ignore that)
           const initialUserMessage = hasInitialPrompt ? createUserMessage({ content: remote }) : null;
@@ -4143,7 +4142,7 @@ async function run(): Promise<CommanderCommand> {
               debug: debug || debugToStderr,
               commands: remoteCommands,
               initialTools: [],
-              initialMessages: initialUserMessage ? [remoteInfoMessage, initialUserMessage] : [remoteInfoMessage],
+              initialMessages: initialUserMessage ? [initialUserMessage] : [],
               mcpClients: [],
               autoConnectIdeFlag: ide,
               mainThreadAgentDefinition,

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { cn } from '../../src/lib/utils';
-import { ArrowUp, Square, Paperclip, Plus, Slash } from 'lucide-react';
+import { ArrowUp, Square, Plus } from 'lucide-react';
 import type { ChatInputMessage, UserMessageImage } from '../../src/lib/types';
 import type { AvailableCommand } from '../../src/acp/types';
 import { CommandMenu } from './CommandMenu';
@@ -301,31 +301,6 @@ export function ChatInput({
     [text],
   );
 
-  const toggleCommandMenu = useCallback(() => {
-    if (showCommandMenu) {
-      closeCommandMenu(true);
-      return;
-    }
-    const slashMode = text.startsWith('/');
-    // Tapping "/" used to prefix the whole draft, turning "hello" into
-    // "/hello". Only seed the slash when the composer is empty.
-    if (!text) setText('/');
-    // Filter on the text that will actually be in the input; using the old
-    // value made a typed prefix invisible to the menu.
-    setCommandFilter(slashMode ? text.slice(1) : '');
-    // A programmatic focus() may be refused by WKWebView, which left the menu
-    // open over a closed keyboard. Only show it once the field really owns
-    // the keyboard.
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.focus({ preventScroll: true });
-      const end = el.value.length;
-      el.setSelectionRange(end, end);
-      if (document.activeElement === el) setShowCommandMenu(true);
-    });
-  }, [closeCommandMenu, showCommandMenu, text]);
-
   // The textarea grows with the text — including text set programmatically by
   // the command menu, which used to leave a one-line command in a 200px box.
   useLayoutEffect(() => {
@@ -436,8 +411,10 @@ export function ChatInput({
             />
           </div>
 
-          {/* Footer toolbar — attachments and mode on the left, model and send on the right. */}
-          <div className="flex items-center gap-1 px-1.5 pb-1.5 pt-1">
+          {/* Footer toolbar — attachments and mode on the left, model and send
+              on the right. Wraps on narrow screens (iPhone) instead of
+              crushing or overflowing the controls. */}
+          <div className="flex flex-wrap items-center gap-1 gap-y-1 px-1.5 pb-1.5 pt-1">
             <div className="flex min-w-0 items-center gap-0.5">
               {toolbarLeft}
               {supportsImages && (
@@ -461,26 +438,9 @@ export function ChatInput({
                   />
                 </>
               )}
-              {commands && commands.length > 0 && (
-                <button
-                  type="button"
-                  id="composer-command-trigger"
-                  onClick={toggleCommandMenu}
-                  className={cn(
-                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-50',
-                    showCommandMenu
-                      ? 'bg-brand/15 text-brand'
-                      : 'text-text-secondary hover:bg-surface-1 hover:text-text-primary',
-                  )}
-                  disabled={disabled}
-                  title="命令列表"
-                  aria-label="命令列表"
-                  aria-expanded={showCommandMenu}
-                  aria-controls="composer-command-menu"
-                >
-                  <Slash className="h-4 w-4" />
-                </button>
-              )}
+              {/* The "/" trigger button was removed: the command list still
+                  opens from typing "/" in the composer, and the icon added
+                  one more control to a row that was already busy. */}
             </div>
 
             <div className="ml-auto flex min-w-0 items-center gap-0.5">
