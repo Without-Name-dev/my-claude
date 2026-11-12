@@ -253,20 +253,44 @@ export function fetchDirectory(
 }
 
 /**
- * Upload files to the operator machine. Pass the same `group` for every batch
- * of one logical upload so a folder upload stays in one folder. Uploads are
- * slow on a phone network, so this call gets a longer timeout than the rest.
+ * Upload files into the session's working directory. Uploads are slow on a
+ * phone network, so this call gets a longer timeout than the rest.
  */
 export function uploadToDevice(
   deviceId: string,
+  cwd: string,
   files: UploadFileInput[],
-  group?: string,
   timeoutMs = 180_000,
 ): Promise<UploadResult> {
   return request(
     'POST',
     `/web/devices/${encodeURIComponent(deviceId)}/uploads`,
-    group ? { files, group } : { files },
+    { cwd, files },
+    timeoutMs,
+  )
+}
+
+export type CopiedEntry = {
+  source: string
+  path: string
+  type: 'dir' | 'file'
+  copied: boolean
+}
+
+/**
+ * Bring files or directories that already exist on the PC into the session
+ * directory. Sources already inside it are returned untouched.
+ */
+export function copyToDevice(
+  deviceId: string,
+  cwd: string,
+  paths: string[],
+  timeoutMs = 180_000,
+): Promise<{ entries: CopiedEntry[] }> {
+  return request(
+    'POST',
+    `/web/devices/${encodeURIComponent(deviceId)}/copy`,
+    { cwd, paths },
     timeoutMs,
   )
 }

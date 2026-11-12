@@ -87,12 +87,12 @@ export function AttachmentMenu({
             'photos',
           )}
           {showDeviceOptions &&
-            row(<FileUp className="h-[18px] w-[18px]" strokeWidth={1.75} />, '文件', '上传到电脑后引用路径', 'files')}
+            row(<FileUp className="h-[18px] w-[18px]" strokeWidth={1.75} />, '文件', '上传到会话目录', 'files')}
           {showDeviceOptions &&
             row(
               <FolderUp className="h-[18px] w-[18px]" strokeWidth={1.75} />,
               '文件夹',
-              '整个目录上传到电脑',
+              '整个目录上传到会话目录',
               'folder',
             )}
         </div>
@@ -105,13 +105,13 @@ export function AttachmentMenu({
             {row(
               <Monitor className="h-[18px] w-[18px]" strokeWidth={1.75} />,
               '文件…',
-              '不用上传，直接引用路径',
+              '复制到会话目录',
               'device-files',
             )}
             {row(
               <Monitor className="h-[18px] w-[18px]" strokeWidth={1.75} />,
               '目录…',
-              '把整个目录交给 Claude',
+              '把整个目录复制进来',
               'device-folder',
             )}
           </div>

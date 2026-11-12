@@ -1,14 +1,15 @@
 /**
- * Directory browsing and browser-to-machine uploads.
+ * Directory browsing and file intake.
  *
  * The web UI lets the operator pick a working directory for a new terminal and
  * attach files from either side. Listing is read-only and reports what the
- * filesystem says; uploading writes only below a fresh folder in the Spawner's
- * own data directory, never onto the path the browser suggests.
+ * filesystem says. Uploads and copies always land in the session's own working
+ * directory — the folder the terminal runs in — so the files are project
+ * files, not a cache the user has to clean up later.
  */
 
-import { randomBytes } from 'node:crypto'
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -16,15 +17,24 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve,
+  sep,
+} from 'node:path'
 import type {
+  CopyResult,
   DirectoryEntry,
   DirectoryListing,
   DirectoryRoot,
   UploadFileInput,
   UploadResult,
 } from '../../remote-control-server/src/device/protocol'
-import { logDir, type SpawnerConfig } from './config'
+import type { SpawnerConfig } from './config'
 
 /** A listing larger than this is not something a person scrolls through. */
 const MAX_ENTRIES = 500
@@ -202,18 +212,57 @@ function safeRelativePath(name: string): string | undefined {
   return segments.map(safeSegment).join('/')
 }
 
-function stamp(): string {
-  const now = new Date()
-  const pad = (value: number) => String(value).padStart(2, '0')
-  return (
-    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
-    `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  )
+/** The session's working directory: every upload and copy lands here. */
+function sessionDirectory(
+  config: SpawnerConfig,
+  cwd: string | undefined,
+): string {
+  const target = (cwd || '').trim()
+  if (
+    !target ||
+    target.length > 4096 ||
+    !isAbsolute(target) ||
+    (!target.startsWith(sep) && !/^[A-Za-z]:[\\/]/.test(target))
+  ) {
+    throw new Error('会话目录不是绝对路径')
+  }
+  if (!underAllowedRoot(target, config.allowedRoots)) {
+    throw new Error('会话目录不在允许的根目录内')
+  }
+  let info
+  try {
+    info = statSync(target)
+  } catch {
+    throw new Error('会话目录不存在或无法访问')
+  }
+  if (!info.isDirectory()) throw new Error('会话目录不是目录')
+  return resolve(target)
+}
+
+/** `report.txt` next to an existing one becomes `report (2).txt`. */
+function uniquePath(directory: string, name: string): string {
+  const first = join(directory, name)
+  if (!existsSync(first)) return first
+  const extension = extname(name)
+  const stem = extension ? name.slice(0, -extension.length) : name
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = join(directory, `${stem} (${index})${extension}`)
+    if (!existsSync(candidate)) return candidate
+  }
+  throw new Error(`无法为 ${name} 生成不冲突的文件名`)
+}
+
+/** True when `child` is `parent` itself or lives below it. */
+function insideOrEqual(parent: string, child: string): boolean {
+  const base = resolve(parent)
+  const value = resolve(child)
+  return value === base || value.startsWith(`${base}${sep}`)
 }
 
 export async function uploadFiles(
+  config: SpawnerConfig,
   files: UploadFileInput[],
-  group?: string,
+  cwd: string | undefined,
 ): Promise<UploadResult> {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('没有要上传的文件')
@@ -221,6 +270,7 @@ export async function uploadFiles(
   if (files.length > MAX_FILES) {
     throw new Error(`一次最多上传 ${MAX_FILES} 个文件`)
   }
+  const root = sessionDirectory(config, cwd)
 
   let total = 0
   const prepared: { relative: string; data: Buffer }[] = []
@@ -243,24 +293,124 @@ export async function uploadFiles(
     prepared.push({ relative, data: Buffer.from(file.data, 'base64') })
   }
 
-  // A client may split one folder into several batches; a hex-only group id
-  // is the only thing it can contribute to the destination path.
-  const folder =
-    typeof group === 'string' && /^[a-z0-9-]{8,64}$/i.test(group)
-      ? group.toLowerCase()
-      : `${stamp()}-${randomBytes(3).toString('hex')}`
-  const root = normalize(join(logDir(), 'uploads', folder))
-  mkdirSync(root, { recursive: true })
-
   const uploaded = prepared.map(file => {
-    const target = normalize(join(root, file.relative))
-    if (!target.startsWith(root + sep)) {
-      throw new Error('文件名不合法')
-    }
-    mkdirSync(dirname(target), { recursive: true })
+    const parts = file.relative.split('/')
+    const name = parts.pop() ?? file.relative
+    // Intermediate folders are reused: a folder upload split into several
+    // batches must keep writing into the same tree.
+    const directory = parts.length > 0 ? join(root, ...parts) : root
+    mkdirSync(directory, { recursive: true })
+    const target = uniquePath(directory, name)
+    if (!insideOrEqual(root, target)) throw new Error('文件名不合法')
     writeFileSync(target, file.data)
-    return { name: file.relative, path: target, bytes: file.data.length }
+    return {
+      name: [...parts, basename(target)].join('/'),
+      path: target,
+      bytes: file.data.length,
+    }
   })
 
   return { root, files: uploaded }
+}
+
+const MAX_COPY_ENTRIES = 1000
+const MAX_COPY_BYTES = 200 * 1024 * 1024
+const MAX_COPY_PATHS = 50
+
+type CopyStats = { entries: number; bytes: number }
+
+/** Pre-scan so a huge directory is refused before anything is written. */
+function measure(source: string, stats: CopyStats): void {
+  const info = statSync(source)
+  if (info.isDirectory()) {
+    for (const dirent of readdirSync(source, { withFileTypes: true })) {
+      if (dirent.isSymbolicLink()) continue
+      if (dirent.isDirectory()) {
+        measure(join(source, dirent.name), stats)
+      } else if (dirent.isFile()) {
+        stats.entries += 1
+        stats.bytes += statSync(join(source, dirent.name)).size
+      }
+    }
+  } else {
+    stats.entries += 1
+    stats.bytes += info.size
+  }
+  if (stats.entries > MAX_COPY_ENTRIES || stats.bytes > MAX_COPY_BYTES) {
+    throw new Error(
+      `要复制的内容太大（上限 ${MAX_COPY_ENTRIES} 个文件 / ${
+        MAX_COPY_BYTES / 1024 / 1024
+      }MB）`,
+    )
+  }
+}
+
+function copyTree(source: string, destination: string): void {
+  const info = statSync(source)
+  if (info.isDirectory()) {
+    mkdirSync(destination, { recursive: true })
+    for (const dirent of readdirSync(source, { withFileTypes: true })) {
+      if (dirent.isSymbolicLink()) continue
+      const child = join(source, dirent.name)
+      if (dirent.isDirectory()) {
+        copyTree(child, join(destination, dirent.name))
+      } else if (dirent.isFile()) {
+        copyFileSync(child, join(destination, dirent.name))
+      }
+    }
+  } else {
+    copyFileSync(source, destination)
+  }
+}
+
+/**
+ * Bring files or directories that already exist on this machine into the
+ * session directory. Sources already inside it are returned untouched.
+ */
+export async function copyPaths(
+  config: SpawnerConfig,
+  cwd: string | undefined,
+  paths: string[],
+): Promise<CopyResult> {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new Error('没有要添加的文件')
+  }
+  if (paths.length > MAX_COPY_PATHS) {
+    throw new Error(`一次最多添加 ${MAX_COPY_PATHS} 项`)
+  }
+  const root = sessionDirectory(config, cwd)
+  const stats: CopyStats = { entries: 0, bytes: 0 }
+  const entries: CopyResult['entries'] = []
+
+  for (const raw of paths) {
+    if (typeof raw !== 'string' || !raw.trim()) throw new Error('路径不合法')
+    const source = resolve(raw.trim())
+    if (
+      source.length > 4096 ||
+      !isAbsolute(source) ||
+      (!source.startsWith(sep) && !/^[A-Za-z]:[\\/]/.test(source))
+    ) {
+      throw new Error(`路径不合法：${raw.slice(0, 120)}`)
+    }
+    let info
+    try {
+      info = statSync(source)
+    } catch {
+      throw new Error(`找不到：${raw.slice(0, 160)}`)
+    }
+    const type: 'dir' | 'file' = info.isDirectory() ? 'dir' : 'file'
+    if (insideOrEqual(root, source)) {
+      entries.push({ source, path: source, type, copied: false })
+      continue
+    }
+    if (type === 'dir' && insideOrEqual(source, root)) {
+      throw new Error('不能把会话目录的上级目录复制到它自己里面')
+    }
+    measure(source, stats)
+    const destination = uniquePath(root, basename(source))
+    copyTree(source, destination)
+    entries.push({ source, path: destination, type, copied: true })
+  }
+
+  return { entries }
 }

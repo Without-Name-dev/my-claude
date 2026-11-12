@@ -849,7 +849,7 @@ app.post('/devices/:deviceId/uploads', uuidAuth, async c => {
   }
   const body = (await c.req.json().catch(() => null)) as {
     files?: unknown
-    group?: unknown
+    cwd?: unknown
   } | null
   const files: { name: string; data: string }[] = []
   if (Array.isArray(body?.files)) {
@@ -868,15 +868,64 @@ app.post('/devices/:deviceId/uploads', uuidAuth, async c => {
   if (files.length > 200) {
     return errorJson(c, 400, 'bad_request', '一次最多上传 200 个文件')
   }
-  const group =
-    typeof body?.group === 'string' && /^[a-z0-9-]{8,64}$/i.test(body.group)
-      ? body.group
-      : undefined
+  const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : ''
+  if (!cwd || cwd.length > 4096 || !/^(\/|[A-Za-z]:[\\/])/.test(cwd)) {
+    return errorJson(c, 400, 'bad_request', '需要会话目录（cwd）')
+  }
   try {
     const result = await requestDevice(
       device.id,
       'upload_files',
-      group ? { files, group } : { files },
+      { files, cwd },
+      180_000,
+    )
+    return c.json(result)
+  } catch (error) {
+    return errorJson(c, 503, 'device_unavailable', (error as Error).message)
+  }
+})
+
+/**
+ * Bring files or directories that already exist on the operator machine into
+ * the session directory (the terminal's cwd).
+ */
+app.post('/devices/:deviceId/copy', uuidAuth, async c => {
+  const device = deviceFromParam(c)
+  if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')
+  if (!getDevice(device.id)) {
+    return errorJson(c, 404, 'device_not_found', '设备不存在')
+  }
+  if (!isDeviceOnline(device.id)) {
+    return errorJson(c, 503, 'device_offline', '设备离线，无法添加文件')
+  }
+  const body = (await c.req.json().catch(() => null)) as {
+    cwd?: unknown
+    paths?: unknown
+  } | null
+  const cwd = typeof body?.cwd === 'string' ? body.cwd.trim() : ''
+  if (!cwd || cwd.length > 4096 || !/^(\/|[A-Za-z]:[\\/])/.test(cwd)) {
+    return errorJson(c, 400, 'bad_request', '需要会话目录（cwd）')
+  }
+  const paths: string[] = []
+  if (Array.isArray(body?.paths)) {
+    for (const item of body.paths) {
+      if (typeof item !== 'string' || !item.trim()) {
+        return errorJson(c, 400, 'bad_request', '路径不合法')
+      }
+      paths.push(item)
+    }
+  }
+  if (paths.length === 0) {
+    return errorJson(c, 400, 'bad_request', '没有要添加的文件')
+  }
+  if (paths.length > 50) {
+    return errorJson(c, 400, 'bad_request', '一次最多添加 50 项')
+  }
+  try {
+    const result = await requestDevice(
+      device.id,
+      'copy_paths',
+      { cwd, paths },
       180_000,
     )
     return c.json(result)

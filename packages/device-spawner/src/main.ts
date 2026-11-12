@@ -49,7 +49,7 @@ import {
   type RegistryEntry,
 } from './registry'
 import { listProjects, listSessions, readSession } from './sessions'
-import { listDirectory, uploadFiles } from './files'
+import { copyPaths, listDirectory, uploadFiles } from './files'
 import { managedSessions, openSession } from './open'
 import { closeSession, openNewSession } from './control'
 
@@ -59,6 +59,7 @@ const CAPABILITIES: DeviceCapability[] = [
   'read_session',
   'list_directory',
   'upload_files',
+  'copy_paths',
   'open_session',
   'open_new_session',
   'close_session',
@@ -498,8 +499,18 @@ async function handleRequest(
               }
             })
           : []
-        const group = stringField(params, 'group', 64)
-        respond(id, await uploadFiles(files, group))
+        const cwd = stringField(params, 'cwd', 4096)
+        respond(id, await uploadFiles(config, files, cwd))
+        return
+      }
+      case 'copy_paths': {
+        const cwd = stringField(params, 'cwd', 4096)
+        const paths = Array.isArray(params.paths)
+          ? params.paths.filter(
+              (item): item is string => typeof item === 'string',
+            )
+          : []
+        respond(id, await copyPaths(config, cwd, paths))
         return
       }
       case 'open_new_session': {

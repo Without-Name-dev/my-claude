@@ -51,6 +51,7 @@ export function BridgeChat({
   toolbarExtraLeft,
   onCloseTerminal,
   deviceId,
+  cwd,
 }: {
   sessionId: string;
   onBack?: () => void;
@@ -73,6 +74,8 @@ export function BridgeChat({
   onCloseTerminal?: () => void;
   /** Enables attaching files from this phone or from the PC. */
   deviceId?: string;
+  /** The terminal's working directory; attachments land inside it. */
+  cwd?: string;
 }) {
   const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
@@ -632,6 +635,7 @@ export function BridgeChat({
           placeholder="和 Claude 一起工作"
           supportsImages
           deviceId={deviceId}
+          cwd={cwd}
           commands={commands}
           toolbarLeft={
             <>

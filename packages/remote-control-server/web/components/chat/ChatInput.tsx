@@ -16,7 +16,7 @@ import type { AvailableCommand } from '../../src/acp/types';
 import { CommandMenu } from './CommandMenu';
 import imageCompression from 'browser-image-compression';
 import { haptic } from '../../src/lib/view-transition';
-import { uploadToDevice } from '../../src/api/devices';
+import { copyToDevice, uploadToDevice } from '../../src/api/devices';
 import { AttachmentMenu, type AttachmentChoice } from '../../src/components/device/AttachmentMenu';
 import { DirectoryPicker } from '../../src/components/device/DirectoryPicker';
 
@@ -62,6 +62,11 @@ interface ChatInputProps {
    * on: local files are uploaded there, machine files are referenced by path.
    */
   deviceId?: string;
+  /**
+   * The session's working directory. Uploads and copies land here so the
+   * terminal sees them as project files.
+   */
+  cwd?: string;
   className?: string;
 }
 
@@ -77,8 +82,11 @@ export function ChatInput({
   toolbarLeft,
   toolbarRight,
   deviceId,
+  cwd,
   className,
 }: ChatInputProps) {
+  /** Attaching from the PC needs a device; uploads also need its cwd. */
+  const deviceReady = Boolean(deviceId && cwd);
   const [text, setText] = useState(() => readDraft(draftKey));
   const [images, setImages] = useState<UserMessageImage[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
@@ -318,13 +326,12 @@ export function ChatInput({
   }, []);
 
   /**
-   * Push phone files to the device and reference the landing path. Batches
-   * keep each request small enough for a phone uplink; one group id keeps a
-   * folder's batches in the same folder on the PC.
+   * Push phone files into the session's working directory and reference the
+   * landing paths. Batches keep each request small enough for a phone uplink.
    */
   const uploadLocalFiles = useCallback(
     async (files: File[], asFolder: boolean) => {
-      if (!deviceId) return;
+      if (!deviceId || !cwd) return;
       const accepted: File[] = [];
       let bytes = 0;
       let skipped = 0;
@@ -346,10 +353,8 @@ export function ChatInput({
       }
 
       setUploading(true);
-      setNotice(`正在上传 ${accepted.length} 个文件到电脑…`);
+      setNotice(`正在上传 ${accepted.length} 个文件到会话目录…`);
       try {
-        const group = generateGroupId();
-        let root = '';
         let done = 0;
         const uploadedPaths: string[] = [];
         let batch: { name: string; data: string }[] = [];
@@ -357,8 +362,7 @@ export function ChatInput({
 
         const flush = async () => {
           if (batch.length === 0) return;
-          const result = await uploadToDevice(deviceId, batch, group);
-          if (!root) root = result.root;
+          const result = await uploadToDevice(deviceId, cwd, batch);
           uploadedPaths.push(...result.files.map(file => file.path));
           done += batch.length;
           setNotice(`正在上传 ${done}/${accepted.length} 个文件…`);
@@ -376,19 +380,26 @@ export function ChatInput({
         }
         await flush();
 
-        if (asFolder && root) {
-          // The browser keeps the chosen folder's own name in the relative
-          // paths; pointing at it means Claude sees the tree, not one flat bag.
-          const top = accepted[0]?.webkitRelativePath?.split('/')[0];
-          const separator = root.includes('\\') ? '\\' : '/';
-          insertReferences([top ? `${root}${separator}${top}` : root]);
+        if (asFolder) {
+          // Point at the uploaded folder itself, not each file: the browser
+          // keeps the folder name in the relative path. Derive it from the
+          // landed path because a name clash may have added a suffix.
+          const first = uploadedPaths[0];
+          const separator = cwd.includes('\\') ? '\\' : '/';
+          const prefix = cwd.endsWith(separator) ? cwd : `${cwd}${separator}`;
+          if (first && first.startsWith(prefix)) {
+            const top = first.slice(prefix.length).split(separator)[0];
+            insertReferences([`${prefix}${top}`]);
+          } else {
+            insertReferences(uploadedPaths);
+          }
         } else {
           insertReferences(uploadedPaths);
         }
         setNotice(
           skipped > 0
-            ? `已上传 ${accepted.length} 个文件，${skipped} 个因大小超限已跳过`
-            : `已上传 ${accepted.length} 个文件`,
+            ? `已上传 ${accepted.length} 个文件到会话目录，${skipped} 个因大小超限已跳过`
+            : `已上传 ${accepted.length} 个文件到会话目录`,
         );
         window.setTimeout(() => setNotice(''), 4000);
       } catch (error) {
@@ -397,7 +408,28 @@ export function ChatInput({
         setUploading(false);
       }
     },
-    [deviceId, insertReferences],
+    [cwd, deviceId, insertReferences],
+  );
+
+  /** Copy PC files/folders into the session directory, then reference them. */
+  const addDevicePaths = useCallback(
+    async (paths: string[]) => {
+      if (!deviceId || !cwd || paths.length === 0) return;
+      setUploading(true);
+      setNotice(paths.length > 1 ? `正在添加到会话目录（${paths.length} 项）…` : '正在添加到会话目录…');
+      try {
+        const result = await copyToDevice(deviceId, cwd, paths);
+        insertReferences(result.entries.map(entry => entry.path));
+        const copied = result.entries.filter(entry => entry.copied).length;
+        setNotice(copied > 0 ? `已添加 ${result.entries.length} 项到会话目录` : '这些文件已经在会话目录里');
+        window.setTimeout(() => setNotice(''), 4000);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : '添加失败，请重试');
+      } finally {
+        setUploading(false);
+      }
+    },
+    [cwd, deviceId, insertReferences],
   );
 
   const handleLocalFiles = useCallback(
@@ -601,7 +633,7 @@ export function ChatInput({
                     className="hidden"
                     onChange={handleFileSelect}
                   />
-                  {deviceId && (
+                  {deviceReady && (
                     <>
                       <input
                         ref={filesInputRef}
@@ -671,9 +703,9 @@ export function ChatInput({
         open={attachOpen}
         onClose={() => setAttachOpen(false)}
         onChoose={choice => void handleAttachChoice(choice)}
-        showDeviceOptions={Boolean(deviceId)}
+        showDeviceOptions={deviceReady}
       />
-      {deviceId && pickerMode && (
+      {deviceId && cwd && pickerMode && (
         <DirectoryPicker
           open
           deviceId={deviceId}
@@ -683,11 +715,11 @@ export function ChatInput({
           onClose={() => setPickerMode(null)}
           onPickFiles={paths => {
             setPickerMode(null);
-            insertReferences(paths);
+            void addDevicePaths(paths);
           }}
           onPickDirectory={path => {
             setPickerMode(null);
-            insertReferences([path]);
+            void addDevicePaths([path]);
           }}
         />
       )}
@@ -736,12 +768,6 @@ const MAX_UPLOAD_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 30 * 1024 * 1024;
 /** One request stays around 8 MB once base64-encoded. */
 const UPLOAD_BATCH_BYTES = 6 * 1024 * 1024;
-
-function generateGroupId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-}
 
 /** `@path` is how the terminal names a file; quote paths that contain spaces. */
 function formatMention(path: string): string {
