@@ -17,20 +17,30 @@ export function usePullToLoadOlder({
   const containerRef = useRef<HTMLDivElement>(null);
   const [pull, setPull] = useState(0);
   const armed = useRef(false);
+  // 手势的起点和累计拉动量放在 ref 里：流式回复期间 ChatView 每来一个数据块
+  // 就重渲染，onLoad 的新身份会重建监听器；闭包里的局部变量随重绑归零，
+  // 下一次 touchmove 拿 clientY-0 当位移，拉动量瞬间跳满并误触发加载。
+  const gesture = useRef({ startY: 0, pulled: 0 });
+  // 回调同样走 ref，让监听器只在开关变化时重绑，而不是每次渲染都拆装一遍。
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
 
   useLayoutEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    let startY = 0;
-    let pulled = 0;
+    const wrapper = containerRef.current;
+    if (!wrapper) return;
+    // The forwarded ref is StickToBottom's outer wrapper, which never scrolls
+    // (overflow-y-hidden). Watching it made scrollTop always read 0, so every
+    // downward drag anywhere in the transcript fired a history load. The real
+    // scroller is the .rcs-scroller div rendered by StickToBottom.Content.
+    const el = (wrapper.querySelector('.rcs-scroller') as HTMLElement | null) ?? wrapper;
     const onStart = (event: TouchEvent) => {
       if (!enabled || loading) {
         armed.current = false;
         return;
       }
       armed.current = el.scrollTop <= 0;
-      startY = event.touches[0]?.clientY ?? 0;
-      pulled = 0;
+      gesture.current.startY = event.touches[0]?.clientY ?? 0;
+      gesture.current.pulled = 0;
     };
     const onMove = (event: TouchEvent) => {
       if (!armed.current) return;
@@ -39,20 +49,20 @@ export function usePullToLoadOlder({
         setPull(0);
         return;
       }
-      const delta = (event.touches[0]?.clientY ?? startY) - startY;
+      const delta = (event.touches[0]?.clientY ?? gesture.current.startY) - gesture.current.startY;
       if (delta <= 0) {
         setPull(0);
         return;
       }
       // Damped so a short pull still reads as a pull, not a jump.
-      pulled = Math.min(delta * 0.5, 72);
-      setPull(pulled);
+      gesture.current.pulled = Math.min(delta * 0.5, 72);
+      setPull(gesture.current.pulled);
     };
     const onEnd = () => {
       if (!armed.current) return;
       armed.current = false;
-      if (pulled > 56) onLoad();
-      pulled = 0;
+      if (gesture.current.pulled > 56) onLoadRef.current();
+      gesture.current.pulled = 0;
       setPull(0);
     };
     el.addEventListener('touchstart', onStart, { passive: true });
@@ -65,7 +75,7 @@ export function usePullToLoadOlder({
       el.removeEventListener('touchend', onEnd);
       el.removeEventListener('touchcancel', onEnd);
     };
-  }, [enabled, loading, onLoad]);
+  }, [enabled, loading]);
 
   const hint = loading ? '正在加载更早的消息…' : pull > 0 ? (pull > 56 ? '松开加载' : '下拉加载更早的消息') : '';
 

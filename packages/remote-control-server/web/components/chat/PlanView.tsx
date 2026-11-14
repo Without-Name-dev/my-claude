@@ -23,7 +23,9 @@ export function PlanDisplay({ entry }: PlanDisplayProps) {
   const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return (
-    <div className="pl-10">
+    // 不再缩进：转录里的正文、工具卡片都是通栏，计划卡片单独 pl-10 在
+    // 窄屏上白丢 40px，视觉上也和相邻内容错位。
+    <div>
       <div className="rounded-xl border border-border bg-brand/5 overflow-hidden">
         {/* Header */}
         <button
@@ -119,7 +121,7 @@ function StatusIcon({ status }: { status: PlanEntryStatus }) {
 function PriorityBadge({ priority }: { priority: PlanEntryPriority }) {
   const styles: Record<PlanEntryPriority, string> = {
     high: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-    medium: 'bg-brand/10 text-brand dark:bg-brand/20',
+    medium: 'bg-brand/10 text-brand-dark dark:bg-brand/20 dark:text-brand',
     low: 'bg-surface-1 text-text-muted',
   };
 

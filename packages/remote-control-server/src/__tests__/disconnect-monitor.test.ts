@@ -100,7 +100,10 @@ describe('Disconnect Monitor Logic', () => {
     rec.updatedAt = new Date(Date.now() - 300 * 1000 * 2 - 60000)
 
     const bus = getEventBus(session.id)
-    const events: Array<{ type: string; payload: { status?: string } }> = []
+    const events: Array<{
+      type: string
+      payload: { status?: string; since?: number }
+    }> = []
     bus.subscribe(event => {
       events.push({
         type: event.type,
@@ -112,7 +115,7 @@ describe('Disconnect Monitor Logic', () => {
 
     expect(events).toContainEqual({
       type: 'session_status',
-      payload: { status: 'inactive' },
+      payload: { status: 'inactive', since: expect.any(Number) },
     })
   })
 })

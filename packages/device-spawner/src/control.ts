@@ -10,8 +10,15 @@
  */
 
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import {
+  existsSync,
+  mkdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { isAbsolute, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import type {
   DeviceEvent,
@@ -20,11 +27,13 @@ import type {
 import { isBridgeSessionId } from '../../remote-control-server/src/device/protocol'
 import { logDir, type SpawnerConfig } from './config'
 import { log } from './log'
+import { underAllowedRoot } from './path-policy'
 import {
   isProcessAlive,
   readRegistryWithReal,
   samePath,
   verifySession,
+  type RegistryEntry,
 } from './registry'
 
 const execFileAsync = promisify(execFile)
@@ -39,6 +48,25 @@ export type CloseSessionRequest = {
   localSessionId: string
   cwd?: string
   bridgeSessionId?: string
+}
+
+/** Select only the process launched with this operation's unique session ID. */
+export function findNewSession(
+  entries: RegistryEntry[],
+  sessionId: string,
+  cwd: string,
+  spawnedAt: number,
+): RegistryEntry | undefined {
+  return entries
+    .filter(
+      entry =>
+        isProcessAlive(entry.pid) &&
+        entry.sessionId === sessionId &&
+        samePath(entry.cwd, cwd) &&
+        (entry.startedAt === undefined ||
+          entry.startedAt >= spawnedAt - 10_000),
+    )
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
 }
 
 async function stopProcess(pid: number): Promise<void> {
@@ -63,15 +91,6 @@ function escapeCmd(value: string): string {
   return value.replace(/%/g, '%%')
 }
 
-function underAllowedRoot(cwd: string, roots: string[]): boolean {
-  if (roots.length === 0) return true
-  const normalized = resolve(cwd)
-  return roots.some(root => {
-    const base = resolve(root)
-    return normalized === base || normalized.startsWith(`${base}${sep}`)
-  })
-}
-
 /** Shared pre-flight for every terminal-spawning request. */
 function validateSpawnTarget(
   config: SpawnerConfig,
@@ -81,7 +100,7 @@ function validateSpawnTarget(
   if (!samePath(configDir, config.claudeConfigDir)) {
     return `Spawner 管理的配置目录是 ${config.claudeConfigDir}，请求来自 ${configDir}`
   }
-  if (!resolve(cwd).startsWith(sep) && !/^[A-Za-z]:[\\/]/.test(cwd)) {
+  if (!isAbsolute(cwd)) {
     return '会话工作目录不是绝对路径'
   }
   if (!underAllowedRoot(cwd, config.allowedRoots)) {
@@ -89,6 +108,11 @@ function validateSpawnTarget(
   }
   if (!existsSync(cwd)) {
     return `工作目录不存在：${cwd}`
+  }
+  try {
+    if (!statSync(cwd).isDirectory()) return `工作目录不是目录：${cwd}`
+  } catch {
+    return `无法访问工作目录：${cwd}`
   }
   return undefined
 }
@@ -175,12 +199,13 @@ export async function openNewSession(
   // Write the launcher inline (same rules as open.ts, minus --resume).
   const dir = join(logDir(), 'launchers')
   mkdirSync(dir, { recursive: true })
-  const launcherPath = join(dir, `new-${Date.now()}.cmd`)
+  const newSessionId = randomUUID()
+  const launcherPath = join(dir, `new-${newSessionId}.cmd`)
   const lines = [
     '@echo off',
     'chcp 65001 >nul',
     `cd /d "${escapeCmd(request.cwd)}"`,
-    `start "" "${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --remote-control`,
+    `start "" "${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --session-id ${newSessionId} --remote-control`,
     '',
   ]
   writeFileSync(launcherPath, lines.join('\r\n'), 'utf8')
@@ -221,25 +246,13 @@ export async function openNewSession(
     }
   }, 30_000).unref?.()
 
-  // Discover the session the CLI registered in this cwd after the spawn. A
-  // resume would carry --resume <id> on the command line; a fresh terminal has
-  // none, so the registry's newest entry for this cwd is the match.
+  // Match the UUID supplied to the CLI, not another process in the same cwd.
   let localSessionId: string | undefined
   let pid: number | undefined
   const deadline = spawnedAt + 90_000
   while (Date.now() < deadline) {
     const entries = await readRegistryWithReal(config.claudeConfigDir)
-    const fresh = entries
-      .filter(
-        entry =>
-          isProcessAlive(entry.pid) &&
-          entry.cwd &&
-          samePath(entry.cwd, request.cwd) &&
-          (entry.startedAt === undefined ||
-            entry.startedAt >= spawnedAt - 10_000),
-      )
-      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-    const entry = fresh[0]
+    const entry = findNewSession(entries, newSessionId, request.cwd, spawnedAt)
     if (entry) {
       if (localSessionId !== entry.sessionId || pid !== entry.pid) {
         localSessionId = entry.sessionId

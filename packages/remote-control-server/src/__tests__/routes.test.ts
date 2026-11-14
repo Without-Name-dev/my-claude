@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterAll, mock } from 'bun:test'
 
 // res.json() returns Promise<unknown> in strict mode; this helper narrows for test assertions
 function resJson(res: Response) {
@@ -58,6 +58,27 @@ import webAuth from '../routes/web/auth'
 import webSessions from '../routes/web/sessions'
 import webControl from '../routes/web/control'
 import webEnvironments from '../routes/web/environments'
+import webDevices from '../routes/web/devices'
+import {
+  listOutbox,
+  loadState,
+  resetStateForTest,
+  setCatalog,
+  setMapping,
+  setRuntime,
+  upsertDevice,
+} from '../device/state'
+import {
+  listStoredMessages,
+  resetConversationStoreForTest,
+} from '../device/conversation-store'
+import {
+  handleWebSocketClose,
+  handleWebSocketOpen,
+} from '../transport/ws-handler'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function createApp() {
   const app = new Hono()
@@ -73,6 +94,7 @@ function createApp() {
   app.route('/web', webSessions)
   app.route('/web', webControl)
   app.route('/web', webEnvironments)
+  app.route('/web', webDevices)
   return app
 }
 
@@ -832,6 +854,42 @@ describe('Web Session Routes', () => {
     ])
   })
 
+  test('GET history keeps the latest execution state after stream history rolls over', async () => {
+    const createRes = await app.request('/web/sessions?uuid=user-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const { id } = await resJson(createRes)
+    publishSessionEvent(
+      id,
+      'task_state',
+      { tasks: [{ id: '1', subject: 'Task', status: 'in_progress' }] },
+      'inbound',
+    )
+    publishSessionEvent(
+      id,
+      'workflow_state',
+      { runs: [{ runId: 'r1', workflowName: 'audit', status: 'running' }] },
+      'inbound',
+    )
+    for (let i = 0; i < 5001; i++)
+      publishSessionEvent(id, 'partial_assistant', {}, 'inbound')
+    const res = await app.request(`/web/sessions/${id}/history?uuid=user-1`)
+    const body = await resJson(res)
+    expect(
+      body.events.filter(
+        (event: { type: string }) => event.type === 'task_state',
+      ),
+    ).toHaveLength(1)
+    expect(
+      body.events.filter(
+        (event: { type: string }) => event.type === 'workflow_state',
+      ),
+    ).toHaveLength(1)
+    expect(body.events[0].type).toBe('task_state')
+  })
+
   test('GET /web/sessions/:id and history — supports compat code session IDs', async () => {
     const codeSession = storeCreateSession({ idPrefix: 'cse_' })
     storeBindSession(codeSession.id, 'user-1')
@@ -1355,12 +1413,25 @@ describe('V1 Session Ingress Routes (HTTP)', () => {
     }
   })
 
-  test('GET /v2/session_ingress/ws/:sessionId — closes 11MB payload with 1009', () => {
+  test('GET /v2/session_ingress/ws/:sessionId — accepts an 11MB photo echo, closes 27MB with 1009', () => {
+    // 8 max-compressed photos echo back as one ~22MB frame, so the frame cap
+    // sits at 26MB: an 11MB frame must pass through…
+    const keep = mock(() => {})
+    expect(
+      handleSessionIngressWsPayload(
+        { close: keep } as any,
+        'session_large_ok',
+        'x'.repeat(11 * 1024 * 1024),
+      ),
+    ).not.toBe(false)
+    expect(keep).not.toHaveBeenCalled()
+
+    // …and only a frame beyond the cap closes the bridge.
     const close = mock(() => {})
     const handled = handleSessionIngressWsPayload(
       { close } as any,
       'session_large',
-      'x'.repeat(11 * 1024 * 1024),
+      'x'.repeat(27 * 1024 * 1024),
     )
 
     expect(handled).toBe(false)
@@ -1832,5 +1903,199 @@ describe('V2 Worker Events Routes', () => {
       },
     )
     expect(res.status).toBe(200)
+  })
+})
+
+describe('Web device message route (photo pipeline)', () => {
+  const deviceId = 'dev_route1'
+  const localSessionId = '1b094c06-6f2d-470d-aef1-dcce041193b7'
+  const bridgeId = 'session_abcdef0123456789'
+  let app: Hono
+  // Fresh dir per test: loadState must not replay an earlier test's outbox.
+  const dirs: string[] = []
+
+  beforeEach(async () => {
+    storeReset()
+    resetStateForTest()
+    resetConversationStoreForTest()
+    for (const [key] of getAllEventBuses()) {
+      removeEventBus(key)
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'rcs-devroute-'))
+    dirs.push(dir)
+    process.env.RCS_DATA_DIR = dir
+    await loadState()
+    upsertDevice({
+      id: deviceId,
+      name: 'Route Test PC',
+      platform: 'win32',
+      configDir: 'C:\\Users\\route\\.claude',
+      secretHash: 'hash',
+      secretPrefix: 'pre',
+      capabilities: [],
+      createdAt: Date.now(),
+      lastSeenAt: null,
+    })
+    setCatalog(
+      deviceId,
+      [],
+      [
+        {
+          localSessionId,
+          projectId: 'proj',
+          cwd: 'C:\\proj',
+          title: 't',
+          summary: '',
+          updatedAt: Date.now(),
+        },
+      ],
+    )
+    app = createApp()
+  })
+
+  afterAll(async () => {
+    resetStateForTest()
+    resetConversationStoreForTest()
+    for (const dir of dirs) await rm(dir, { recursive: true, force: true })
+  })
+
+  function postMessage(body: unknown) {
+    return app.request(
+      `/web/devices/${deviceId}/sessions/${localSessionId}/messages`,
+      {
+        method: 'POST',
+        headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
+  }
+
+  test('rejects more than 8 images with 400', async () => {
+    const res = await postMessage({
+      text: 'hi',
+      images: Array.from({ length: 9 }, () => ({
+        mimeType: 'image/png',
+        data: 'aGk=',
+      })),
+    })
+    expect(res.status).toBe(400)
+    const body = await resJson(res)
+    expect(body.error.message).toBe('最多只能发送 8 张图片')
+  })
+
+  test('rejects text over 100000 characters with 400', async () => {
+    const res = await postMessage({ text: 'a'.repeat(100_001) })
+    expect(res.status).toBe(400)
+    const body = await resJson(res)
+    expect(body.error.message).toBe('消息内容无效')
+  })
+
+  test('rejects an image entry with empty data with 400', async () => {
+    const res = await postMessage({
+      text: '看图',
+      images: [
+        { mimeType: 'image/png', data: 'aGk=' },
+        { mimeType: 'image/png', data: '' },
+      ],
+    })
+    expect(res.status).toBe(400)
+    const body = await resJson(res)
+    expect(body.error.message).toBe('图片格式无效')
+  })
+
+  test('queues a pure image message with an image-only content array', async () => {
+    // Device offline (no spawner attached): the message must queue, not 400.
+    const res = await postMessage({
+      text: '',
+      images: [{ mimeType: 'image/png', data: 'aGk=' }],
+    })
+    expect(res.status).toBe(200)
+    const body = await resJson(res)
+    expect(body.state).toBe('queued')
+
+    const entry = listOutbox(deviceId, localSessionId).find(
+      row => row.id === body.messageId,
+    )
+    const payload = entry?.payload as {
+      content: unknown[]
+    }
+    expect(payload.content).toEqual([
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+      },
+    ])
+
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'image', mimeType: 'image/png', data: 'aGk=' },
+    ])
+  })
+
+  test('still queues text-only messages with string content', async () => {
+    const res = await postMessage({ text: '你好' })
+    expect(res.status).toBe(200)
+    const body = await resJson(res)
+    expect(body.state).toBe('queued')
+    const entry = listOutbox(deviceId, localSessionId).find(
+      row => row.id === body.messageId,
+    )
+    expect((entry?.payload as { content: unknown }).content).toBe('你好')
+  })
+
+  test('delivers a pure image message through a live bridge as content blocks', async () => {
+    setMapping({
+      deviceId,
+      localSessionId,
+      bridgeSessionId: bridgeId,
+      cwd: 'C:\\proj',
+      updatedAt: Date.now(),
+    })
+    setRuntime(deviceId, localSessionId, {
+      localSessionId,
+      cwd: 'C:\\proj',
+      processAlive: true,
+      bridgeSessionId: bridgeId,
+      verifiedAt: Date.now(),
+      source: 'managed',
+    })
+    const sent: string[] = []
+    const ws = {
+      readyState: 1,
+      send: (data: string) => sent.push(data),
+      close: () => {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridgeId)
+    try {
+      const res = await postMessage({
+        text: '',
+        images: [{ mimeType: 'image/jpeg', data: 'aGk=' }],
+      })
+      expect(res.status).toBe(200)
+      const body = await resJson(res)
+      expect(body.state).toBe('sent')
+      expect(body.bridgeSessionId).toBe(bridgeId)
+
+      // The frame the CLI receives must carry the image block array.
+      const frame = sent
+        .map(data => JSON.parse(data) as Record<string, unknown>)
+        .find(message => message.type === 'user') as {
+        message: { content: unknown }
+      }
+      expect(frame.message.content).toEqual([
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: 'aGk=' },
+        },
+      ])
+
+      const page = listStoredMessages(deviceId, localSessionId, 10)
+      expect(page.messages[0]?.blocks).toEqual([
+        { type: 'image', mimeType: 'image/jpeg', data: 'aGk=' },
+      ])
+    } finally {
+      handleWebSocketClose(ws, bridgeId, 1000, '', token)
+      removeEventBus(bridgeId)
+    }
   })
 })

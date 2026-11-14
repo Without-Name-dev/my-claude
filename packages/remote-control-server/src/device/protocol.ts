@@ -62,7 +62,7 @@ export type TranscriptBlock =
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id?: string; name: string; input?: unknown }
   | { type: 'tool_result'; toolUseId?: string; text: string; isError?: boolean }
-  | { type: 'image' }
+  | { type: 'image'; mimeType?: string; data?: string }
 
 export type TranscriptMessage = {
   /** Stable id: the transcript entry uuid when present. */
@@ -72,7 +72,35 @@ export type TranscriptMessage = {
   timestamp?: string
   blocks: TranscriptBlock[]
   isMeta?: boolean
+  /**
+   * Billed usage of this assistant message, when the source carries it. The
+   * web's token/cache-rate row seeds from history with the same numbers the
+   * terminal's status line hydrates from the transcript, so a reload shows
+   * the same rate instead of restarting from zero.
+   */
+  usage?: TranscriptUsage
 }
+
+export type TranscriptUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+}
+
+/**
+ * Content of an outbound user event on the bridge wire. Plain text stays a
+ * string; a message with photos travels as Anthropic content blocks, which
+ * the CLI's inbound path normalizes (inboundMessages.normalizeImageBlocks).
+ */
+export type UserContentBlock =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image'
+      source: { type: 'base64'; media_type: string; data: string }
+    }
+
+export type UserContent = string | UserContentBlock[]
 
 /** One child of a directory the operator browsed on their own machine. */
 export type DirectoryEntry = {

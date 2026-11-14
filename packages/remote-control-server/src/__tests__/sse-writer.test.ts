@@ -28,6 +28,7 @@ import {
   getEventBus,
 } from '../transport/event-bus'
 import { createSSEWriter, createSSEStream } from '../transport/sse-writer'
+import { publishSessionEvent } from '../services/transport'
 
 /** Read up to N bytes from a Response stream, then cancel */
 async function readPartialStream(
@@ -83,6 +84,41 @@ describe('SSE Writer', () => {
       for (const [key] of getAllEventBuses()) {
         removeEventBus(key)
       }
+    })
+
+    test('sends terminal image data once while retaining the message and metadata', async () => {
+      const sessionId = 'sse-image'
+      publishSessionEvent(sessionId, 'system', { content: 'before' }, 'inbound')
+      const image = 'UNIQUE_BASE64_IMAGE_DATA'
+      publishSessionEvent(
+        sessionId,
+        'user',
+        {
+          uuid: 'photo-id',
+          isSynthetic: false,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: image,
+                },
+              },
+            ],
+          },
+        },
+        'inbound',
+      )
+      const app = new Hono()
+      app.get('/stream', c => createSSEStream(c, sessionId, 1))
+      const response = await app.request('/stream')
+      const text = await readPartialStream(response)
+      expect(text.split(image)).toHaveLength(2)
+      expect(text).toContain('photo-id')
+      expect(text).toContain('image/png')
     })
 
     test('returns Response with correct SSE headers', async () => {
@@ -202,39 +238,82 @@ describe('SSE Writer', () => {
       expect(text).not.toContain('event: message')
     })
 
-    test('subscribes to new events and delivers them', async () => {
-      const app = new Hono()
+    test('snapshots the stored session status for mid-turn subscribers', async () => {
+      // A phone that opens the stream while a turn is already running missed
+      // the session_status event that started it.
+      const { storeCreateSession, storeUpdateSession } = await import(
+        '../store'
+      )
+      const session = storeCreateSession({})
+      storeUpdateSession(session.id, { status: 'running' })
 
+      const app = new Hono()
       app.get('/stream/:sessionId', c => {
         const sessionId = c.req.param('sessionId')
         return createSSEStream(c, sessionId, 0)
       })
 
-      const res = await app.request('/stream/s6')
-
-      // Read initial keepalive first
+      const res = await app.request(`/stream/${session.id}`)
+      // keepalive and snapshot enqueue as separate chunks; read both.
       const reader = res.body!.getReader()
-      const { value: firstChunk } = await reader.read()
-      const initialText = new TextDecoder().decode(firstChunk!)
-      expect(initialText).toContain(': keepalive')
+      const decoder = new TextDecoder()
+      let text = ''
+      for (let i = 0; i < 3; i += 1) {
+        const { value } = await reader.read()
+        text += decoder.decode(value ?? new Uint8Array())
+        if (text.includes('session_status')) break
+      }
+      reader.cancel()
+      expect(text).toContain('event: message')
+      expect(text).toContain('"session_status"')
+      expect(text).toContain('"running"')
+      expect(text).toContain('"since"')
+      // No id line: the snapshot must not move the client's replay cursor.
+      expect(text).not.toMatch(/^id: /m)
+    })
 
-      // Now publish an event
-      const bus = getEventBus('s6')
-      bus.publish({
-        id: 'e1',
-        sessionId: 's6',
-        type: 'user',
-        payload: { content: 'real-time' },
-        direction: 'outbound',
+    test('streams an image-only user turn with its content blocks intact', async () => {
+      // The device photo pipeline publishes user turns whose content is an
+      // Anthropic block array. normalizePayload flattens a display string but
+      // keeps the array on message.content — the SSE frame must carry it
+      // through untouched (no string coercion anywhere in the path).
+      const { publishSessionEvent } = await import('../services/transport')
+      const app = new Hono()
+      app.get('/stream/:sessionId', c => {
+        const sessionId = c.req.param('sessionId')
+        return createSSEStream(c, sessionId, 0)
       })
 
-      // Read the event
-      const { value: secondChunk } = await reader.read()
-      const eventText = new TextDecoder().decode(secondChunk!)
-      expect(eventText).toContain('event: message')
-      expect(eventText).toContain('real-time')
-
+      const res = await app.request('/stream/s-img')
+      const blocks = [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+        },
+      ]
+      publishSessionEvent(
+        's-img',
+        'user',
+        {
+          type: 'user',
+          uuid: 'u-img',
+          content: blocks,
+          message: { content: blocks },
+        },
+        'outbound',
+      )
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let text = ''
+      for (let i = 0; i < 3; i += 1) {
+        const { value } = await reader.read()
+        text += decoder.decode(value ?? new Uint8Array())
+        if (text.includes('"u-img"')) break
+      }
       reader.cancel()
+      expect(text).toContain('"type":"user"')
+      expect(text).toContain('"content":[{"type":"image"')
+      expect(text).toContain('"data":"aGk="')
     })
   })
 })

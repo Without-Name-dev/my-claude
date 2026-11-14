@@ -68,6 +68,32 @@ describe('transcriptToEntries', () => {
     ])
     expect(entries).toEqual([])
   })
+
+  test('does not claim an agent finished when its result is absent from the history page', () => {
+    const entries = transcriptToEntries([
+      message('a1', 'assistant', [
+        {
+          type: 'tool_use',
+          id: 'agent-1',
+          name: 'Agent',
+          input: { description: '检查前端' },
+        },
+      ]),
+    ])
+    expect(entries[0]).toMatchObject({
+      type: 'tool_call',
+      toolCall: { status: 'unknown' },
+    })
+    const live: ThreadEntry[] = [
+      {
+        type: 'tool_call',
+        toolCall: { id: 'agent-1', title: 'Agent', status: 'running' },
+      },
+    ]
+    expect(mergeThreadEntries(live, entries)[0]).toMatchObject({
+      toolCall: { status: 'running' },
+    })
+  })
 })
 
 describe('mergeThreadEntries', () => {
@@ -107,6 +133,101 @@ describe('mergeThreadEntries', () => {
       [{ type: 'user_message', id: 'user-u2', content: 'again' }],
     )
     expect(merged).toHaveLength(2)
+  })
+
+  test('adopts an un-echoed optimistic bubble after its pending flag was cleared', () => {
+    // A missed echo plus a live assistant chunk clears `pending`, so the
+    // resync replay must still recognize the bubble as ours and keep it in
+    // place instead of appending the user message after the reply.
+    const adoptable = new Set(['user-client-uuid'])
+    const merged = mergeThreadEntries(
+      [
+        { type: 'user_message', id: 'user-client-uuid', content: 'hello' },
+        {
+          type: 'assistant_message',
+          id: 'assistant-a1',
+          chunks: [{ type: 'message', text: 'answer' }],
+        },
+      ],
+      [
+        { type: 'user_message', id: 'user-server-uuid', content: 'hello' },
+        {
+          type: 'assistant_message',
+          id: 'assistant-a1',
+          chunks: [{ type: 'message', text: 'answer' }],
+        },
+      ],
+      adoptable,
+    )
+    expect(
+      merged.map(entry =>
+        entry.type === 'user_message' ? entry.id : entry.type,
+      ),
+    ).toEqual(['user-server-uuid', 'assistant_message'])
+    expect(adoptable.size).toBe(0)
+  })
+
+  test('same-text bubbles that this client did not create are kept', () => {
+    const merged = mergeThreadEntries(
+      [{ type: 'user_message', id: 'user-someone-else', content: 'hello' }],
+      [{ type: 'user_message', id: 'user-new', content: 'hello' }],
+      new Set(),
+    )
+    expect(merged).toHaveLength(2)
+  })
+
+  test('an old matching history row does not consume a new queued message', () => {
+    const old: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-old',
+      content: '继续',
+    }
+    const pending: ThreadEntry = {
+      type: 'user_message',
+      id: 'pending-new',
+      content: '继续',
+      pending: true,
+    }
+    expect(mergeThreadEntries([old, pending], [old])).toEqual([old, pending])
+  })
+
+  test('a matching id confirms a pending message without losing its image', () => {
+    const images = [{ mimeType: 'image/png', data: 'photo' }]
+    const pending: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-1',
+      content: '照片',
+      images,
+      pending: true,
+    }
+    const echo: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-1',
+      content: '照片',
+    }
+    expect(mergeThreadEntries([pending], [echo])).toEqual([{ ...echo, images }])
+  })
+
+  test('a reattach replay of a long turn under a fresh uuid is not duplicated', () => {
+    const prose =
+      '实锤了：两张截图是 22:35:00 和 22:35:46 通过 App 上传到电脑的，这就是照片变成路径引用的根本原因，真正的修复是让历史视图的发消息通道也支持图片直传。'
+    const onScreen = transcriptToEntries([
+      message('live-uuid', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    const replayed = transcriptToEntries([
+      message('replay-uuid', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    expect(mergeThreadEntries(onScreen, replayed)).toHaveLength(1)
+  })
+
+  test('a short identical reply is still kept twice', () => {
+    const onScreen = transcriptToEntries([
+      message('live-uuid', 'assistant', [{ type: 'text', text: 'ok' }]),
+    ])
+    const replayed = transcriptToEntries([
+      message('replay-uuid', 'assistant', [{ type: 'text', text: 'ok' }]),
+    ])
+    expect(mergeThreadEntries(onScreen, replayed)).toHaveLength(2)
   })
 })
 
@@ -154,6 +275,60 @@ describe('mergeHistoryPage', () => {
     )
     expect(merged).toEqual([
       { type: 'user_message', id: 'user-u1', content: 'hello' },
+    ])
+  })
+
+  test('keeps a queued repeat until a new matching history row arrives', () => {
+    const old: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-old',
+      content: '继续',
+    }
+    const pending: ThreadEntry = {
+      type: 'user_message',
+      id: 'pending-new',
+      content: '继续',
+      pending: true,
+    }
+    expect(mergeHistoryPage([old, pending], [old])).toEqual([old, pending])
+    const echoed: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-new',
+      content: '继续',
+    }
+    expect(mergeHistoryPage([old, pending], [old, echoed])).toEqual([
+      old,
+      echoed,
+    ])
+  })
+
+  test('only confirms one of two identical queued messages per new echo', () => {
+    const old: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-old',
+      content: '继续',
+    }
+    const first: ThreadEntry = {
+      type: 'user_message',
+      id: 'pending-1',
+      content: '继续',
+      pending: true,
+    }
+    const second: ThreadEntry = {
+      type: 'user_message',
+      id: 'pending-2',
+      content: '继续',
+      pending: true,
+    }
+    const echoed: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-new',
+      content: '继续',
+    }
+    expect(mergeHistoryPage([old, first, second], [old, echoed])).toEqual([
+      old,
+      echoed,
+      second,
     ])
   })
 })

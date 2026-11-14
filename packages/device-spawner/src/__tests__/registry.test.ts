@@ -90,6 +90,61 @@ describe('session registry', () => {
     expect(result.state.source).toBe('registry')
   })
 
+  test('accepts a CLI that registers long after process startup but rejects a reused PID', async () => {
+    const dir = await configDir()
+    const registeredAt = Date.now()
+    await writeFile(
+      join(dir, 'sessions', `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId: localSessionId,
+        cwd: 'C:\\work',
+        startedAt: registeredAt,
+      }),
+    )
+    const processInfo = (startedAt: number) =>
+      new Map([
+        [
+          process.pid,
+          {
+            name: 'bun.exe',
+            commandLine: 'bun cli.js',
+            startedAt,
+          },
+        ],
+      ])
+    const slowStartup = await verifySession(dir, localSessionId, undefined, {
+      verifyCommandLine: false,
+      processes: processInfo(registeredAt - 120_000),
+    })
+    expect(slowStartup.state.processAlive).toBe(true)
+    const reusedPid = await verifySession(dir, localSessionId, undefined, {
+      verifyCommandLine: false,
+      processes: processInfo(registeredAt + 120_000),
+    })
+    expect(reusedPid.state.processAlive).toBe(false)
+  })
+
+  test('reuses the supplied registry snapshot during a state report', async () => {
+    const dir = await configDir()
+    const entries = [
+      { pid: process.pid, sessionId: localSessionId, cwd: 'C:\\work' },
+    ]
+    const processes = new Map([
+      [
+        process.pid,
+        { name: 'bun.exe', commandLine: 'bun cli.js', startedAt: 0 },
+      ],
+    ])
+    const result = await verifySession(dir, localSessionId, undefined, {
+      verifyCommandLine: false,
+      entries,
+      processes,
+    })
+    expect(result.state.processAlive).toBe(true)
+    expect(result.state.pid).toBe(process.pid)
+  })
+
   test('samePath is case-insensitive on Windows and trims separators', () => {
     if (process.platform === 'win32') {
       expect(samePath('C:\\Work\\', 'c:/work')).toBe(true)

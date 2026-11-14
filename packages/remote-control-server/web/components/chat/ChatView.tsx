@@ -1,25 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { OlderMessagesRow, usePullToLoadOlder } from './PullOlder';
-import type { ThreadEntry, ToolCallEntry, PlanDisplayEntry } from '../../src/lib/types';
-import { cn } from '../../src/lib/utils';
-import { UserBubble, AssistantBubble } from './MessageBubble';
-import { ToolCallGroup } from './ToolCallGroup';
+import type {
+  AssistantMessageEntry,
+  CommandOutputEntry,
+  PlanDisplayEntry,
+  ThreadEntry,
+  ToolCallEntry,
+  UserMessageEntry,
+} from '../../src/lib/types';
+import { cn, stripAnsi } from '../../src/lib/utils';
+import { UserBubble, AssistantTurn } from './MessageBubble';
 import { PlanDisplay } from './PlanView';
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButtons,
-} from '../ai-elements/conversation';
+import { Conversation, ConversationContent, ConversationScrollButtons } from '../ai-elements/conversation';
 
 // =============================================================================
 // 统一聊天视图 — Anthropic 编辑式排版
-// 无气泡间距，用垂直 rhythm 区分消息块
+//
+// 上游把一次回答拆成很多条 JSONL 记录（思考 / 工具 / 正文各一条）。逐条渲染
+// 会得到满屏"思考了几秒 + 一个工具"的日志。这里先按用户消息切回合，再把同一
+// 回合里的思考合并成一条、连续工具合并成一组，正文保持原顺序。
 // =============================================================================
 
 interface ChatViewProps {
   entries: ThreadEntry[];
   isLoading?: boolean;
+  isHistoryLoading?: boolean;
   onPermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
   emptyTitle?: string;
   emptyDescription?: string;
@@ -32,6 +37,7 @@ interface ChatViewProps {
 export function ChatView({
   entries,
   isLoading = false,
+  isHistoryLoading = false,
   onPermissionRespond,
   emptyTitle = '开始对话',
   emptyDescription = '输入消息开始聊天',
@@ -39,22 +45,20 @@ export function ChatView({
   loadingOlder = false,
   onLoadOlder,
 }: ChatViewProps) {
-  // 将相邻的 ToolCallEntry 合并为一组
-  const grouped = groupToolCalls(entries);
+  const items = useMemo(() => buildChatItems(entries), [entries]);
   const hasMessages = entries.length > 0;
 
   // Entrance animation belongs to messages that arrive while you are watching.
   // A history page can drop 30-100 entries in at once; animating all of them
   // turned the first screen into a frame-dropping wall of motion.
   const animatedKeys = useRef<Set<string>>(new Set());
-  const previousCount = useRef(entries.length);
-  const added = entries.length - previousCount.current;
-  if (added > 0 && added <= 2) {
-    for (const entry of entries.slice(previousCount.current)) {
-      animatedKeys.current.add(entryDomKey(entry));
-    }
+  const previousKeys = useRef<Set<string>>(new Set());
+  const currentKeys = items.map(item => item.key);
+  const freshKeys = currentKeys.filter(key => !previousKeys.current.has(key));
+  if (freshKeys.length > 0 && freshKeys.length <= 2) {
+    for (const key of freshKeys) animatedKeys.current.add(key);
   }
-  previousCount.current = entries.length;
+  previousKeys.current = new Set(currentKeys);
 
   // Paint the newest few messages first, then fill the rest of the page in on
   // the next tick. The transcript is pinned to the bottom either way, so the
@@ -72,12 +76,12 @@ export function ChatView({
   useEffect(() => {
     void import('streamdown').catch(() => {});
   }, []);
-  const visibleGroups = revealAll ? grouped : grouped.slice(-6);
+  const visibleItems = revealAll ? items : items.slice(-6);
+  const lastItemKey = items.length > 0 ? items[items.length - 1]!.key : '';
 
-  // 检查是否正在加载（最后一个条目是用户消息）
-  // Keep the indicator visible for every busy turn, including ones started
-  // in the terminal and turns currently running a tool.
-  const showThinking = isLoading && entries.length > 0;
+  // Dots only mean "sent, nothing back yet". Once a turn has started, the
+  // thinking shimmer / running tool / streaming prose already say it.
+  const showThinking = isLoading && entries.length > 0 && entries[entries.length - 1]?.type === 'user_message';
 
   // Pull down at the top of the transcript to fetch the previous page.
   const { containerRef, pull, hint } = usePullToLoadOlder({
@@ -104,7 +108,7 @@ export function ChatView({
           />
         ) : null}
         {!hasMessages ? (
-          isLoading ? (
+          isHistoryLoading || isLoading ? (
             <div role="status" aria-live="polite" className="flex w-full flex-col gap-3 py-6">
               <span className="sr-only">{emptyTitle}</span>
               {[72, 55, 84].map((width, i) => (
@@ -137,39 +141,43 @@ export function ChatView({
           )
         ) : (
           <>
-            {visibleGroups.map(item => {
-              if (item.type === 'single') {
-                return (
-                  <div
-                    key={entryDomKey(item.entry)}
-                    className={cn(
-                      entrySpacing(entries, item.index),
-                      animatedKeys.current.has(entryDomKey(item.entry)) && 'rcs-enter',
-                    )}
-                  >
-                    <EntryRenderer
-                      entry={item.entry}
-                      isStreaming={isLoading && item.index === entries.length - 1}
-                      onPermissionRespond={onPermissionRespond}
-                    />
-                  </div>
-                );
+            {visibleItems.map(item => {
+              const animate = animatedKeys.current.has(item.key);
+              switch (item.kind) {
+                case 'user':
+                  return (
+                    <div key={item.key} className={cn('pt-7 pb-1', animate && 'rcs-enter')}>
+                      <UserBubble entry={item.entry} />
+                    </div>
+                  );
+                case 'turn':
+                  return (
+                    <div key={item.key} className={cn('pt-1 pb-2', animate && 'rcs-enter')}>
+                      <AssistantTurn
+                        entries={item.entries}
+                        isStreaming={isLoading && item.key === lastItemKey}
+                        onPermissionRespond={onPermissionRespond}
+                      />
+                    </div>
+                  );
+                case 'plan':
+                  return (
+                    <div key={item.key} className={cn('py-1', animate && 'rcs-enter')}>
+                      <PlanDisplay entry={item.entry} />
+                    </div>
+                  );
+                case 'output':
+                  return (
+                    <div key={item.key} className={cn('py-1', animate && 'rcs-enter')}>
+                      <CommandOutput text={item.entry.text} />
+                    </div>
+                  );
+                default:
+                  return null;
               }
-              // 工具调用组 — 紧贴在助手消息下方
-              return (
-                <div
-                  key={`group-${item.entries[0]?.toolCall.id ?? item.index}`}
-                  className={cn(
-                    '-mt-2',
-                    item.entries.some(entry => animatedKeys.current.has(entryDomKey(entry))) && 'rcs-enter',
-                  )}
-                >
-                  <ToolCallGroup entries={item.entries} onPermissionRespond={onPermissionRespond} />
-                </div>
-              );
             })}
 
-            {/* 思考指示器 — 三个点 */}
+            {/* 思考指示器 — 三个点（仅等待第一条输出时出现） */}
             {showThinking && (
               <div className="flex items-center gap-2 py-1" aria-hidden="true">
                 <span className="chat-typing-indicator">
@@ -187,114 +195,71 @@ export function ChatView({
   );
 }
 
-/** Stable key shared by the React list and the entrance-animation ledger. */
-function entryDomKey(entry: ThreadEntry): string {
-  return entry.type === 'tool_call' ? `tool-${entry.toolCall.id}` : `${entry.type}-${entry.id}`;
-}
-
 // =============================================================================
-// 间距逻辑 — 用户消息前后间距大，工具调用紧贴
+// 条目分组 — 用户消息之间的一切助手活动是一个回合
 // =============================================================================
 
-function entrySpacing(entries: ThreadEntry[], index: number): string {
-  const entry = entries[index];
-  // 用户消息前后大留白 — Claude.ai 式宽松间距
-  if (entry?.type === 'user_message') {
-    return 'pt-5 pb-1 sm:pt-8';
-  }
-  // 助手消息 — 工具调用紧贴，否则多留白
-  if (entry?.type === 'assistant_message') {
-    const next = entries[index + 1];
-    if (next?.type === 'tool_call') {
-      return 'pt-1 pb-1';
+type ChatItem =
+  | { kind: 'user'; key: string; entry: UserMessageEntry }
+  | { kind: 'turn'; key: string; entries: Array<AssistantMessageEntry | ToolCallEntry> }
+  | { kind: 'plan'; key: string; entry: PlanDisplayEntry }
+  | { kind: 'output'; key: string; entry: CommandOutputEntry };
+
+function buildChatItems(entries: ThreadEntry[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  let turn: Array<AssistantMessageEntry | ToolCallEntry> = [];
+
+  const flushTurn = () => {
+    if (turn.length === 0) return;
+    items.push({ kind: 'turn', key: itemKey(turn[0]!), entries: turn });
+    turn = [];
+  };
+
+  for (const entry of entries) {
+    if (entry.type === 'assistant_message' || entry.type === 'tool_call') {
+      turn.push(entry);
+      continue;
     }
-    return 'pt-1 pb-5 sm:pb-7';
+    flushTurn();
+    switch (entry.type) {
+      case 'user_message':
+        items.push({ kind: 'user', key: itemKey(entry), entry });
+        break;
+      case 'plan':
+        items.push({ kind: 'plan', key: itemKey(entry), entry });
+        break;
+      case 'command_output':
+        items.push({ kind: 'output', key: itemKey(entry), entry });
+        break;
+      default:
+        break;
+    }
   }
-  // Plan 条目
-  if (entry?.type === 'plan' || entry?.type === 'command_output') {
-    return 'pt-1 pb-1';
-  }
-  return 'py-2';
+  flushTurn();
+
+  return items;
+}
+
+/** Stable key shared by the React list and the entrance-animation ledger. */
+function itemKey(entry: ThreadEntry): string {
+  if (entry.type === 'user_message') return `user-${entry.id}`;
+  if (entry.type === 'assistant_message') return `assistant-${entry.id}`;
+  if (entry.type === 'tool_call') return `tool-${entry.toolCall.id}`;
+  if (entry.type === 'command_output') return `output-${entry.id}`;
+  return `plan-${entry.id}`;
 }
 
 // =============================================================================
-// 单条目渲染器
+// 命令输出（/compact 等）— 去掉 ANSI 控制符再显示
 // =============================================================================
 
 function CommandOutput({ text }: { text: string }) {
   return (
     <div className="rounded-lg border border-border/60 bg-surface-1/50 px-3 py-2">
       <div className="mb-1 text-[11px] uppercase tracking-wide text-text-muted">命令输出</div>
-      <div className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-text-secondary">{text}</div>
+      <div className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-text-secondary">
+        {stripAnsi(text)}
+      </div>
     </div>
   );
-}
-
-function EntryRenderer({
-  entry,
-  isStreaming,
-  onPermissionRespond,
-}: {
-  entry: ThreadEntry;
-  isStreaming: boolean;
-  onPermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
-}) {
-  switch (entry.type) {
-    case 'user_message':
-      return <UserBubble entry={entry} />;
-    case 'assistant_message':
-      return <AssistantBubble entry={entry} isStreaming={isStreaming} />;
-    case 'tool_call':
-      return <ToolCallGroup entries={[entry as ToolCallEntry]} onPermissionRespond={onPermissionRespond} />;
-    case 'command_output':
-      return <CommandOutput text={entry.text} />;
-    case 'plan':
-      return <PlanDisplay entry={entry as PlanDisplayEntry} />;
-    default:
-      return null;
-  }
-}
-
-// =============================================================================
-// 工具调用分组逻辑
-// =============================================================================
-
-type GroupedItem =
-  | { type: 'single'; entry: ThreadEntry; index: number }
-  | { type: 'tool_group'; entries: ToolCallEntry[]; index: number };
-
-function groupToolCalls(entries: ThreadEntry[]): GroupedItem[] {
-  const result: GroupedItem[] = [];
-  let currentToolGroup: ToolCallEntry[] = [];
-  let groupStart = 0;
-
-  const flushToolGroup = () => {
-    if (currentToolGroup.length === 1) {
-      result.push({
-        type: 'single',
-        entry: currentToolGroup[0]!,
-        index: groupStart,
-      });
-    } else if (currentToolGroup.length > 1) {
-      result.push({
-        type: 'tool_group',
-        entries: currentToolGroup,
-        index: groupStart,
-      });
-    }
-    currentToolGroup = [];
-  };
-
-  entries.forEach((entry, index) => {
-    if (entry.type === 'tool_call') {
-      if (currentToolGroup.length === 0) groupStart = index;
-      currentToolGroup.push(entry);
-    } else {
-      flushToolGroup();
-      result.push({ type: 'single', entry, index });
-    }
-  });
-  flushToolGroup();
-
-  return result;
 }

@@ -207,12 +207,17 @@ export function updateSessionStatus(sessionId: string, status: string) {
   storeUpdateSession(sessionId, { status })
   const bus = getAllEventBuses().get(sessionId)
   if (!bus) return
+  // The marker only moves on a real transition, so a re-affirmed status keeps
+  // its original start — the web's "已进行" elapsed timer stays stable across
+  // reloads instead of restarting from the publish moment.
+  const since =
+    storeGetSession(sessionId)?.statusChangedAt.getTime() ?? Date.now()
 
   bus.publish({
     id: randomUUID(),
     sessionId,
     type: 'session_status',
-    payload: { status },
+    payload: { status, since },
     direction: 'inbound',
   })
 }

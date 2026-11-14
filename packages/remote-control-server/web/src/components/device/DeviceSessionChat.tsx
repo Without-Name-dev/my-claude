@@ -5,18 +5,23 @@ import { ChatView } from '../../../components/chat/ChatView';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import type { ChatInputMessage, ThreadEntry } from '../../lib/types';
 import { mergeHistoryPage, mergeThreadEntries, transcriptToEntries } from '../../lib/device-history';
+import { cn } from '../../lib/utils';
+import { createSerialQueue } from '../../lib/serial-queue';
 import {
   closeSession,
   fetchHistory,
   fetchOperation,
   fetchSession,
   openSession,
+  reviewUnconfirmedDelivery,
   sendDeviceMessage,
   type DeviceSessionDetail,
   type OpenOperation,
+  type TranscriptUsage,
 } from '../../api/devices';
 import { BridgeChat } from './BridgeChat';
 import { apiSendControl } from '../../api/client';
+import { ModalSheet } from './ModalSheet';
 
 /**
  * The 10s poll rebuilds the detail object on every tick; pushing an identical
@@ -46,6 +51,27 @@ function shallowEqualSession(a: DeviceSessionDetail | null, b: DeviceSessionDeta
 /** One screenful plus context; older pages are fetched on demand. */
 const HISTORY_PAGE = 30;
 
+/**
+ * After a long agent turn the newest 30 rows can hold nothing but tool calls,
+ * which used to make the chat open on a single anonymous tool group that
+ * looked like "all my messages are gone". Keep paging back until the window
+ * contains at least one user message (bounded so a transcript with none —
+ * impossible today — cannot loop).
+ */
+const INITIAL_MAX_PAGES = 6;
+
+const OFFLINE_CACHE_NOTICE = '设备离线，显示服务端缓存的消息';
+
+const FAILURE_TEXT: Record<string, string> = {
+  busy: '该会话已有一个启动请求在进行中',
+  config_dir_mismatch: '配置目录不匹配，无法打开终端',
+  session_not_found: '找不到该会话的记录文件',
+  cwd_mismatch: '会话工作目录不在允许范围内',
+  spawn_failed: '终端启动失败',
+  bridge_timeout: '终端已打开，但 90 秒内没有连上远程控制',
+  process_exited: '终端在连接远程控制之前退出了',
+};
+
 function isBridgeFresh(detail: DeviceSessionDetail): boolean {
   if (!detail.bridgeSessionId) return false;
   // A stale mapping must never mount the live chat: the SSE endpoint answers
@@ -61,6 +87,7 @@ function isBridgeFresh(detail: DeviceSessionDetail): boolean {
 export function DeviceSessionChat({
   deviceId,
   localSessionId,
+  deviceName,
   onBack,
 }: {
   deviceId: string;
@@ -84,12 +111,25 @@ export function DeviceSessionChat({
   const [blockedSession, setBlockedSession] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [confirmTerminalAction, setConfirmTerminalAction] = useState<'restart' | 'close' | null>(null);
+  const [terminalActionPending, setTerminalActionPending] = useState(false);
+  const terminalActionInFlight = useRef(false);
+  /** Assistant history rows with billed usage; seeds the live token ledger. */
+  const [usageSeed, setUsageSeed] = useState<{ id: string; usage: TranscriptUsage }[]>([]);
   const loadedKey = useRef('');
-  // A second send while the first is still on the wire used to be dropped
-  // silently. Queue it and flush once the first settles.
-  const sendingRef = useRef(false);
-  const queuedMessage = useRef<ChatInputMessage | null>(null);
-  const sendRef = useRef<(message: ChatInputMessage) => Promise<void>>(async () => {});
+  // The 10s poll's closure captures operationId from mount (null); a plain
+  // state read made the poll decide "no operation" forever and flip the
+  // blocked card while a terminal was legitimately being opened.
+  const operationIdRef = useRef<string | null>(null);
+  // Suppresses the poll's mount-time tick while the initial detail+history
+  // load is still on the wire (it duplicated both requests).
+  const initialLoadDoneRef = useRef(false);
+  useEffect(() => {
+    operationIdRef.current = operationId;
+  }, [operationId]);
+  // Each caller waits its turn and receives its own result. A single queued
+  // message ref overwrote earlier sends and silently lost them on a slow link.
+  const sendQueue = useRef(createSerialQueue());
 
   const loadDetail = useCallback(async () => {
     const next = await fetchSession(deviceId, localSessionId);
@@ -113,6 +153,19 @@ export function DeviceSessionChat({
         ...(before ? { before } : {}),
       });
       const converted = transcriptToEntries(page.messages);
+      // Assistant rows that carry billed usage seed the live ledger, so the
+      // token/cache-rate row matches the terminal immediately after a reload.
+      const usageRows = page.messages.filter(message => message.role === 'assistant' && message.usage) as {
+        id: string;
+        usage: TranscriptUsage;
+      }[];
+      if (usageRows.length > 0) {
+        setUsageSeed(previous => {
+          const byId = new Map(previous.map(row => [row.id, row]));
+          for (const row of usageRows) byId.set(row.id, row);
+          return [...byId.values()];
+        });
+      }
       setEntries(previous => {
         if (!before) {
           // A live bridge may have appended entries while this async load was
@@ -132,11 +185,32 @@ export function DeviceSessionChat({
       if (page.warning) {
         setNotice(previous => previous || page.warning!);
       } else if (page.cached) {
-        setNotice(previous => previous || '设备离线，显示服务端缓存的消息');
+        setNotice(previous => previous || OFFLINE_CACHE_NOTICE);
       }
+      return page;
     },
     [deviceId, localSessionId],
   );
+
+  /**
+   * First load: page back until the window shows a user message so the chat
+   * never opens on a wall of tool cards.
+   */
+  const loadInitialHistory = useCallback(async () => {
+    let page = await loadHistory();
+    let combined = transcriptToEntries(page.messages);
+    let pages = 1;
+    while (
+      page.hasMore &&
+      page.before &&
+      !combined.some(entry => entry.type === 'user_message') &&
+      pages < INITIAL_MAX_PAGES
+    ) {
+      page = await loadHistory(page.before);
+      combined = [...transcriptToEntries(page.messages), ...combined];
+      pages += 1;
+    }
+  }, [loadHistory]);
 
   /**
    * Merge the newest server rows into the on-screen transcript without
@@ -148,6 +222,14 @@ export function DeviceSessionChat({
       const page = await fetchHistory(deviceId, localSessionId, { limit: HISTORY_PAGE });
       const converted = transcriptToEntries(page.messages);
       setEntries(previous => mergeHistoryPage(previous, converted));
+      // Recovery: a background sync that succeeds means history is reachable
+      // again — a stale load error would otherwise stick above a transcript
+      // that visibly recovered. Same for the offline notice once the server
+      // stops serving its cache.
+      setHistoryError('');
+      if (!page.cached && !page.warning) {
+        setNotice(previous => (previous === OFFLINE_CACHE_NOTICE ? '' : previous));
+      }
     } catch {
       // Silent: this is a background catch-up, not the primary load.
     }
@@ -168,6 +250,7 @@ export function DeviceSessionChat({
   const reload = useCallback(async () => {
     setError('');
     setHistoryError('');
+    setNotice('');
     setLoadingDetail(true);
     try {
       try {
@@ -177,26 +260,29 @@ export function DeviceSessionChat({
       }
       // History comes from the server cache, so a detail failure must not
       // hide a transcript that is still readable.
-      await loadHistory();
+      await loadInitialHistory();
     } catch (err) {
       setHistoryError(err instanceof Error ? err.message : '加载历史失败');
     } finally {
       setLoadingDetail(false);
     }
-  }, [loadDetail, loadHistory]);
+  }, [loadDetail, loadInitialHistory]);
 
   useEffect(() => {
     const key = `${deviceId}:${localSessionId}`;
     if (loadedKey.current === key) return;
     loadedKey.current = key;
+    initialLoadDoneRef.current = false;
     setDetail(null);
     setEntries([]);
+    setUsageSeed([]);
     setHistoryCursor(undefined);
     setHistoryHasMore(false);
     setHistoryError('');
     setOperation(null);
     setOperationId(null);
     setForcedBridgeId(null);
+    setBlockedSession(false);
     setNotice('');
     setError('');
     setLoadingDetail(true);
@@ -205,28 +291,39 @@ export function DeviceSessionChat({
     void (async () => {
       try {
         try {
-          await loadDetail();
+          const next = await loadDetail();
+          // The poll's mount-time tick used to detect this; it is skipped
+          // while the initial load runs, so evaluate it here instead.
+          if (!next.operation && next.runtime?.processAlive && !next.bridgeSessionId) {
+            setBlockedSession(true);
+          }
         } catch (err) {
           setError(err instanceof Error ? err.message : '加载会话失败');
         }
         // Always load: the server has a durable conversation cache, so the
         // terminal being closed (or the machine offline) no longer blanks out
         // the conversation.
-        await loadHistory();
+        await loadInitialHistory();
       } catch (err) {
         setHistoryError(err instanceof Error ? err.message : '加载历史失败');
       } finally {
+        initialLoadDoneRef.current = true;
         setLoadingDetail(false);
         setHistoryLoading(false);
       }
     })();
-  }, [deviceId, localSessionId, loadDetail, loadHistory]);
+  }, [deviceId, localSessionId, loadDetail, loadInitialHistory]);
 
   useEffect(() => {
     if (!operationId) return;
     let cancelled = false;
     let failures = 0;
     let running = false;
+    // The spawner gives up after 90s; if its terminal event never arrives
+    // (restart, dropped SSE, spawner offline) the spinner used to spin
+    // forever. Give the client its own deadline and tell the user they can
+    // retry.
+    let startedAt = Date.now();
     const tick = async () => {
       // A slow request used to overlap the next tick; one hung request also
       // ended the loop for good. Serialise ticks and give up only after a
@@ -234,6 +331,11 @@ export function DeviceSessionChat({
       if (running) return;
       running = true;
       try {
+        if (Date.now() - startedAt > 100_000) {
+          setOperationId(null);
+          setError('等待终端就绪超时。可以点“重试”再打开一次，或检查电脑上的终端是否停在确认提示。');
+          return;
+        }
         const next = await fetchOperation(operationId);
         failures = 0;
         if (cancelled) return;
@@ -256,11 +358,14 @@ export function DeviceSessionChat({
             setBlockedSession(true);
             setError('');
           } else {
-            setError(next.detail || '终端启动失败');
+            setError(next.detail || FAILURE_TEXT[next.failureCode ?? ''] || '终端启动失败');
           }
         } else if (next.state === 'waiting_for_user') {
           // Keep polling, but surface the actionable instruction instead of a
-          // generic spinner (the terminal is waiting on the PC).
+          // generic spinner (the terminal is waiting on the PC). A human
+          // staring at a confirmation prompt is not a stuck spawner: restart
+          // the deadline so the 100s budget only measures actual progress.
+          startedAt = Date.now();
           setOperation(next);
         }
       } catch (err) {
@@ -306,73 +411,89 @@ export function DeviceSessionChat({
   );
 
   const forceRestart = useCallback(async () => {
-    if (!window.confirm('重启会中断该终端里正在执行的任务，但会话记录会保留。确定重启并启用远程控制吗？')) {
-      return;
-    }
-    setBlockedSession(false);
     setError('');
     setNotice('正在重启终端并启用远程控制…');
     try {
       const result = await openSession(deviceId, localSessionId, true);
       if (result.operationId) {
+        setBlockedSession(false);
         setOperationId(result.operationId);
       } else if (result.bridgeSessionId) {
+        setBlockedSession(false);
         setForcedBridgeId(result.bridgeSessionId);
         await loadDetail();
+      } else {
+        setNotice('');
+        setError(result.detail || '无法启动终端，请重试');
       }
     } catch (err) {
+      setNotice('');
       setError(err instanceof Error ? err.message : '重启终端失败');
     }
   }, [deviceId, localSessionId, loadDetail]);
 
   const send = useCallback(
-    async (message: ChatInputMessage) => {
+    async (message: ChatInputMessage, transitionalNotice?: string) => {
       const text = message.text.trim();
-      if (!text) return;
-      if (sendingRef.current) {
-        queuedMessage.current = message;
-        return;
-      }
-      sendingRef.current = true;
-      setSending(true);
-      setError('');
-      setNotice('');
-      const pendingId = `pending-${Date.now()}`;
-      setEntries(previous => [...previous, { type: 'user_message', id: pendingId, content: text }]);
-      try {
-        const result = await sendDeviceMessage(deviceId, localSessionId, text);
-        if (result.bridgeSessionId) {
-          setForcedBridgeId(result.bridgeSessionId);
-          await loadDetail();
-        } else if (result.operationId) {
-          setOperationId(result.operationId);
+      const images = message.images;
+      if (!text && (!images || images.length === 0)) return;
+      return sendQueue.current(async () => {
+        setSending(true);
+        setError('');
+        // React batches the caller's setNotice with this one; only clobber the
+        // notice when no transitional message was handed in, or the
+        // "正在重新打开…" hint could never paint.
+        setNotice(transitionalNotice ?? '');
+        const pendingId = `pending-${Date.now()}`;
+        // pending: the muted bubble + 排队中 label — a queued/offline send must
+        // not look delivered. The history echo adopts this row by content match.
+        setEntries(previous => [
+          ...previous,
+          {
+            type: 'user_message',
+            id: pendingId,
+            content: text,
+            images: images && images.length > 0 ? images : undefined,
+            pending: true,
+          },
+        ]);
+        try {
+          const result = await sendDeviceMessage(
+            deviceId,
+            localSessionId,
+            text,
+            images && images.length > 0 ? images : undefined,
+          );
+          if (result.bridgeSessionId) {
+            setForcedBridgeId(result.bridgeSessionId);
+            // The message has already been accepted. A subsequent status refresh
+            // must not be treated as a failed send, remove its bubble, or put
+            // the draft back where the user could send the same prompt again.
+            try {
+              await loadDetail();
+            } catch {
+              setNotice('消息已提交，正在重新同步终端状态。');
+            }
+          } else if (result.operationId) {
+            setOperationId(result.operationId);
+          }
+          if (result.state === 'unconfirmed') {
+            setNotice(result.detail || '消息已保存，等待终端确认。');
+          } else if (result.state === 'queued') {
+            setNotice(result.detail || '终端尚未就绪，消息会在连接后发送。');
+          }
+        } catch (err) {
+          setEntries(previous => previous.filter(entry => !(entry.type === 'user_message' && entry.id === pendingId)));
+          setError(err instanceof Error ? err.message : '发送失败');
+          // The composer puts the text back, so a failed send is never silent.
+          throw err;
+        } finally {
+          setSending(false);
         }
-        if (result.state === 'unconfirmed') {
-          setNotice(result.detail || '消息已保存，等待终端确认。');
-        } else if (result.state === 'queued') {
-          setNotice(result.detail || '终端尚未就绪，消息会在连接后发送。');
-        }
-      } catch (err) {
-        setEntries(previous => previous.filter(entry => !(entry.type === 'user_message' && entry.id === pendingId)));
-        setError(err instanceof Error ? err.message : '发送失败');
-        // The composer puts the text back, so a failed send is never silent.
-        throw err;
-      } finally {
-        sendingRef.current = false;
-        setSending(false);
-        const next = queuedMessage.current;
-        if (next) {
-          queuedMessage.current = null;
-          window.setTimeout(() => void sendRef.current(next), 0);
-        }
-      }
+      });
     },
     [deviceId, localSessionId, loadDetail],
   );
-
-  useEffect(() => {
-    sendRef.current = send;
-  }, [send]);
 
   // Always keep the session state fresh, not only while the live view is up.
   // This is what re-enters the bridge after an RCS restart or a transient SSE
@@ -381,6 +502,11 @@ export function DeviceSessionChat({
     let cancelled = false;
     let running = false;
     const tick = async () => {
+      // The initial load already fetched detail and history; a mount-time tick
+      // on top of it tripled cold-open latency and raced the history pager.
+      // Checked before `running` is armed — an early return below would leave
+      // it stuck true and kill the poll for good.
+      if (!initialLoadDoneRef.current) return;
       // Skip while the previous tick is still in flight: a slow request used
       // to stack up on a flaky network.
       if (running) return;
@@ -411,8 +537,10 @@ export function DeviceSessionChat({
         }
         // Running in a terminal with no bridge at all: sending cannot reach it.
         // Say so up front instead of letting the first message queue into the
-        // void and only then explaining why.
-        if (!operationId && next.runtime?.processAlive && !next.bridgeSessionId) {
+        // void and only then explaining why. Read the ref, not the closure:
+        // this effect is not re-created when an operation starts, and a stale
+        // null showed the blocked card while a terminal was being opened.
+        if (!operationIdRef.current && next.runtime?.processAlive && !next.bridgeSessionId) {
           setBlockedSession(true);
         } else if (next.runtime && next.runtime.processAlive === false) {
           // The terminal exited; a send will open a fresh bridged one.
@@ -454,9 +582,6 @@ export function DeviceSessionChat({
    * stays; sending a message will open a fresh terminal again.
    */
   const closeTerminal = useCallback(async () => {
-    if (!window.confirm('关闭电脑上的这个终端？正在执行的任务会被中断（会话记录会保留）。')) {
-      return;
-    }
     setNotice('正在关闭终端…');
     try {
       const result = await closeSession(deviceId, localSessionId);
@@ -465,9 +590,11 @@ export function DeviceSessionChat({
         setNotice(result.detail || '终端已关闭，发送消息会重新打开终端。');
         void loadDetail();
       } else {
+        setNotice('');
         setError(result.detail || '无法关闭终端');
       }
     } catch (err) {
+      setNotice('');
       setError(err instanceof Error ? err.message : '关闭终端失败');
     }
   }, [deviceId, localSessionId, loadDetail]);
@@ -489,26 +616,110 @@ export function DeviceSessionChat({
     [deviceId, localSessionId, syncHistory],
   );
 
+  const terminalStatus = !detail
+    ? '状态加载中'
+    : !detail.online
+      ? '设备离线'
+      : bridgeId
+        ? '终端已连接'
+        : operation?.state === 'waiting_for_user'
+          ? '等待电脑确认'
+          : operationId
+            ? '终端启动中'
+            : detail.runtime?.processAlive === false
+              ? '终端未运行'
+              : '终端未连接';
+
+  const terminalConfirm = (
+    <ModalSheet
+      open={confirmTerminalAction !== null}
+      onClose={() => {
+        if (!terminalActionPending) setConfirmTerminalAction(null);
+      }}
+      label={confirmTerminalAction === 'restart' ? '重启终端' : '关闭终端'}
+      className="rounded-t-[20px] border border-border bg-surface-0 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl sm:max-w-md sm:rounded-2xl sm:pb-5"
+    >
+      <h2 aria-hidden="true" className="text-base font-semibold text-text-primary">
+        {confirmTerminalAction === 'restart' ? '重启电脑上的终端？' : '关闭电脑上的终端？'}
+      </h2>
+      <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+        正在执行的任务会中断，会话记录会保留。
+        {confirmTerminalAction === 'restart' && ' 重启后会尝试开启远程控制。'}
+      </p>
+      <div className="mt-5 flex gap-2">
+        <button
+          type="button"
+          disabled={terminalActionPending}
+          onClick={() => setConfirmTerminalAction(null)}
+          className="h-11 flex-1 rounded-xl border border-border bg-surface-1 text-sm text-text-primary disabled:opacity-50"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          disabled={terminalActionPending}
+          onClick={() => {
+            if (terminalActionInFlight.current) return;
+            terminalActionInFlight.current = true;
+            setTerminalActionPending(true);
+            void (confirmTerminalAction === 'restart' ? forceRestart() : closeTerminal()).finally(() => {
+              terminalActionInFlight.current = false;
+              setTerminalActionPending(false);
+              setConfirmTerminalAction(null);
+            });
+          }}
+          className="h-11 flex-1 rounded-xl bg-destructive px-4 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {terminalActionPending ? '处理中…' : confirmTerminalAction === 'restart' ? '重启终端' : '关闭终端'}
+        </button>
+      </div>
+    </ModalSheet>
+  );
+
   if (bridgeId) {
     return (
-      <BridgeChat
-        key={bridgeId}
-        sessionId={bridgeId}
-        entries={entries}
-        onEntriesChange={setEntries}
-        onBridgeReady={() => void syncHistory()}
-        onBridgeDisconnected={() => leaveBridge('终端已关闭，发送消息会重新打开终端。')}
-        onTerminalUnavailable={text => {
-          setForcedBridgeId(null);
-          setNotice('终端已关闭，正在重新打开…');
-          void send({ text });
-        }}
-        onCloseTerminal={detail?.bridgeConnected ? () => void closeTerminal() : undefined}
-        deviceId={deviceId}
-        cwd={detail?.session.cwd}
-        onBack={onBack}
-        header={<MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />}
-      />
+      <>
+        <BridgeChat
+          key={bridgeId}
+          sessionId={bridgeId}
+          entries={entries}
+          onEntriesChange={setEntries}
+          onBridgeReady={() => void syncHistory()}
+          onBridgeDisconnected={() => leaveBridge('终端已关闭，发送消息会重新打开终端。')}
+          onTerminalUnavailable={async text => {
+            await send({ text }, '终端已关闭，正在重新打开…');
+            setForcedBridgeId(current => (current === bridgeId ? null : current));
+          }}
+          onCloseTerminal={detail?.bridgeConnected ? () => setConfirmTerminalAction('close') : undefined}
+          deviceId={deviceId}
+          cwd={detail?.session.cwd}
+          hasOlder={historyHasMore}
+          loadingOlder={loadingEarlier}
+          onLoadOlder={() => void loadEarlier()}
+          usageSeed={usageSeed}
+          draftKey={`device:${deviceId}:${localSessionId}`}
+          onBack={onBack}
+          header={
+            <>
+              <MobileChatHeader
+                title={detail?.session.title || localSessionId}
+                subtitle={detail?.session.cwd}
+                deviceName={deviceName}
+                online={detail?.online}
+                terminalStatus={terminalStatus}
+                onBack={onBack}
+              />
+              <DeliveryReviewNotice
+                count={detail?.deliveryReviewRequired ?? 0}
+                deviceId={deviceId}
+                localSessionId={localSessionId}
+                onReviewed={() => setDetail(current => (current ? { ...current, deliveryReviewRequired: 0 } : current))}
+              />
+            </>
+          }
+        />
+        {terminalConfirm}
+      </>
     );
   }
 
@@ -522,9 +733,22 @@ export function DeviceSessionChat({
   return (
     <TooltipProvider>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
-        <MobileChatHeader title={detail?.session.title || localSessionId} onBack={onBack} />
+        <MobileChatHeader
+          title={detail?.session.title || localSessionId}
+          subtitle={detail?.session.cwd}
+          deviceName={deviceName}
+          online={detail?.online}
+          terminalStatus={terminalStatus}
+          onBack={onBack}
+        />
+        <DeliveryReviewNotice
+          count={detail?.deliveryReviewRequired ?? 0}
+          deviceId={deviceId}
+          localSessionId={localSessionId}
+          onReviewed={() => setDetail(current => (current ? { ...current, deliveryReviewRequired: 0 } : current))}
+        />
         {error && (
-          <div className="mx-auto w-full max-w-3xl px-4 pt-2">
+          <div className="mx-auto w-full px-4 pt-2">
             <div
               role="alert"
               className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive"
@@ -535,7 +759,7 @@ export function DeviceSessionChat({
                 onClick={() => void reload()}
                 className="shrink-0 text-xs font-medium text-brand-dark hover:underline dark:text-brand"
               >
-                重试
+                刷新状态
               </button>
               <button
                 type="button"
@@ -553,7 +777,7 @@ export function DeviceSessionChat({
         <ChatView
           entries={entries}
           onPermissionRespond={respondToolPermission}
-          isLoading={sending || historyLoading}
+          isHistoryLoading={historyLoading}
           hasOlder={historyHasMore}
           loadingOlder={loadingEarlier}
           onLoadOlder={() => void loadEarlier()}
@@ -567,7 +791,7 @@ export function DeviceSessionChat({
           }
         />
         {blockedSession && (
-          <div className="mx-auto w-full max-w-3xl px-4 pt-2">
+          <div className="mx-auto w-full px-4 pt-2">
             <div className="rounded-xl border border-border bg-surface-1 p-3">
               <p className="text-[13px] font-medium text-text-primary">
                 这个会话正在电脑的终端里运行，但没有开启远程控制
@@ -580,7 +804,7 @@ export function DeviceSessionChat({
               <div className="mt-2 flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => void forceRestart()}
+                  onClick={() => setConfirmTerminalAction('restart')}
                   className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
                 >
                   重启终端并启用
@@ -594,7 +818,7 @@ export function DeviceSessionChat({
           <div
             role="status"
             aria-live="polite"
-            className="mx-auto w-full max-w-3xl px-4 pt-1 text-[13px] leading-snug text-text-secondary"
+            className="mx-auto w-full px-4 pt-1 text-[13px] leading-snug text-text-secondary"
           >
             {statusText}
           </div>
@@ -605,34 +829,110 @@ export function DeviceSessionChat({
           onSubmit={send}
           isLoading={sending}
           disabled={loadingDetail || blockedSession}
+          supportsImages
+          deviceId={deviceId}
+          cwd={detail?.session.cwd}
           placeholder={
             loadingDetail
               ? '正在加载…'
               : blockedSession
                 ? '终端未开启远程控制，暂时无法发送'
                 : detail?.online
-                  ? '输入消息…'
+                  ? '输入消息，发送后连接终端…'
                   : '设备离线，消息会在上线后发送'
           }
         />
+        {terminalConfirm}
       </div>
     </TooltipProvider>
   );
 }
 
-/** Mobile-only way back; the desktop sidebar already shows the selection. */
-function MobileChatHeader({ title, onBack }: { title: string; onBack: () => void }) {
+function DeliveryReviewNotice({
+  count,
+  deviceId,
+  localSessionId,
+  onReviewed,
+}: {
+  count: number;
+  deviceId: string;
+  localSessionId: string;
+  onReviewed: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  if (!count) return null;
   return (
-    <div className="flex h-12 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5 md:hidden">
+    <div
+      role="alert"
+      className="border-b border-warning-border/30 bg-warning-bg/50 px-4 py-2 text-sm text-warning-text"
+    >
+      <span>服务重启前有 {count} 条消息的发送状态无法确认，请检查终端记录后再决定是否重新发送。</span>
+      <button
+        type="button"
+        className="ml-3 font-medium underline disabled:opacity-50"
+        disabled={pending}
+        onClick={() => {
+          setPending(true);
+          setError('');
+          void reviewUnconfirmedDelivery(deviceId, localSessionId)
+            .then(onReviewed)
+            .catch(() => setError('保存核对状态失败，请重试'))
+            .finally(() => setPending(false));
+        }}
+      >
+        已核对
+      </button>
+      {error && <span className="ml-2">{error}</span>}
+    </div>
+  );
+}
+
+/** Session context on both layouts, with a back button on phones. */
+function MobileChatHeader({
+  title,
+  subtitle,
+  deviceName,
+  online,
+  terminalStatus,
+  onBack,
+}: {
+  title: string;
+  subtitle?: string;
+  deviceName?: string;
+  online?: boolean;
+  terminalStatus: string;
+  onBack: () => void;
+}) {
+  return (
+    <div className="flex h-14 shrink-0 items-center gap-0.5 border-b border-border/70 bg-surface-0 px-1.5 md:px-6">
       <button
         type="button"
         onClick={onBack}
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1"
+        className="session-back flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1 md:hidden"
         aria-label="返回列表"
       >
         <ChevronLeft className="h-5 w-5" />
       </button>
-      <h2 className="truncate text-[15px] font-medium text-text-primary">{title}</h2>
+      <div className="min-w-0 flex-1">
+        <h2 className="truncate text-[15px] font-medium leading-tight text-text-primary">{title}</h2>
+        {(deviceName || subtitle || terminalStatus) && (
+          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] leading-tight text-text-muted">
+            <span
+              aria-hidden="true"
+              className={cn('h-1.5 w-1.5 shrink-0 rounded-full', online ? 'bg-status-success' : 'bg-text-muted/40')}
+            />
+            <span className="min-w-0 truncate" title={[deviceName, subtitle].filter(Boolean).join(' · ')}>
+              {[deviceName, subtitle].filter(Boolean).join(' · ')}
+            </span>
+            {online !== undefined && <span className="sr-only">{online ? '设备在线' : '设备离线'}</span>}
+            <span aria-hidden="true" className="shrink-0 text-text-secondary">
+              · {terminalStatus}
+            </span>
+            <span className="sr-only">{terminalStatus}</span>
+          </p>
+        )}
+      </div>
     </div>
   );
 }

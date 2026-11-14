@@ -1,4 +1,4 @@
-import { log, error as logError } from '../logger'
+import { debug, error as logError } from '../logger'
 
 export interface SessionEvent {
   id: string
@@ -19,6 +19,7 @@ export class EventBus {
   private events: SessionEvent[] = []
   private seqNum = 0
   private closed = false
+  private snapshots = new Map<string, SessionEvent>()
 
   subscribe(callback: Subscriber): () => void {
     this.subscribers.add(callback)
@@ -37,13 +38,18 @@ export class EventBus {
       createdAt: Date.now(),
     }
     this.events.push(full)
+    if (
+      event.direction === 'inbound' &&
+      (event.type === 'task_state' || event.type === 'workflow_state')
+    ) {
+      this.snapshots.set(event.type, full)
+    }
     // Evict oldest events when exceeding limit
     if (this.events.length > MAX_EVENTS_PER_BUS) {
       this.events = this.events.slice(-Math.floor(MAX_EVENTS_PER_BUS / 2))
     }
-    log(
+    debug(
       `[RC-DEBUG] bus publish: sessionId=${event.sessionId} type=${event.type} dir=${event.direction} seq=${full.seqNum} subscribers=${this.subscribers.size}`,
-      event.type === 'error' ? `payload=${JSON.stringify(event.payload)}` : '',
     )
     for (const cb of this.subscribers) {
       try {
@@ -84,9 +90,15 @@ export class EventBus {
     return this.events.slice(idx)
   }
 
+  /** Latest execution state survives rolling history eviction. */
+  getStateSnapshots(): SessionEvent[] {
+    return [...this.snapshots.values()]
+  }
+
   close() {
     this.closed = true
     this.subscribers.clear()
+    this.snapshots.clear()
   }
 }
 

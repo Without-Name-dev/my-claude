@@ -134,10 +134,16 @@ bun run packages/device-spawner/src/main.ts
 
 `spawner.json` 关键字段：`serverUrl`、`enrollKey`、`deviceId`、`deviceSecret`、`claudeConfigDir`、`cliPath`、`bunPath`、`allowedRoots`。文件由 Spawner 自动生成并用 owner-only ACL 收紧。
 
+### 手动打开的 CCB 终端
+
+打包版 `cc` 启动器可以读取本机 Spawner 配置，为手动启动的交互式 CCB 使用同一服务端并启用 Bridge。只有启动的 CLI 路径和 Claude 配置目录均与 Spawner 配置匹配时才启用；`-p`、`--version`、子命令等非交互场景不受影响。已有明确的 Bridge 环境变量优先；`CCB_DISABLE_AUTO_BRIDGE=1` 或配置中的 `remoteControlAtStartup=false` 可关闭自动启用。
+
+打包时将 `scripts/cc-run.js` 安装为 CCB 包目录下的 `cc-run.js`，将 `packages/device-spawner/src/manual-bridge.ts` 安装为同目录下的 `cc-manual-bridge.ts`。这不会修改另外安装的官方 `claude`。
+
 ## 已知限制
 
 - 一个 Spawner 进程管理一个 `claudeConfigDir`；多配置目录需多实例（或后续扩展）。
-- 历史正文不缓存到服务端：设备离线时只能看目录，不能看正文。
+- 历史正文使用服务端缓存；设备离线时只能查看此前已缓存的内容。
 - Bridge 断线后服务端无法确认终端是否仍活着，除非 Spawner 在线并重新核实。
 - 无登录/无 HTTPS 是产品既定选择；任何能访问 RCS 的人都能使用 UUID 进入（风险已确认）。
 - `/remote-control` 在已运行终端中是否可用取决于该 REPL 命令；不可用时只能提示用户，不自动重启。

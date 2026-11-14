@@ -27,9 +27,15 @@ const IMAGE_COMPRESSION_OPTIONS = {
   useWebWorker: true,
   fileType: 'image/jpeg' as const,
 };
+const SUPPORTED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
 /** More than this in one message freezes WKWebView long before the server cares. */
-const MAX_IMAGES = 9;
+const MAX_IMAGES = 8;
+
+// On touch devices Enter deliberately inserts a newline (the send button
+// submits); labelling that key "send" made phones show a send key that
+// could not send.
+const coarsePointer = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(pointer: coarse)').matches);
 /** Refuse absurd files before decoding; the canvas copy would be worse. */
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
@@ -87,20 +93,45 @@ export function ChatInput({
 }: ChatInputProps) {
   /** Attaching from the PC needs a device; uploads also need its cwd. */
   const deviceReady = Boolean(deviceId && cwd);
+  /**
+   * The "+" is about attachments, not about inline images: a chat that can
+   * upload to the session directory must offer the button even when the model
+   * cannot take image blocks.
+   */
+  const canAttach = supportsImages || deviceReady;
   const [text, setText] = useState(() => readDraft(draftKey));
   const [images, setImages] = useState<UserMessageImage[]>([]);
   const [showCommandMenu, setShowCommandMenu] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const filesInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // handleFileSelect is defined before uploadLocalFiles; a ref bridges the two.
+  const uploadLocalFilesRef = useRef<(files: File[], asFolder: boolean) => Promise<void>>(async () => {});
 
   const [sending, setSending] = useState(false);
   // State alone is not enough: two taps in the same tick both read the old
   // closure and sent the prompt twice. The ref closes that window.
   const sendingRef = useRef(false);
   const [notice, setNotice] = useState('');
+  // Every notice self-clears: error/limit texts used to sit above the composer
+  // forever, contradicting state the user had long since changed.
+  const noticeTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
+  const showNotice = useCallback((text: string, autoClearMs = 4000) => {
+    setNotice(text);
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    if (text && autoClearMs > 0) {
+      noticeTimer.current = window.setTimeout(() => setNotice(''), autoClearMs);
+    }
+  }, []);
   const [attachOpen, setAttachOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'file' | 'directory' | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -128,13 +159,14 @@ export function ChatInput({
     // Explain instead of ignoring the tap: a disabled-looking composer that
     // swallows input reads as a broken app.
     if (disabled) {
-      setNotice('正在加载，请稍候…');
+      showNotice('正在加载，请稍候…');
       return;
     }
     if (!trimmed && images.length === 0) return;
     if (sendingRef.current) return;
     const sentText = text;
     const sentImages = images;
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     setNotice('');
 
     haptic('light');
@@ -144,20 +176,25 @@ export function ChatInput({
     setSending(true);
     // Clear before the request settles: the bubble is already on screen, and
     // leaving the text in the box invited a second tap on the same prompt.
+    // The history composer can unmount as soon as the terminal connects.
+    // Clear both the cleanup ref and persisted draft synchronously, before the
+    // replacement live composer reads them during the same React commit.
+    latestText.current = '';
+    writeDraft(draftKey, '');
     setText('');
     setImages([]);
     try {
       await onSubmit({ text: trimmed, images: images.length > 0 ? images : undefined });
     } catch (error) {
       // A failed send must not eat the draft; put it back if it is untouched.
-      setText(current => (current === '' ? sentText : current));
-      setImages(current => (current.length === 0 ? sentImages : current));
-      setNotice(error instanceof Error ? error.message : '发送失败，请重试');
+      setText(current => (!current ? sentText : sentText ? `${sentText}\n\n${current}` : current));
+      setImages(current => [...sentImages, ...current]);
+      showNotice(error instanceof Error ? error.message : '发送失败，请重试');
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
-  }, [text, images, disabled, onSubmit]);
+  }, [text, images, disabled, onSubmit, showNotice, draftKey]);
 
   // The menu only owns the keyboard while it actually has matches; otherwise
   // Enter must submit normally.
@@ -181,6 +218,9 @@ export function ChatInput({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter can confirm a Chinese/Japanese IME candidate, including in
+      // WebKit's legacy 229 composition sequence; it must not send a message.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       if (showCommandMenu) {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -203,26 +243,17 @@ export function ChatInput({
       if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         // Soft keyboards label this key "换行/newline" and have no Shift, so
         // Enter inserts a line break there; the send button submits. Hardware
-        // keyboards keep the desktop behaviour.
-        if (window.matchMedia?.('(pointer: coarse)').matches) return;
+        // keyboards keep the desktop behaviour. An empty composer must never
+        // interrupt a running turn from the keyboard: stopping is the explicit
+        // two-tap control's job.
+        if (coarsePointer) return;
         e.preventDefault();
         if (text.trim() || images.length > 0) {
           void handleSubmit();
-        } else if (isLoading) {
-          onInterrupt?.();
         }
       }
     },
-    [
-      closeCommandMenu,
-      commandMatches.length,
-      handleSubmit,
-      images.length,
-      isLoading,
-      onInterrupt,
-      showCommandMenu,
-      text,
-    ],
+    [closeCommandMenu, commandMatches.length, handleSubmit, images.length, showCommandMenu, text],
   );
 
   const handleInput = useCallback(
@@ -251,26 +282,36 @@ export function ChatInput({
   // 粘贴图片
   const handlePaste = useCallback(
     async (e: ClipboardEvent) => {
-      if (!supportsImages) return;
       const files = Array.from(e.clipboardData.files).filter(f => f.type.startsWith('image/'));
       if (files.length === 0) return;
+      // A chat without inline image support swallowed the paste in silence;
+      // say where attachments go instead of letting the clipboard vanish.
+      if (!supportsImages) {
+        if (deviceReady) {
+          e.preventDefault();
+          await uploadLocalFilesRef.current(files, false);
+        } else {
+          showNotice('这个会话不能直接发送图片，请用 + 上传附件');
+        }
+        return;
+      }
 
       e.preventDefault();
       const room = Math.max(0, MAX_IMAGES - images.length);
       if (room === 0) {
-        setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+        showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
         return;
       }
       const { images: newImages, failed } = await processImageFiles(files);
       const accepted = newImages.slice(0, room);
       setImages(prev => [...prev, ...accepted].slice(0, MAX_IMAGES));
       if (failed > 0) {
-        setNotice(`${failed} 张图片无法读取，已跳过`);
+        showNotice(`${failed} 张图片无法读取，已跳过`);
       } else if (newImages.length > room) {
-        setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+        showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
       }
     },
-    [images.length, supportsImages],
+    [deviceReady, images.length, showNotice, supportsImages],
   );
 
   // 选择文件
@@ -279,9 +320,20 @@ export function ChatInput({
     const files = fileInputRef.current.files;
     if (!files || files.length === 0) return;
 
+    // No inline image support (the history composer, before a terminal is up):
+    // the photo is still useful as a session file, so upload it and reference
+    // the path instead of silently dropping the message's image blocks.
+    if (!supportsImages) {
+      const list = Array.from(files);
+      fileInputRef.current.value = '';
+      if (deviceReady) await uploadLocalFilesRef.current(list, false);
+      else showNotice('这个会话还不能添加附件');
+      return;
+    }
+
     const imagesOnly = Array.from(files).filter(file => file.type.startsWith('image/'));
     if (imagesOnly.length !== files.length) {
-      setNotice('只能发送图片附件');
+      showNotice('只能发送图片附件');
     }
     if (imagesOnly.length === 0) {
       fileInputRef.current.value = '';
@@ -289,7 +341,7 @@ export function ChatInput({
     }
     const accepted = imagesOnly.filter(file => file.size <= MAX_IMAGE_BYTES);
     if (accepted.length !== imagesOnly.length) {
-      setNotice('图片超过 25MB，已跳过');
+      showNotice('图片超过 25MB，已跳过');
     }
     if (accepted.length === 0) {
       fileInputRef.current.value = '';
@@ -297,7 +349,7 @@ export function ChatInput({
     }
     const room = Math.max(0, MAX_IMAGES - images.length);
     if (room === 0) {
-      setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+      showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
       fileInputRef.current.value = '';
       return;
     }
@@ -305,13 +357,13 @@ export function ChatInput({
     const kept = newImages.slice(0, room);
     setImages(prev => [...prev, ...kept].slice(0, MAX_IMAGES));
     if (failed > 0) {
-      setNotice(`${failed} 张图片无法读取，已跳过`);
+      showNotice(`${failed} 张图片无法读取，已跳过`);
     } else if (newImages.length > room) {
-      setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+      showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
     }
     // 清空 input 以便重复选择
     fileInputRef.current.value = '';
-  }, [images.length]);
+  }, [deviceReady, images.length, showNotice, supportsImages]);
 
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
@@ -348,15 +400,15 @@ export function ChatInput({
         accepted.push(file);
       }
       if (accepted.length === 0) {
-        setNotice(`没有可上传的文件（单个最大 20MB，总共 30MB）`);
+        showNotice(`没有可上传的文件（单个最大 20MB，总共 30MB）`);
         return;
       }
 
       setUploading(true);
-      setNotice(`正在上传 ${accepted.length} 个文件到会话目录…`);
+      showNotice(`正在上传 ${accepted.length} 个文件到会话目录…`, 0);
+      const uploadedPaths: string[] = [];
       try {
         let done = 0;
-        const uploadedPaths: string[] = [];
         let batch: { name: string; data: string }[] = [];
         let batchBytes = 0;
 
@@ -365,7 +417,7 @@ export function ChatInput({
           const result = await uploadToDevice(deviceId, cwd, batch);
           uploadedPaths.push(...result.files.map(file => file.path));
           done += batch.length;
-          setNotice(`正在上传 ${done}/${accepted.length} 个文件…`);
+          showNotice(`正在上传 ${done}/${accepted.length} 个文件…`, 0);
           batch = [];
           batchBytes = 0;
         };
@@ -396,40 +448,49 @@ export function ChatInput({
         } else {
           insertReferences(uploadedPaths);
         }
-        setNotice(
+        showNotice(
           skipped > 0
             ? `已上传 ${accepted.length} 个文件到会话目录，${skipped} 个因大小超限已跳过`
             : `已上传 ${accepted.length} 个文件到会话目录`,
         );
-        window.setTimeout(() => setNotice(''), 4000);
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : '上传失败，请重试');
+        const detail = error instanceof Error ? error.message : '上传失败';
+        if (uploadedPaths.length > 0) {
+          insertReferences(uploadedPaths);
+          showNotice(`已上传 ${uploadedPaths.length} 个文件并添加引用；后续上传失败：${detail}`);
+        } else {
+          showNotice(`${detail}；请检查会话目录后重试`);
+        }
       } finally {
         setUploading(false);
       }
     },
-    [cwd, deviceId, insertReferences],
+    [cwd, deviceId, insertReferences, showNotice],
   );
+
+  // handleFileSelect may need the upload path defined above.
+  useEffect(() => {
+    uploadLocalFilesRef.current = uploadLocalFiles;
+  }, [uploadLocalFiles]);
 
   /** Copy PC files/folders into the session directory, then reference them. */
   const addDevicePaths = useCallback(
     async (paths: string[]) => {
       if (!deviceId || !cwd || paths.length === 0) return;
       setUploading(true);
-      setNotice(paths.length > 1 ? `正在添加到会话目录（${paths.length} 项）…` : '正在添加到会话目录…');
+      showNotice(paths.length > 1 ? `正在添加到会话目录（${paths.length} 项）…` : '正在添加到会话目录…', 0);
       try {
         const result = await copyToDevice(deviceId, cwd, paths);
         insertReferences(result.entries.map(entry => entry.path));
         const copied = result.entries.filter(entry => entry.copied).length;
-        setNotice(copied > 0 ? `已添加 ${result.entries.length} 项到会话目录` : '这些文件已经在会话目录里');
-        window.setTimeout(() => setNotice(''), 4000);
+        showNotice(copied > 0 ? `已添加 ${result.entries.length} 项到会话目录` : '这些文件已经在会话目录里');
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : '添加失败，请重试');
+        showNotice(error instanceof Error ? error.message : '添加失败，请重试');
       } finally {
         setUploading(false);
       }
     },
-    [cwd, deviceId, insertReferences],
+    [cwd, deviceId, insertReferences, showNotice],
   );
 
   const handleLocalFiles = useCallback(
@@ -438,22 +499,26 @@ export function ChatInput({
       if (!list || list.length === 0) return;
       const files = Array.from(list);
       event.target.value = '';
-      const allImages = !asFolder && files.every(file => file.type.startsWith('image/'));
+      // Only inline images when the send path can carry image blocks; the
+      // history composer (no bridge yet) must upload them as session files.
+      const allImages = supportsImages && !asFolder && files.every(file => file.type.startsWith('image/'));
       if (allImages) {
         // Images stay inline: Claude sees them directly, no upload needed.
         const room = Math.max(0, MAX_IMAGES - images.length);
         if (room === 0) {
-          setNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
+          showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
           return;
         }
         const { images: newImages, failed } = await processImageFiles(files.slice(0, room));
         setImages(previous => [...previous, ...newImages].slice(0, MAX_IMAGES));
-        if (failed > 0) setNotice(`${failed} 张图片无法读取，已跳过`);
+        if (failed > 0) showNotice(`${failed} 张图片无法读取，已跳过`);
+        // Mirrors the picker path: never drop photos past the cap in silence.
+        if (files.length > room) showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
         return;
       }
       await uploadLocalFiles(files, asFolder);
     },
-    [images.length, uploadLocalFiles],
+    [images.length, showNotice, supportsImages, uploadLocalFiles],
   );
 
   const handleAttachChoice = useCallback(async (choice: AttachmentChoice) => {
@@ -529,7 +594,7 @@ export function ChatInput({
   return (
     <div
       className={cn(
-        'composer-safe w-full max-w-3xl mx-auto px-3 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
+        'composer-safe w-full max-w-[56rem] mx-auto px-4 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
         className,
       )}
     >
@@ -538,7 +603,7 @@ export function ChatInput({
           {notice}
         </div>
       )}
-      <div className="relative">
+      <div className="relative" data-composer-root>
         {/* Slash command menu — floating above input */}
         {showCommandMenu && commands && commands.length > 0 && (
           <CommandMenu
@@ -590,6 +655,7 @@ export function ChatInput({
               disabled={disabled}
               rows={1}
               aria-label="消息输入框"
+              enterKeyHint={coarsePointer ? 'enter' : 'send'}
               className={cn(
                 'w-full resize-none border-none bg-transparent outline-none',
                 'text-base text-text-primary placeholder:text-text-muted sm:text-[15px]',
@@ -607,51 +673,52 @@ export function ChatInput({
           <div className="flex flex-wrap items-center gap-1 gap-y-1 px-1.5 pb-1.5 pt-1">
             <div className="flex min-w-0 items-center gap-0.5">
               {toolbarLeft}
-              {supportsImages && (
+              {canAttach && (
+                <button
+                  ref={attachmentButtonRef}
+                  type="button"
+                  onClick={() => {
+                    setNotice('');
+                    setAttachOpen(true);
+                  }}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
+                  disabled={disabled || uploading}
+                  aria-label={uploading ? '正在上传附件' : '添加附件'}
+                >
+                  {uploading ? (
+                    <Loader2 className="h-[18px] w-[18px] animate-spin" strokeWidth={1.75} />
+                  ) : (
+                    <Plus className="h-5 w-5" strokeWidth={1.75} />
+                  )}
+                </button>
+              )}
+              {canAttach && (
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+              )}
+              {deviceReady && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNotice('');
-                      setAttachOpen(true);
-                    }}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-50"
-                    disabled={disabled || uploading}
-                    aria-label={uploading ? '正在上传附件' : '添加附件'}
-                  >
-                    {uploading ? (
-                      <Loader2 className="h-[18px] w-[18px] animate-spin" strokeWidth={1.75} />
-                    ) : (
-                      <Plus className="h-5 w-5" strokeWidth={1.75} />
-                    )}
-                  </button>
                   <input
-                    ref={fileInputRef}
+                    ref={filesInputRef}
                     type="file"
-                    accept="image/*"
                     multiple
                     className="hidden"
-                    onChange={handleFileSelect}
+                    onChange={event => void handleLocalFiles(event, false)}
                   />
-                  {deviceReady && (
-                    <>
-                      <input
-                        ref={filesInputRef}
-                        type="file"
-                        multiple
-                        className="hidden"
-                        onChange={event => void handleLocalFiles(event, false)}
-                      />
-                      <input
-                        ref={folderInputRef}
-                        type="file"
-                        multiple
-                        className="hidden"
-                        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-                        onChange={event => void handleLocalFiles(event, true)}
-                      />
-                    </>
-                  )}
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+                    onChange={event => void handleLocalFiles(event, true)}
+                  />
                 </>
               )}
               {/* The "/" trigger button was removed: the command list still
@@ -704,11 +771,13 @@ export function ChatInput({
         onClose={() => setAttachOpen(false)}
         onChoose={choice => void handleAttachChoice(choice)}
         showDeviceOptions={deviceReady}
+        imagesInline={supportsImages}
       />
       {deviceId && cwd && pickerMode && (
         <DirectoryPicker
           open
           deviceId={deviceId}
+          returnFocusRef={attachmentButtonRef}
           mode={pickerMode}
           title={pickerMode === 'file' ? '添加电脑上的文件' : '添加电脑上的目录'}
           directoryConfirmLabel="添加这个目录"
@@ -791,14 +860,17 @@ function fileToBase64(file: File): Promise<string> {
 // 图片处理工具
 // =============================================================================
 
-async function processImageFiles(files: File[]): Promise<{ images: UserMessageImage[]; failed: number }> {
+export async function processImageFiles(
+  files: File[],
+  compress: typeof imageCompression = imageCompression,
+): Promise<{ images: UserMessageImage[]; failed: number }> {
   const results: UserMessageImage[] = [];
   let failed = 0;
 
   for (const file of files) {
     try {
       let blob: Blob = file;
-      let mimeType = file.type;
+      let mimeType = file.type.toLowerCase();
 
       // A 1.9 MB JPEG can still be 8000×6000 pixels: size alone does not
       // decide whether the WebView can hold it in memory. Decode the header
@@ -814,10 +886,13 @@ async function processImageFiles(files: File[]): Promise<{ images: UserMessageIm
         bitmap.close?.();
       }
 
-      if (file.size > 2 * 1024 * 1024 || width > 2048 || height > 2048) {
-        const compressed = await imageCompression(file, IMAGE_COMPRESSION_OPTIONS);
+      // A small iPhone HEIC can decode successfully and still be unsupported
+      // by model APIs; convert it even when no resizing is needed.
+      if (!SUPPORTED_IMAGE_TYPES.has(mimeType) || file.size > 2 * 1024 * 1024 || width > 2048 || height > 2048) {
+        const compressed = await compress(file, IMAGE_COMPRESSION_OPTIONS);
         blob = compressed;
-        mimeType = 'image/jpeg';
+        mimeType = compressed.type.toLowerCase();
+        if (!SUPPORTED_IMAGE_TYPES.has(mimeType)) throw new Error('图片格式不受支持');
       }
 
       const base64 = await new Promise<string>((resolve, reject) => {

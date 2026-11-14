@@ -65,3 +65,6 @@ apps/ios-shell/node_modules/
 apps/ios-native/*.xcodeproj/
 apps/ios-native/build/
 apps/ios-native/out/
+
+# local deploy tarballs
+packages/remote-control-server/web/cc-rcs-web-*.tgz

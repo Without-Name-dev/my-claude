@@ -7,8 +7,8 @@
     content="width=device-width, initial-scale=1.0, viewport-fit=cover"
   />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0f1012" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f8f7f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#11100f" media="(prefers-color-scheme: dark)" />
   <!-- Same markup can be wrapped/served to iOS without a separate shell. -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -20,11 +20,12 @@
     http-equiv="Content-Security-Policy"
     content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:"
   />
-  <title>Claude Remote</title>
+  <title>My Claude</title>
   <script>
     // Apply the saved theme before first paint; otherwise dark-mode users get
     // a flash of the light theme while React mounts.
     (function () {
+      document.documentElement.dataset.bootAt = String(Date.now());
       var stored = 'system';
       var dark = false;
       var handlers = null;
@@ -57,10 +58,10 @@
        painted frame already has the app background — a WKWebView with no
        stylesheet paints pure white, which is what made launches flash. */
     :root {
-      --boot-bg: #f7f7f8;
+      --boot-bg: #f8f7f5;
     }
     html.dark {
-      --boot-bg: #0f1012;
+      --boot-bg: #11100f;
     }
     html {
       background-color: var(--boot-bg);
@@ -117,29 +118,6 @@
     html.dark .boot-name {
       color: #6f7681;
     }
-    .boot-dots {
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: calc(50% + 96px);
-      display: flex;
-      justify-content: center;
-      gap: 12px;
-    }
-    .boot-dots span {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #d97757;
-      opacity: 0.2;
-      animation: boot-dot 1.1s ease-in-out infinite;
-    }
-    .boot-dots span:nth-child(2) {
-      animation-delay: 0.15s;
-    }
-    .boot-dots span:nth-child(3) {
-      animation-delay: 0.3s;
-    }
     @keyframes boot-pop {
       from {
         opacity: 0;
@@ -166,22 +144,10 @@
         opacity: 1;
       }
     }
-    @keyframes boot-dot {
-      0%,
-      100% {
-        opacity: 0.2;
-        transform: translateY(0);
-      }
-      50% {
-        opacity: 1;
-        transform: translateY(-3px);
-      }
-    }
     @media (prefers-reduced-motion: reduce) {
       .boot-mark-wrap,
       .boot-mark,
-      .boot-name,
-      .boot-dots span {
+      .boot-name {
         animation: none;
       }
     }
@@ -190,21 +156,31 @@
 <body>
   <div id="boot" aria-hidden="true">
     <div class="boot-mark-wrap">
-      <!-- Geometry matches the app icon: eight rounded spokes around a
-           background-coloured octagon that hosts the centre dot. -->
-      <svg class="boot-mark" viewBox="0 0 96 96" width="96" height="96">
-        <g fill="#d97757">
-          <rect x="42.48" y="4.8" width="11.04" height="86.4" rx="5.52" />
-          <rect x="42.48" y="4.8" width="11.04" height="86.4" rx="5.52" transform="rotate(45 48 48)" />
-          <rect x="42.48" y="4.8" width="11.04" height="86.4" rx="5.52" transform="rotate(90 48 48)" />
-          <rect x="42.48" y="4.8" width="11.04" height="86.4" rx="5.52" transform="rotate(135 48 48)" />
+      <!-- Same artwork as the iOS app icon, launch screen and AppMark.tsx:
+           blocky body, two black eyes, side arms and four legs. -->
+      <svg class="boot-mark" viewBox="0 0 1024 1024" width="96" height="96">
+        <g transform="translate(0 55)">
+          <g fill="#DF7C57">
+            <rect x="170" y="150" width="684" height="470" rx="18" />
+            <rect x="60" y="348" width="120" height="108" />
+            <rect x="844" y="348" width="120" height="108" />
+            <rect x="245" y="612" width="62" height="152" />
+            <rect x="380" y="612" width="62" height="152" />
+            <rect x="582" y="612" width="62" height="152" />
+            <rect x="717" y="612" width="62" height="152" />
+          </g>
+          <g fill="#161514">
+            <rect x="300" y="252" width="58" height="130" rx="10" />
+            <rect x="666" y="252" width="58" height="130" rx="10" />
+          </g>
         </g>
-        </svg>
+      </svg>
     </div>
-    <div class="boot-name">CLAUDE REMOTE</div>
-    <div class="boot-dots"><span></span><span></span><span></span></div>
+    <div class="boot-name">MY CLAUDE</div>
   </div>
-  <div id="root"></div>
+  <!-- Inert until the boot splash fades: a mounted input must not pull the
+       keyboard up over the splash. main.tsx lifts it on reveal. -->
+  <div id="root" inert></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

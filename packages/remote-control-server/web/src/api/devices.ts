@@ -8,6 +8,7 @@
 
 import { getAccessKey, getActiveApiToken, getUuid } from './client'
 import { debugLog } from '../lib/debug-log'
+import type { UserMessageImage } from '../lib/types'
 
 export type DeviceInfo = {
   id: string
@@ -52,7 +53,15 @@ export type TranscriptBlock =
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id?: string; name: string; input?: unknown }
   | { type: 'tool_result'; toolUseId?: string; text: string; isError?: boolean }
-  | { type: 'image' }
+  | { type: 'image'; mimeType?: string; data?: string }
+
+/** Billed usage of one assistant message, when the source carries it. */
+export type TranscriptUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+}
 
 export type TranscriptMessage = {
   id: string
@@ -61,6 +70,7 @@ export type TranscriptMessage = {
   timestamp?: string
   blocks: TranscriptBlock[]
   isMeta?: boolean
+  usage?: TranscriptUsage
 }
 
 /** One row in the directory browser; files are listed but not selectable
@@ -130,6 +140,8 @@ export type DeviceSessionDetail = {
   bridgeConnected: boolean
   runtime: SessionRuntime | null
   operation: OpenOperation | null
+  /** Messages that might have been delivered before an RCS restart. */
+  deliveryReviewRequired?: number
 }
 
 export class DeviceApiError extends Error {
@@ -222,6 +234,16 @@ async function request<T>(
 
 export function fetchDevices(): Promise<{ devices: DeviceInfo[] }> {
   return request('GET', '/web/devices')
+}
+
+export function reviewUnconfirmedDelivery(
+  deviceId: string,
+  localSessionId: string,
+): Promise<{ reviewed: number }> {
+  return request(
+    'POST',
+    `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/review-delivery`,
+  )
 }
 
 /**
@@ -409,6 +431,7 @@ export function sendDeviceMessage(
   deviceId: string,
   localSessionId: string,
   text: string,
+  images?: UserMessageImage[],
 ): Promise<{
   state: 'sent' | 'unconfirmed' | 'queued'
   messageId: string
@@ -419,6 +442,6 @@ export function sendDeviceMessage(
   return request(
     'POST',
     `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/messages`,
-    { text },
+    { text, ...(images && images.length > 0 ? { images } : {}) },
   )
 }

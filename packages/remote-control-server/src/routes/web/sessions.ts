@@ -113,6 +113,13 @@ app.get('/sessions/:id/history', uuidAuth, async c => {
 
   const bus = getEventBus(sessionId)
   const events = bus.getEventsSince(0)
+  // A long streaming turn can evict the last state snapshot from the rolling
+  // event history. Keep it available to a browser opened mid-run.
+  const ids = new Set(events.map(event => event.id))
+  for (const snapshot of bus.getStateSnapshots()) {
+    if (!ids.has(snapshot.id)) events.push(snapshot)
+  }
+  events.sort((a, b) => a.seqNum - b.seqNum)
   return c.json({ events }, 200)
 })
 

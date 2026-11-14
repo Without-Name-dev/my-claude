@@ -6,14 +6,27 @@ import { type ElementType, type JSX, memo } from 'react';
 
 export interface TextShimmerProps {
   children: string;
-  as?: ElementType;
+  as?: keyof JSX.IntrinsicElements;
   className?: string;
   duration?: number;
   spread?: number;
 }
 
-const ShimmerComponent = ({ children, as: Component = 'p', className, duration = 2 }: TextShimmerProps) => {
-  const MotionComponent = motion.create(Component as keyof JSX.IntrinsicElements);
+// Created once per tag: calling motion.create inside the component body made
+// a brand-new component type every render, so a streaming "思考中…" pulse
+// unmounted and restarted its animation on every chunk.
+const motionCache = new Map<string, ElementType>();
+function motionFor(tag: string): ElementType {
+  let component = motionCache.get(tag);
+  if (!component) {
+    component = motion.create(tag as keyof JSX.IntrinsicElements);
+    motionCache.set(tag, component);
+  }
+  return component;
+}
+
+const ShimmerComponent = ({ children, as = 'p', className, duration = 2 }: TextShimmerProps) => {
+  const MotionComponent = motionFor(as);
 
   return (
     <MotionComponent

@@ -79,7 +79,7 @@ describe('device state', () => {
     expect(getMapping('dev_test1', localSessionId)?.cwd).toBe('C:\\work')
   })
 
-  test('runtime evidence for a resumed session stays on the original key', () => {
+  test('runtime evidence for a resumed session retargets the bridge mapping', () => {
     setMapping({
       deviceId: 'dev_test1',
       localSessionId,
@@ -87,7 +87,10 @@ describe('device state', () => {
       cwd: 'C:work',
       updatedAt: Date.now(),
     })
-    // After --resume the CLI may report a new local id for the same bridge.
+    // The CLI re-mints its registry sessionId on /resume while the bridge
+    // keeps its server session. The report is the CLI's own claim about
+    // which conversation the bridge now serves: the live row must FOLLOW
+    // the resume, or the resumed session stays uncontrollable from the web.
     const resumedLocal = '11111111-2222-3333-4444-555555555555'
     setRuntime('dev_test1', resumedLocal, {
       localSessionId: resumedLocal,
@@ -98,12 +101,11 @@ describe('device state', () => {
       source: 'registry',
     })
 
-    expect(getRuntime('dev_test1', localSessionId)?.state.processAlive).toBe(
-      true,
-    )
-    expect(getRuntime('dev_test1', resumedLocal)).toBeUndefined()
-    expect(getMapping('dev_test1', resumedLocal)).toBeUndefined()
-    expect(getMapping('dev_test1', localSessionId)?.bridgeSessionId).toBe(
+    expect(getRuntime('dev_test1', resumedLocal)?.state.processAlive).toBe(true)
+    // The pre-resume local id no longer claims the bridge.
+    expect(getRuntime('dev_test1', localSessionId)).toBeUndefined()
+    expect(getMapping('dev_test1', localSessionId)).toBeUndefined()
+    expect(getMapping('dev_test1', resumedLocal)?.bridgeSessionId).toBe(
       'session_abcdef0123456789',
     )
   })
@@ -149,6 +151,29 @@ describe('device state', () => {
     expect(listOutbox('dev_test1', localSessionId)).toHaveLength(0)
   })
 
+  test('keeps every pending message even when the outbox exceeds its history target', async () => {
+    const now = Date.now()
+    const pendingSessionId = '11111111-1111-4111-8111-111111111111'
+    for (let i = 0; i < 5001; i++) {
+      enqueueOutbox({
+        id: `pending-${i}`,
+        deviceId: 'dev_test1',
+        localSessionId: pendingSessionId,
+        payload: { content: 'pending' },
+        state: 'queued',
+        createdAt: now,
+        updatedAt: now,
+        attempts: 0,
+      })
+    }
+    await flushState()
+    resetStateForTest()
+    await loadState()
+    const pending = listOutbox('dev_test1', pendingSessionId)
+    expect(pending).toHaveLength(5001)
+    expect(pending[0]?.id).toBe('pending-0')
+  })
+
   test('mappings survive a state reload', async () => {
     setMapping({
       deviceId: 'dev_test1',
@@ -165,5 +190,26 @@ describe('device state', () => {
     expect(getMapping('dev_test1', localSessionId)?.bridgeSessionId).toBe(
       'session_abcdef0123456789',
     )
+  })
+
+  test('does not automatically resend a message whose delivery was uncertain at restart', async () => {
+    enqueueOutbox({
+      id: 'uncertain-message',
+      deviceId: 'dev_test1',
+      localSessionId,
+      payload: { content: 'run once' },
+      state: 'unconfirmed',
+      bridgeSessionId: 'session_abcdef0123456789',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      attempts: 1,
+    })
+    await flushState()
+    resetStateForTest()
+    await loadState()
+
+    const [entry] = listOutbox('dev_test1', localSessionId)
+    expect(entry?.state).toBe('unconfirmed')
+    expect(entry?.requiresReview).toBe(true)
   })
 })

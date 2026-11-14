@@ -1,4 +1,5 @@
 import type { SetStateAction } from 'react'
+import type { TranscriptUsage } from '../api/devices'
 import {
   apiFetchSession,
   apiFetchSessionHistory,
@@ -9,8 +10,15 @@ import {
   getUuid,
 } from '../api/client'
 import { generateMessageUuid } from './utils'
-import { mergeThreadEntries } from './device-history'
+import { findAssistantReplayTwin, mergeThreadEntries } from './device-history'
 import { debugLog } from './debug-log'
+import {
+  applyAgentProgress,
+  parseTaskSnapshot,
+  parseWorkflowSnapshot,
+  type ExecutionTask,
+  type WorkflowRun,
+} from './execution-state'
 import type { SessionEvent, EventPayload } from '../types'
 import type {
   ThreadEntry,
@@ -99,6 +107,13 @@ function classifyLocalCommandText(
     const text = (stdout[2] || '').trim()
     return text ? { kind: 'output', text } : { kind: 'drop' }
   }
+  // Show the command the person actually ran, not the REPL's scaffolding —
+  // same rule as the transcript path (device-history), so a reload does not
+  // turn a dropped row into a bubble or vice versa.
+  const commandName = content.match(/<command-name>([^<]*)<\/command-name>/)
+  if (commandName?.[1]?.trim()) {
+    return { kind: 'text', text: commandName[1].trim() }
+  }
   if (
     synthetic ||
     /^\s*<(task-notification|system-reminder)\b/i.test(content) ||
@@ -108,7 +123,10 @@ function classifyLocalCommandText(
   ) {
     return { kind: 'drop' }
   }
-  const text = content.replace(/<\/?[a-z][\w-]*>/gi, '').trim()
+  // Keep genuine prose verbatim — the transcript path does not strip tags
+  // either, and a live-stripped copy made the same message differ from its
+  // history twin (broke echo adoption, duplicated rows after resync).
+  const text = content.trim()
   return text ? { kind: 'text', text } : { kind: 'drop' }
 }
 
@@ -127,6 +145,34 @@ function permissionOptions(req: Record<string, unknown>): PermissionOption[] {
         : 'allow_once') as PermissionOption['kind'],
     }))
     .filter(o => o.optionId)
+}
+
+/**
+ * Extract the request a resolution event refers to. Three wire shapes end a
+ * permission request: the CLI's `control_response` (payload.response.request_id),
+ * the web's own `permission_response` answer (payload.request_id), and the CLI's
+ * `control_cancel_request` when the terminal resolved it locally
+ * (payload.request_id). Missing any of them makes a reload replay the old
+ * control_request and pop the already-answered card again.
+ */
+function resolvedRequestId(payload: EventPayload): string | undefined {
+  const root = payload as unknown as Record<string, unknown>
+  const record =
+    root.raw && typeof root.raw === 'object' && !Array.isArray(root.raw)
+      ? (root.raw as Record<string, unknown>)
+      : root
+  if (typeof record.request_id === 'string' && record.request_id) {
+    return record.request_id
+  }
+  const response = record.response as Record<string, unknown> | undefined
+  if (
+    response &&
+    typeof response.request_id === 'string' &&
+    response.request_id
+  ) {
+    return response.request_id
+  }
+  return undefined
 }
 
 /**
@@ -164,20 +210,13 @@ class SSEBus {
   private eventSource: EventSource | null = null
   private onError: ((message: string) => void) | null = null
   private onOpen: (() => void) | null = null
-  private failures = 0
   private lastProbe = 0
   /** Server sequence cursor: a reconnect may replay events we already have. */
   private lastSeqNum = 0
   private seqSessionId = ''
-  /**
-   * The server's event bus is in memory, so a restart resets seqNum to 1 for
-   * the same session. The first event after every open is therefore trusted
-   * even if it looks like a replay — otherwise a restart would silently
-   * freeze the stream until the counter caught up.
-   */
-  private freshConnection = false
   /** The server admitted it cannot replay the gap; the transcript is stale. */
   private onResync: (() => void) | null = null
+  private onConnectionChange: ((connected: boolean) => void) | null = null
 
   onEvent(handler: SSEEventHandler): () => void {
     this.listeners.add(handler)
@@ -189,12 +228,13 @@ class SSEBus {
     onSseError?: (message: string) => void,
     onStreamOpen?: () => void,
     onResync?: () => void,
+    onConnectionChange?: (connected: boolean) => void,
   ): EventSource {
     this.disconnect()
     this.onError = onSseError ?? null
     this.onOpen = onStreamOpen ?? null
     this.onResync = onResync ?? null
-    this.failures = 0
+    this.onConnectionChange = onConnectionChange ?? null
     this.lastProbe = 0
     // Keep the cursor across reconnects of the same session; reset it when the
     // bus is reused for a different one. A reload restores it from storage.
@@ -211,18 +251,17 @@ class SSEBus {
     this.eventSource = es
 
     es.addEventListener('message', (e: MessageEvent) => {
-      this.failures = 0
+      if (this.eventSource !== es) return
       try {
         const data = JSON.parse(e.data) as SessionEvent
         // Auto-replay after a reconnect re-sends everything since the cursor;
         // without this the duplicate assistant text/tool cards piled up.
         if (typeof data.seqNum === 'number') {
-          if (data.seqNum <= this.lastSeqNum && !this.freshConnection) return
+          if (data.seqNum <= this.lastSeqNum) return
           // A jump means the server could not replay everything. Applying the
           // rest would leave a permanent hole, so ask for a history reload.
-          const gap = !this.freshConnection && data.seqNum > this.lastSeqNum + 1
+          const gap = this.lastSeqNum > 0 && data.seqNum > this.lastSeqNum + 1
           this.lastSeqNum = data.seqNum
-          this.freshConnection = false
           storeCursor(sessionId, this.lastSeqNum)
           if (gap) this.onResync?.()
         }
@@ -237,7 +276,7 @@ class SSEBus {
     // The server could not bridge the gap from our cursor (evicted buffer or
     // a restarted process). Trust its cursor, then re-read the durable store.
     es.addEventListener('resync', (e: MessageEvent) => {
-      this.failures = 0
+      if (this.eventSource !== es) return
       let cursor = 0
       try {
         const data = JSON.parse(e.data || '{}') as { seqNum?: unknown }
@@ -246,15 +285,13 @@ class SSEBus {
         // Keep 0: the next event after the reload re-establishes the cursor.
       }
       this.lastSeqNum = cursor
-      this.freshConnection = false
       storeCursor(sessionId, cursor)
       this.onResync?.()
     })
 
     es.onopen = () => {
-      this.failures = 0
-      // Includes every EventSource auto-reconnect, not just connect().
-      this.freshConnection = true
+      if (this.eventSource !== es) return
+      this.onConnectionChange?.(true)
       // The server has subscribed to the bus before answering, so anything
       // produced earlier is only in the durable store. Let the view catch up.
       this.onOpen?.()
@@ -265,14 +302,12 @@ class SSEBus {
     // should reconnect. Probe the session before deciding which this is.
     es.onerror = () => {
       if (this.eventSource !== es) return
+      this.onConnectionChange?.(false)
       const now = Date.now()
       if (now - this.lastProbe < 2000) return
       this.lastProbe = now
-      this.failures += 1
-      if (this.failures >= 5) {
-        this.fail(es, sessionId, '无法连接会话，终端可能已关闭')
-        return
-      }
+      // A prolonged network outage says nothing about whether the terminal
+      // closed. Let EventSource keep retrying until the server confirms it.
       void (async () => {
         try {
           const res = await fetch(
@@ -312,6 +347,7 @@ class SSEBus {
     this.onError = null
     this.onOpen = null
     this.onResync = null
+    this.onConnectionChange = null
   }
 }
 
@@ -341,6 +377,46 @@ function extractEventText(payload: EventPayload): string {
     }
   }
   return ''
+}
+
+/** Preserve image blocks from terminal echoes and history on other devices. */
+function extractEventImages(payload: EventPayload): UserMessageImage[] {
+  const record = payload as Record<string, unknown>
+  const raw =
+    record.raw && typeof record.raw === 'object'
+      ? (record.raw as Record<string, unknown>)
+      : undefined
+  const message =
+    record.message && typeof record.message === 'object'
+      ? (record.message as Record<string, unknown>)
+      : undefined
+  const rawMessage =
+    raw?.message && typeof raw.message === 'object'
+      ? (raw.message as Record<string, unknown>)
+      : undefined
+  const blocks = [
+    message?.content,
+    rawMessage?.content,
+    raw?.content,
+    record.content,
+  ].find(value => Array.isArray(value))
+  if (!Array.isArray(blocks)) return []
+  const images: UserMessageImage[] = []
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object' || block.type !== 'image') continue
+    const source = block.source
+    if (
+      !source ||
+      typeof source !== 'object' ||
+      source.type !== 'base64' ||
+      typeof source.data !== 'string'
+    )
+      continue
+    const mimeType = source.media_type ?? source.mediaType
+    if (typeof mimeType !== 'string' || !mimeType.startsWith('image/')) continue
+    images.push({ mimeType, data: source.data })
+  }
+  return images
 }
 
 /** SDK tool_result blocks (top-level tool_call_id only exists on legacy v1). */
@@ -473,7 +549,7 @@ export class RCSChatAdapter {
   private unsub: (() => void) | null = null
   /** The EventSource this adapter opened on the shared bus. */
   private es: EventSource | null = null
-  private onStatusChange?: (status: string) => void
+  private onStatusChange?: (status: string, since?: number) => void
   private onError?: (error: string) => void
   private onPermissionRequest?: (permission: PendingPermission) => void
   private onPermissionResolved?: (requestId: string) => void
@@ -483,6 +559,10 @@ export class RCSChatAdapter {
   private onTurnComplete?: () => void
   private onUsage?: (usage: SessionUsage) => void
   private onStreamOpen?: () => void
+  private onStreamState?: (connected: boolean) => void
+  private onTasks?: (tasks: ExecutionTask[]) => void
+  private onWorkflows?: (runs: WorkflowRun[]) => void
+  private onAgentProgress?: (payload: unknown) => void
   private historyMode: 'full' | 'metadata'
   private disposed = false
   /**
@@ -501,7 +581,7 @@ export class RCSChatAdapter {
     sessionId: string,
     setEntries: React.Dispatch<SetStateAction<ThreadEntry[]>>,
     options?: {
-      onStatusChange?: (status: string) => void
+      onStatusChange?: (status: string, since?: number) => void
       onError?: (error: string) => void
       onPermissionRequest?: (permission: PendingPermission) => void
       /** The request was answered elsewhere (the terminal, another device). */
@@ -514,6 +594,10 @@ export class RCSChatAdapter {
       onUsage?: (usage: SessionUsage) => void
       /** Fired once the live SSE stream is actually open. */
       onStreamOpen?: () => void
+      onStreamState?: (connected: boolean) => void
+      onTasks?: (tasks: ExecutionTask[]) => void
+      onWorkflows?: (runs: WorkflowRun[]) => void
+      onAgentProgress?: (payload: unknown) => void
       /**
        * 'metadata' still reads the bridge's system/init and bridge_state so
        * the pickers work, but leaves the transcript to the caller.
@@ -533,6 +617,10 @@ export class RCSChatAdapter {
     this.onTurnComplete = options?.onTurnComplete
     this.onUsage = options?.onUsage
     this.onStreamOpen = options?.onStreamOpen
+    this.onStreamState = options?.onStreamState
+    this.onTasks = options?.onTasks
+    this.onWorkflows = options?.onWorkflows
+    this.onAgentProgress = options?.onAgentProgress
     this.historyMode = options?.historyMode ?? 'full'
   }
 
@@ -664,6 +752,15 @@ export class RCSChatAdapter {
     if (!events || events.length === 0) return
 
     const historyEntries: ThreadEntry[] = []
+    const agentProgress: unknown[] = []
+    /**
+     * Tool results seen in the replay. They are applied to the LIVE transcript
+     * too: a resync can contain the completion of a tool whose tool_use event
+     * fell out of the surviving bus window, and applying the result only to
+     * the freshly built history would leave the on-screen card spinning with
+     * no output (the reported "bash output missing after a reconnect").
+     */
+    const toolResultPayloads: Array<Record<string, unknown>> = []
     let currentAssistant: AssistantMessageEntry | null = null
     // Permission requests are state, not transcript: replay the ones that
     // were never answered (the terminal is still blocked on them).
@@ -692,18 +789,23 @@ export class RCSChatAdapter {
         // tool cards instead of dropping them.
         const asRecord = payload as Record<string, unknown>
         if (toolResultBlocks(asRecord).length > 0) {
+          toolResultPayloads.push(asRecord)
           const updated = applyToolResult(historyEntries, asRecord)
           historyEntries.length = 0
           historyEntries.push(...updated)
           continue
         }
         const text = extractEventText(payload)
-        if (text) {
+        const images = extractEventImages(payload)
+        if (text || images.length) {
           const synthetic =
             (payload as Record<string, unknown>).isSynthetic === true ||
             (payload.raw as Record<string, unknown> | undefined)
               ?.isSynthetic === true
-          const classified = classifyLocalCommandText(text, synthetic)
+          const classified =
+            !text && images.length && !synthetic
+              ? { kind: 'text' as const, text: '' }
+              : classifyLocalCommandText(text, synthetic)
           if (classified.kind === 'drop') continue
           const id = payload.uuid
             ? `user-${payload.uuid}`
@@ -719,6 +821,7 @@ export class RCSChatAdapter {
               type: 'user_message',
               id,
               content: classified.text,
+              ...(images.length ? { images } : {}),
             })
           }
         }
@@ -738,7 +841,7 @@ export class RCSChatAdapter {
                     (block.id as string) ||
                     `hist-tool-${historyEntries.length}`,
                   title: (block.name as string) || 'tool',
-                  status: 'complete',
+                  status: 'unknown',
                   rawInput: (block.input as Record<string, unknown>) || {},
                 },
               })
@@ -772,16 +875,15 @@ export class RCSChatAdapter {
               (p.tool_call_id as string) ||
               `hist-tool-${historyEntries.length}`,
             title: (p.tool_name as string) || 'tool',
-            status: 'complete',
+            status: 'unknown',
             rawInput: (p.tool_input as Record<string, unknown>) || {},
           },
         }
         historyEntries.push(tc)
       } else if (event.type === 'tool_result') {
-        const updated = applyToolResult(
-          historyEntries,
-          payload as Record<string, unknown>,
-        )
+        const result = payload as Record<string, unknown>
+        toolResultPayloads.push(result)
+        const updated = applyToolResult(historyEntries, result)
         historyEntries.length = 0
         historyEntries.push(...updated)
       } else if (event.type === 'system') {
@@ -800,6 +902,14 @@ export class RCSChatAdapter {
         this.handleInit(payload)
       } else if (event.type === 'bridge_state') {
         this.emitBridgeState(payload)
+      } else if (
+        event.type === 'task_state' ||
+        event.type === 'workflow_state'
+      ) {
+        this.applyExecutionSnapshot(event.type, payload)
+      } else if (event.type === 'agent_progress') {
+        agentProgress.push(payload)
+        this.onAgentProgress?.(payload)
       } else if (
         event.type === 'control_request' ||
         event.type === 'permission_request'
@@ -822,12 +932,19 @@ export class RCSChatAdapter {
                 : '',
           })
         }
-      } else if (event.type === 'control_response') {
-        const response = (payload as unknown as Record<string, unknown>)
-          .response as Record<string, unknown> | undefined
-        if (typeof response?.request_id === 'string') {
-          answeredPermissions.add(response.request_id)
-          this.onPermissionResolved?.(response.request_id)
+      } else if (
+        event.type === 'control_response' ||
+        event.type === 'permission_response' ||
+        event.type === 'control_cancel_request'
+      ) {
+        // Any resolution signal means the request is spent. Missing the web's
+        // own answer (permission_response) or a terminal-side resolution
+        // (control_cancel_request) made a reload replay the old
+        // control_request and pop the already-answered card again.
+        const requestId = resolvedRequestId(payload)
+        if (requestId) {
+          answeredPermissions.add(requestId)
+          this.onPermissionResolved?.(requestId)
         }
       }
     }
@@ -838,12 +955,37 @@ export class RCSChatAdapter {
         this.onPermissionRequest?.(permission)
       }
     }
-    if (this.historyMode === 'metadata') return
+    if (this.historyMode === 'metadata') {
+      if (agentProgress.length)
+        this.setEntries(prev =>
+          agentProgress.reduce<ThreadEntry[]>(
+            (items, event) => applyAgentProgress(items, event),
+            prev,
+          ),
+        )
+      return
+    }
     if (this.disposed) return
     // The parent may already have loaded the server-cached transcript (the
     // device history survives terminal restarts). Merge instead of replacing
     // so the bridge replay only fills the gaps.
-    this.setEntries(prev => mergeThreadEntries(prev, historyEntries))
+    this.setEntries(prev => {
+      const merged = mergeThreadEntries(
+        prev,
+        historyEntries,
+        this.optimisticUserIds,
+      )
+      // Complete cards that only exist in the live transcript: their
+      // tool_use event may predate the surviving replay window.
+      const withResults = toolResultPayloads.reduce<ThreadEntry[]>(
+        (items, result) => applyToolResult(items, result),
+        merged,
+      )
+      return agentProgress.reduce<ThreadEntry[]>(
+        (items, event) => applyAgentProgress(items, event),
+        withResults,
+      )
+    })
   }
 
   /**
@@ -858,20 +1000,59 @@ export class RCSChatAdapter {
     const usage = message?.usage
     if (!usage || typeof usage !== 'object') return
     const record = usage as Record<string, unknown>
-    const entry = {
+    this.recordUsage(assistantId, {
       input: Number(record.input_tokens) || 0,
       output: Number(record.output_tokens) || 0,
       cacheCreation: Number(record.cache_creation_input_tokens) || 0,
       cacheRead: Number(record.cache_read_input_tokens) || 0,
+    })
+    this.publishUsageLedger()
+  }
+
+  /**
+   * Seed the ledger from history rows that carry billed usage. The terminal
+   * hydrates its status line from the transcript the same way; without this a
+   * reload showed Tokens 0 (cache —) until the next reply. Ids match the live
+   * stream's uuid space, so a later live event for the same message simply
+   * overwrites its seed — nothing is counted twice.
+   */
+  seedUsageFromHistory(
+    messages: { id: string; usage?: TranscriptUsage }[],
+  ): void {
+    let touched = false
+    for (const message of messages) {
+      if (!message.usage) continue
+      this.recordUsage(`assistant-${message.id}`, {
+        input: message.usage.inputTokens,
+        output: message.usage.outputTokens,
+        cacheCreation: message.usage.cacheCreationInputTokens,
+        cacheRead: message.usage.cacheReadInputTokens,
+      })
+      touched = true
     }
-    if (!this.usageByMessage.has(assistantId)) this.usageOrder.push(assistantId)
-    this.usageByMessage.set(assistantId, entry)
+    if (touched) this.publishUsageLedger()
+  }
+
+  private recordUsage(
+    id: string,
+    entry: {
+      input: number
+      output: number
+      cacheCreation: number
+      cacheRead: number
+    },
+  ): void {
+    if (!this.usageByMessage.has(id)) this.usageOrder.push(id)
+    this.usageByMessage.set(id, entry)
     // Bound the ledger: totals drift slightly once old messages drop off,
     // which is the same trade-off the terminal status line makes.
     while (this.usageOrder.length > 200) {
       const dropped = this.usageOrder.shift()
       if (dropped) this.usageByMessage.delete(dropped)
     }
+  }
+
+  private publishUsageLedger(): void {
     let input = 0
     let output = 0
     let cacheCreation = 0
@@ -882,11 +1063,17 @@ export class RCSChatAdapter {
       cacheCreation += item.cacheCreation
       cacheRead += item.cacheRead
     }
+    // The newest ledger row is the latest context size the model saw — the
+    // context bar should be right immediately after a reload, not only after
+    // the next reply.
+    const newestId = this.usageOrder[this.usageOrder.length - 1]
+    const current = newestId ? this.usageByMessage.get(newestId) : undefined
+    if (!current) return
     // Conversation average, matching the terminal status line: cumulative
     // cache reads over every prompt token billed this session.
     const readTotal = input + cacheCreation + cacheRead
     this.onUsage?.({
-      current: entry,
+      current,
       // `in` is the uncached prompt only, matching the terminal's totals; the
       // cache share is reported separately as a rate.
       totals: { input, output },
@@ -909,12 +1096,45 @@ export class RCSChatAdapter {
         if (!this.disposed) this.onStreamOpen?.()
       },
       () => this.requestResync(),
+      connected => this.onStreamState?.(connected),
     )
     this.unsub = sseBus.onEvent(event => this.handleEvent(event))
   }
 
   /** Guards a history reload from stacking up behind a burst of events. */
   private resyncing = false
+
+  /**
+   * Ids of the optimistic user bubbles this adapter itself created in
+   * sendMessage. The echo's adoption loop may only rewrite bubbles that are
+   * still ours and un-echoed: matching ANY same-text row let the second echo
+   * of a repeated reply (“好”) swallow the first echo's bubble, and a later
+   * resync re-appended it out of order. Cleared pending state alone is not a
+   * discriminator — clearStalePending strips it legitimately — so the id set
+   * is what survives that pass.
+   */
+  private optimisticUserIds = new Set<string>()
+
+  /**
+   * Any sign that the CLI is consuming its queue — an assistant chunk, a tool
+   * call, a finished turn, a local command — proves earlier messages were
+   * delivered. Slash commands never echo as user events and a server restart
+   * wipes the echo entirely, so without this the "排队中" state could stick
+   * forever.
+   */
+  private clearStalePending(): void {
+    this.setEntries(prev => {
+      let changed = false
+      const next = prev.map(entry => {
+        if (entry.type === 'user_message' && entry.pending) {
+          changed = true
+          return { ...entry, pending: false }
+        }
+        return entry
+      })
+      return changed ? next : prev
+    })
+  }
 
   /**
    * The stream lost events that no replay can recover. Re-read the stored
@@ -931,15 +1151,31 @@ export class RCSChatAdapter {
     }
     if (this.resyncing) return
     this.resyncing = true
+    // Buffer live events for the duration of the fetch, exactly like init():
+    // merging while the stream keeps appending pushed the re-read older rows
+    // AFTER the newer live tail (the merge is insertion-only), permanently
+    // reordering the transcript.
+    this.historyReady = false
     void (async () => {
       try {
         await this.loadHistory()
+        // Anything still pending after the replay was never echoed (restart,
+        // uuid rewrite): stop claiming it is queued.
+        this.clearStalePending()
       } catch (error) {
         this.onError?.(
           error instanceof Error ? error.message : '重新加载历史失败',
         )
       } finally {
         this.resyncing = false
+        if (!this.disposed) {
+          this.historyReady = true
+          const buffered = this.bufferedEvents
+          this.bufferedEvents = []
+          for (const event of buffered) this.handleEvent(event)
+        } else {
+          this.historyReady = true
+        }
       }
     })()
   }
@@ -960,6 +1196,16 @@ export class RCSChatAdapter {
   }
 
   /** 处理 SSE 事件 */
+  private applyExecutionSnapshot(type: string, payload: unknown): void {
+    if (type === 'task_state') {
+      const tasks = parseTaskSnapshot(payload)
+      if (tasks) this.onTasks?.(tasks)
+    } else if (type === 'workflow_state') {
+      const runs = parseWorkflowSnapshot(payload)
+      if (runs) this.onWorkflows?.(runs)
+    }
+  }
+
   handleEvent(event: SessionEvent): void {
     if (this.disposed) return
     if (!this.historyReady) {
@@ -983,16 +1229,24 @@ export class RCSChatAdapter {
         // used to be dropped, leaving every tool card spinning forever.
         const asRecord = payload as Record<string, unknown>
         if (toolResultBlocks(asRecord).length > 0) {
+          // Same proof of queue consumption as a tool_use event — and the only
+          // signal that still arrives when the page reattached mid-tool-run
+          // (the tool_use event already passed before the resubscribe).
+          this.clearStalePending()
           this.setEntries(prev => applyToolResult(prev, asRecord))
           break
         }
         const content = extractEventText(payload)
-        if (!content) break
+        const images = extractEventImages(payload)
+        if (!content && !images.length) break
         const synthetic =
           (payload as Record<string, unknown>).isSynthetic === true ||
           (payload.raw as Record<string, unknown> | undefined)?.isSynthetic ===
             true
-        const classified = classifyLocalCommandText(content, synthetic)
+        const classified =
+          !content && images.length && !synthetic
+            ? { kind: 'text' as const, text: '' }
+            : classifyLocalCommandText(content, synthetic)
         if (classified.kind === 'drop') break
         if (classified.kind === 'output') {
           const outputId = `command-${
@@ -1020,6 +1274,10 @@ export class RCSChatAdapter {
         const id = payload.uuid
           ? `user-${payload.uuid}`
           : event.id || `user-${generateMessageUuid()}`
+        // Snapshot the id set: the updater may run twice under StrictMode, and
+        // draining the live set inside invocation 1 made invocation 2 take the
+        // append branch — nondeterministic output, duplicate bubble.
+        const adoptableIds = new Set(this.optimisticUserIds)
         this.setEntries(prev => {
           // The echo means the CLI has actually taken the message off its
           // queue — clear the "排队中" state on the optimistic bubble.
@@ -1028,9 +1286,17 @@ export class RCSChatAdapter {
           )
           if (echoed >= 0) {
             const entry = prev[echoed] as UserMessageEntry
-            if (!entry.pending) return prev
+            // Idempotent side effect only: control flow above never reads the
+            // live set, so a StrictMode double-invocation stays deterministic.
+            this.optimisticUserIds.delete(entry.id)
+            if (!entry.pending && (entry.images?.length || !images.length))
+              return prev
             const next = [...prev]
-            next[echoed] = { ...entry, pending: false }
+            next[echoed] = {
+              ...entry,
+              pending: false,
+              ...(!entry.images?.length && images.length ? { images } : {}),
+            }
             return next
           }
           // A message shown optimistically with a local id adopts the echo
@@ -1038,16 +1304,36 @@ export class RCSChatAdapter {
           // (`user-…`, pending:true) and the device view (`pending-…`) take
           // this path: the echo's uuid can differ from the one the browser
           // generated, and matching only `pending-` ids split one prompt into
-          // two bubbles.
-          const pending = prev.findIndex(
-            entry =>
-              entry.type === 'user_message' &&
-              (entry.pending === true || entry.id.startsWith('pending-')) &&
-              entry.content === cleanContent,
-          )
+          // two bubbles. Pending state is not required — clearStalePending may
+          // have already cleared it — but the candidate MUST still be one of
+          // ours and un-echoed; an already-adopted echo is not, and letting a
+          // later same-text echo replace it deleted the older bubble when the
+          // person repeated a short reply.
+          const isAdoptable = (entry: ThreadEntry): boolean =>
+            entry.type === 'user_message' &&
+            entry.id !== id &&
+            entry.content === cleanContent &&
+            (cleanContent !== '' ||
+              (entry.images?.length === images.length &&
+                entry.images?.every(
+                  (image, index) => image.data === images[index]?.data,
+                ))) &&
+            (entry.pending === true ||
+              entry.id.startsWith('pending-') ||
+              adoptableIds.has(entry.id))
+          let pending = -1
+          for (let i = prev.length - 1; i >= 0; i -= 1) {
+            if (isAdoptable(prev[i])) {
+              pending = i
+              break
+            }
+          }
           if (pending >= 0) {
             const next = [...prev]
             const optimistic = prev[pending] as UserMessageEntry
+            // Idempotent side effect (see the exact-id branch): the decision
+            // came from the snapshot, not the live set.
+            this.optimisticUserIds.delete(optimistic.id)
             // Adopt the real id but keep the images: the echo's text is the
             // same string, and dropping the optimistic entry's attachments
             // made sent photos vanish from the transcript.
@@ -1055,17 +1341,30 @@ export class RCSChatAdapter {
               type: 'user_message',
               id,
               content: cleanContent,
-              ...(optimistic.images ? { images: optimistic.images } : {}),
+              ...(optimistic.images?.length
+                ? { images: optimistic.images }
+                : images.length
+                  ? { images }
+                  : {}),
             }
             return next
           }
-          return [...prev, { type: 'user_message', id, content: cleanContent }]
+          return [
+            ...prev,
+            {
+              type: 'user_message',
+              id,
+              content: cleanContent,
+              ...(images.length ? { images } : {}),
+            },
+          ]
         })
         break
       }
 
       // ---- 助手消息 ----
       case 'assistant': {
+        this.clearStalePending()
         const content =
           typeof payload.content === 'string' ? payload.content : ''
         // Stable id: when the CLI streams one message in several events they
@@ -1105,6 +1404,15 @@ export class RCSChatAdapter {
           )
 
           if (existingIndex < 0) {
+            // A bridge reattach (server restart, terminal resume) replays the
+            // transcript tail under fresh uuids; without this fallback the
+            // whole old turn renders again at the bottom of the chat.
+            const replayTwin = findAssistantReplayTwin(prev, {
+              type: 'assistant_message',
+              id: assistantId,
+              chunks: [{ type: 'message', text: content }],
+            })
+            if (replayTwin >= 0) return prev
             if (!thoughts.length && !content.trim()) return prev
             const newEntry: AssistantMessageEntry = {
               type: 'assistant_message',
@@ -1205,6 +1513,7 @@ export class RCSChatAdapter {
 
       // ---- 工具调用 ----
       case 'tool_use': {
+        this.clearStalePending()
         const p = payload as Record<string, unknown>
         const toolCallId = (p.tool_call_id as string) || `call-${Date.now()}`
         const toolData: ToolCallData = {
@@ -1224,6 +1533,7 @@ export class RCSChatAdapter {
       // ---- 工具结果 ----
       case 'tool_result': {
         const p = payload as Record<string, unknown>
+        this.clearStalePending()
         this.setEntries(prev => applyToolResult(prev, p))
         break
       }
@@ -1241,32 +1551,39 @@ export class RCSChatAdapter {
           >
           const description = (req.description as string) || ''
 
-          // Update tool call status
+          // Update tool call status. The request carries no tool_use id, so
+          // match by name: with parallel calls the permission can belong to an
+          // earlier tool, and "the newest running card" was the wrong one.
           this.setEntries(prev => {
-            // Find matching tool call
-            const idx = [...prev]
-              .reverse()
-              .findIndex(e => e.type === 'tool_call')
-            if (idx >= 0) {
-              const realIdx = prev.length - 1 - idx
-              const entry = prev[realIdx] as ToolCallEntry
-              if (entry.toolCall.status === 'running') {
-                return prev.map((e, i) =>
-                  i === realIdx
-                    ? {
-                        type: 'tool_call',
-                        toolCall: {
-                          ...entry.toolCall,
-                          status: 'waiting_for_confirmation' as ToolCallStatus,
-                          permissionRequest: {
-                            requestId,
-                            options: permissionOptions(req),
-                          },
+            const candidates = prev
+              .map((entry, index) => ({ entry, index }))
+              .filter(
+                item =>
+                  item.entry.type === 'tool_call' &&
+                  item.entry.toolCall.status === 'running' &&
+                  (toolName === 'unknown' ||
+                    item.entry.toolCall.title.toLowerCase() ===
+                      toolName.toLowerCase()),
+              )
+            const match = candidates[candidates.length - 1]
+            if (match && match.entry.type === 'tool_call') {
+              // Hoisted so the narrowing survives the map callback below.
+              const matched = match.entry
+              return prev.map((e, i) =>
+                i === match.index
+                  ? {
+                      type: 'tool_call' as const,
+                      toolCall: {
+                        ...matched.toolCall,
+                        status: 'waiting_for_confirmation' as ToolCallStatus,
+                        permissionRequest: {
+                          requestId,
+                          options: permissionOptions(req),
                         },
-                      }
-                    : e,
-                )
-              }
+                      },
+                    }
+                  : e,
+              )
             }
             return prev
           })
@@ -1286,13 +1603,17 @@ export class RCSChatAdapter {
       // ---- 会话状态 ----
       case 'session_status': {
         if (typeof payload.status === 'string') {
-          this.onStatusChange?.(payload.status)
+          this.onStatusChange?.(
+            payload.status,
+            typeof payload.since === 'number' ? payload.since : undefined,
+          )
         }
         break
       }
 
       // ---- 错误 ----
       case 'error': {
+        this.clearStalePending()
         const errorMsg = String(
           payload.message || payload.content || 'Unknown error',
         )
@@ -1305,6 +1626,7 @@ export class RCSChatAdapter {
       // message arrived without a trailing tool result.
       case 'result':
       case 'result_success': {
+        this.clearStalePending()
         this.onTurnComplete?.()
         break
       }
@@ -1315,6 +1637,9 @@ export class RCSChatAdapter {
         // so a command looked like it did nothing.
         const record = payload as Record<string, unknown>
         if (record.subtype === 'local_command') {
+          // A local command is executed without any user echo; without this
+          // its optimistic bubble would show 排队中 forever.
+          this.clearStalePending()
           const raw = typeof record.content === 'string' ? record.content : ''
           const text = raw.replace(/<\/?local-command-[^>]*>/g, '').trim()
           if (text) {
@@ -1379,10 +1704,29 @@ export class RCSChatAdapter {
         break
       }
 
+      case 'task_state':
+      case 'workflow_state':
+        this.applyExecutionSnapshot(type, payload)
+        break
+      case 'agent_progress':
+        this.onAgentProgress?.(payload)
+        this.setEntries(prev => applyAgentProgress(prev, payload))
+        break
+
+      // ---- 权限已在别处解决 ----
+      case 'permission_response':
+      case 'control_cancel_request': {
+        // The web answered (permission_response) or the terminal resolved the
+        // request locally (control_cancel_request). Dismiss the card on every
+        // connected client; ignoring these left a stale prompt that a reload
+        // then re-raised from history.
+        const requestId = resolvedRequestId(payload)
+        if (requestId) this.onPermissionResolved?.(requestId)
+        break
+      }
+
       // ---- 忽略的事件类型 ----
       case 'partial_assistant':
-      case 'permission_response':
-      case 'task_state':
       case 'automation_state':
       case 'status':
         break
@@ -1439,6 +1783,7 @@ export class RCSChatAdapter {
       // message back the bubble stays muted ("排队中"), matching the terminal.
       pending: true,
     }
+    this.optimisticUserIds.add(userEntry.id)
     this.setEntries(prev => [...prev, userEntry])
 
     // Images travel as Anthropic content blocks: the CLI's bridge inbound
@@ -1465,9 +1810,9 @@ export class RCSChatAdapter {
         type: 'user',
         uuid,
         content,
-        message: { content },
       })
     } catch (error) {
+      this.optimisticUserIds.delete(userEntry.id)
       this.setEntries(prev =>
         prev.filter(
           entry =>
@@ -1511,7 +1856,11 @@ export class RCSChatAdapter {
 
   /** 中断当前操作 */
   async interrupt(): Promise<void> {
-    // Mark running tools as canceled
+    await apiInterrupt(this.sessionId)
+
+    // Mark running tools as canceled — only after the interrupt really
+    // landed. Marking optimistically left cards claiming 已取消 when the
+    // POST failed and the turn kept running.
     this.setEntries(prev =>
       prev.map(entry => {
         if (entry.type !== 'tool_call') return entry
@@ -1530,7 +1879,5 @@ export class RCSChatAdapter {
         }
       }),
     )
-
-    await apiInterrupt(this.sessionId)
   }
 }

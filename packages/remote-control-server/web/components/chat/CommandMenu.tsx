@@ -38,10 +38,14 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
     setActiveIndex(0);
   }, [filter]);
 
-  // Close on outside click
+  // Close on outside click — but a tap on the composer itself (repositioning
+  // the caret, fixing the slash token) is editing, not dismissing.
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-composer-root]')) return;
+      if (containerRef.current && !containerRef.current.contains(target)) {
         onClose();
       }
     };
@@ -119,7 +123,7 @@ export function CommandMenu({ commands, filter, onSelect, onClose, className }: 
               )}
               style={{ width: 'calc(100% - 8px)' }}
             >
-              <span className="text-sm font-display font-medium text-brand">/{cmd.name}</span>
+              <span className="text-sm font-display font-medium text-brand-dark dark:text-brand">/{cmd.name}</span>
               <span className="text-xs text-text-muted truncate flex-1">{cmd.description}</span>
               {cmd.input?.hint && <span className="text-[11px] text-text-muted italic">{cmd.input.hint}</span>}
             </button>

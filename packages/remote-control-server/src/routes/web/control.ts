@@ -1,4 +1,4 @@
-import { log, error as logError } from '../../logger'
+import { debug, error as logError } from '../../logger'
 import { Hono } from 'hono'
 import { uuidAuth } from '../../auth/middleware'
 import {
@@ -67,11 +67,11 @@ app.post('/sessions/:id/events', uuidAuth, async c => {
   // Everything published here (messages, slash commands, control frames) is
   // replayed to the bridge on its next attach — see handleWebSocketOpen — so
   // accepting while the transport is briefly down is queueing, not losing.
-  log(
-    `[RC-DEBUG] web -> server: POST /web/sessions/${sessionId}/events type=${eventType} content=${JSON.stringify(body).slice(0, 200)}`,
+  debug(
+    `[RC-DEBUG] web -> server: POST /web/sessions/${sessionId}/events type=${eventType}`,
   )
   const event = publishSessionEvent(sessionId, eventType, body, 'outbound')
-  log(
+  debug(
     `[RC-DEBUG] web -> server: published outbound event id=${event.id} type=${event.type} direction=${event.direction} subscribers=${getEventBus(sessionId).subscriberCount()}`,
   )
   return c.json({ status: 'ok', event }, 200)

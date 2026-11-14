@@ -60,8 +60,10 @@ export type OutboxEntry = {
   bridgeSessionId?: string
   /** The event body handed to the bridge transport. */
   payload: unknown
-  state: 'queued' | 'sent' | 'unconfirmed' | 'failed'
+  state: 'queued' | 'sent' | 'unconfirmed' | 'failed' | 'reviewed'
   detail?: string
+  /** Delivery may have happened before an RCS restart; never replay blindly. */
+  requiresReview?: boolean
   createdAt: number
   updatedAt: number
   attempts: number
@@ -134,13 +136,14 @@ export async function loadState(): Promise<void> {
       catalogs: parsed.catalogs ?? {},
       outbox: Array.isArray(parsed.outbox) ? parsed.outbox : [],
     }
-    // The event bus is in-memory: an `unconfirmed` entry published before the
-    // restart was never delivered (no bridge subscriber survived). Requeue it
-    // so the next bridge attach sends it exactly once.
+    // The old event bus is gone, but a bridge could have received the event
+    // just before the restart and before its state was saved. The on-disk
+    // record cannot distinguish those cases, so replay could run a prompt twice.
     for (const entry of state.outbox) {
       if (entry.state === 'unconfirmed') {
-        entry.state = 'queued'
-        entry.detail = '服务重启，等待终端重新连接后发送'
+        entry.requiresReview = true
+        entry.detail =
+          '服务重启，无法确认消息是否已送达，请检查终端后决定是否重发'
       }
     }
     trimOutbox()
@@ -332,6 +335,30 @@ export function listOutbox(
   )
 }
 
+/** Acknowledge uncertain deliveries without resending or claiming success. */
+export function reviewUnconfirmedOutbox(
+  deviceId: string,
+  localSessionId: string,
+): number {
+  let reviewed = 0
+  for (const entry of state.outbox) {
+    if (
+      entry.deviceId !== deviceId ||
+      entry.localSessionId !== localSessionId ||
+      entry.state !== 'unconfirmed' ||
+      !entry.requiresReview
+    )
+      continue
+    entry.state = 'reviewed'
+    entry.requiresReview = false
+    entry.detail = '已核对发送状态'
+    entry.updatedAt = Date.now()
+    reviewed++
+  }
+  if (reviewed) scheduleSave()
+  return reviewed
+}
+
 /** Turn previously failed (never-published) rows back into queued work. */
 export function requeueFailedOutbox(
   deviceId: string,
@@ -376,7 +403,9 @@ function trimOutbox(): void {
     const pending = state.outbox.filter(
       entry => entry.state === 'queued' || entry.state === 'unconfirmed',
     )
-    const keep = new Set(pending.slice(-5000).map(entry => entry.id))
+    // Pending entries were accepted from the user and must not be discarded,
+    // even when they alone exceed the target size for retained history.
+    const keep = new Set(pending.map(entry => entry.id))
     for (const entry of [...state.outbox].reverse()) {
       if (keep.size >= 5000) break
       keep.add(entry.id)
@@ -392,31 +421,34 @@ export function setRuntime(
   localSessionId: string,
   reported: SessionRuntimeState,
 ): void {
-  // After `--resume`, the CLI can report a different local session id for the
-  // same bridge session. The conversation (and the web route) is keyed by the
-  // original local session, so follow the bridge mapping instead of creating
-  // a second runtime entry that the UI never asks for.
-  let canonicalLocal = localSessionId
-  if (reported.bridgeSessionId) {
-    const byBridge = findMappingByBridgeId(reported.bridgeSessionId)
-    if (byBridge && byBridge.deviceId === deviceId) {
-      canonicalLocal = byBridge.localSessionId
-    }
-  }
-  const state =
-    canonicalLocal === localSessionId
-      ? reported
-      : { ...reported, localSessionId: canonicalLocal }
-
-  runtimes.set(runtimeKey(deviceId, canonicalLocal), {
-    state,
+  // The CLI re-mints its registry sessionId on /resume while the bridge keeps
+  // its server session, so a report of (new local id, same bridge id) is the
+  // CLI's own claim about which conversation the bridge now serves. Store the
+  // runtime under THAT id and let setMapping retarget the bridge mapping (it
+  // removes the older mapping for the same bridge id): the web's live row
+  // follows the resume instead of staying pinned to the session the terminal
+  // booted as — which left the resumed session uncontrollable from the phone.
+  runtimes.set(runtimeKey(deviceId, localSessionId), {
+    state: reported,
     reportedAt: Date.now(),
   })
+  if (reported.bridgeSessionId) {
+    for (const [key, entry] of runtimes) {
+      // The pre-resume local id must not keep claiming a live bridge: its
+      // detail row would show a chat that no longer receives anything.
+      if (
+        key !== runtimeKey(deviceId, localSessionId) &&
+        entry.state.bridgeSessionId === reported.bridgeSessionId
+      ) {
+        runtimes.delete(key)
+      }
+    }
+  }
   // Keep the bridge mapping in sync with what the device actually observes.
   // Only write when it changed: heartbeats arrive every 15s and must not
   // rewrite the state file each time.
   if (reported.bridgeSessionId) {
-    const existing = getMapping(deviceId, canonicalLocal)
+    const existing = getMapping(deviceId, localSessionId)
     if (
       !existing ||
       existing.bridgeSessionId !== reported.bridgeSessionId ||
@@ -424,7 +456,7 @@ export function setRuntime(
     ) {
       setMapping({
         deviceId,
-        localSessionId: canonicalLocal,
+        localSessionId,
         bridgeSessionId: reported.bridgeSessionId,
         cwd: reported.cwd || existing?.cwd || '',
         updatedAt: Date.now(),
@@ -456,7 +488,9 @@ export function scheduleSave(): void {
   }, 250)
 }
 
-export async function flushState(): Promise<void> {
+export async function flushState(options?: {
+  throwOnError?: boolean
+}): Promise<void> {
   // A rejected write must not poison the chain: without the catch, every
   // later save would be skipped and the state would silently stop persisting.
   saveChain = saveChain
@@ -472,6 +506,7 @@ export async function flushState(): Promise<void> {
     await saveChain
   } catch (error) {
     log(`[device] state save failed: ${(error as Error).message}`)
+    if (options?.throwOnError) throw error
   }
 }
 

@@ -1,6 +1,44 @@
 import { describe, test, expect } from 'bun:test'
 
-const { normalizePayload } = await import('../services/transport')
+const { normalizePayload, publishSessionEvent } = await import(
+  '../services/transport'
+)
+
+describe('outbound user message deduplication', () => {
+  test('delivers identical text when the messages have different UUIDs', () => {
+    const session = `message-dedupe-${crypto.randomUUID()}`
+    const first = publishSessionEvent(
+      session,
+      'user',
+      { uuid: 'first', content: 'continue' },
+      'outbound',
+    )
+    const second = publishSessionEvent(
+      session,
+      'user',
+      { uuid: 'second', content: 'continue' },
+      'outbound',
+    )
+    expect(second.id).not.toBe(first.id)
+  })
+
+  test('deduplicates a retry with the same UUID', () => {
+    const session = `message-retry-${crypto.randomUUID()}`
+    const first = publishSessionEvent(
+      session,
+      'user',
+      { uuid: 'same', content: 'continue' },
+      'outbound',
+    )
+    const retry = publishSessionEvent(
+      session,
+      'user',
+      { uuid: 'same', content: 'continue' },
+      'outbound',
+    )
+    expect(retry.id).toBe(first.id)
+  })
+})
 
 // extractContent is not exported; we test it via normalizePayload's content field
 

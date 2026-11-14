@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
@@ -35,6 +36,7 @@ import type {
   UploadResult,
 } from '../../remote-control-server/src/device/protocol'
 import type { SpawnerConfig } from './config'
+import { isWithin, underAllowedRoot } from './path-policy'
 
 /** A listing larger than this is not something a person scrolls through. */
 const MAX_ENTRIES = 500
@@ -43,15 +45,6 @@ const MAX_ENTRIES = 500
 const MAX_FILES = 200
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_TOTAL_BYTES = 30 * 1024 * 1024
-
-function underAllowedRoot(path: string, roots: string[]): boolean {
-  if (roots.length === 0) return true
-  const normalized = resolve(path)
-  return roots.some(root => {
-    const base = resolve(root)
-    return normalized === base || normalized.startsWith(`${base}${sep}`)
-  })
-}
 
 function windowsDrives(): string[] {
   const drives: string[] = []
@@ -92,7 +85,24 @@ export async function listDirectory(
   config: SpawnerConfig,
   path: string | undefined,
 ): Promise<DirectoryListing> {
-  if (!path) return { entries: [], roots: directoryRoots() }
+  if (!path) {
+    const roots = config.allowedRoots.length
+      ? config.allowedRoots
+          .filter(root => {
+            try {
+              return statSync(root).isDirectory()
+            } catch {
+              return false
+            }
+          })
+          .map(root => ({
+            name: root,
+            path: resolve(root),
+            kind: 'volume' as const,
+          }))
+      : directoryRoots()
+    return { entries: [], roots }
+  }
 
   const target = path.trim()
   if (
@@ -182,6 +192,28 @@ function encodedSize(data: string): number {
   return Math.floor((data.length * 3) / 4) - padding
 }
 
+/** Validate in linear time; a repeated-group regexp hits engine limits on
+ * otherwise valid multi-megabyte uploads. Empty files are valid. */
+function isBase64(data: string): boolean {
+  if (data.length % 4 !== 0) return false
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+  const end = data.length - padding
+  for (let i = 0; i < end; i += 1) {
+    const code = data.charCodeAt(i)
+    if (
+      !(
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122) ||
+        (code >= 48 && code <= 57) ||
+        code === 43 ||
+        code === 47
+      )
+    )
+      return false
+  }
+  return true
+}
+
 /**
  * Windows forbids these characters in names. Rather than reject the whole
  * upload, replace them so a phone-generated name still lands somewhere sane.
@@ -253,12 +285,6 @@ function uniquePath(directory: string, name: string): string {
 }
 
 /** True when `child` is `parent` itself or lives below it. */
-function insideOrEqual(parent: string, child: string): boolean {
-  const base = resolve(parent)
-  const value = resolve(child)
-  return value === base || value.startsWith(`${base}${sep}`)
-}
-
 export async function uploadFiles(
   config: SpawnerConfig,
   files: UploadFileInput[],
@@ -290,6 +316,9 @@ export async function uploadFiles(
     if (total > MAX_TOTAL_BYTES) {
       throw new Error(`上传总大小超过 ${MAX_TOTAL_BYTES / 1024 / 1024}MB`)
     }
+    if (!isBase64(file.data)) {
+      throw new Error(`文件内容不是有效的 base64：${relative}`)
+    }
     prepared.push({ relative, data: Buffer.from(file.data, 'base64') })
   }
 
@@ -298,11 +327,18 @@ export async function uploadFiles(
     const name = parts.pop() ?? file.relative
     // Intermediate folders are reused: a folder upload split into several
     // batches must keep writing into the same tree.
-    const directory = parts.length > 0 ? join(root, ...parts) : root
-    mkdirSync(directory, { recursive: true })
+    let directory = root
+    const realRoot = realpathSync(root)
+    for (const part of parts) {
+      directory = join(directory, part)
+      mkdirSync(directory, { recursive: true })
+      if (!isWithin(realRoot, realpathSync(directory))) {
+        throw new Error('上传目录位于会话目录之外')
+      }
+    }
     const target = uniquePath(directory, name)
-    if (!insideOrEqual(root, target)) throw new Error('文件名不合法')
-    writeFileSync(target, file.data)
+    if (!isWithin(root, target)) throw new Error('文件名不合法')
+    writeFileSync(target, file.data, { flag: 'wx' })
     return {
       name: [...parts, basename(target)].join('/'),
       path: target,
@@ -384,6 +420,8 @@ export async function copyPaths(
 
   for (const raw of paths) {
     if (typeof raw !== 'string' || !raw.trim()) throw new Error('路径不合法')
+    if (!isAbsolute(raw.trim()))
+      throw new Error(`路径不合法：${raw.slice(0, 120)}`)
     const source = resolve(raw.trim())
     if (
       source.length > 4096 ||
@@ -399,11 +437,11 @@ export async function copyPaths(
       throw new Error(`找不到：${raw.slice(0, 160)}`)
     }
     const type: 'dir' | 'file' = info.isDirectory() ? 'dir' : 'file'
-    if (insideOrEqual(root, source)) {
+    if (isWithin(realpathSync(root), realpathSync(source))) {
       entries.push({ source, path: source, type, copied: false })
       continue
     }
-    if (type === 'dir' && insideOrEqual(source, root)) {
+    if (type === 'dir' && isWithin(realpathSync(source), realpathSync(root))) {
       throw new Error('不能把会话目录的上级目录复制到它自己里面')
     }
     measure(source, stats)

@@ -24,6 +24,7 @@ import type {
 import { isBridgeSessionId } from '../../remote-control-server/src/device/protocol'
 import { logDir, type SpawnerConfig } from './config'
 import { log } from './log'
+import { underAllowedRoot } from './path-policy'
 import {
   findLaunchPids,
   isProcessAlive,
@@ -78,15 +79,6 @@ export type ManagedSession = {
 
 const inFlight = new Set<string>()
 export const managedSessions = new Map<string, ManagedSession>()
-
-function underAllowedRoot(cwd: string, roots: string[]): boolean {
-  if (roots.length === 0) return true
-  const normalized = resolve(cwd)
-  return roots.some(root => {
-    const base = resolve(root)
-    return normalized === base || normalized.startsWith(`${base}${sep}`)
-  })
-}
 
 function emit(
   out: OperationEmitter,
@@ -259,8 +251,22 @@ export async function openSession(
       request.cwd,
     )
     if (!resolved) {
-      failure(out, request, 'session_not_found', '找不到该会话的记录文件')
-      return
+      // No transcript yet: fine when this exact session is already running in
+      // this cwd (a brand-new `--remote-control` terminal writes its first
+      // JSONL line only when the first message arrives). verifySession below
+      // then reports it ready with its bridge instead of dead-ending here.
+      const live = (await readRegistryWithReal(config.claudeConfigDir)).some(
+        entry =>
+          entry.sessionId.toLowerCase() ===
+            request.localSessionId.toLowerCase() &&
+          isProcessAlive(entry.pid) &&
+          entry.cwd &&
+          samePath(entry.cwd, request.cwd),
+      )
+      if (!live) {
+        failure(out, request, 'session_not_found', '找不到该会话的记录文件')
+        return
+      }
     }
 
     const existing = await verifySession(
@@ -338,7 +344,7 @@ export async function openSession(
         elapsed - lastPidScan > 2000
       ) {
         lastPidScan = elapsed
-        const pids = findLaunchPids(request.localSessionId).filter(
+        const pids = (await findLaunchPids(request.localSessionId)).filter(
           isProcessAlive,
         )
         if (pids.length > 0) {

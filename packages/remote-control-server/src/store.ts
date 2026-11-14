@@ -36,6 +36,12 @@ export interface SessionRecord {
   username: string | null
   createdAt: Date
   updatedAt: Date
+  /**
+   * When `status` last took its current value. `updatedAt` moves on every
+   * touch (each bridge message), so it cannot back the web's "已进行" elapsed
+   * timer — a reload would restart the clock from the last chunk.
+   */
+  statusChangedAt: Date
 }
 
 export interface WorkItemRecord {
@@ -198,6 +204,7 @@ export function storeCreateSession(req: {
     username: req.username ?? null,
     createdAt: now,
     updatedAt: now,
+    statusChangedAt: now,
   }
   sessions.set(id, record)
   return record
@@ -215,7 +222,13 @@ export function storeUpdateSession(
 ): boolean {
   const rec = sessions.get(id)
   if (!rec) return false
+  const prevStatus = rec.status
   Object.assign(rec, patch, { updatedAt: new Date() })
+  // Heartbeats and touches keep landing while a status holds; only a real
+  // transition moves the marker, or the elapsed timer would keep restarting.
+  if (patch.status !== undefined && patch.status !== prevStatus) {
+    rec.statusChangedAt = new Date()
+  }
   return true
 }
 

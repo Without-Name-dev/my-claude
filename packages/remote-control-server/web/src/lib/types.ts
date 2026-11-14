@@ -8,6 +8,7 @@ export type { PermissionOption }
 // 工具调用状态
 export type ToolCallStatus =
   | 'running'
+  | 'unknown'
   | 'complete'
   | 'error'
   | 'waiting_for_confirmation'
@@ -22,6 +23,14 @@ export interface ToolCallData {
   content?: ToolCallContent[]
   rawInput?: Record<string, unknown>
   rawOutput?: Record<string, unknown>
+  agentId?: string
+  agentActivity?: Array<{
+    id: string
+    name?: string
+    hint?: string
+    output?: string
+    status: 'running' | 'complete' | 'error'
+  }>
   // 权限请求（仅当 status === "waiting_for_confirmation"）
   permissionRequest?: {
     requestId: string

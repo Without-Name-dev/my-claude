@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Folder, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { formatRelativeTime } from '../lib/device-history';
+import { mergeSessionCatalog } from '../lib/session-catalog';
 import {
   fetchDevices,
   fetchOperation,
@@ -13,10 +14,13 @@ import {
   type DeviceProject,
   type DeviceSessionSummary,
 } from '../api/devices';
-import { DeviceSessionChat } from '../components/device/DeviceSessionChat';
 import { DirectoryPicker } from '../components/device/DirectoryPicker';
 import { DebugButton } from '../components/DebugPanel';
 import { ThemeToggle } from '../components/ThemeToggle';
+
+const DeviceSessionChat = lazy(() =>
+  import('../components/device/DeviceSessionChat').then(module => ({ default: module.DeviceSessionChat })),
+);
 
 /**
  * Chat-first workspace: devices → projects → local sessions on the left,
@@ -43,6 +47,7 @@ export function Workspace({
   const [catalogNonce, setCatalogNonce] = useState(0);
   const refreshCatalog = useCallback(() => setCatalogNonce(n => n + 1), []);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [collapsedSearchProjects, setCollapsedSearchProjects] = useState<Set<string>>(() => new Set());
   // Load every session for the device once and filter locally: expanding a
   // project used to trigger a multi-second disk scan on the PC.
   const [allSessions, setAllSessions] = useState<DeviceSessionSummary[]>([]);
@@ -52,9 +57,32 @@ export function Workspace({
   // silently once a machine had more than the first page.
   const [sessionsHasMore, setSessionsHasMore] = useState(false);
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  // A page requested for one device can finish after the user switches to
+  // another. Keep it from being merged into the newly selected device.
+  const paginationDevice = useRef(activeDeviceId);
+  const paginationGeneration = useRef(0);
+  if (paginationDevice.current !== activeDeviceId) {
+    paginationDevice.current = activeDeviceId;
+    paginationGeneration.current += 1;
+  }
+  useEffect(() => setLoadingMoreSessions(false), [activeDeviceId]);
   const [selectedLocalSessionId, setSelectedLocalSessionId] = useState(initialLocalSessionId || '');
   const [mobileChat, setMobileChat] = useState(Boolean(initialLocalSessionId));
   const [search, setSearch] = useState('');
+
+  // The list is display:none while a chat is open on a phone, which also
+  // throws away its scroll position. The position must be captured while the
+  // list is still laid out — BEFORE the state change hides it — because a
+  // hidden element always reports scrollTop 0 (and reading it in a layout
+  // effect after the commit is exactly that mistake).
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const savedListScroll = useRef(0);
+  const captureListScroll = useCallback(() => {
+    const el = listScrollRef.current;
+    // offsetHeight is 0 while display:none; never overwrite a real save with
+    // a hidden read.
+    if (el && el.offsetHeight > 0) savedListScroll.current = el.scrollTop;
+  }, []);
 
   // Route changes (the iOS edge swipe, browser back) must land in the same
   // commit. Doing this in an effect painted the chat for one frame after the
@@ -62,6 +90,9 @@ export function Workspace({
   const routeSessionId = initialLocalSessionId || '';
   const lastRouteSessionId = useRef(routeSessionId);
   if (lastRouteSessionId.current !== routeSessionId) {
+    // Entering a chat via forward navigation: the list is still laid out in
+    // this pre-commit render, so its scrollTop is live.
+    if (!lastRouteSessionId.current && routeSessionId) captureListScroll();
     lastRouteSessionId.current = routeSessionId;
     setSelectedLocalSessionId(routeSessionId);
     setMobileChat(Boolean(routeSessionId));
@@ -77,6 +108,20 @@ export function Workspace({
     const timer = window.setTimeout(() => setNavDir(null), 340);
     return () => window.clearTimeout(timer);
   }, [navDir]);
+
+  const prevMobileChat = useRef(mobileChat);
+  useLayoutEffect(() => {
+    if (prevMobileChat.current === mobileChat) return;
+    prevMobileChat.current = mobileChat;
+    if (!mobileChat) {
+      // Chromium preserves scrollTop across display:none and gets the same
+      // value written back; WebKit resets to 0 and needs the restore.
+      const restore = savedListScroll.current;
+      requestAnimationFrame(() => {
+        if (listScrollRef.current) listScrollRef.current.scrollTop = restore;
+      });
+    }
+  }, [mobileChat]);
 
   const refreshDevices = useCallback(
     async (manual = false) => {
@@ -139,45 +184,63 @@ export function Workspace({
     setMobileChat(Boolean(initialLocalSessionId));
   }, [initialDeviceId, initialLocalSessionId, devices]);
 
+  // A catalog refresh (retry, new-session ready, header refresh) must not
+  // wipe what the user is looking at: only a real device switch resets the
+  // expansion, the loaded pages and the scroll.
+  const catalogDeviceRef = useRef('');
   useEffect(() => {
     if (!activeDeviceId) {
+      catalogDeviceRef.current = '';
       setProjects([]);
       setAllSessions([]);
       setProjectsLoading(false);
       return;
     }
+    const deviceChanged = catalogDeviceRef.current !== activeDeviceId;
+    catalogDeviceRef.current = activeDeviceId;
     let cancelled = false;
     setProjectsError('');
     setSessionsError('');
     setProjectsLoading(true);
-    setExpandedProjectId(null);
-    setAllSessions([]);
-    setSessionsHasMore(false);
+    if (deviceChanged) {
+      setExpandedProjectId(null);
+      setAllSessions([]);
+      setSessionsHasMore(false);
+    }
     setSessionsLoading(true);
-    void (async () => {
-      // Projects and the session index are independent scans on the PC; run
-      // them together so the sidebar becomes interactive as soon as either
-      // is ready.
-      const [projectResult, sessionResult] = await Promise.allSettled([
-        fetchProjects(activeDeviceId),
-        fetchSessions(activeDeviceId, undefined, 500),
-      ]);
-      if (cancelled) return;
-      if (projectResult.status === 'fulfilled') {
-        setProjects(projectResult.value.projects);
-      } else {
+    // Let each request update the sidebar as soon as it completes. Waiting
+    // for both makes a slow session scan hide the already-loaded projects.
+    void fetchProjects(activeDeviceId)
+      .then(result => {
+        if (!cancelled) setProjects(result.projects);
+      })
+      .catch(error => {
+        if (cancelled) return;
         setProjects([]);
-        setProjectsError(projectResult.reason instanceof Error ? projectResult.reason.message : '无法读取项目');
-      }
-      if (sessionResult.status === 'fulfilled') {
-        setAllSessions(sessionResult.value.sessions);
-        setSessionsHasMore(Boolean(sessionResult.value.hasMore));
-      } else {
-        setSessionsError(sessionResult.reason instanceof Error ? sessionResult.reason.message : '无法读取会话');
-      }
-      setProjectsLoading(false);
-      setSessionsLoading(false);
-    })();
+        setProjectsError(error instanceof Error ? error.message : '无法读取项目');
+      })
+      .finally(() => {
+        if (!cancelled) setProjectsLoading(false);
+      });
+    void fetchSessions(activeDeviceId, undefined, 500)
+      .then(result => {
+        if (cancelled) return;
+        const fresh = result.sessions;
+        if (deviceChanged) {
+          setAllSessions(fresh);
+        } else {
+          // Keep any older pages the user already loaded; the refresh only
+          // describes the first 500.
+          setAllSessions(previous => mergeSessionCatalog(previous, fresh, Boolean(result.hasMore)));
+        }
+        setSessionsHasMore(Boolean(result.hasMore));
+      })
+      .catch(error => {
+        if (!cancelled) setSessionsError(error instanceof Error ? error.message : '无法读取会话');
+      })
+      .finally(() => {
+        if (!cancelled) setSessionsLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -238,38 +301,75 @@ export function Workspace({
     return grouped;
   }, [allSessions, liveTerminals]);
 
-  const toggleProject = useCallback((project: DeviceProject) => {
-    setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
-    setSessionsError('');
-  }, []);
+  // A direct link or browser reload should reveal the selected conversation
+  // in the desktop sidebar. Do this once per selection so a manual collapse
+  // is not undone by subsequent catalog refreshes.
+  const revealedSelection = useRef('');
+  useEffect(() => {
+    if (!activeDeviceId || !selectedLocalSessionId) {
+      revealedSelection.current = '';
+      return;
+    }
+    const key = `${activeDeviceId}:${selectedLocalSessionId}`;
+    if (revealedSelection.current === key) return;
+    const selected = allSessions.find(session => session.localSessionId === selectedLocalSessionId);
+    if (!selected) return;
+    revealedSelection.current = key;
+    setExpandedProjectId(selected.projectId);
+  }, [activeDeviceId, allSessions, selectedLocalSessionId]);
+
+  const toggleProject = useCallback(
+    (project: DeviceProject) => {
+      if (search.trim()) {
+        setCollapsedSearchProjects(current => {
+          const next = new Set(current);
+          if (next.has(project.projectId)) next.delete(project.projectId);
+          else next.add(project.projectId);
+          return next;
+        });
+      } else {
+        setExpandedProjectId(current => (current === project.projectId ? null : project.projectId));
+      }
+      setSessionsError('');
+    },
+    [search],
+  );
+
+  useEffect(() => {
+    setCollapsedSearchProjects(new Set());
+  }, [search, activeDeviceId]);
 
   // Fetch the next page of the session index. Sessions are merged by id so a
   // refresh that raced with this call cannot produce duplicates.
   const loadMoreSessions = useCallback(async () => {
     if (!activeDeviceId || !sessionsHasMore || loadingMoreSessions) return;
+    const generation = paginationGeneration.current;
     setLoadingMoreSessions(true);
     try {
       const page = await fetchSessions(activeDeviceId, undefined, 500, allSessions.length);
+      if (generation !== paginationGeneration.current) return;
       setAllSessions(previous => {
         const seen = new Set(previous.map(session => session.localSessionId));
         return [...previous, ...page.sessions.filter(session => !seen.has(session.localSessionId))];
       });
       setSessionsHasMore(Boolean(page.hasMore));
     } catch (error) {
+      if (generation !== paginationGeneration.current) return;
       setSessionsError(error instanceof Error ? error.message : '加载更多会话失败');
     } finally {
-      setLoadingMoreSessions(false);
+      if (generation === paginationGeneration.current) setLoadingMoreSessions(false);
     }
   }, [activeDeviceId, allSessions.length, loadingMoreSessions, sessionsHasMore]);
 
   const selectSession = useCallback(
     (localSessionId: string) => {
+      captureListScroll();
       playNav('push');
       setSelectedLocalSessionId(localSessionId);
       setMobileChat(true);
       onNavigate(activeDeviceId, localSessionId);
     },
-    [activeDeviceId, onNavigate, playNav],
+    [activeDeviceId, captureListScroll, onNavigate, playNav],
   );
 
   // Closing the chat: the header button plays the list fade-in, the gesture
@@ -371,6 +471,13 @@ export function Workspace({
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [newSessionState, setNewSessionState] = useState('');
+  // A new-terminal operation is bound to the device it was started on;
+  // switching devices mid-poll used to relaunch it on the wrong machine with
+  // the old path.
+  useEffect(() => {
+    setNewSessionCwd(null);
+    setNewSessionState('');
+  }, [activeDeviceId]);
   useEffect(() => {
     if (!newSessionCwd) return;
     let cancelled = false;
@@ -448,15 +555,24 @@ export function Workspace({
     [activeDevice?.online, newSessionCwd],
   );
 
+  // One predicate for both filters: the project filter used to ignore
+  // summaries, so a summary-only hit showed "没有匹配的项目" while the session
+  // filter was written to match them.
+  const sessionMatches = useCallback(
+    (session: DeviceSessionSummary, q: string): boolean =>
+      session.title.toLowerCase().includes(q) || (session.summary ?? '').toLowerCase().includes(q),
+    [],
+  );
+
   const filteredProjects = useMemo(() => {
     if (!query) return projects;
     return projects.filter(project => {
       if (project.name.toLowerCase().includes(query) || project.path.toLowerCase().includes(query)) {
         return true;
       }
-      return (sessionsByProject[project.projectId] ?? []).some(session => session.title.toLowerCase().includes(query));
+      return (sessionsByProject[project.projectId] ?? []).some(session => sessionMatches(session, query));
     });
-  }, [projects, query, sessionsByProject]);
+  }, [projects, query, sessionMatches, sessionsByProject]);
 
   const filteredSessions = useCallback(
     (project: DeviceProject): DeviceSessionSummary[] => {
@@ -467,18 +583,17 @@ export function Workspace({
       if (project.name.toLowerCase().includes(query) || project.path.toLowerCase().includes(query)) {
         return sessions;
       }
-      return sessions.filter(
-        session => session.title.toLowerCase().includes(query) || (session.summary ?? '').toLowerCase().includes(query),
-      );
+      return sessions.filter(session => sessionMatches(session, query));
     },
-    [query, sessionsByProject],
+    [query, sessionMatches, sessionsByProject],
   );
 
   return (
-    <div className="rcs-page-enter flex min-h-0 flex-1 overflow-hidden">
+    <div className="rcs-page-enter relative flex min-h-0 flex-1 overflow-hidden">
       <aside
+        data-chat-open={mobileChat}
         className={cn(
-          'w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
+          'workspace-sidebar w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
           navDir === 'pop' && 'rcs-nav-pop',
           // The chat panel covers the list on phones; leaving the list in the
           // accessibility tree let VoiceOver swipe into invisible rows.
@@ -493,7 +608,10 @@ export function Workspace({
               <ThemeToggle />
               <button
                 type="button"
-                onClick={() => void refreshDevices(true)}
+                onClick={() => {
+                  void refreshDevices(true);
+                  refreshCatalog();
+                }}
                 title="刷新设备"
                 aria-label="刷新设备"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-surface-2 hover:text-text-secondary active:bg-surface-2 active:text-text-secondary"
@@ -518,6 +636,8 @@ export function Workspace({
                 <button
                   key={device.id}
                   type="button"
+                  aria-pressed={device.id === activeDeviceId}
+                  aria-label={`${device.name}，${device.online ? '设备在线' : '设备离线'}`}
                   onClick={() => {
                     setActiveDeviceId(device.id);
                     setSelectedLocalSessionId('');
@@ -538,6 +658,9 @@ export function Workspace({
                     )}
                   />
                   <span className="max-w-[10rem] truncate">{device.name}</span>
+                  <span aria-hidden="true" className="text-[11px] text-text-muted">
+                    {device.online ? '在线' : '离线'}
+                  </span>
                 </button>
               ))}
             </div>
@@ -581,7 +704,7 @@ export function Workspace({
           )}
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div ref={listScrollRef} className="flex-1 overflow-y-auto">
           {projectsError && (
             <div className="mx-3 mb-1 flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-status-error">
               <span className="min-w-0 flex-1">{projectsError}</span>
@@ -596,7 +719,9 @@ export function Workspace({
           )}
           <div className="list-safe pb-[calc(1rem+env(safe-area-inset-bottom))]">
             {filteredProjects.map(project => {
-              const expanded = expandedProjectId === project.projectId;
+              const expanded = query
+                ? !collapsedSearchProjects.has(project.projectId)
+                : expandedProjectId === project.projectId;
               const sessions = filteredSessions(project);
               return (
                 <div key={project.projectId}>
@@ -604,6 +729,7 @@ export function Workspace({
                     <button
                       type="button"
                       onClick={() => toggleProject(project)}
+                      aria-expanded={expanded}
                       className="flex min-h-12 min-w-0 flex-1 items-center gap-2.5 px-3 text-left text-[15px] text-text-primary transition-colors hover:bg-surface-1"
                       title={project.path}
                     >
@@ -647,14 +773,16 @@ export function Workspace({
                             )}
                             title={liveTerminals[session.localSessionId] ? '终端运行中' : '终端未运行'}
                           >
-                            {liveTerminals[session.localSessionId] && <span className="sr-only">终端运行中</span>}
+                            <span className="sr-only">
+                              {liveTerminals[session.localSessionId] ? '终端运行中' : '终端未运行'}
+                            </span>
                           </span>
                           <span className="shrink-0 text-[12px] text-text-muted">
                             {formatRelativeTime(session.updatedAt)}
                           </span>
                         </button>
                       ))}
-                      {sessions.length === 0 && !sessionsLoading && (
+                      {sessions.length === 0 && !sessionsLoading && !sessionsError && (
                         <p className="px-9 py-1 text-xs text-text-muted">没有匹配的会话</p>
                       )}
                       {sessionsError && (
@@ -674,7 +802,7 @@ export function Workspace({
                 </div>
               );
             })}
-            {sessionsHasMore && !query && (
+            {sessionsHasMore && (
               <div className="px-3 py-2">
                 <button
                   type="button"
@@ -684,6 +812,11 @@ export function Workspace({
                 >
                   {loadingMoreSessions ? '正在加载…' : '加载更早的会话'}
                 </button>
+                {/* Searching only covers loaded rows; say so instead of hiding
+                    the rest of the corpus behind a silent dead end. */}
+                {query && !loadingMoreSessions && (
+                  <p className="pt-1 text-center text-[11px] text-text-muted">仅搜索已加载的会话</p>
+                )}
               </div>
             )}
             {projectsLoading && projects.length === 0 && (
@@ -707,22 +840,28 @@ export function Workspace({
 
       <main
         ref={chatPanelRef}
-        aria-hidden={!mobileChat ? true : undefined}
+        data-chat-open={mobileChat}
         className={cn(
-          'min-h-0 min-w-0 flex-1 flex-col bg-surface-0 max-md:absolute max-md:inset-0 max-md:z-10',
+          'workspace-chat min-h-0 min-w-0 flex-1 flex-col bg-surface-0 max-md:absolute max-md:inset-0 max-md:z-10',
           mobileChat ? 'flex' : 'hidden md:flex',
           !mobileChat && 'max-md:pointer-events-none',
           navDir === 'push' && 'rcs-nav-push',
         )}
       >
         {selectedLocalSessionId && activeDeviceId ? (
-          <DeviceSessionChat
-            key={`${activeDeviceId}:${selectedLocalSessionId}`}
-            deviceId={activeDeviceId}
-            localSessionId={selectedLocalSessionId}
-            deviceName={activeDevice?.name}
-            onBack={() => closeChat(true)}
-          />
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在加载会话…</div>
+            }
+          >
+            <DeviceSessionChat
+              key={`${activeDeviceId}:${selectedLocalSessionId}`}
+              deviceId={activeDeviceId}
+              localSessionId={selectedLocalSessionId}
+              deviceName={activeDevice?.name}
+              onBack={() => closeChat(true)}
+            />
+          </Suspense>
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center">
             <div className="max-w-md">

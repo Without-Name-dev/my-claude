@@ -43,7 +43,13 @@ export type ConversationContentProps = ComponentProps<typeof StickToBottom.Conte
 
 export const ConversationContent = ({ className, scrollClassName, ...props }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn('mx-auto flex min-h-full max-w-3xl flex-col gap-2 px-4 py-8 sm:px-8 sm:py-12 min-w-0', className)}
+    className={cn(
+      // `justify-end` keeps a short transcript hugging the composer instead of
+      // leaving a dead half-screen of blank space between the last message and
+      // the status strip. Overflowing transcripts are unaffected.
+      'mx-auto flex min-h-full w-full max-w-[56rem] flex-col justify-end gap-1.5 px-4 py-5 sm:px-8 sm:py-8 min-w-0',
+      className,
+    )}
     // Stops a drag at the end of the transcript from chaining to the page;
     // the WKWebView rubber-banding is what made the screen shake.
     scrollClassName={cn('rcs-scroller', scrollClassName)}

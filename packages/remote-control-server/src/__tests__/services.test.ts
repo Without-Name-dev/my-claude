@@ -20,13 +20,14 @@ mock.module('../config', () => ({
   getBaseUrl: () => 'http://localhost:3000',
 }))
 
-import { storeReset, storeCreateEnvironment } from '../store'
+import { storeReset, storeCreateEnvironment, storeGetSession } from '../store'
 import {
   createSession,
   createCodeSession,
   getSession,
   updateSessionTitle,
   updateSessionStatus,
+  touchSession,
   archiveSession,
   incrementEpoch,
   listSessions,
@@ -125,6 +126,24 @@ describe('Session Service', () => {
       const s = createSession({})
       updateSessionStatus(s.id, 'active')
       expect(getSession(s.id)?.status).toBe('active')
+    })
+
+    test('statusChangedAt only moves on a real transition, not on touches', () => {
+      const s = createSession({})
+      updateSessionStatus(s.id, 'running')
+      const start = storeGetSession(s.id)!.statusChangedAt.getTime()
+      // Heartbeat-style touches and re-affirmations of the same status must
+      // not restart the clock — the web's elapsed timer reads this marker.
+      touchSession(s.id)
+      updateSessionStatus(s.id, 'running')
+      touchSession(s.id)
+      expect(storeGetSession(s.id)!.statusChangedAt.getTime()).toBe(start)
+      updateSessionStatus(s.id, 'idle')
+      // >= not >: the transition can land in the same millisecond.
+      expect(
+        storeGetSession(s.id)!.statusChangedAt.getTime(),
+      ).toBeGreaterThanOrEqual(start)
+      expect(storeGetSession(s.id)!.status).toBe('idle')
     })
   })
 

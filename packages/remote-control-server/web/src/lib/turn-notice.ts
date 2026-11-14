@@ -1,6 +1,6 @@
 import { haptic } from './view-transition'
 
-const BASE_TITLE = 'Claude Remote'
+const BASE_TITLE = 'My Claude'
 /** Turns shorter than this are over before you could look away. */
 const QUIET_UNDER_MS = 3000
 

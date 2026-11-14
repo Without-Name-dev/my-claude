@@ -44,11 +44,17 @@ import {
   isProcessAlive,
   listBunProcesses,
   readRegistryWithReal,
+  startedAfterRegistration,
   verifySession,
   type BunProcess,
   type RegistryEntry,
 } from './registry'
-import { listProjects, listSessions, readSession } from './sessions'
+import {
+  invalidateCatalog,
+  listProjects,
+  listSessions,
+  readSession,
+} from './sessions'
 import { copyPaths, listDirectory, uploadFiles } from './files'
 import { managedSessions, openSession } from './open'
 import { closeSession, openNewSession } from './control'
@@ -103,7 +109,25 @@ function watchRegistry(): void {
   }
 }
 
-let discovering = false
+type RuntimeSnapshot = {
+  entries: RegistryEntry[]
+  processes: Map<number, BunProcess>
+}
+let snapshotInFlight: Promise<RuntimeSnapshot> | undefined
+
+function readRuntimeSnapshot(): Promise<RuntimeSnapshot> {
+  if (!snapshotInFlight) {
+    snapshotInFlight = Promise.all([
+      readRegistryWithReal(config.claudeConfigDir),
+      listBunProcesses(),
+    ])
+      .then(([entries, processes]) => ({ entries, processes }))
+      .finally(() => {
+        snapshotInFlight = undefined
+      })
+  }
+  return snapshotInFlight
+}
 
 /**
  * Find terminals that are running right now, including ones the user started
@@ -111,59 +135,46 @@ let discovering = false
  * about Spawner-managed sessions, and a manual terminal looks "not running"
  * (or worse, "alive without a bridge") in the web UI.
  *
- * One WMI query + the CLI's own registry; the command line must mention the
- * session id, so a recycled PID is never reported as a CLI.
+ * One shared process scan and registry snapshot per state report.
  */
-async function discoverRunningSessions(): Promise<void> {
-  if (discovering) return
-  discovering = true
-  try {
-    const entries = await readRegistryWithReal(config.claudeConfigDir)
-    const processes = await listBunProcesses()
-    for (const entry of entries) {
-      if (!isProcessAlive(entry.pid)) continue
-      const proc = processes.get(entry.pid)
-      // The registry file can outlive a crashed process and PIDs get reused.
-      // Require a live CLI process whose start time matches the registry
-      // entry. Fresh sessions have no `--resume <id>` in their command line,
-      // so the session id cannot be the identity check here.
-      if (!proc) continue
-      const isAgentRuntime =
-        /^(bun|node|claude)\.exe$/i.test(proc.name) ||
-        /cli\.js/i.test(proc.commandLine)
-      if (!isAgentRuntime) continue
-      if (
-        entry.startedAt &&
-        proc.startedAt > 0 &&
-        Math.abs(proc.startedAt - entry.startedAt) > 10_000
-      ) {
-        continue
-      }
-      trackedSessions.add(entry.sessionId)
-      if (entry.bridgeSessionId && !managedSessions.has(entry.sessionId)) {
-        managedSessions.set(entry.sessionId, {
-          pid: entry.pid,
-          cwd: entry.cwd,
-          bridgeSessionId: entry.bridgeSessionId,
-          startedAt: entry.startedAt,
-          openedAt: entry.startedAt ?? Date.now(),
-        })
-      }
+async function discoverRunningSessions(): Promise<RuntimeSnapshot> {
+  const snapshot = await readRuntimeSnapshot()
+  const { entries, processes } = snapshot
+  for (const entry of entries) {
+    if (!isProcessAlive(entry.pid)) continue
+    const proc = processes.get(entry.pid)
+    // Fresh sessions have no `--resume <id>` in their command line.
+    if (!proc) continue
+    const isAgentRuntime =
+      /^(bun|node|claude)\.exe$/i.test(proc.name) ||
+      /cli\.js/i.test(proc.commandLine)
+    if (!isAgentRuntime) continue
+    if (startedAfterRegistration(proc.startedAt, entry.startedAt)) {
+      continue
     }
-    log(
-      `[spawner] discovery: ${entries.length} registry entries, ` +
-        `${processes.size} processes, ${trackedSessions.size} tracked`,
-    )
-  } finally {
-    discovering = false
+    trackedSessions.add(entry.sessionId)
+    if (entry.bridgeSessionId && !managedSessions.has(entry.sessionId)) {
+      managedSessions.set(entry.sessionId, {
+        pid: entry.pid,
+        cwd: entry.cwd,
+        bridgeSessionId: entry.bridgeSessionId,
+        startedAt: entry.startedAt,
+        openedAt: entry.startedAt ?? Date.now(),
+      })
+    }
   }
+  log(
+    `[spawner] discovery: ${entries.length} registry entries, ` +
+      `${processes.size} processes, ${trackedSessions.size} tracked`,
+  )
+  return snapshot
 }
 
 async function reportTrackedStates(): Promise<void> {
   if (!isOpen()) return
-  await discoverRunningSessions()
+  const snapshot = await discoverRunningSessions()
   if (trackedSessions.size === 0) return
-  const states = await collectRuntimeStates()
+  const states = await collectRuntimeStates(snapshot)
   if (states.length > 0) sendEvent({ type: 'session_state', states })
 }
 
@@ -273,15 +284,17 @@ function managedRuntimeState(
     managedSessions.delete(localSessionId)
     return undefined
   }
-  if (
-    managed.startedAt &&
-    proc.startedAt > 0 &&
-    Math.abs(proc.startedAt - managed.startedAt) > 10_000
-  ) {
+  if (startedAfterRegistration(proc.startedAt, managed.startedAt)) {
     managedSessions.delete(localSessionId)
     return undefined
   }
   const entry = entries.find(item => item.pid === managed.pid)
+  // A terminal can switch sessions via /resume without changing its PID. The
+  // registry is authoritative about which session that process now owns.
+  if (entry && entry.sessionId !== localSessionId) {
+    managedSessions.delete(localSessionId)
+    return undefined
+  }
   return {
     localSessionId,
     cwd: managed.cwd,
@@ -294,11 +307,11 @@ function managedRuntimeState(
   }
 }
 
-async function collectRuntimeStates(): Promise<SessionRuntimeState[]> {
+async function collectRuntimeStates(
+  snapshot: RuntimeSnapshot,
+): Promise<SessionRuntimeState[]> {
   const states: SessionRuntimeState[] = []
-  // One registry read + one process scan per report, not one per session.
-  const entries = await readRegistryWithReal(config.claudeConfigDir)
-  const processes = await listBunProcesses()
+  const { entries, processes } = snapshot
   for (const localSessionId of trackedSessions) {
     const managedState = managedRuntimeState(localSessionId, entries, processes)
     if (managedState) {
@@ -309,7 +322,7 @@ async function collectRuntimeStates(): Promise<SessionRuntimeState[]> {
       config.claudeConfigDir,
       localSessionId,
       undefined,
-      { verifyCommandLine: false, processes },
+      { verifyCommandLine: false, processes, entries },
     )
     states.push(verified.state)
   }
@@ -323,11 +336,12 @@ function startHeartbeat(): void {
   if (heartbeatTimer) clearInterval(heartbeatTimer)
   const interval = Math.max(config.heartbeatMs, 5_000)
   heartbeatTimer = setInterval(() => {
+    if (!registryWatcher) watchRegistry()
     void (async () => {
       // Pick up terminals started since the last tick (including manual
       // ones), then report every tracked session.
-      await discoverRunningSessions()
-      const running = await collectRuntimeStates()
+      const snapshot = await discoverRunningSessions()
+      const running = await collectRuntimeStates(snapshot)
       send({ type: 'heartbeat', ts: Date.now(), running })
     })()
   }, interval)
@@ -455,7 +469,7 @@ async function handleRequest(
   try {
     switch (method) {
       case 'list_projects': {
-        respond(id, { projects: await listProjects() })
+        respond(id, { projects: await listProjects(config.claudeConfigDir) })
         return
       }
       case 'list_sessions': {
@@ -463,12 +477,15 @@ async function handleRequest(
         const projectPath = stringField(params, 'projectPath', 2048)
         const limit = numberField(params, 'limit')
         const offset = numberField(params, 'offset')
-        const result = await listSessions({
-          projectId,
-          projectPath,
-          limit,
-          offset,
-        })
+        const result = await listSessions(
+          {
+            projectId,
+            projectPath,
+            limit,
+            offset,
+          },
+          config.claudeConfigDir,
+        )
         respond(id, result)
         return
       }
@@ -481,7 +498,16 @@ async function handleRequest(
         const cwd = stringField(params, 'cwd', 2048)
         const before = stringField(params, 'before', 200)
         const limit = numberField(params, 'limit')
-        respond(id, await readSession({ localSessionId, cwd, before, limit }))
+        respond(
+          id,
+          await readSession({
+            localSessionId,
+            cwd,
+            before,
+            limit,
+            configDir: config.claudeConfigDir,
+          }),
+        )
         return
       }
       case 'list_directory': {
@@ -525,6 +551,9 @@ async function handleRequest(
         const emit = (event: Extract<DeviceEvent, { type: 'operation' }>) => {
           if (event.state === 'ready') {
             trackedSessions.add(event.localSessionId)
+            // The new session has no transcript yet; it only shows up through
+            // the registry merge, so drop the 20s catalog cache right away.
+            invalidateCatalog()
           }
           sendEvent(event)
         }

@@ -4,11 +4,9 @@ import { getEventBus, type SessionEvent } from '../transport/event-bus'
 /**
  * Duplicate-tap guard.
  *
- * A phone that sends the same prompt twice within a couple of seconds — rapid
- * taps on the send button, a retried fetch, two clients finishing the same
- * draft — used to arrive as two distinct outbound events and run the prompt
- * twice. Identical user content inside this window with no reply in between
- * is the same send, not a new one.
+ * Prefer the message UUID: a retry of the same send keeps its UUID, while two
+ * deliberate sends may legitimately contain identical text. Content remains
+ * a short-window fallback for legacy clients that do not send an identifier.
  */
 const USER_DEDUPE_WINDOW_MS = 2_500
 const recentUserSends = new Map<
@@ -29,6 +27,8 @@ function hashContent(text: string): string {
 function userContentKey(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined
   const record = payload as Record<string, unknown>
+  if (typeof record.uuid === 'string' && record.uuid)
+    return `uuid:${record.uuid}`
   const message = record.message as Record<string, unknown> | undefined
   const content = message?.content ?? record.content
   if (typeof content === 'string') return `s:${hashContent(content)}`

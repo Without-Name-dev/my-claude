@@ -10,18 +10,39 @@ installDebugCapture();
 
 let revealed = false;
 
+/**
+ * The splash used to vanish as soon as React committed — on a fast connection
+ * that read as a flicker rather than a launch. Keep it up for at least this
+ * long; index.html stamps the first paint so time spent loading HTML counts.
+ */
+const BOOT_MIN_VISIBLE_MS = 1500;
+
 function revealApp() {
   if (revealed) return;
   revealed = true;
+  const startedAt = Number(document.documentElement.dataset.bootAt) || Date.now();
+  const remaining = Math.max(0, BOOT_MIN_VISIBLE_MS - (Date.now() - startedAt));
+  const finish = () => window.dispatchEvent(new Event('ccremote:boot-done'));
   // One frame for React's commit, one for the browser to paint it, then fade.
-  requestAnimationFrame(() => {
+  window.setTimeout(() => {
     requestAnimationFrame(() => {
-      const boot = document.getElementById('boot');
-      if (!boot) return;
-      boot.classList.add('is-done');
-      window.setTimeout(() => boot.remove(), 450);
+      requestAnimationFrame(() => {
+        // Inputs mount under the splash; re-enable touch and focus only now so
+        // autofocus cannot raise the keyboard while the splash is still up.
+        document.getElementById('root')?.removeAttribute('inert');
+        const boot = document.getElementById('boot');
+        if (!boot) {
+          finish();
+          return;
+        }
+        boot.classList.add('is-done');
+        window.setTimeout(() => {
+          boot.remove();
+          finish();
+        }, 450);
+      });
     });
-  });
+  }, remaining);
 }
 
 const container = document.getElementById('root');

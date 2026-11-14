@@ -10,13 +10,19 @@
 
 import { randomUUID } from 'node:crypto'
 import { log } from '../logger'
-import { isBridgeConnected, onBridgeAttached } from '../transport/ws-handler'
+import {
+  isBridgeConnected,
+  onBridgeAttached,
+  wasBridgeEventWritten,
+  wasBridgeMessageWritten,
+} from '../transport/ws-handler'
 import { publishSessionEvent } from '../services/transport'
 import { requestDevice } from './hub'
 import {
   clearMapping,
   enqueueOutbox,
   findMappingByBridgeId,
+  flushState,
   getCatalog,
   getMapping,
   listOutbox,
@@ -33,6 +39,7 @@ import {
   type OpenFailureCode,
   type OpenOperationState,
   type SessionSummary,
+  type UserContent,
 } from './protocol'
 
 export type OperationRecord = {
@@ -58,6 +65,9 @@ export type OperationRecord = {
 
 const operations = new Map<string, OperationRecord>()
 const activeBySession = new Map<string, string>()
+// Entries being durably prepared have not yet reached the event bus. An
+// intervening bridge attach must not mistake them for replayed events.
+const publishingOutboxIds = new Set<string>()
 const OPERATION_TTL_MS = 10 * 60 * 1000
 const OPERATION_TIMEOUT_MS = 120_000
 
@@ -341,14 +351,18 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
       record.updatedAt = Date.now()
 
       if (event.state === 'ready' && event.bridgeSessionId) {
+        // open_new_session runs under a placeholder id; the ready event carries
+        // the id the CLI actually minted and the web navigated to. The mapping
+        // must live under that id or the new session looks offline forever.
+        const mappedId = record.resolvedLocalSessionId ?? record.localSessionId
         setMapping({
           deviceId,
-          localSessionId: record.localSessionId,
+          localSessionId: mappedId,
           bridgeSessionId: event.bridgeSessionId,
           cwd: record.cwd,
           updatedAt: Date.now(),
         })
-        void flushOutbox(deviceId, record.localSessionId, event.bridgeSessionId)
+        void flushOutbox(deviceId, mappedId, event.bridgeSessionId)
       } else if (event.state === 'failed') {
         void markQueuedFailed(
           deviceId,
@@ -388,22 +402,52 @@ export async function flushOutbox(
     entry => entry.state === 'queued',
   )
   if (entries.length === 0) return
+  // Persist the potentially-delivered state before publishing. Otherwise a
+  // crash between a bridge send and the debounced save leaves a 'queued' row
+  // on disk and silently sends it again after restart.
+  for (const entry of entries) {
+    publishingOutboxIds.add(entry.id)
+    updateOutbox(entry.id, {
+      state: 'unconfirmed',
+      bridgeSessionId,
+      detail: '正在发送，等待终端连接',
+    })
+  }
+  try {
+    await flushState({ throwOnError: true })
+  } catch (error) {
+    for (const entry of entries) {
+      publishingOutboxIds.delete(entry.id)
+      updateOutbox(entry.id, {
+        state: 'queued',
+        detail: '保存消息状态失败，尚未发送',
+      })
+    }
+    log(`[device] outbox persistence failed: ${(error as Error).message}`)
+    return
+  }
   const connected = isBridgeConnected(bridgeSessionId)
   for (const entry of entries) {
     try {
-      publishSessionEvent(bridgeSessionId, 'user', entry.payload, 'outbound')
-      updateOutbox(entry.id, {
-        state: connected ? 'sent' : 'unconfirmed',
+      const event = publishSessionEvent(
         bridgeSessionId,
-        detail: connected
-          ? undefined
-          : '已放入服务端队列，但尚未确认终端已连接',
+        'user',
+        entry.payload,
+        'outbound',
+      )
+      const written = wasBridgeEventWritten(bridgeSessionId, event)
+      updateOutbox(entry.id, {
+        state: written ? 'sent' : 'unconfirmed',
+        bridgeSessionId,
+        detail: written ? undefined : '已放入服务端队列，但尚未确认终端已连接',
       })
     } catch (error) {
       updateOutbox(entry.id, {
         state: 'failed',
         detail: `发送失败：${(error as Error).message}`,
       })
+    } finally {
+      publishingOutboxIds.delete(entry.id)
     }
   }
   log(
@@ -416,9 +460,17 @@ export async function flushOutbox(
 export function markUnconfirmedSent(
   deviceId: string,
   localSessionId: string,
+  bridgeSessionId?: string,
 ): void {
   for (const entry of listOutbox(deviceId, localSessionId)) {
-    if (entry.state === 'unconfirmed') {
+    if (
+      entry.state === 'unconfirmed' &&
+      !entry.requiresReview &&
+      !publishingOutboxIds.has(entry.id) &&
+      bridgeSessionId &&
+      entry.bridgeSessionId === bridgeSessionId &&
+      wasBridgeMessageWritten(bridgeSessionId, entry.id)
+    ) {
       updateOutbox(entry.id, { state: 'sent', detail: undefined })
     }
   }
@@ -459,7 +511,7 @@ export async function resumeQueuedSessions(
 onBridgeAttached(bridgeSessionId => {
   const mapping = findMappingByBridgeId(bridgeSessionId)
   if (!mapping) return
-  markUnconfirmedSent(mapping.deviceId, mapping.localSessionId)
+  markUnconfirmedSent(mapping.deviceId, mapping.localSessionId, bridgeSessionId)
   void flushOutbox(mapping.deviceId, mapping.localSessionId, bridgeSessionId)
 })
 
@@ -504,7 +556,7 @@ export async function markQueuedFailed(
 export function queueMessage(
   deviceId: string,
   localSessionId: string,
-  text: string,
+  content: UserContent,
 ): OutboxEntry {
   const id = randomUUID()
   const entry: OutboxEntry = {
@@ -517,8 +569,7 @@ export function queueMessage(
       // uuid, so the conversation store can dedupe the optimistic web row
       // and the real transcript row by primary key.
       uuid: id,
-      content: text,
-      message: { content: text },
+      content,
     },
     state: 'queued',
     createdAt: Date.now(),
@@ -530,32 +581,55 @@ export function queueMessage(
 }
 
 /** Deliver immediately through the bridge and report what is actually known. */
-export function deliverNow(
+export async function deliverNow(
   bridgeSessionId: string,
   deviceId: string,
   localSessionId: string,
-  text: string,
-): { state: 'sent' | 'unconfirmed'; entry: OutboxEntry } {
-  const entry = queueMessage(deviceId, localSessionId, text)
+  content: UserContent,
+): Promise<{ state: 'sent' | 'unconfirmed'; entry: OutboxEntry }> {
+  const entry = queueMessage(deviceId, localSessionId, content)
+  publishingOutboxIds.add(entry.id)
+  updateOutbox(entry.id, {
+    state: 'unconfirmed',
+    bridgeSessionId,
+    detail: '正在发送，等待终端连接',
+  })
+  try {
+    await flushState({ throwOnError: true })
+  } catch (error) {
+    publishingOutboxIds.delete(entry.id)
+    updateOutbox(entry.id, {
+      state: 'failed',
+      detail: '保存消息状态失败，尚未发送',
+    })
+    throw error
+  }
   // A web SSE subscriber is not delivery evidence; only an attached bridge
   // transport means the CLI received the event.
-  const connected = isBridgeConnected(bridgeSessionId)
   try {
-    publishSessionEvent(bridgeSessionId, 'user', entry.payload, 'outbound')
-    updateOutbox(entry.id, {
-      state: connected ? 'sent' : 'unconfirmed',
+    const event = publishSessionEvent(
       bridgeSessionId,
-      detail: connected ? undefined : '已放入服务端队列，但尚未确认终端已连接',
+      'user',
+      entry.payload,
+      'outbound',
+    )
+    const written = wasBridgeEventWritten(bridgeSessionId, event)
+    updateOutbox(entry.id, {
+      state: written ? 'sent' : 'unconfirmed',
+      bridgeSessionId,
+      detail: written ? undefined : '已放入服务端队列，但尚未确认终端已连接',
     })
     return {
-      state: connected ? 'sent' : 'unconfirmed',
-      entry: { ...entry, state: connected ? 'sent' : 'unconfirmed' },
+      state: written ? 'sent' : 'unconfirmed',
+      entry: { ...entry, state: written ? 'sent' : 'unconfirmed' },
     }
   } catch (error) {
     updateOutbox(entry.id, {
       state: 'failed',
       detail: `发送失败：${(error as Error).message}`,
     })
-    return { state: 'unconfirmed', entry: { ...entry, state: 'failed' } }
+    throw error
+  } finally {
+    publishingOutboxIds.delete(entry.id)
   }
 }

@@ -17,12 +17,23 @@ import {
   resolveSessionFilePath,
   sanitizePath,
 } from '../../../src/utils/sessionStoragePortable'
-import type {
-  ProjectSummary,
-  SessionSummary,
-  TranscriptBlock,
-  TranscriptMessage,
+import {
+  isBridgeSessionId,
+  type ProjectSummary,
+  type SessionSummary,
+  type TranscriptBlock,
+  type TranscriptMessage,
+  type TranscriptUsage,
 } from '../../remote-control-server/src/device/protocol'
+import {
+  isProcessAlive,
+  listBunProcesses,
+  readRegistryWithReal,
+  samePath,
+  startedAfterRegistration,
+  type BunProcess,
+  type RegistryEntry,
+} from './registry'
 
 const PROJECT_CACHE_MS = 20_000
 
@@ -53,21 +64,24 @@ function toSummary(info: SessionInfo): SessionSummary {
   }
 }
 
-export async function listProjects(): Promise<ProjectSummary[]> {
+export async function listProjects(
+  configDir?: string,
+): Promise<ProjectSummary[]> {
   if (projectCache && Date.now() - projectCache.at < PROJECT_CACHE_MS) {
     return projectCache.projects
   }
-  const sessions = await listSessionsImpl({})
+  const infos = await listSessionsImpl({})
+  const live = configDir
+    ? await fetchFreshTerminalSessions(configDir, infos.map(toSummary))
+    : []
   const byPath = new Map<string, ProjectSummary>()
-  for (const info of sessions) {
-    const cwd = info.cwd
-    if (!cwd) continue
+  const addSession = (cwd: string, lastModified: number) => {
     const existing = byPath.get(cwd)
     if (existing) {
       existing.sessionCount += 1
       existing.lastActivityAt = Math.max(
         existing.lastActivityAt ?? 0,
-        info.lastModified,
+        lastModified,
       )
     } else {
       byPath.set(cwd, {
@@ -75,9 +89,16 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         path: cwd,
         name: basename(cwd) || cwd,
         sessionCount: 1,
-        lastActivityAt: info.lastModified,
+        lastActivityAt: lastModified,
       })
     }
+  }
+  for (const info of infos) {
+    if (!info.cwd) continue
+    addSession(info.cwd, info.lastModified)
+  }
+  for (const session of live) {
+    addSession(session.cwd, session.updatedAt)
   }
   const projects = [...byPath.values()].sort(
     (a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0),
@@ -86,29 +107,133 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   return projects
 }
 
-export async function listSessions(options: {
-  projectId?: string
-  projectPath?: string
-  limit?: number
-  offset?: number
-}): Promise<{ sessions: SessionSummary[]; hasMore: boolean }> {
+export async function listSessions(
+  options: {
+    projectId?: string
+    projectPath?: string
+    limit?: number
+    offset?: number
+  },
+  configDir?: string,
+): Promise<{ sessions: SessionSummary[]; hasMore: boolean }> {
   const limit = Math.min(Math.max(options.limit ?? 200, 1), 500)
   const offset = Math.max(options.offset ?? 0, 0)
 
   let dir = options.projectPath
   if (!dir && options.projectId) {
-    const projects = await listProjects()
+    const projects = await listProjects(configDir)
     dir = projects.find(
       project => project.projectId === options.projectId,
     )?.path
+    if (!dir) return { sessions: [], hasMore: false }
   }
 
-  const sessions = await listSessionsImpl(
-    dir ? { dir, limit, offset } : { limit, offset },
+  // Live terminals must be merged before applying the offset. Fetch a prefix
+  // large enough to fill this page plus one item for an accurate hasMore.
+  // Without this, the offset was applied by listSessionsImpl and a second
+  // time after merging, silently skipping older conversations.
+  const listingLimit = configDir ? offset + limit + 1 : limit + 1
+  const listingOffset = configDir ? 0 : offset
+  const listed = await listSessionsImpl(
+    dir
+      ? { dir, limit: listingLimit, offset: listingOffset }
+      : { limit: listingLimit, offset: listingOffset },
   )
+  const summaries = listed.map(toSummary)
+  if (configDir) {
+    const live = await fetchFreshTerminalSessions(configDir, summaries)
+    const matching = dir ? live.filter(s => samePath(s.cwd, dir)) : live
+    const merged = [...matching, ...summaries].sort(
+      (a, b) =>
+        b.updatedAt - a.updatedAt ||
+        b.localSessionId.localeCompare(a.localSessionId),
+    )
+    return {
+      sessions: merged.slice(offset, offset + limit),
+      hasMore: merged.length > offset + limit,
+    }
+  }
   return {
-    sessions: sessions.map(toSummary),
-    hasMore: sessions.length === limit,
+    sessions: summaries.slice(0, limit),
+    hasMore: summaries.length > limit,
+  }
+}
+
+/**
+ * Live `--remote-control` terminals whose session has no transcript yet.
+ *
+ * A brand-new session only writes its first JSONL line when the first message
+ * arrives, so right after 新会话 the file-based catalog cannot see it and the
+ * web lands on "找不到该本地会话". The CLI's own PID registry does know it.
+ * Only terminals whose live command line has no `--resume` qualify: a resumed
+ * terminal re-mints its registry sessionId while writing to the original
+ * transcript, and listing that id would duplicate an existing session.
+ */
+export function selectFreshTerminalSessions(
+  entries: RegistryEntry[],
+  processes: Map<number, BunProcess>,
+  listed: SessionSummary[],
+): SessionSummary[] {
+  const known = new Set(
+    listed.map(session => session.localSessionId.toLowerCase()),
+  )
+  const fresh: SessionSummary[] = []
+  for (const entry of entries) {
+    if (!entry.cwd || known.has(entry.sessionId.toLowerCase())) continue
+    if (!entry.bridgeSessionId || !isBridgeSessionId(entry.bridgeSessionId))
+      continue
+    const proc = processes.get(entry.pid)
+    if (!proc) continue
+    const isAgentRuntime =
+      /^(bun|node|claude)\.exe$/i.test(proc.name) ||
+      /cli\.js/i.test(proc.commandLine)
+    if (!isAgentRuntime) continue
+    if (/--resume\s/i.test(proc.commandLine)) continue
+    if (startedAfterRegistration(proc.startedAt, entry.startedAt)) {
+      continue
+    }
+    fresh.push({
+      localSessionId: entry.sessionId,
+      projectId: sanitizePath(entry.cwd),
+      cwd: entry.cwd,
+      title: '新会话',
+      summary: '',
+      updatedAt: entry.updatedAt ?? entry.startedAt ?? Date.now(),
+      createdAt: entry.startedAt,
+      fileSize: 0,
+    })
+  }
+  return fresh
+}
+
+async function fetchFreshTerminalSessions(
+  configDir: string,
+  listed: SessionSummary[],
+): Promise<SessionSummary[]> {
+  try {
+    const [entries, processes] = await Promise.all([
+      readRegistryWithReal(configDir),
+      listBunProcesses(),
+    ])
+    return selectFreshTerminalSessions(entries, processes, listed)
+  } catch {
+    return []
+  }
+}
+
+async function isLiveRegistrySession(
+  configDir: string,
+  localSessionId: string,
+): Promise<boolean> {
+  try {
+    const entries = await readRegistryWithReal(configDir)
+    return entries.some(
+      entry =>
+        entry.sessionId.toLowerCase() === localSessionId.toLowerCase() &&
+        isProcessAlive(entry.pid),
+    )
+  } catch {
+    return false
   }
 }
 
@@ -178,9 +303,31 @@ function normalizeBlocks(content: unknown): TranscriptBlock[] {
         })
         break
       }
-      case 'image':
-        blocks.push({ type: 'image' })
+      case 'image': {
+        // Keep the base64 payload so photos survive history reloads on the
+        // phone; cap the size to keep one page from ballooning.
+        const source =
+          block.source && typeof block.source === 'object'
+            ? (block.source as Record<string, unknown>)
+            : undefined
+        if (
+          source &&
+          source.type === 'base64' &&
+          typeof source.data === 'string' &&
+          source.data.length > 0 &&
+          source.data.length <= 6_000_000
+        ) {
+          blocks.push({
+            type: 'image',
+            mimeType:
+              typeof source.media_type === 'string'
+                ? source.media_type
+                : 'image/png',
+            data: source.data,
+          })
+        }
         break
+      }
       default:
         break
     }
@@ -221,6 +368,9 @@ function normalizeEntry(
     text: textFromBlocks(blocks),
     timestamp:
       typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+    // Same extraction rules as the terminal's usage hydration
+    // (usageHydration.ts): assistant entries only, synthetic models skipped.
+    ...(role === 'assistant' ? { usage: usageFromEntry(record) } : {}),
     blocks,
     isMeta: entry.isMeta === true,
   }
@@ -231,6 +381,32 @@ export type ReadSessionResult = {
   before?: string
   hasMore: boolean
   total: number
+}
+
+/** Extract a transcript assistant message's billed usage, if present. */
+function usageFromEntry(
+  record: Record<string, unknown>,
+): TranscriptUsage | undefined {
+  const usage = record.usage
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage))
+    return undefined
+  if (record.model === '<synthetic>') return undefined
+  const u = usage as Record<string, unknown>
+  const result = {
+    inputTokens: Number(u.input_tokens) || 0,
+    outputTokens: Number(u.output_tokens) || 0,
+    cacheReadInputTokens: Number(u.cache_read_input_tokens) || 0,
+    cacheCreationInputTokens: Number(u.cache_creation_input_tokens) || 0,
+  }
+  if (
+    result.inputTokens === 0 &&
+    result.outputTokens === 0 &&
+    result.cacheReadInputTokens === 0 &&
+    result.cacheCreationInputTokens === 0
+  ) {
+    return undefined
+  }
+  return result
 }
 
 /**
@@ -245,6 +421,7 @@ export async function readSession(options: {
   cwd?: string
   limit?: number
   before?: string
+  configDir?: string
 }): Promise<ReadSessionResult> {
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 200)
   const resolved = await resolveSessionFilePath(
@@ -252,6 +429,14 @@ export async function readSession(options: {
     options.cwd,
   )
   if (!resolved) {
+    // A brand-new terminal has no transcript until its first message; report
+    // an empty conversation instead of an error the web renders as broken.
+    if (
+      options.configDir &&
+      (await isLiveRegistrySession(options.configDir, options.localSessionId))
+    ) {
+      return { messages: [], hasMore: false, total: 0 }
+    }
     throw new Error('找不到该会话的记录文件')
   }
 

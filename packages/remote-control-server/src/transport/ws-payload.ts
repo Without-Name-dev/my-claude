@@ -4,7 +4,10 @@ import { error as logError } from '../logger'
 
 const textDecoder = new TextDecoder()
 
-export const MAX_WS_MESSAGE_SIZE = 10 * 1024 * 1024
+// The CLI echoes a full user turn back over this socket. A web send may carry
+// 8 photos at ~2MB each (≈2.67MB base64), which peaks around 22MB of frame —
+// the old 10MB cap closed those bridges with 1009 mid-echo.
+export const MAX_WS_MESSAGE_SIZE = 26 * 1024 * 1024
 
 export type DecodedWsMessage =
   | { ok: true; data: string; size: number }

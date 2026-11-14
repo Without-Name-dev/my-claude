@@ -20,6 +20,23 @@ export function formatTime(ts: number | null | undefined): string {
   return new Date(ts * 1000).toLocaleString()
 }
 
+/**
+ * Strip ANSI/VT100 escape sequences from terminal output. Local command
+ * replies (/compact, /status…) arrive with SGR codes; rendering them raw put
+ * literal "␛[2m" boxes in the transcript.
+ */
+export function stripAnsi(text: string): string {
+  return (
+    text
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: terminal escape sequences intentionally contain ESC and BEL.
+      .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '')
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI CSI sequences.
+      .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: strip remaining VT100 escape sequences.
+      .replace(/\u001B[@-Z\\-_]/g, '')
+  )
+}
+
 export function statusClass(status: string | null | undefined): string {
   const map: Record<string, string> = {
     active: 'active',

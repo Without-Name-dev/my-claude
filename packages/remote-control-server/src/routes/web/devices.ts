@@ -9,6 +9,7 @@
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { uuidAuth } from '../../auth/middleware'
 import { log } from '../../logger'
 import {
@@ -16,17 +17,22 @@ import {
   getDevice,
   getMapping,
   getRuntime,
+  flushState,
+  listOutbox,
   listDevices,
   listMappingsForDevice,
   requeueFailedOutbox,
+  reviewUnconfirmedOutbox,
   setCatalog,
   setMapping,
   setRuntime,
+  updateOutbox,
 } from '../../device/state'
 import { isDeviceOnline, requestDevice } from '../../device/hub'
 import { isBridgeConnected } from '../../transport/ws-handler'
 import {
   isBackfillComplete,
+  isStoreAtCapacity,
   listStoredMessages,
   markBackfillComplete,
   oldestTranscriptMessageId,
@@ -50,6 +56,7 @@ import {
   type SessionRuntimeState,
   type SessionSummary,
   type TranscriptMessage,
+  type UserContent,
 } from '../../device/protocol'
 
 const app = new Hono()
@@ -293,8 +300,37 @@ app.get('/devices/:deviceId/sessions/:localSessionId', uuidAuth, async c => {
       ? { ...runtime.state, reportedAt: runtime.reportedAt }
       : null,
     operation: operation ?? null,
+    deliveryReviewRequired: listOutbox(device.id, localSessionId).filter(
+      entry => entry.requiresReview,
+    ).length,
   })
 })
+
+app.post(
+  '/devices/:deviceId/sessions/:localSessionId/review-delivery',
+  uuidAuth,
+  async c => {
+    const device = deviceFromParam(c)
+    const localSessionId = c.req.param('localSessionId')
+    if (!device || !localSessionId || !isLocalSessionId(localSessionId)) {
+      return errorJson(c, 400, 'bad_request', 'Invalid device or session ID')
+    }
+    if (!getDevice(device.id))
+      return errorJson(c, 404, 'device_not_found', 'Device not found')
+    const reviewed = reviewUnconfirmedOutbox(device.id, localSessionId)
+    try {
+      await flushState({ throwOnError: true })
+    } catch {
+      return errorJson(
+        c,
+        503,
+        'storage_unavailable',
+        'Could not save review status',
+      )
+    }
+    return c.json({ reviewed })
+  },
+)
 
 const backfilling = new Set<string>()
 
@@ -307,6 +343,18 @@ function scheduleHistoryBackfill(
   deviceId: string,
   localSessionId: string,
 ): void {
+  // Once the walk reached the transcript's beginning there is nothing left to
+  // fetch: without this check every open re-issued the device reads even
+  // though the pages are already stored.
+  if (isBackfillComplete(deviceId, localSessionId)) return
+  // Trim pins the cache at its per-session cap; older pages fetched past it
+  // are deleted as fast as they arrive. For long sessions this turned every
+  // open into 10 wasted device reads (a treadmill that also never reached the
+  // "complete" mark). At capacity the cache is as full as it gets.
+  if (isStoreAtCapacity(deviceId, localSessionId)) {
+    markBackfillComplete(deviceId, localSessionId)
+    return
+  }
   const key = `${deviceId}\u0000${localSessionId}`
   if (backfilling.has(key)) return
   backfilling.add(key)
@@ -374,9 +422,16 @@ const lastNewestRefresh = new Map<string, number>()
  * still waits for the device (there is nothing else to show).
  */
 function scheduleNewestRefresh(deviceId: string, localSessionId: string): void {
-  const key = `${deviceId} ${localSessionId}`
+  const key = `${deviceId}\0${localSessionId}`
   const now = Date.now()
   if (now - (lastNewestRefresh.get(key) ?? 0) < 20_000) return
+  // One entry per opened session, forever, on a long-lived server: sweep the
+  // stale ones once the map grows so the throttle table stays bounded.
+  if (lastNewestRefresh.size > 256) {
+    for (const [staleKey, at] of lastNewestRefresh) {
+      if (now - at > 10 * 60_000) lastNewestRefresh.delete(staleKey)
+    }
+  }
   lastNewestRefresh.set(key, now)
   void (async () => {
     try {
@@ -410,7 +465,18 @@ app.get(
     const limit = Number.isFinite(limitRaw)
       ? Math.min(Math.max(Math.trunc(limitRaw), 1), 200)
       : 100
-    const before = c.req.query('before')
+    const beforeRaw = c.req.query('before')
+    const before = beforeRaw === '' ? undefined : beforeRaw
+    // A garbage cursor used to fall through to the newest-page query, and the
+    // pager would happily prepend the newest rows into the middle of the
+    // transcript. Reject it instead.
+    if (
+      before !== undefined &&
+      !/^\d+$/.test(before) &&
+      !/^\d+\|\d+$/.test(before)
+    ) {
+      return errorJson(c, 400, 'bad_request', '无效的分页游标')
+    }
     const online = isDeviceOnline(device.id)
     let warning: string | undefined
 
@@ -655,17 +721,48 @@ app.post(
     const record = getDevice(device.id)
     if (!record) return errorJson(c, 404, 'device_not_found', '设备不存在')
     const body: unknown = await c.req.json().catch(() => null)
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      !('text' in body) ||
-      typeof body.text !== 'string' ||
-      !body.text.trim() ||
-      body.text.length > 100_000
-    ) {
+    const payload: { text?: unknown; images?: unknown } =
+      body && typeof body === 'object'
+        ? (body as { text?: unknown; images?: unknown })
+        : {}
+    const text = typeof payload.text === 'string' ? payload.text : ''
+    // Photos travel as base64 blocks on the same wire the live bridge chat
+    // uses, so a send from the history view behaves like a send from the
+    // phone's live chat instead of uploading files and naming their paths.
+    const images: Array<{ mimeType: string; data: string }> = []
+    for (const item of Array.isArray(payload.images) ? payload.images : []) {
+      const image = item as { mimeType?: unknown; data?: unknown }
+      if (
+        !image ||
+        typeof image.mimeType !== 'string' ||
+        !image.mimeType.startsWith('image/') ||
+        typeof image.data !== 'string' ||
+        image.data.length === 0
+      ) {
+        return errorJson(c, 400, 'bad_request', '图片格式无效')
+      }
+      images.push({ mimeType: image.mimeType, data: image.data })
+    }
+    if (images.length > 8) {
+      return errorJson(c, 400, 'bad_request', '最多只能发送 8 张图片')
+    }
+    if (text.length > 100_000 || (!text.trim() && images.length === 0)) {
       return errorJson(c, 400, 'bad_request', '消息内容无效')
     }
-    const text = body.text
+    const content: UserContent =
+      images.length > 0
+        ? [
+            ...(text.trim() ? [{ type: 'text' as const, text }] : []),
+            ...images.map(image => ({
+              type: 'image' as const,
+              source: {
+                type: 'base64' as const,
+                media_type: image.mimeType,
+                data: image.data,
+              },
+            })),
+          ]
+        : text
 
     const session = await resolveSession(device.id, localSessionId)
     if (!session) {
@@ -683,13 +780,31 @@ app.post(
       isBridgeConnected(mapping.bridgeSessionId) &&
       Date.now() - runtime.reportedAt < 120_000
     ) {
-      const delivered = deliverNow(
-        mapping.bridgeSessionId,
+      let delivered: Awaited<ReturnType<typeof deliverNow>>
+      try {
+        delivered = await deliverNow(
+          mapping.bridgeSessionId,
+          device.id,
+          localSessionId,
+          content,
+        )
+      } catch (error) {
+        // deliverNow marks the outbox row failed itself; surface a readable
+        // error instead of bubbling into a generic Hono 500.
+        return errorJson(
+          c,
+          503,
+          'send_failed',
+          `发送失败：${(error as Error).message}`,
+        )
+      }
+      saveWebUserMessage(
         device.id,
         localSessionId,
+        delivered.entry.id,
         text,
+        images.length > 0 ? images : undefined,
       )
-      saveWebUserMessage(device.id, localSessionId, delivered.entry.id, text)
       return c.json({
         state: delivered.state,
         messageId: delivered.entry.id,
@@ -697,10 +812,30 @@ app.post(
       })
     }
 
-    const entry = queueMessage(device.id, localSessionId, text)
+    const entry = queueMessage(device.id, localSessionId, content)
+    try {
+      await flushState({ throwOnError: true })
+    } catch {
+      updateOutbox(entry.id, {
+        state: 'failed',
+        detail: '保存消息失败，尚未发送',
+      })
+      return errorJson(
+        c,
+        503,
+        'storage_unavailable',
+        '保存消息失败，请稍后重试',
+      )
+    }
     // Store it now: the terminal may take seconds to start, a laptop may be
     // asleep, and a reload in between must still show what was sent.
-    saveWebUserMessage(device.id, localSessionId, entry.id, text)
+    saveWebUserMessage(
+      device.id,
+      localSessionId,
+      entry.id,
+      text,
+      images.length > 0 ? images : undefined,
+    )
 
     if (!isDeviceOnline(device.id)) {
       // Chatting must not dead-end when the machine is asleep. The message
@@ -837,7 +972,11 @@ app.get('/devices/:deviceId/directory', uuidAuth, async c => {
  * Push browser files onto the operator machine. The Spawner confines every
  * write to a fresh folder under its own data directory and answers with the
  * absolute paths, which the client references in the next message.
+ *
+ * The Spawner caps uploads at 30MB decoded (~40MB of base64 in JSON); reject
+ * anything larger here so Bun never buffers a multi-GB body first.
  */
+app.use('/devices/:deviceId/uploads', bodyLimit({ maxSize: 64 * 1024 * 1024 }))
 app.post('/devices/:deviceId/uploads', uuidAuth, async c => {
   const device = deviceFromParam(c)
   if (!device) return errorJson(c, 400, 'bad_request', '缺少设备 ID')

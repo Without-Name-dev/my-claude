@@ -32,6 +32,8 @@ export interface EventPayload {
   content?: string
   message?: unknown
   status?: string
+  /** Epoch ms when this status last changed (session_status events). */
+  since?: number
   uuid?: string
   connected?: boolean
   raw?: {

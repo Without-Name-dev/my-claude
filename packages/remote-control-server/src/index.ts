@@ -4,6 +4,7 @@ import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/bun'
 import { config } from './config'
 import { closeAllConnections } from './transport/ws-handler'
+import { MAX_WS_MESSAGE_SIZE } from './transport/ws-payload'
 import { startDisconnectMonitor } from './services/disconnect-monitor'
 import { dirname, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -156,6 +157,7 @@ export default {
   fetch: app.fetch,
   websocket: {
     ...websocket,
+    maxPayloadLength: MAX_WS_MESSAGE_SIZE,
     idleTimeout: config.wsIdleTimeout, // Bun sends protocol pings after this many seconds of silence
   },
   idleTimeout: config.wsIdleTimeout, // HTTP server idle timeout (seconds)

@@ -45,7 +45,11 @@ import type { Statement } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { log } from '../logger'
-import type { TranscriptBlock, TranscriptMessage } from './protocol'
+import type {
+  TranscriptBlock,
+  TranscriptMessage,
+  TranscriptUsage,
+} from './protocol'
 import { dataDir } from './state'
 
 export type StoredMessage = TranscriptMessage & {
@@ -67,6 +71,7 @@ type Row = {
   text: string
   timestamp: string | null
   blocks: string
+  usage?: string | null
   source: string
 }
 
@@ -105,6 +110,7 @@ function ensureDb(): Database {
       timestamp TEXT,
       sort_ms INTEGER NOT NULL DEFAULT 0,
       blocks TEXT NOT NULL DEFAULT '[]',
+      usage TEXT,
       source TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       UNIQUE (device_id, local_session_id, message_id)
@@ -120,36 +126,48 @@ function ensureDb(): Database {
       PRIMARY KEY (device_id, local_session_id)
     );
   `)
+  // Databases created before the usage column: add it in place. A nullable
+  // column with no default keeps existing rows valid without a rebuild.
+  const columns = db
+    .query('PRAGMA table_info(conversation_messages)')
+    .all() as { name: string }[]
+  if (!columns.some(column => column.name === 'usage')) {
+    db.exec('ALTER TABLE conversation_messages ADD COLUMN usage TEXT')
+  }
 
   // A transcript page may later fill in richer text/tool blocks for a row the
   // bridge already stored (or vice versa). Never downgrade non-empty content.
+  // Blocks compare by encoded length: a text-only re-read of a row the bridge
+  // stored with image blocks is "non-empty" but strictly poorer, and the old
+  // <> '[]' test let it strip the images back out.
   insertStmt = db.query(`
     INSERT INTO conversation_messages
-      (device_id, local_session_id, message_id, role, text, timestamp, sort_ms, blocks, source, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (device_id, local_session_id, message_id, role, text, timestamp, sort_ms, blocks, usage, source, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, local_session_id, message_id) DO UPDATE SET
       text = CASE WHEN excluded.text <> '' THEN excluded.text ELSE text END,
       timestamp = COALESCE(excluded.timestamp, timestamp),
       sort_ms = excluded.sort_ms,
-      blocks = CASE WHEN excluded.blocks <> '[]' THEN excluded.blocks ELSE blocks END,
+      blocks = CASE WHEN length(excluded.blocks) > length(blocks) THEN excluded.blocks ELSE blocks END,
+      usage = COALESCE(excluded.usage, usage),
       source = excluded.source
   `)
   // The web's optimistic row is the weakest source: if the CLI echoed it
   // first (same uuid), keep the bridge row's richer content untouched.
   insertIfAbsentStmt = db.query(`
     INSERT INTO conversation_messages
-      (device_id, local_session_id, message_id, role, text, timestamp, sort_ms, blocks, source, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (device_id, local_session_id, message_id, role, text, timestamp, sort_ms, blocks, usage, source, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, local_session_id, message_id) DO NOTHING
   `)
   listStmt = db.query(`
-    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, source
+    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, usage, source
     FROM conversation_messages
     WHERE device_id = ? AND local_session_id = ?
     ORDER BY sort_ms DESC, seq DESC LIMIT ?
   `)
   listBeforeStmt = db.query(`
-    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, source
+    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, usage, source
     FROM conversation_messages
     WHERE device_id = ? AND local_session_id = ?
       AND (sort_ms < ? OR (sort_ms = ? AND seq < ?))
@@ -269,6 +287,25 @@ function blocksFromContent(content: unknown): TranscriptBlock[] {
           ...(item.is_error === true ? { isError: true } : {}),
         })
       }
+    } else if (type === 'image' && isRecord(item.source)) {
+      const source = item.source
+      // Photos sent from the phone live in the transcript as base64 blocks;
+      // dropping them here made every image vanish from history on reload.
+      if (
+        source.type === 'base64' &&
+        typeof source.data === 'string' &&
+        source.data.length > 0 &&
+        source.data.length <= 6_000_000
+      ) {
+        blocks.push({
+          type: 'image',
+          mimeType:
+            typeof source.media_type === 'string'
+              ? source.media_type
+              : 'image/png',
+          data: source.data,
+        })
+      }
     }
   }
   return blocks
@@ -297,6 +334,7 @@ function writeRow(
     timestamp?: string
     sortMs: number
     blocks: TranscriptBlock[]
+    usage?: TranscriptUsage | null
     source: StoredMessage['source']
   },
   ifAbsent = false,
@@ -312,6 +350,7 @@ function writeRow(
       message.timestamp ?? null,
       message.sortMs,
       safeJson(message.blocks),
+      message.usage ? safeJson(message.usage) : null,
       message.source,
       Date.now(),
     )
@@ -393,6 +432,7 @@ export function saveTranscript(
         message.timestamp ?? null,
         times[index]!,
         safeJson(message.blocks ?? []),
+        message.usage ? safeJson(message.usage) : null,
         'transcript',
         Date.now(),
       )
@@ -418,6 +458,7 @@ export function saveWebUserMessage(
   localSessionId: string,
   messageId: string,
   text: string,
+  images?: Array<{ mimeType: string; data: string }>,
 ): void {
   // `messageId` is the outbox entry id, and the outbox reuses it as the
   // bridge message uuid. The CLI echoes that uuid, so both writes land on the
@@ -432,7 +473,14 @@ export function saveWebUserMessage(
         text,
         timestamp: new Date().toISOString(),
         sortMs: Date.now(),
-        blocks: text ? [{ type: 'text', text }] : [],
+        blocks: [
+          ...(text ? [{ type: 'text' as const, text }] : []),
+          ...(images ?? []).map(image => ({
+            type: 'image' as const,
+            mimeType: image.mimeType,
+            data: image.data,
+          })),
+        ],
         source: 'web',
       },
       true,
@@ -466,8 +514,12 @@ export function recordBridgeEvent(
   if (eventType === 'user') {
     // Synthetic user turns are tool results, not something a human typed.
     if (payload.isSynthetic === true) return
-    const text = textFromContent(content)
-    if (!text.trim() || !uuid) return
+    const blocks = blocksFromContent(content)
+    const text = textFromBlocks(blocks)
+    // Image-only turns carry no text; requiring it made every photo sent from
+    // the phone vanish from history on the next reload.
+    const hasImage = blocks.some(block => block.type === 'image')
+    if ((!text.trim() && !hasImage) || !uuid) return
     // Same uuid as the web-accepted row (the outbox reuses its id), so the
     // upsert merges them instead of adding a duplicate bubble.
     writeRow(deviceId, localSessionId, {
@@ -476,7 +528,7 @@ export function recordBridgeEvent(
       text,
       timestamp: new Date().toISOString(),
       sortMs: Date.now(),
-      blocks: blocksFromContent(content),
+      blocks,
       source: 'bridge',
     })
     trim(deviceId, localSessionId)
@@ -484,6 +536,10 @@ export function recordBridgeEvent(
   }
 
   if (eventType === 'assistant') {
+    // A synthetic turn ("No response requested." after an interrupt) is
+    // already persisted by the transcript backfill under its stable uuid;
+    // storing the live echo too rendered it twice in history.
+    if (isRecord(message) && message.model === '<synthetic>') return
     const blocks = blocksFromContent(content)
     const text = textFromBlocks(blocks)
     if ((!text.trim() && blocks.length === 0) || !uuid) return
@@ -494,10 +550,40 @@ export function recordBridgeEvent(
       timestamp: new Date().toISOString(),
       sortMs: Date.now(),
       blocks,
+      usage: usageFromMessage(isRecord(message) ? message : undefined),
       source: 'bridge',
     })
     trim(deviceId, localSessionId)
   }
+}
+
+/**
+ * Pull billed usage off a live bridge assistant message (same extraction
+ * rules as the spawner's transcript reader and the terminal's hydration).
+ */
+function usageFromMessage(
+  message: Record<string, unknown> | undefined,
+): TranscriptUsage | undefined {
+  if (!message || message.model === '<synthetic>') return undefined
+  const usage = message.usage
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage))
+    return undefined
+  const u = usage as Record<string, unknown>
+  const result = {
+    inputTokens: Number(u.input_tokens) || 0,
+    outputTokens: Number(u.output_tokens) || 0,
+    cacheReadInputTokens: Number(u.cache_read_input_tokens) || 0,
+    cacheCreationInputTokens: Number(u.cache_creation_input_tokens) || 0,
+  }
+  if (
+    result.inputTokens === 0 &&
+    result.outputTokens === 0 &&
+    result.cacheReadInputTokens === 0 &&
+    result.cacheCreationInputTokens === 0
+  ) {
+    return undefined
+  }
+  return result
 }
 
 function trim(deviceId: string, localSessionId: string): void {
@@ -565,11 +651,23 @@ export function listStoredMessages(
     } catch {
       blocks = []
     }
+    let usage: TranscriptUsage | undefined
+    if (row.usage) {
+      try {
+        const parsed = JSON.parse(row.usage)
+        if (parsed && typeof parsed === 'object') {
+          usage = parsed as TranscriptUsage
+        }
+      } catch {
+        // A corrupt usage payload must not take the page down with it.
+      }
+    }
     return {
       id: row.message_id,
       role: row.role === 'assistant' ? 'assistant' : 'user',
       text: row.text,
       ...(row.timestamp ? { timestamp: row.timestamp } : {}),
+      ...(usage ? { usage } : {}),
       blocks,
       source: row.source as StoredMessage['source'],
     }
@@ -604,6 +702,21 @@ export function hasStoredMessages(
   ensureDb()
   const row = countStmt!.get(deviceId, localSessionId) as { n: number } | null
   return (row?.n ?? 0) > 0
+}
+
+/**
+ * True when the session's cache is pinned at the trim cap: older pages fetched
+ * past this point are deleted as fast as they arrive, so backfilling further
+ * only burns device round-trips. Callers treat this as "history is as complete
+ * as the cache allows".
+ */
+export function isStoreAtCapacity(
+  deviceId: string,
+  localSessionId: string,
+): boolean {
+  ensureDb()
+  const row = countStmt!.get(deviceId, localSessionId) as { n: number } | null
+  return (row?.n ?? 0) >= MAX_STORED_PER_SESSION
 }
 
 export function isBackfillComplete(

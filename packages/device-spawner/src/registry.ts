@@ -166,6 +166,18 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** A recycled PID starts after the old registry record, not before it. */
+export function startedAfterRegistration(
+  processStartedAt: number,
+  registeredAt?: number,
+): boolean {
+  return (
+    registeredAt !== undefined &&
+    processStartedAt > 0 &&
+    processStartedAt > registeredAt + 10_000
+  )
+}
+
 /**
  * Read the live command line for a PID. Returns undefined when the process
  * is gone or the lookup fails/times out. Used as evidence, never as the only
@@ -207,11 +219,17 @@ export function processCommandLine(pid: number): string | undefined {
  * This is how `open_session` learns the PID: `cmd /c start` does not return
  * one, and the CLI's PID file may carry a different sessionId after resume.
  * The command line always contains `--resume <localSessionId>`.
+ *
+ * Async: PowerShell+CIM takes seconds and the sync version stalled the
+ * single-threaded Spawner, stretching heartbeat handling and the launch
+ * poll loop far past their intended cadence.
  */
-export function findLaunchPids(localSessionId: string): number[] {
+export async function findLaunchPids(
+  localSessionId: string,
+): Promise<number[]> {
   try {
     if (process.platform === 'win32') {
-      const raw = execFileSync(
+      const { stdout } = await execFileAsync(
         'powershell.exe',
         [
           '-NoProfile',
@@ -221,16 +239,16 @@ export function findLaunchPids(localSessionId: string): number[] {
         ],
         { encoding: 'utf8', timeout: 6000, windowsHide: true },
       )
-      return raw
+      return stdout
         .split(/\r?\n/)
         .map(line => Number.parseInt(line.trim(), 10))
         .filter(pid => Number.isInteger(pid) && pid > 0)
     }
-    const raw = execFileSync('ps', ['-eo', 'pid=,args='], {
+    const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,args='], {
       encoding: 'utf8',
       timeout: 4000,
     })
-    return raw
+    return stdout
       .split(/\r?\n/)
       .filter(
         line => line.includes('--resume') && line.includes(localSessionId),
@@ -310,9 +328,11 @@ export async function verifySession(
     pid?: number
     /** Reuse one process scan across many verifications. */
     processes?: Map<number, BunProcess>
+    /** Reuse the same registry snapshot across a state report. */
+    entries?: RegistryEntry[]
   } = {},
 ): Promise<VerifiedSession> {
-  const entries = await readRegistryWithReal(configDir)
+  const entries = options.entries ?? (await readRegistryWithReal(configDir))
   const processes = options.processes ?? (await listBunProcesses())
   // After `--resume`, the CLI can leave the startup session id in its PID
   // file while switching the in-memory session. Match the launched process
@@ -332,7 +352,7 @@ export async function verifySession(
     // command line identifies it even when the PID file carries a different
     // sessionId. Never guess from cwd alone: two sessions can share a cwd and
     // that would attach the wrong bridge.
-    const pids = findLaunchPids(localSessionId).filter(isProcessAlive)
+    const pids = (await findLaunchPids(localSessionId)).filter(isProcessAlive)
     if (pids.length > 0) {
       candidates = entries.filter(entry => pids.includes(entry.pid))
     }
@@ -349,12 +369,7 @@ export async function verifySession(
     // Start time is the only identity a fresh native CLI exposes; check it
     // even on the cheap heartbeat path. A stale registry file pointing at a
     // recycled PID will have a wildly different start time.
-    if (
-      proc &&
-      entry.startedAt &&
-      proc.startedAt > 0 &&
-      Math.abs(proc.startedAt - entry.startedAt) > 10_000
-    ) {
+    if (proc && startedAfterRegistration(proc.startedAt, entry.startedAt)) {
       continue
     }
     if (options.verifyCommandLine !== false) {

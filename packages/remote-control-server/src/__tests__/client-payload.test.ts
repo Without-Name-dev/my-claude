@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { toClientPayload } from '../transport/client-payload'
+import { normalizePayload } from '../services/transport'
 import type { SessionEvent } from '../transport/event-bus'
 
 function makeEvent(
@@ -102,6 +103,58 @@ describe('toClientPayload — user message', () => {
     })
     const result = toClientPayload(event)
     expect(result.uuid).toBe('evt-1')
+  })
+})
+
+// =============================================================================
+// user / user_message — image content blocks (device photo pipeline)
+// =============================================================================
+
+describe('toClientPayload — image content blocks from the device outbox', () => {
+  // The device outbox publishes {type:'user', uuid, content}; older clients
+  // may also include message.content. Both shapes must reach the CLI intact.
+  // with Anthropic content blocks. publishSessionEvent runs normalizePayload on
+  // it (flattening content to a display string, keeping the original in raw);
+  // the bridge frame must restore the block array from raw, not send the
+  // flattened empty string.
+  const imageBlocks = [
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+    },
+  ]
+
+  test('an image-only turn round-trips as content blocks', () => {
+    const normalized = normalizePayload('user', {
+      type: 'user',
+      uuid: 'img-1',
+      content: imageBlocks,
+    })
+    // Display text is empty for an image-only turn — by design.
+    expect(normalized.content).toBe('')
+    const result = toClientPayload(
+      makeEvent({ type: 'user', sessionId: 'sess-img', payload: normalized }),
+    )
+    expect(
+      (result as { message: { content: unknown } }).message.content,
+    ).toEqual(imageBlocks)
+  })
+
+  test('a text+image turn keeps both blocks in order', () => {
+    const blocks = [{ type: 'text', text: '看图' }, ...imageBlocks]
+    const normalized = normalizePayload('user', {
+      type: 'user',
+      uuid: 'img-2',
+      content: blocks,
+      message: { content: blocks },
+    })
+    expect(normalized.content).toBe('看图')
+    const result = toClientPayload(
+      makeEvent({ type: 'user', sessionId: 'sess-img', payload: normalized }),
+    )
+    expect(
+      (result as { message: { content: unknown } }).message.content,
+    ).toEqual(blocks)
   })
 })
 

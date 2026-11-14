@@ -1,4 +1,4 @@
-import { Component, useState, useEffect, useCallback, lazy, Suspense, type ReactNode } from 'react';
+import { Component, useState, useEffect, useCallback, useRef, lazy, Suspense, type ReactNode } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { ThemeProvider } from './lib/theme';
 import { haptic } from './lib/view-transition';
@@ -23,11 +23,24 @@ function AccessGate() {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const onUnauthorized = () => setOpen(true);
     window.addEventListener('rcs:unauthorized', onUnauthorized);
     return () => window.removeEventListener('rcs:unauthorized', onUnauthorized);
   }, []);
+  // A 401 can land while the boot splash is still covering the page. Focusing
+  // then raised the keyboard over the splash, so wait until it has faded.
+  useEffect(() => {
+    if (!open) return;
+    const focus = () => inputRef.current?.focus();
+    if (document.getElementById('boot')) {
+      window.addEventListener('ccremote:boot-done', focus, { once: true });
+      return () => window.removeEventListener('ccremote:boot-done', focus);
+    }
+    const timer = window.setTimeout(focus, 0);
+    return () => window.clearTimeout(timer);
+  }, [open]);
   if (!open) return null;
   return (
     <div
@@ -81,7 +94,7 @@ function AccessGate() {
           }}
           placeholder="访问密钥"
           aria-label="访问密钥"
-          autoFocus
+          ref={inputRef}
           className="mt-3 h-11 w-full rounded-xl border border-border bg-surface-2 px-3 text-base text-text-primary outline-none focus:border-brand/50"
         />
         {error && (
@@ -162,6 +175,10 @@ export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceRoute | null>(null);
   const [bridgeSessionId, setBridgeSessionId] = useState<string | null>(null);
   const [routeReady, setRouteReady] = useState(false);
+  // The session URL this UI pushed (null on deep links and popstate). Closing
+  // that chat must go BACK, not push another entry — otherwise the phone back
+  // button replays every chat the person already closed.
+  const pushedSessionPathRef = useRef<string | null>(null);
 
   const parseRoute = useCallback(() => {
     // Ensure a stable identity exists for session ownership.
@@ -271,6 +288,7 @@ export default function App() {
       haptic('light');
       // Back/forward already animate: iOS plays its own interactive swipe, and
       // a View Transition on top of it flashes the snapshot mid-gesture.
+      pushedSessionPathRef.current = null;
       parseRoute();
     };
     window.addEventListener('popstate', onPop);
@@ -289,6 +307,19 @@ export default function App() {
     const path = localSessionId
       ? `/code/d/${encodeURIComponent(deviceId)}/s/${encodeURIComponent(localSessionId)}`
       : `/code/d/${encodeURIComponent(deviceId)}`;
+    // Closing a chat this UI opened: back() unwinds the pushed entry and the
+    // popstate handler re-renders the destination. Deep-linked sessions (no
+    // pushed entry) still fall through to a push, so back exits the app.
+    if (
+      !localSessionId &&
+      pushedSessionPathRef.current !== null &&
+      window.location.pathname === pushedSessionPathRef.current
+    ) {
+      pushedSessionPathRef.current = null;
+      window.history.back();
+      return;
+    }
+    pushedSessionPathRef.current = localSessionId ? path : null;
     window.history.pushState(null, '', path);
     setBridgeSessionId(null);
     setWorkspace(localSessionId ? { deviceId, localSessionId } : { deviceId });

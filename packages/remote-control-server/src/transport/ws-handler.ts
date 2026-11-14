@@ -4,7 +4,7 @@ import { getEventBus } from './event-bus'
 import type { SessionEvent } from './event-bus'
 import { publishSessionEvent } from '../services/transport'
 import { updateSessionStatus } from '../services/session'
-import { log, error as logError } from '../logger'
+import { log, debug, error as logError } from '../logger'
 import { toClientPayload } from './client-payload'
 import { config } from '../config'
 import { recordBridgeEvent } from '../device/conversation-store'
@@ -59,12 +59,42 @@ export function isBridgeConnected(sessionId: string): boolean {
   return cleanupBySession.has(sessionId)
 }
 
+/** A successful socket write is evidence of forwarding, not a CLI ack. */
+export function wasBridgeEventWritten(
+  sessionId: string,
+  event: SessionEvent,
+): boolean {
+  const bus = getEventBus(sessionId)
+  return (
+    isBridgeConnected(sessionId) &&
+    (lastDeliveredByBus.get(bus) ?? 0) >= event.seqNum
+  )
+}
+
+export function wasBridgeMessageWritten(
+  sessionId: string,
+  uuid: string,
+): boolean {
+  const bus = getEventBus(sessionId)
+  const last = lastDeliveredByBus.get(bus) ?? 0
+  return bus.getEventsSince(0).some(event => {
+    const payload = event.payload
+    return (
+      event.direction === 'outbound' &&
+      event.seqNum <= last &&
+      typeof payload === 'object' &&
+      payload !== null &&
+      (payload as Record<string, unknown>).uuid === uuid
+    )
+  })
+}
+
 /** Called from onOpen — subscribes to event bus, forwards outbound events to bridge WS.
  *  Returns a connection token that the caller must pass back on close. */
 export function handleWebSocketOpen(ws: WSContext, sessionId: string): string {
   const openTime = Date.now()
   const token = randomUUID()
-  log(`[RC-DEBUG] [WS] Open session=${sessionId}`)
+  debug(`[RC-DEBUG] [WS] Open session=${sessionId}`)
   activeConnections.add(ws)
 
   // If there's an existing connection for this session, clean it up first
@@ -74,6 +104,7 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string): string {
     existing.unsub()
     clearInterval(existing.keepalive)
     activeConnections.delete(existing.ws)
+    cleanupBySession.delete(sessionId)
     // The old CLI process is gone (or reconnecting). Close its socket so it
     // cannot keep writing into this session through a half-open connection.
     try {
@@ -88,32 +119,63 @@ export function handleWebSocketOpen(ws: WSContext, sessionId: string): string {
   // The bridge writes over HTTP and reads over WS. Replaying inbound events
   // feeds its own replies back into the bridge on every reconnect.
   const missed = bus.getEventsSince(lastDeliveredByBus.get(bus) ?? 0)
+  let replayFailed = false
   if (missed.length > 0) {
     log(`[WS] Replaying ${missed.length} missed event(s)`)
     for (const event of missed) {
-      if (ws.readyState !== 1) break
+      if (ws.readyState !== 1) {
+        replayFailed = true
+        break
+      }
       if (event.direction !== 'outbound') continue
       try {
         ws.send(toSDKMessage(event))
         lastDeliveredByBus.set(bus, event.seqNum)
       } catch {
-        // ignore send errors during replay
+        replayFailed = true
+        break
       }
     }
   }
+  if (replayFailed) {
+    activeConnections.delete(ws)
+    publishSessionEvent(
+      sessionId,
+      'bridge_state',
+      { connected: false },
+      'inbound',
+    )
+    try {
+      ws.close(1011, 'bridge replay failed')
+    } catch {
+      /* already closed */
+    }
+    return token
+  }
 
   const unsub = bus.subscribe((event: SessionEvent) => {
-    if (ws.readyState !== 1) return
     if (event.direction !== 'outbound') return
+    if (ws.readyState !== 1) {
+      handleWebSocketClose(ws, sessionId, 1011, 'bridge unavailable', token)
+      return
+    }
     try {
       const sdkMsg = toSDKMessage(event)
-      log(
-        `[RC-DEBUG] [WS] -> bridge (outbound): type=${event.type} len=${sdkMsg.length} msg=${sdkMsg.slice(0, 300)}`,
+      debug(
+        `[RC-DEBUG] [WS] -> bridge (outbound): type=${event.type} len=${sdkMsg.length}`,
       )
       ws.send(sdkMsg)
       lastDeliveredByBus.set(bus, event.seqNum)
     } catch (err) {
       logError('[RC-DEBUG] [WS] send error:', err)
+      // Stop forwarding after a failed write so a later successful event
+      // cannot advance the replay cursor past the missing message.
+      handleWebSocketClose(ws, sessionId, 1011, 'bridge send failed', token)
+      try {
+        ws.close(1011, 'bridge send failed')
+      } catch {
+        /* already closed */
+      }
     }
   })
 
@@ -278,8 +340,8 @@ export function ingestBridgeMessage(
 
   const eventType = deriveEventType(msg)
 
-  log(
-    `[RC-DEBUG] [WS] <- bridge (inbound): sessionId=${sessionId} type=${eventType}${msg.uuid ? ` uuid=${msg.uuid}` : ''} msg=${JSON.stringify(msg).slice(0, 300)}`,
+  debug(
+    `[RC-DEBUG] [WS] <- bridge (inbound): sessionId=${sessionId} type=${eventType}${msg.uuid ? ` uuid=${msg.uuid}` : ''}`,
   )
 
   let payload: unknown

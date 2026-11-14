@@ -154,6 +154,96 @@ describe('conversation store', () => {
     expect(page.messages[0]?.text).toBe('你好')
   })
 
+  test('web message with photos stores image blocks and survives the echo', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-2', '看图', [
+      { mimeType: 'image/png', data: 'aGk=' },
+    ])
+    let page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'text', text: '看图' },
+      { type: 'image', mimeType: 'image/png', data: 'aGk=' },
+    ])
+
+    // The CLI echo reuses the outbox uuid; the upsert must not strip the
+    // photos even when the echo's own content is text-only.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'outbox-2',
+      message: { content: '看图' },
+    })
+    page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.blocks).toHaveLength(2)
+  })
+
+  test('image-only web message is stored without an empty text block', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-3', '', [
+      { mimeType: 'image/jpeg', data: 'aGk=' },
+    ])
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'image', mimeType: 'image/jpeg', data: 'aGk=' },
+    ])
+  })
+
+  test('image-only web message keeps its photo through an empty-text echo', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-4', '', [
+      { mimeType: 'image/png', data: 'aGk=' },
+    ])
+    // The CLI echo of an image-only turn carries no text. The echo's block
+    // list is shorter (empty), so the upsert must keep the web row's photo.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'outbox-4',
+      message: { content: '' },
+    })
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'image', mimeType: 'image/png', data: 'aGk=' },
+    ])
+  })
+
+  test('image-only web message keeps its photo through a text-only echo', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-5', '', [
+      { mimeType: 'image/jpeg', data: 'aGk=' },
+    ])
+    // A one-block text echo is still shorter than the stored image block:
+    // the photo must survive even when the echo adds text the web row lacked.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'outbox-5',
+      message: { content: '看图' },
+    })
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'image', mimeType: 'image/jpeg', data: 'aGk=' },
+    ])
+  })
+
+  test('image-only web message survives a full image-block echo (same uuid)', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-6', '', [
+      { mimeType: 'image/png', data: 'aGk=' },
+    ])
+    // The realistic CLI echo re-sends the same image block. Equal length
+    // means the stored row is kept as-is — no duplicate, no loss.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'outbox-6',
+      message: {
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+          },
+        ],
+      },
+    })
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.blocks).toEqual([
+      { type: 'image', mimeType: 'image/png', data: 'aGk=' },
+    ])
+  })
+
   test('ignores synthetic user turns and assistant noise', () => {
     recordBridgeEvent(deviceId, localSessionId, 'user', {
       uuid: 'tool-result',
@@ -163,6 +253,14 @@ describe('conversation store', () => {
     recordBridgeEvent(deviceId, localSessionId, 'assistant', {
       uuid: 'empty',
       message: { content: [] },
+    })
+    expect(listStoredMessages(deviceId, localSessionId, 10).total).toBe(0)
+  })
+
+  test('a synthetic assistant echo is not stored (transcript backfill owns it)', () => {
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'synthetic-echo',
+      message: { model: '<synthetic>', content: 'No response requested.' },
     })
     expect(listStoredMessages(deviceId, localSessionId, 10).total).toBe(0)
   })
