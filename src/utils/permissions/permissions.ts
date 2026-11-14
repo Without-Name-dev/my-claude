@@ -846,6 +846,42 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         // When classifier is unavailable (API error), behavior depends on
         // the tengu_iron_gate_closed gate.
         if (classifierResult.unavailable) {
+          // Fork: on a flaky provider endpoint, fail-closed turned every
+          // classifier outage into a permission prompt — exactly what the
+          // user opted out of by choosing auto mode. With
+          // CLAUDE_CODE_AUTO_MODE_FAIL_OPEN=1, provider errors (timeouts,
+          // 5xx, aborted connections) allow instead of prompting. A
+          // user-initiated abort still prompts, and the default (env unset)
+          // behavior is unchanged.
+          if (
+            process.env.CLAUDE_CODE_AUTO_MODE_FAIL_OPEN === '1' &&
+            !classifierResult.abortedByUser
+          ) {
+            logForDebugging(
+              'Auto mode classifier unavailable; failing open (CLAUDE_CODE_AUTO_MODE_FAIL_OPEN=1)',
+              { level: 'warn' },
+            )
+            logEvent('tengu_auto_mode_decision', {
+              decision:
+                'allowed' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              toolName: sanitizeToolNameForAnalytics(tool.name),
+              inProtectedNamespace: isInProtectedNamespace(),
+              agentMsgId: assistantMessage.message
+                .id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              confidence:
+                'low' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              fastPath:
+                'fail-open' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            })
+            return {
+              behavior: 'allow',
+              updatedInput: input,
+              decisionReason: {
+                type: 'mode',
+                mode: 'auto',
+              },
+            }
+          }
           if (
             getFeatureValue_CACHED_WITH_REFRESH(
               'tengu_iron_gate_closed',
@@ -872,11 +908,17 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
               }
             }
             logForDebugging(
-              'Auto mode classifier unavailable, falling back to prompting with retry guidance (fail closed)',
+              'Auto mode classifier unavailable, denying with retry guidance (interactive sessions match official fail-closed behavior)',
               { level: 'warn' },
             )
+            // Fork: prompting here defeated the point of auto mode — a flaky
+            // provider turned every classifier outage into a dialog, while
+            // official clients fail closed to the agent with retry guidance
+            // and the user never sees anything. Deny for interactive sessions
+            // too: the agent retries a moment later (the message says so), and
+            // allow rules still fast-path before the classifier ever runs.
             return {
-              behavior: 'ask',
+              behavior: 'deny',
               decisionReason: {
                 type: 'classifier',
                 classifier: 'auto-mode',

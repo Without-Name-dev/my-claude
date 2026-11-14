@@ -15,7 +15,10 @@ import { logEvent } from '../../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import { getCacheControl } from '../../services/api/claude.js'
 import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
-import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
+import {
+  CannotRetryError,
+  getDefaultMaxRetries,
+} from '../../services/api/withRetry.js'
 import type { Tool, ToolPermissionContext, Tools } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import type {
@@ -88,6 +91,31 @@ export type AutoModeRules = {
   allow: string[]
   soft_deny: string[]
   environment: string[]
+}
+
+/**
+ * Fork: with CLAUDE_CODE_AUTO_MODE_FAIL_OPEN=1, cap classifier requests so a
+ * hung provider call fails into the unavailable path (where the caller fails
+ * open) instead of stalling the turn until the user interrupts. The timer is
+ * unref'd, and aborting an already-settled request is a no-op, so there is no
+ * cleanup contract. When the env var is unset the signal passes through
+ * unchanged — default upstream behavior is untouched.
+ */
+const CLASSIFIER_TIMEOUT_MS = 45_000
+
+function withClassifierTimeout(signal: AbortSignal): AbortSignal {
+  if (process.env.CLAUDE_CODE_AUTO_MODE_FAIL_OPEN !== '1') return signal
+  const controller = new AbortController()
+  const timer = setTimeout(() => {
+    controller.abort(new Error('Auto mode classifier timed out'))
+  }, CLASSIFIER_TIMEOUT_MS)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  const forward = () => {
+    clearTimeout(timer)
+    controller.abort()
+  }
+  signal.addEventListener('abort', forward, { once: true })
+  return controller.signal
 }
 
 /**
@@ -759,6 +787,8 @@ async function classifyYoloActionXml(
   let stage1Opts: Parameters<typeof sideQuery>[0] | undefined
   const overallStart = Date.now()
   const [disableThinking, thinkingPadding] = getClassifierThinkingConfig(model)
+  // Fork: cap this request when fail-open is enabled (see withClassifierTimeout).
+  const requestSignal = withClassifierTimeout(signal)
 
   // Wrap transcript entries in <transcript> tags for the XML classifier.
   // Wrap all content (transcript + action) in <transcript> tags.
@@ -794,7 +824,7 @@ async function classifyYoloActionXml(
           { role: 'user' as const, content: stage1Content },
         ],
         maxRetries: getDefaultMaxRetries(),
-        signal,
+        signal: requestSignal,
         ...(mode !== 'fast' && { stop_sequences: ['</block>'] }),
         querySource: 'auto_mode',
         parentSpan,
@@ -882,7 +912,7 @@ async function classifyYoloActionXml(
         { role: 'user' as const, content: stage2Content },
       ],
       maxRetries: getDefaultMaxRetries(),
-      signal,
+      signal: requestSignal,
       querySource: 'auto_mode' as const,
       parentSpan,
     }
@@ -955,6 +985,7 @@ async function classifyYoloActionXml(
         reason: 'Classifier request aborted',
         model,
         unavailable: true,
+        abortedByUser: true,
         durationMs: Date.now() - overallStart,
         promptLengths,
       }
@@ -1139,6 +1170,8 @@ export async function classifyYoloAction(
     )
   }
   const [disableThinking, thinkingPadding] = getClassifierThinkingConfig(model)
+  // Fork: cap this request when fail-open is enabled (see withClassifierTimeout).
+  const requestSignal = withClassifierTimeout(signal)
   try {
     const start = Date.now()
     const sideQueryOpts = {
@@ -1164,7 +1197,7 @@ export async function classifyYoloAction(
         name: YOLO_CLASSIFIER_TOOL_NAME,
       },
       maxRetries: getDefaultMaxRetries(),
-      signal,
+      signal: requestSignal,
       querySource: 'auto_mode' as const,
       parentSpan,
     }
@@ -1277,9 +1310,51 @@ export async function classifyYoloAction(
         reason: 'Classifier request aborted',
         model,
         unavailable: true,
+        abortedByUser: true,
       }
     }
     const tooLong = detectPromptTooLong(error)
+    // Fork: providers that reject forced tool_choice (HTTP 400) or are
+    // having a bad day (5xx) can still serve plain XML completions — retry
+    // once through the two-stage XML classifier before failing closed.
+    // CannotRetryError wraps the original without exposing .status, and other
+    // SDK shapes carry it as statusCode/httpStatus — unwrap and probe all of
+    // them, or exactly the errors that most need the fallback never reach it.
+    const rawError =
+      error instanceof CannotRetryError ? error.originalError : error
+    const status = httpStatusOf(rawError)
+    if (!tooLong && (status === 400 || (status ?? 0) >= 500)) {
+      try {
+        return await classifyYoloActionXml(
+          prefixMessages,
+          systemPrompt,
+          userPrompt,
+          userContentBlocks,
+          model,
+          promptLengths,
+          signal,
+          {
+            mainLoopTokens:
+              mainLoopTokens ?? tokenCountWithEstimation(messages),
+            classifierChars,
+            classifierTokensEst,
+            transcriptEntries: transcriptEntries.length,
+            messages: messages.length,
+            action: actionCompact,
+          },
+          getTwoStageMode(),
+          parentSpan,
+        )
+      } catch (fallbackError) {
+        // Fall through to the fail-closed return below — but say why the
+        // fallback died, an empty catch hid provider outages behind a
+        // generic classifier error.
+        logForDebugging(
+          `Auto mode classifier XML fallback failed: ${errorMessage(fallbackError)}`,
+          { level: 'warn' },
+        )
+      }
+    }
     logForDebugging(`Auto mode classifier error: ${errorMessage(error)}`, {
       level: 'warn',
     })
@@ -1362,6 +1437,21 @@ function getClassifierModel(): string {
 }
 
 /**
+ * Pull an HTTP status code out of whatever error shape a provider SDK threw.
+ * Only plausible HTTP codes (100–599) count, so numeric-looking fields on
+ * unrelated errors (Node fs errno, vendor codes) can never fake a 400/5xx.
+ */
+export function httpStatusOf(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const record = error as Record<string, unknown>
+  for (const key of ['status', 'statusCode', 'httpStatus']) {
+    const value = Number(record[key])
+    if (Number.isInteger(value) && value >= 100 && value <= 599) return value
+  }
+  return undefined
+}
+
+/**
  * Resolve the XML classifier setting: ant-only env var takes precedence,
  * then GrowthBook. Returns undefined when unset (caller decides default).
  */
@@ -1370,12 +1460,10 @@ function resolveTwoStageClassifier():
   | 'fast'
   | 'thinking'
   | undefined {
-  if (process.env.USER_TYPE === 'ant') {
-    const env = process.env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER
-    if (env === 'fast' || env === 'thinking') return env
-    if (isEnvTruthy(env)) return true
-    if (isEnvDefinedFalsy(env)) return false
-  }
+  const env = process.env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER?.toLowerCase()
+  if (env === 'fast' || env === 'thinking') return env
+  if (isEnvTruthy(env)) return true
+  if (isEnvDefinedFalsy(env)) return false
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
@@ -1387,7 +1475,10 @@ function resolveTwoStageClassifier():
  * Check if the XML classifier is enabled (any truthy value including 'fast'/'thinking').
  */
 function isTwoStageClassifierEnabled(): boolean {
-  const v = resolveTwoStageClassifier()
+  // Fork default: third-party providers (e.g. Tencent MaaS) reject requests
+  // with a forced tool_choice, so the XML classifier is the only usable path.
+  // Set CLAUDE_CODE_TWO_STAGE_CLASSIFIER=0 to restore the tool_use classifier.
+  const v = resolveTwoStageClassifier() ?? true
   return v === true || v === 'fast' || v === 'thinking'
 }
 

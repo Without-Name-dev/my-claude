@@ -350,6 +350,12 @@ export type YoloClassifierResult = {
   reason: string
   unavailable?: boolean
   /**
+   * The request ended because the USER aborted (Esc/interrupt) — as opposed to
+   * a provider error. Callers must not fail open on this: an abort is the
+   * user's own hand on the brakes, not an outage.
+   */
+  abortedByUser?: boolean
+  /**
    * API returned "prompt is too long" — the classifier transcript exceeded
    * the context window. Deterministic (same transcript → same error), so
    * callers should fall back to normal prompting rather than retry/fail-closed.
