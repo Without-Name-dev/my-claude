@@ -9,7 +9,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
  */
 const config: CapacitorConfig = {
   appId: 'app.jade5197.ccremote',
-  appName: 'Claude Remote',
+  appName: 'My Claude',
   webDir: 'www',
   server: {
     url: 'http://8.166.138.207/code/',
