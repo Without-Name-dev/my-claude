@@ -141,6 +141,7 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
             label: event.label,
             phase: event.phase,
             status: 'done',
+            resultKind: event.result.kind,
             ...(event.result.kind === 'ok'
               ? {
                   outputShape:

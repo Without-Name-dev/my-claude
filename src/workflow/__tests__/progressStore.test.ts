@@ -209,6 +209,23 @@ test('agent_progress real-time updates token/tool (correlated by agentId)', () =
   expect(a.toolCount).toBe(3)
 })
 
+test('agent completion without a preceding start retains its failure state', () => {
+  const { bus, store } = newStore()
+  bus.emit({
+    type: 'agent_done',
+    runId: 'r1',
+    agentId: 9,
+    label: 'audit',
+    phase: 'scan',
+    result: { kind: 'dead' },
+  })
+  expect(store.get('r1')?.agents[0]).toMatchObject({
+    id: 9,
+    status: 'done',
+    resultKind: 'dead',
+  })
+})
+
 test('agent_done persists model/tokenCount/toolCount (ok variant)', () => {
   const { bus, store } = newStore()
   bus.emit({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null })

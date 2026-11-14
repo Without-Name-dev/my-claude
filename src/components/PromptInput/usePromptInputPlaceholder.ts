@@ -4,7 +4,10 @@ import { useCommandQueue } from 'src/hooks/useCommandQueue.js'
 import { useAppState } from 'src/state/AppState.js'
 import { getGlobalConfig } from 'src/utils/config.js'
 import { getExampleCommandFromCache } from 'src/utils/exampleCommands.js'
-import { isQueuedCommandEditable } from 'src/utils/messageQueueManager.js'
+import {
+  isQueuedCommandEditable,
+  isQueuedCommandVisible,
+} from 'src/utils/messageQueueManager.js'
 
 // Dead code elimination: conditional import for proactive mode
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -44,10 +47,14 @@ export function usePromptInputPlaceholder({
     }
 
     // Show queue hint if user has not seen it yet.
-    // Only count user-editable commands — task-notification and isMeta
-    // are hidden from the prompt area (see PromptInputQueuedCommands).
+    // Only count user-editable commands that are actually rendered — bridge
+    // prompts skip the preview (isQueuedCommandVisible), so a queue of only
+    // those must not advertise an invisible "up to edit" list.
     if (
-      queuedCommands.some(isQueuedCommandEditable) &&
+      queuedCommands.some(
+        command =>
+          isQueuedCommandEditable(command) && isQueuedCommandVisible(command),
+      ) &&
       (getGlobalConfig().queuedCommandUpHintCount || 0) <
         NUM_TIMES_QUEUE_HINT_SHOWN
     ) {

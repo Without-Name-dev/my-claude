@@ -1,13 +1,13 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useMemo } from 'react';
-import { Box } from '@anthropic/ink';
+import { Box, Text } from '@anthropic/ink';
 import { useAppState } from 'src/state/AppState.js';
 import { STATUS_TAG, SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../../constants/xml.js';
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js';
 import { useCommandQueue } from '../../hooks/useCommandQueue.js';
 import type { QueuedCommand } from '../../types/textInputTypes.js';
-import { isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
+import { getBridgeQueuedNotices, isQueuedCommandVisible } from '../../utils/messageQueueManager.js';
 import { createUserMessage, EMPTY_LOOKUPS, normalizeMessages } from '../../utils/messages.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { Message } from '../Message.js';
@@ -107,14 +107,28 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
     );
   }, [queuedCommands]);
 
+  // Remote (bridge) prompts are hidden from the static bubble preview above,
+  // but the keyboard user still needs to see that a phone/web message is
+  // waiting. These status lines are dynamic: they vanish when the command is
+  // submitted, so the message never prints twice.
+  const bridgeNotices = useMemo(() => getBridgeQueuedNotices(queuedCommands), [queuedCommands]);
+
   // Don't show leader's queued commands when viewing any agent's transcript
-  if (viewingAgent || messages === null) {
+  if (viewingAgent) {
+    return null;
+  }
+  if (messages === null && bridgeNotices.length === 0) {
     return null;
   }
 
   return (
     <Box marginTop={1} flexDirection="column">
-      {messages.map((message, i) => (
+      {bridgeNotices.map((notice, i) => (
+        <Box key={`bridge-notice-${i}`} marginLeft={2}>
+          <Text dimColor>{notice}</Text>
+        </Box>
+      ))}
+      {messages?.map((message, i) => (
         <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>
           <Message
             message={message}

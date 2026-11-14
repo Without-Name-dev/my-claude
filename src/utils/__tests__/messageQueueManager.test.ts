@@ -213,3 +213,79 @@ describe('messageQueueManager priority ordering', () => {
     expect(dequeue()!.value).toBe('later')
   })
 })
+
+describe('messageQueueManager.isQueuedCommandVisible', () => {
+  test('hides bridge-injected prompts from the queue preview', async () => {
+    const { isQueuedCommandVisible } = await import('../messageQueueManager.js')
+    expect(
+      isQueuedCommandVisible({
+        value: '你好',
+        mode: 'prompt',
+        bridgeOrigin: true,
+      } as any),
+    ).toBe(false)
+  })
+
+  test('local typed prompts still show in the queue preview', async () => {
+    const { isQueuedCommandVisible } = await import('../messageQueueManager.js')
+    expect(
+      isQueuedCommandVisible({ value: '你好', mode: 'prompt' } as any),
+    ).toBe(true)
+  })
+
+  test('bridge messages without prompt mode are unaffected', async () => {
+    const { isQueuedCommandVisible } = await import('../messageQueueManager.js')
+    expect(
+      isQueuedCommandVisible({
+        value: 'x',
+        mode: 'bash',
+        bridgeOrigin: true,
+      } as any),
+    ).toBe(true)
+  })
+})
+
+describe('messageQueueManager.getBridgeQueuedNotices', () => {
+  test('shows a dynamic status line for queued remote prompts only', async () => {
+    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
+    expect(
+      getBridgeQueuedNotices([
+        { value: '你好', mode: 'prompt', bridgeOrigin: true } as any,
+        { value: 'typed locally', mode: 'prompt' } as any,
+        { value: 'ls', mode: 'bash', bridgeOrigin: true } as any,
+      ]),
+    ).toEqual(['Queued from remote: 你好 (runs after this turn)'])
+  })
+
+  test('summarizes image-only remote prompts', async () => {
+    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
+    expect(
+      getBridgeQueuedNotices([
+        {
+          value: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+            },
+          ],
+          mode: 'prompt',
+          bridgeOrigin: true,
+        } as any,
+      ]),
+    ).toEqual(['Queued from remote: [1 image] (runs after this turn)'])
+  })
+
+  test('truncates long remote prompts to one line', async () => {
+    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
+    const notices = getBridgeQueuedNotices([
+      {
+        value: `first line\n${'x'.repeat(200)}`,
+        mode: 'prompt',
+        bridgeOrigin: true,
+      } as any,
+    ])
+    expect(notices[0]).toContain('first line xxx')
+    expect(notices[0]).toContain('…')
+    expect(notices[0]!.length).toBeLessThan(160)
+  })
+})

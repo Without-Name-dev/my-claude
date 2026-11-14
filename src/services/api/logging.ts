@@ -163,8 +163,16 @@ function getAnthropicEnvMetadata() {
 }
 
 function getBuildAgeMinutes(): number | undefined {
-  if (!MACRO.BUILD_TIME) return undefined
-  const buildTime = new Date(MACRO.BUILD_TIME).getTime()
+  // Source/test runtimes do not always inject build-time defines. Logging is
+  // optional and must not abort a model request in that environment.
+  let buildTimeValue: string | undefined
+  try {
+    buildTimeValue = MACRO.BUILD_TIME
+  } catch {
+    return undefined
+  }
+  if (!buildTimeValue) return undefined
+  const buildTime = new Date(buildTimeValue).getTime()
   if (isNaN(buildTime)) return undefined
   return Math.floor((Date.now() - buildTime) / 60000)
 }

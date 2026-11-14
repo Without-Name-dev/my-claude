@@ -494,6 +494,9 @@ describe('UDS inbox retention', () => {
       const conn = createConnection(path, () => {
         conn.write('x'.repeat(MAX_UDS_FRAME_BYTES + 1))
       })
+      // The server writes an error before closing; consume it so Node/Bun
+      // can observe EOF instead of leaving a paused readable stream open.
+      conn.resume()
       conn.setTimeout(5_000, () => {
         conn.destroy()
         reject(new Error('Timed out waiting for oversized frame close'))

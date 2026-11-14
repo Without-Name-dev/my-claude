@@ -36,6 +36,7 @@ import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { createSystemMessage } from '../utils/messages.js';
 import { buildTaskStateMessage, getTaskStateSnapshotKey } from '../utils/taskStateMessage.js';
+import { buildAgentProgressMessage } from '../bridge/agentProgressMessage.js';
 import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
@@ -214,12 +215,31 @@ export function useReplBridge(
           // disk write before we enqueue with the @path prefix. Caller doesn't
           // await — messages with attachments just land in the queue slightly
           // later, which is fine (web messages aren't rapid-fire).
+          const injectedInboundUuids = new Set<string>();
           async function handleInboundMessage(msg: SDKMessage): Promise<void> {
+            let uuid: `${string}-${string}-${string}-${string}-${string}` | undefined;
             try {
               const fields = extractInboundMessageFields(msg);
               if (!fields) return;
 
-              const { uuid } = fields;
+              uuid = fields.uuid;
+
+              // Idempotency guard: a web send that gets redelivered (client
+              // retry, server outbox flush racing a direct delivery) would
+              // inject the same message twice and the terminal renders both —
+              // the user sees one prompt go out as two. Drop exact re-deliveries.
+              if (uuid) {
+                if (injectedInboundUuids.has(uuid)) {
+                  logForDebugging(`[bridge:repl] Dropping duplicate inbound message uuid=${uuid}`);
+                  return;
+                }
+                injectedInboundUuids.add(uuid);
+                while (injectedInboundUuids.size > 500) {
+                  const oldest = injectedInboundUuids.keys().next().value;
+                  if (oldest === undefined) break;
+                  injectedInboundUuids.delete(oldest);
+                }
+              }
 
               // Dynamic import keeps the bridge code out of non-BRIDGE_MODE builds.
               const { resolveAndPrepend } = await import('../bridge/inboundAttachments.js');
@@ -254,6 +274,10 @@ export function useReplBridge(
                 bridgeOrigin: true,
               });
             } catch (e) {
+              // The uuid was marked as injected up front; if anything below
+              // that mark threw, a redelivery of the same message must be
+              // allowed through again or it is silently lost.
+              if (uuid !== undefined) injectedInboundUuids.delete(uuid);
               logForDebugging(`[bridge:repl] handleInboundMessage failed: ${e}`, { level: 'error' });
             }
           }
@@ -864,6 +888,7 @@ export function useReplBridge(
 
       // Collect new messages since last write
       const newMessages: Message[] = [];
+      const agentProgressMessages: SDKMessage[] = [];
       for (let i = startIndex; i < messages.length; i++) {
         const msg = messages[i];
         if (
@@ -874,6 +899,10 @@ export function useReplBridge(
         ) {
           newMessages.push(msg);
         }
+        if (msg?.type === 'progress' && isSelfHostedBridge()) {
+          const progress = buildAgentProgressMessage(msg);
+          if (progress) agentProgressMessages.push(progress);
+        }
       }
       lastWrittenIndexRef.current = messages.length;
 
@@ -881,6 +910,7 @@ export function useReplBridge(
         handle.writeMessages(newMessages);
         transcriptResetPendingRef.current = false;
       }
+      if (agentProgressMessages.length > 0) handle.writeSdkMessages(agentProgressMessages);
 
       if (
         pendingResultAfterFlushRef.current &&
@@ -972,6 +1002,46 @@ export function useReplBridge(
       };
     }
   }, [replBridgeSessionActive, replBridgeOutboundOnly]);
+
+  // Workflows have their own progress store; those updates are not normal
+  // conversation messages. Forward the same snapshot that the terminal's
+  // /workflows panel reads, without exposing the script or result payload.
+  useEffect(() => {
+    if (feature('BRIDGE_MODE')) {
+      if (feature('WORKFLOW_SCRIPTS')) {
+        if (!replBridgeSessionActive || replBridgeOutboundOnly || !isSelfHostedBridge()) return;
+        let cancelled = false;
+        let unsubscribe: (() => void) | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        void (async () => {
+          try {
+            const [{ getWorkflowService }, { buildWorkflowStateMessage }] = await Promise.all([
+              import('../workflow/service.js'),
+              import('../workflow/bridgeSnapshot.js'),
+            ]);
+            if (cancelled) return;
+            const service = getWorkflowService();
+            const publish = () => {
+              timer = undefined;
+              if (!cancelled) handleRef.current?.writeSdkMessages([buildWorkflowStateMessage(service.listRuns())]);
+            };
+            const schedule = () => {
+              if (!timer) timer = setTimeout(publish, 250);
+            };
+            unsubscribe = service.subscribe(schedule);
+            publish();
+          } catch (err) {
+            logForDebugging(`[bridge:repl] Failed to publish workflow state: ${errorMessage(err)}`, { level: 'error' });
+          }
+        })();
+        return () => {
+          cancelled = true;
+          unsubscribe?.();
+          if (timer) clearTimeout(timer);
+        };
+      }
+    }
+  }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected]);
 
   const sendBridgeResult = useCallback(() => {
     if (feature('BRIDGE_MODE')) {
