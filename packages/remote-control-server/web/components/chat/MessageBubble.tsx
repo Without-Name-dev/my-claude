@@ -97,13 +97,14 @@ export const UserBubble = memo(function UserBubble({ entry }: UserBubbleProps) {
 
 // =============================================================================
 // 助手回合 — 把一次回答里的思考、工具、正文收进同一个块
-// 思考只出现一次；工具按顺序成组；正文保持原始顺序。
+// 三者按到达顺序渲染（与终端 transcript 一致）；连续工具成组。
 // =============================================================================
 
 type TurnEntry = AssistantMessageEntry | ToolCallEntry;
 
 type TurnSegment =
   | { kind: 'text'; key: string; text: string }
+  | { kind: 'thinking'; key: string; text: string }
   | { kind: 'tools'; key: string; entries: ToolCallEntry[] };
 
 interface AssistantTurnProps {
@@ -117,8 +118,7 @@ export const AssistantTurn = memo(function AssistantTurn({
   isStreaming,
   onPermissionRespond,
 }: AssistantTurnProps) {
-  const { thoughtText, segments, streamingThought } = useMemo(() => {
-    const thoughtParts: string[] = [];
+  const { segments, streamingThought } = useMemo(() => {
     const segments: TurnSegment[] = [];
     let toolRun: ToolCallEntry[] = [];
 
@@ -144,10 +144,19 @@ export const AssistantTurn = memo(function AssistantTurn({
         (chunk): chunk is Extract<AssistantChunk, { type: 'message' }> =>
           chunk.type === 'message' && Boolean(chunk.text.trim()),
       );
-      for (const chunk of entry.chunks) {
-        if (chunk.type === 'thought' && chunk.text.trim()) thoughtParts.push(chunk.text);
+      // Thinking renders where it arrived. The old single merged row above
+      // every tool card moved later thoughts above earlier tool calls, so the
+      // same turn read differently here than in the terminal transcript.
+      const thoughts = entry.chunks
+        .filter(
+          (chunk): chunk is Extract<AssistantChunk, { type: 'thought' }> =>
+            chunk.type === 'thought' && Boolean(chunk.text.trim()),
+        )
+        .map(chunk => chunk.text);
+      if (thoughts.length > 0) {
+        flushTools();
+        segments.push({ kind: 'thinking', key: `${entry.id}-thought`, text: thoughts.join('\n\n') });
       }
-      // 只有思考、没有正文的消息不打断工具分组
       if (prose.length === 0) continue;
       flushTools();
       prose.forEach((chunk, index) => {
@@ -160,7 +169,6 @@ export const AssistantTurn = memo(function AssistantTurn({
     const lastChunk = last?.type === 'assistant_message' ? last.chunks[last.chunks.length - 1] : undefined;
 
     return {
-      thoughtText: thoughtParts.join('\n\n').trim(),
       segments,
       streamingThought: Boolean(isStreaming) && lastChunk?.type === 'thought',
     };
@@ -172,17 +180,17 @@ export const AssistantTurn = memo(function AssistantTurn({
     .join('\n\n')
     .trim();
 
-  if (!thoughtText && segments.length === 0) return null;
+  if (segments.length === 0) return null;
 
   // The copy affordance belongs to the prose, not the turn: rendering it after
   // every segment left it stranded below trailing tool cards, far from the
   // text it copies.
   const lastTextIndex = segments.reduce((acc, segment, index) => (segment.kind === 'text' ? index : acc), -1);
+  const lastThinkingIndex = segments.reduce((acc, segment, index) => (segment.kind === 'thinking' ? index : acc), -1);
 
   return (
     <div className="min-w-0">
       <div className="space-y-2">
-        {thoughtText && <ThinkingRow text={thoughtText} streaming={streamingThought} />}
         {segments.map((segment, index) =>
           segment.kind === 'text' ? (
             <Fragment key={segment.key}>
@@ -195,6 +203,12 @@ export const AssistantTurn = memo(function AssistantTurn({
                 </div>
               )}
             </Fragment>
+          ) : segment.kind === 'thinking' ? (
+            <ThinkingRow
+              key={segment.key}
+              text={segment.text}
+              streaming={Boolean(streamingThought) && index === lastThinkingIndex}
+            />
           ) : (
             <ToolCallGroup key={segment.key} entries={segment.entries} onPermissionRespond={onPermissionRespond} />
           ),

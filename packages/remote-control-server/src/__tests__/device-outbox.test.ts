@@ -19,8 +19,10 @@ import {
   markUnconfirmedSent,
   queueMessage,
 } from '../device/operations'
+import { resetConversationStoreForTest } from '../device/conversation-store'
 import type { UserContentBlock } from '../device/protocol'
 import { getEventBus, removeEventBus } from '../transport/event-bus'
+import { publishSessionEvent } from '../services/transport'
 import {
   handleWebSocketClose,
   handleWebSocketOpen,
@@ -54,10 +56,104 @@ beforeEach(async () => {
 
 afterAll(async () => {
   resetStateForTest()
+  // The outbox recovery path opens the conversation store in this data dir;
+  // SQLite holds the file open until the connection is closed.
+  resetConversationStoreForTest()
   if (dataDir) await rm(dataDir, { recursive: true, force: true })
 })
 
 describe('outbox failure handling', () => {
+  test('concurrent retries with the same client UUID publish once', async () => {
+    const bridgeId = `durable-retry-${crypto.randomUUID()}`
+    const testSession = crypto.randomUUID()
+    try {
+      const [first, retry] = await Promise.all([
+        deliverNow(bridgeId, deviceId, testSession, 'hello', 'client-uuid'),
+        deliverNow(bridgeId, deviceId, testSession, 'hello', 'client-uuid'),
+      ])
+      expect(first.entry.id).toBe('client-uuid')
+      expect(retry.entry.id).toBe('client-uuid')
+      expect(
+        getEventBus(bridgeId)
+          .getEventsSince(0)
+          .filter(event => event.direction === 'outbound'),
+      ).toHaveLength(1)
+      expect(listOutbox(deviceId, testSession)).toHaveLength(1)
+      await expect(
+        deliverNow(bridgeId, deviceId, testSession, 'different', 'client-uuid'),
+      ).rejects.toThrow()
+    } finally {
+      removeEventBus(bridgeId)
+    }
+  })
+
+  test('a direct web send survives restart without blindly replaying uncertain delivery', async () => {
+    const bridgeId = `durable-restart-${crypto.randomUUID()}`
+    const testSession = crypto.randomUUID()
+    await deliverNow(
+      bridgeId,
+      deviceId,
+      testSession,
+      'queued',
+      'client-restart',
+    )
+    await flushState({ throwOnError: true })
+    removeEventBus(bridgeId)
+    resetStateForTest()
+    await loadState()
+    const entry = listOutbox(deviceId, testSession).find(
+      row => row.id === 'client-restart',
+    )
+    expect(entry?.requiresReview).toBe(true)
+    const retry = await deliverNow(
+      bridgeId,
+      deviceId,
+      testSession,
+      'queued',
+      'client-restart',
+    )
+    expect(retry.state).toBe('unconfirmed')
+    expect(getEventBus(bridgeId).getEventsSince(0)).toHaveLength(0)
+    removeEventBus(bridgeId)
+  })
+
+  test('a retried web prompt reaches an attached terminal only once, even after other events', () => {
+    const bridgeId = `retry-${crypto.randomUUID()}`
+    const received: string[] = []
+    const socket = {
+      readyState: 1,
+      send(value: string) {
+        received.push(value)
+      },
+      close() {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(socket, bridgeId)
+    try {
+      const first = { uuid: 'prompt-1', content: 'first' }
+      publishSessionEvent(bridgeId, 'user', first, 'outbound')
+      publishSessionEvent(
+        bridgeId,
+        'user',
+        { uuid: 'prompt-2', content: 'second' },
+        'outbound',
+      )
+      publishSessionEvent(
+        bridgeId,
+        'assistant',
+        { content: 'working' },
+        'inbound',
+      )
+      publishSessionEvent(bridgeId, 'user', first, 'outbound')
+      expect(received.map(value => JSON.parse(value).uuid)).toEqual([
+        'prompt-1',
+        'prompt-2',
+      ])
+    } finally {
+      handleWebSocketClose(socket, bridgeId, 1000, '', token)
+      removeEventBus(bridgeId)
+    }
+  })
+
   test('a failed replay does not skip the failed message on the next connection', async () => {
     const bridgeId = 'session_1234567890abcdef'
     await deliverNow(bridgeId, deviceId, localSessionId, 'replay one')
@@ -192,6 +288,49 @@ describe('outbox failure handling', () => {
     expect(listOutbox(deviceId, localSessionId)).toHaveLength(0)
     requeueFailedOutbox(deviceId, localSessionId)
     expect(listOutbox(deviceId, localSessionId)).toHaveLength(0)
+  })
+
+  test('an unconfirmed prompt whose bus event was evicted is re-queued, not stranded', async () => {
+    const bridgeId = 'session_feedfacecafebeef'
+    const queued = queueMessage(deviceId, localSessionId, 'survive eviction')
+    // No transport attached: the prompt was published and stays unconfirmed.
+    await flushOutbox(deviceId, localSessionId, bridgeId)
+    expect(
+      listOutbox(deviceId, localSessionId).find(row => row.id === queued.id)
+        ?.state,
+    ).toBe('unconfirmed')
+    // A long tool-heavy turn pushes the publish event out of the rolling bus
+    // (5000 kept, trimmed to 2500), so the attach replay can no longer carry
+    // it and the row would never be confirmed.
+    const bus = getEventBus(bridgeId)
+    for (let i = 0; i < 5001; i += 1) {
+      bus.publish({
+        id: `evt-${i}`,
+        sessionId: bridgeId,
+        type: 'assistant',
+        payload: {},
+        direction: 'inbound',
+      })
+    }
+    const sent: string[] = []
+    const ws = {
+      readyState: 1,
+      send: (data: string) => sent.push(data),
+      close: () => {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridgeId)
+    try {
+      markUnconfirmedSent(deviceId, localSessionId, bridgeId)
+      // Re-queued under the same uuid, then flushed to the attached bridge.
+      await flushOutbox(deviceId, localSessionId, bridgeId)
+      expect(
+        listOutbox(deviceId, localSessionId).some(row => row.id === queued.id),
+      ).toBe(false)
+      expect(sent.some(frame => frame.includes(queued.id))).toBe(true)
+    } finally {
+      handleWebSocketClose(ws, bridgeId, 1000, '', token)
+      removeEventBus(bridgeId)
+    }
   })
 
   test('a bridge attach cannot confirm a message before it was published', async () => {

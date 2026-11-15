@@ -285,8 +285,23 @@ export function handleIngressMessage(
       logEvent('tengu_bridge_message_received', {
         is_repl: true,
       })
-      // Fire-and-forget — handler may be async (attachment resolution).
-      void onInboundMessage?.(parsed)
+      // Keep the UUID while async preparation is in progress, but allow a
+      // redelivery if it fails before the prompt actually enters the queue.
+      try {
+        const result = onInboundMessage?.(parsed)
+        if (result) {
+          void result.catch(err => {
+            if (uuid) recentInboundUUIDs.delete(uuid)
+            logForDebugging(
+              `[bridge:repl] Inbound handler failed: ${errorMessage(err)}`,
+              { level: 'error' },
+            )
+          })
+        }
+      } catch (err) {
+        if (uuid) recentInboundUUIDs.delete(uuid)
+        throw err
+      }
     } else {
       logForDebugging(
         `[bridge:repl] Ignoring non-user inbound message: type=${parsed.type}`,
@@ -621,6 +636,12 @@ export class BoundedUUIDSet {
 
   has(uuid: string): boolean {
     return this.set.has(uuid)
+  }
+
+  delete(uuid: string): void {
+    if (!this.set.delete(uuid)) return
+    const index = this.ring.indexOf(uuid)
+    if (index >= 0) this.ring[index] = undefined
   }
 
   clear(): void {

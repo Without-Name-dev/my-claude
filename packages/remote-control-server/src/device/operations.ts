@@ -17,10 +17,14 @@ import {
   wasBridgeMessageWritten,
 } from '../transport/ws-handler'
 import { publishSessionEvent } from '../services/transport'
+import type { SessionEvent } from '../transport/event-bus'
+import { hasTerminalReceivedMessage } from './conversation-store'
 import { requestDevice } from './hub'
 import {
   clearMapping,
   enqueueOutbox,
+  findOutboxEntry,
+  findOutboxEntryById,
   findMappingByBridgeId,
   flushState,
   getCatalog,
@@ -316,8 +320,14 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
       const record = operations.get(event.operationId)
       if (!record) {
         // The operation began before an RCS restart. A ready event still
-        // carries enough information to repair the mapping.
-        if (event.state === 'ready' && event.bridgeSessionId) {
+        // carries enough information to repair the mapping — but only for a
+        // real session id; the `pending-<operationId>` placeholder would
+        // install a mapping no bridge can ever satisfy.
+        if (
+          event.state === 'ready' &&
+          event.bridgeSessionId &&
+          isLocalSessionId(event.localSessionId)
+        ) {
           setMapping({
             deviceId,
             localSessionId: event.localSessionId,
@@ -341,10 +351,14 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
       if (event.bridgeSessionId) record.bridgeSessionId = event.bridgeSessionId
       if (event.pid) record.pid = event.pid
       // A fresh terminal reports the session id the CLI minted; remember it so
-      // the web can navigate to the new conversation.
+      // the web can navigate to the new conversation. Pre-discovery events
+      // carry the `pending-<operationId>` placeholder — never store that as
+      // the resolved id or the web would navigate to a session that does not
+      // exist.
       if (
         event.localSessionId &&
-        event.localSessionId !== record.localSessionId
+        event.localSessionId !== record.localSessionId &&
+        isLocalSessionId(event.localSessionId)
       ) {
         record.resolvedLocalSessionId = event.localSessionId
       }
@@ -462,17 +476,42 @@ export function markUnconfirmedSent(
   localSessionId: string,
   bridgeSessionId?: string,
 ): void {
+  if (!bridgeSessionId) return
+  const stranded: string[] = []
   for (const entry of listOutbox(deviceId, localSessionId)) {
     if (
-      entry.state === 'unconfirmed' &&
-      !entry.requiresReview &&
-      !publishingOutboxIds.has(entry.id) &&
-      bridgeSessionId &&
+      entry.state !== 'unconfirmed' ||
+      entry.requiresReview ||
+      publishingOutboxIds.has(entry.id)
+    ) {
+      continue
+    }
+    if (
       entry.bridgeSessionId === bridgeSessionId &&
       wasBridgeMessageWritten(bridgeSessionId, entry.id)
     ) {
       updateOutbox(entry.id, { state: 'sent', detail: undefined })
+      continue
     }
+    // The publish event is not in the current bus: it was evicted, or the
+    // server restarted and the bus with it (attach replays nothing then).
+    // The terminal may still have received it — its echo proves that — but
+    // without either signal the prompt would sit 'unconfirmed' forever.
+    if (hasTerminalReceivedMessage(deviceId, localSessionId, entry.id)) {
+      updateOutbox(entry.id, { state: 'sent', detail: undefined })
+      continue
+    }
+    // Re-queue instead of losing it. flushOutbox re-publishes under the SAME
+    // uuid, and the CLI drops a re-delivered inbound prompt by uuid, so this
+    // cannot queue it twice in a live terminal.
+    stranded.push(entry.id)
+  }
+  for (const id of stranded) {
+    updateOutbox(id, {
+      state: 'queued',
+      bridgeSessionId,
+      detail: '重新排队，等待终端接收',
+    })
   }
 }
 
@@ -557,8 +596,9 @@ export function queueMessage(
   deviceId: string,
   localSessionId: string,
   content: UserContent,
+  messageId?: string,
 ): OutboxEntry {
-  const id = randomUUID()
+  const id = messageId ?? randomUUID()
   const entry: OutboxEntry = {
     id,
     deviceId,
@@ -580,14 +620,77 @@ export function queueMessage(
   return entry
 }
 
+type DeliveryResult = {
+  state: 'sent' | 'unconfirmed'
+  entry: OutboxEntry
+  event?: SessionEvent
+}
+const inFlightDeliveries = new Map<string, Promise<DeliveryResult>>()
+
 /** Deliver immediately through the bridge and report what is actually known. */
-export async function deliverNow(
+export function deliverNow(
   bridgeSessionId: string,
   deviceId: string,
   localSessionId: string,
   content: UserContent,
-): Promise<{ state: 'sent' | 'unconfirmed'; entry: OutboxEntry }> {
-  const entry = queueMessage(deviceId, localSessionId, content)
+  messageId?: string,
+): Promise<DeliveryResult> {
+  if (messageId) {
+    const existing = findOutboxEntryById(messageId)
+    if (existing) {
+      const payload = existing.payload as { content?: unknown }
+      if (
+        existing.deviceId !== deviceId ||
+        existing.localSessionId !== localSessionId ||
+        JSON.stringify(payload.content) !== JSON.stringify(content)
+      ) {
+        return Promise.reject(new Error('消息标识已被其他内容使用'))
+      }
+    }
+  }
+  const key =
+    messageId && `${deviceId}\u0000${localSessionId}\u0000${messageId}`
+  const inFlight = key && inFlightDeliveries.get(key)
+  if (inFlight) return inFlight
+  const result = deliverNowOnce(
+    bridgeSessionId,
+    deviceId,
+    localSessionId,
+    content,
+    messageId,
+  )
+  if (key) {
+    inFlightDeliveries.set(key, result)
+    void result.then(
+      () => inFlightDeliveries.delete(key),
+      () => inFlightDeliveries.delete(key),
+    )
+  }
+  return result
+}
+
+async function deliverNowOnce(
+  bridgeSessionId: string,
+  deviceId: string,
+  localSessionId: string,
+  content: UserContent,
+  messageId?: string,
+): Promise<DeliveryResult> {
+  const existing = messageId
+    ? findOutboxEntry(deviceId, localSessionId, messageId)
+    : undefined
+  if (existing) {
+    const payload = existing.payload as { content?: unknown }
+    if (JSON.stringify(payload.content) !== JSON.stringify(content)) {
+      throw new Error('消息标识已被其他内容使用')
+    }
+    if (existing.state === 'sent') return { state: 'sent', entry: existing }
+    if (existing.state === 'unconfirmed' || existing.state === 'reviewed') {
+      return { state: 'unconfirmed', entry: existing }
+    }
+  }
+  const entry =
+    existing ?? queueMessage(deviceId, localSessionId, content, messageId)
   publishingOutboxIds.add(entry.id)
   updateOutbox(entry.id, {
     state: 'unconfirmed',
@@ -622,6 +725,7 @@ export async function deliverNow(
     return {
       state: written ? 'sent' : 'unconfirmed',
       entry: { ...entry, state: written ? 'sent' : 'unconfirmed' },
+      event,
     }
   } catch (error) {
     updateOutbox(entry.id, {

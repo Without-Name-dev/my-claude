@@ -31,12 +31,17 @@ import { isUltracodeAvailable } from '../utils/ultracode.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
-import { enqueue } from '../utils/messageQueueManager.js';
+import { enqueue, getCommandQueue, subscribeToCommandQueue } from '../utils/messageQueueManager.js';
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { createSystemMessage } from '../utils/messages.js';
 import { buildTaskStateMessage, getTaskStateSnapshotKey } from '../utils/taskStateMessage.js';
 import { buildAgentProgressMessage } from '../bridge/agentProgressMessage.js';
+import {
+  buildTerminalQueueMessage,
+  buildTerminalQueueSnapshot,
+  terminalQueueSnapshotKey,
+} from '../bridge/terminalQueueMessage.js';
 import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
@@ -47,6 +52,14 @@ import {
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js';
 import { getTaskListId, getTasksDir, listTasks, onTasksUpdated } from '../utils/tasks.js';
 import { ContentBlockParam } from '@anthropic-ai/sdk/resources';
+import { randomUUID } from 'crypto';
+import {
+  getTotalInputTokens,
+  getTotalOutputTokens,
+  getTotalCacheCreationInputTokens,
+  getTotalCacheReadInputTokens,
+} from '../cost-tracker.js';
+import { getCurrentUsage } from '../utils/tokens.js';
 
 const TASK_STATE_DEBOUNCE_MS = 50;
 const TASK_STATE_POLL_MS = 5000;
@@ -87,6 +100,9 @@ export function useReplBridge(
   // Re-publishes system/init after a control that changes session metadata
   // (effort, ultracode), so remote pickers do not keep showing stale values.
   const sendSystemInitRef = useRef<() => void>(() => {});
+  // Re-publishes the terminal queue snapshot after a reconnect (the effect's
+  // last-published key resets on remount, this covers within-mount reconnects).
+  const publishTerminalQueueRef = useRef<() => void>(() => {});
   const teardownPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const lastWrittenIndexRef = useRef(0);
   const pendingResultAfterFlushRef = useRef(false);
@@ -119,6 +135,12 @@ export function useReplBridge(
   // too, so the phone's pickers do not drift from the session.
   const sessionEffort = useAppState(s => s.effortValue);
   const sessionUltracode = useAppState(s => s.ultracodeActive);
+  // Permission mode changes (phone picker, plan approval "accept edits",
+  // terminal Shift+Tab) are part of system/init. Without republishing, a
+  // reload replayed the startup mode and every remote picker drifted.
+  const sessionPermissionMode = useAppState(s => s.toolPermissionContext.mode);
+  // fastMode feeds the advertised model list in system/init.
+  const sessionFastMode = useAppState(s => s.fastMode);
   const replBridgeSessionActiveRaw = useAppState(s => s.replBridgeSessionActive);
   const replBridgeSessionActive = feature('BRIDGE_MODE') ? replBridgeSessionActiveRaw : false;
   const replBridgeOutboundOnlyRaw = useAppState(s => s.replBridgeOutboundOnly);
@@ -211,10 +233,8 @@ export function useReplBridge(
           // Preserves the original UUID so that when the message is forwarded
           // back to CCR, it matches the original — avoiding duplicate messages.
           //
-          // Async because file_attachments (if present) need a network fetch +
-          // disk write before we enqueue with the @path prefix. Caller doesn't
-          // await — messages with attachments just land in the queue slightly
-          // later, which is fine (web messages aren't rapid-fire).
+          // File attachments need a network fetch and disk write. Preserve
+          // arrival order even if the next prompt has no attachment.
           const injectedInboundUuids = new Set<string>();
           async function handleInboundMessage(msg: SDKMessage): Promise<void> {
             let uuid: `${string}-${string}-${string}-${string}-${string}` | undefined;
@@ -258,6 +278,10 @@ export function useReplBridge(
                 }
               }
               const content = await resolveAndPrepend(msg, sanitized as string | ContentBlockParam[]);
+              if (cancelled) {
+                if (uuid !== undefined) injectedInboundUuids.delete(uuid);
+                return;
+              }
 
               const preview = typeof content === 'string' ? content.slice(0, 80) : `[${content.length} content blocks]`;
               logForDebugging(`[bridge:repl] Injecting inbound user message: ${preview}${uuid ? ` uuid=${uuid}` : ''}`);
@@ -279,8 +303,12 @@ export function useReplBridge(
               // allowed through again or it is silently lost.
               if (uuid !== undefined) injectedInboundUuids.delete(uuid);
               logForDebugging(`[bridge:repl] handleInboundMessage failed: ${e}`, { level: 'error' });
+              throw e;
             }
           }
+
+          const { createSerialInboundQueue } = await import('../bridge/serialInboundQueue.js');
+          const enqueueInboundMessage = createSerialInboundQueue(handleInboundMessage);
 
           // State change callback — maps bridge lifecycle events to AppState.
           function handleStateChange(state: BridgeState, detail?: string): void {
@@ -371,6 +399,7 @@ export function useReplBridge(
                 // model/permission/command pickers from it, and GrowthBook is
                 // not consulted in self-hosted mode anyway.
                 sendSystemInitRef.current();
+                publishTerminalQueueRef.current();
                 break;
               }
               case 'reconnecting':
@@ -527,7 +556,7 @@ export function useReplBridge(
           const rawHandle = await initReplBridge({
             outboundOnly,
             tags: outboundOnly ? ['ccr-mirror'] : undefined,
-            onInboundMessage: handleInboundMessage,
+            onInboundMessage: enqueueInboundMessage,
             onPermissionResponse: handlePermissionResponse,
             onInterrupt() {
               handleRemoteInterrupt(abortControllerRef.current);
@@ -556,10 +585,16 @@ export function useReplBridge(
                   error: 'Invalid effort. Valid options are: low, medium, high, xhigh, max, auto',
                 };
               }
-              const result = updateSettingsForSource('userSettings', {
-                effortLevel: toPersistableEffort(value),
-              });
-              if (result.error) return { ok: false, error: result.error.message };
+              // 'max' is session-scoped for external users: writing
+              // `effortLevel: undefined` would delete a pinned value from
+              // settings.json, unlike the local /effort max command.
+              const persistable = toPersistableEffort(value);
+              if (persistable !== undefined) {
+                const result = updateSettingsForSource('userSettings', {
+                  effortLevel: persistable,
+                });
+                if (result.error) return { ok: false, error: result.error.message };
+              }
               setAppState(prev => ({ ...prev, effortValue: value }));
               return { ok: true };
             },
@@ -889,6 +924,12 @@ export function useReplBridge(
       // Collect new messages since last write
       const newMessages: Message[] = [];
       const agentProgressMessages: SDKMessage[] = [];
+      // A prompt sent from the phone that the running turn drains as a
+      // queued_command attachment never becomes a user Message, so the bridge
+      // never echoes it: other clients rendered the answer with no prompt,
+      // and a reload lost it. Echo it under the sender's uuid (idempotent on
+      // the server's message key) at the moment the terminal actually took it.
+      const queuedCommandEchoes: SDKMessage[] = [];
       for (let i = startIndex; i < messages.length; i++) {
         const msg = messages[i];
         if (
@@ -903,6 +944,21 @@ export function useReplBridge(
           const progress = buildAgentProgressMessage(msg);
           if (progress) agentProgressMessages.push(progress);
         }
+        if (msg?.type === 'attachment' && isSelfHostedBridge() && msg.attachment?.type === 'queued_command') {
+          const attachment = msg.attachment;
+          if (
+            attachment.commandMode === 'prompt' &&
+            attachment.source_uuid &&
+            !attachment.isMeta &&
+            !attachment.origin
+          ) {
+            queuedCommandEchoes.push({
+              type: 'user',
+              uuid: attachment.source_uuid,
+              message: { role: 'user', content: attachment.prompt },
+            } as unknown as SDKMessage);
+          }
+        }
       }
       lastWrittenIndexRef.current = messages.length;
 
@@ -911,6 +967,7 @@ export function useReplBridge(
         transcriptResetPendingRef.current = false;
       }
       if (agentProgressMessages.length > 0) handle.writeSdkMessages(agentProgressMessages);
+      if (queuedCommandEchoes.length > 0) handle.writeSdkMessages(queuedCommandEchoes);
 
       if (
         pendingResultAfterFlushRef.current &&
@@ -1029,6 +1086,11 @@ export function useReplBridge(
               if (!timer) timer = setTimeout(publish, 250);
             };
             unsubscribe = service.subscribe(schedule);
+            // Without this, a freshly restarted CLI shows no runs on the web
+            // until a new workflow launches: the in-memory store only knows
+            // runs from this process, while the /workflows panel hydrates the
+            // persisted history on open. Idempotent (process-singleton flag).
+            await service.loadPersistedRuns();
             publish();
           } catch (err) {
             logForDebugging(`[bridge:repl] Failed to publish workflow state: ${errorMessage(err)}`, { level: 'error' });
@@ -1084,7 +1146,75 @@ export function useReplBridge(
   useEffect(() => {
     if (!replBridgeSessionActive) return;
     sendSystemInitRef.current();
-  }, [sessionEffort, sessionUltracode, replBridgeSessionActive]);
+  }, [mainLoopModel, sessionEffort, sessionUltracode, sessionPermissionMode, sessionFastMode, replBridgeSessionActive]);
+
+  // Publish the same session totals used by the terminal status line. The web
+  // cannot reconstruct these from a paged transcript or replay buffer.
+  useEffect(() => {
+    if (!replBridgeSessionActive || replBridgeOutboundOnly || !isSelfHostedBridge()) return;
+    let lastSnapshot = '';
+    const publish = () => {
+      const handle = handleRef.current;
+      if (!handle) return;
+      const current = getCurrentUsage(messagesRef.current);
+      const snapshot = {
+        current,
+        total_input_tokens: getTotalInputTokens(),
+        total_output_tokens: getTotalOutputTokens(),
+        total_cache_creation_input_tokens: getTotalCacheCreationInputTokens(),
+        total_cache_read_input_tokens: getTotalCacheReadInputTokens(),
+      };
+      const key = JSON.stringify(snapshot);
+      if (key === lastSnapshot) return;
+      lastSnapshot = key;
+      handle.writeSdkMessages([{ type: 'usage_state', uuid: randomUUID(), ...snapshot } as unknown as SDKMessage]);
+    };
+    publish();
+    const timer = setInterval(publish, 2000);
+    return () => clearInterval(timer);
+  }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected]);
+
+  // Mirror the terminal's local command queue: prompts typed while a turn runs
+  // are invisible to remote clients until executed, which read as "the phone
+  // is not synced". Publishing the snapshot lets the web show 终端排队中. The
+  // empty snapshot is only sent after a non-empty one, so a quiet session
+  // emits nothing.
+  useEffect(() => {
+    if (feature('BRIDGE_MODE')) {
+      if (!replBridgeSessionActive || replBridgeOutboundOnly || !isSelfHostedBridge()) return;
+      let lastKey: string | null = null;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const publish = (forced = false) => {
+        timer = undefined;
+        const handle = handleRef.current;
+        if (!handle) return;
+        const snapshot = buildTerminalQueueSnapshot(getCommandQueue());
+        const key = terminalQueueSnapshotKey(snapshot);
+        if (key === lastKey) return;
+        // An unpublishable initial empty snapshot is noise; a forced publish
+        // after reconnect must overwrite a stale retained server snapshot.
+        if (!forced && snapshot.count === 0 && lastKey === null) return;
+        lastKey = key;
+        handle.writeSdkMessages([buildTerminalQueueMessage(snapshot)]);
+      };
+      const schedule = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => publish(), 250);
+        timer.unref?.();
+      };
+      const unsubscribe = subscribeToCommandQueue(schedule);
+      publish();
+      publishTerminalQueueRef.current = () => {
+        lastKey = null;
+        publish(true);
+      };
+      return () => {
+        unsubscribe();
+        if (timer) clearTimeout(timer);
+        publishTerminalQueueRef.current = () => {};
+      };
+    }
+  }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected]);
 
   return { sendBridgeResult };
 }

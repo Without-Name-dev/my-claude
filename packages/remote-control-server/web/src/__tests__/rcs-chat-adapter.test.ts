@@ -4,6 +4,96 @@ import { RCSChatAdapter } from '../lib/rcs-chat-adapter'
 import type { SessionUsage } from '../lib/rcs-chat-adapter'
 import type { ThreadEntry } from '../lib/types'
 
+test('retries an interrupted send using the same message UUID', async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  const ids: string[] = []
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+    async (_input, init) => {
+      ids.push((JSON.parse(String(init?.body)) as { uuid: string }).uuid)
+      if (ids.length === 1) throw new TypeError('connection lost')
+      return Response.json({ status: 'ok' })
+    },
+  )
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await adapter.sendMessage('hello')
+    expect(ids).toHaveLength(2)
+    expect(ids[1]).toBe(ids[0])
+    expect(entries.filter(entry => entry.type === 'user_message')).toHaveLength(
+      1,
+    )
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('keeps an uncertain send visible when both responses are lost', async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    throw new TypeError('offline')
+  })
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await expect(adapter.sendMessage('hello')).rejects.toThrow('无法确认')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.type === 'user_message' && entries[0].pending).toBe(true)
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('shows identical long answers from separate turns', () => {
+  let entries: ThreadEntry[] = []
+  const adapter = new RCSChatAdapter('session', action => {
+    entries = typeof action === 'function' ? action(entries) : action
+  })
+  const answer = 'This is a deliberately repeated answer. '.repeat(3)
+  for (const [user, assistant] of [
+    ['u1', 'a1'],
+    ['u2', 'a2'],
+  ]) {
+    adapter.handleEvent({
+      type: 'user',
+      direction: 'inbound',
+      payload: { uuid: user, content: 'repeat' },
+    })
+    adapter.handleEvent({
+      type: 'assistant',
+      direction: 'inbound',
+      payload: { uuid: assistant, content: answer },
+    })
+  }
+  expect(
+    entries.filter(entry => entry.type === 'assistant_message'),
+  ).toHaveLength(2)
+})
+
 test('shows a message written in the local terminal', () => {
   let entries: ThreadEntry[] = []
   const setEntries = (action: SetStateAction<ThreadEntry[]>) => {
@@ -315,6 +405,161 @@ test('seeds usage from history and does not double-count live echoes', () => {
   expect(live.cacheHitRate).toBeCloseTo(0.6)
 })
 
+test('uses session totals reported by the terminal instead of a partial history', () => {
+  let entries: ThreadEntry[] = []
+  const seen: SessionUsage[] = []
+  const adapter = new RCSChatAdapter(
+    'session',
+    action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    },
+    { onUsage: usage => seen.push(usage) },
+  )
+  adapter.handleEvent({
+    type: 'usage_state',
+    direction: 'inbound',
+    payload: {
+      raw: {
+        current: {
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 70,
+        },
+        total_input_tokens: 100,
+        total_output_tokens: 50,
+        total_cache_creation_input_tokens: 100,
+        total_cache_read_input_tokens: 800,
+      },
+    },
+  })
+  expect(seen.at(-1)).toEqual({
+    current: { input: 10, output: 3, cacheCreation: 20, cacheRead: 70 },
+    totals: { input: 100, output: 50 },
+    cacheHitRate: 0.8,
+    estimated: false,
+  })
+  adapter.seedUsageFromHistory([
+    {
+      id: 'older',
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadInputTokens: 3,
+        cacheCreationInputTokens: 4,
+      },
+    },
+  ])
+  expect(seen).toHaveLength(1)
+})
+
+test('older history pages never replace the current live usage', () => {
+  let entries: ThreadEntry[] = []
+  const seen: SessionUsage[] = []
+  const adapter = new RCSChatAdapter(
+    'session',
+    action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    },
+    { onUsage: usage => seen.push(usage) },
+  )
+  const usage = (inputTokens: number) => ({
+    inputTokens,
+    outputTokens: 1,
+    cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 0,
+  })
+  adapter.seedUsageFromHistory([
+    { id: 'newer', timestamp: '2026-11-15T03:00:00Z', usage: usage(100) },
+  ])
+  adapter.seedUsageFromHistory([
+    { id: 'newer', timestamp: '2026-11-15T03:00:00Z', usage: usage(100) },
+    { id: 'older', timestamp: '2026-11-14T03:00:00Z', usage: usage(20) },
+  ])
+  expect(seen.at(-1)?.current?.input).toBe(100)
+  adapter.handleEvent({
+    type: 'assistant',
+    direction: 'inbound',
+    payload: {
+      uuid: 'newer',
+      content: 'hello',
+      message: {
+        usage: {
+          input_tokens: 200,
+          output_tokens: 2,
+          cache_read_input_tokens: 50,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    },
+  })
+  adapter.seedUsageFromHistory([
+    { id: 'newer', timestamp: '2026-11-15T03:00:00Z', usage: usage(100) },
+  ])
+  expect(seen.at(-1)?.current?.input).toBe(200)
+  expect(seen.at(-1)?.totals.input).toBe(220)
+})
+
+test('loading a large older page keeps the newest history in the bounded ledger', () => {
+  const seen: SessionUsage[] = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onUsage: usage => seen.push(usage),
+  })
+  const usage = (inputTokens: number) => ({
+    inputTokens,
+    outputTokens: 1,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  })
+  adapter.seedUsageFromHistory([
+    { id: 'new', timestamp: '2026-11-15T03:00:00Z', usage: usage(1000) },
+  ])
+  adapter.seedUsageFromHistory(
+    Array.from({ length: 220 }, (_, i) => ({
+      id: `old-${i}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+      usage: usage(1),
+    })),
+  )
+  expect(seen.at(-1)?.current?.input).toBe(1000)
+  expect(seen.at(-1)?.totals.input).toBe(1199)
+})
+
+test('registers a control request before sending it, so a fast response is matched', async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: () => 'test-identity',
+      setItem: () => {},
+      removeItem: () => {},
+    },
+  })
+  let registered = ''
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+    async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as { request_id: string }
+      expect(registered).toBe(sent.request_id)
+      return Response.json({ status: 'ok' })
+    },
+  )
+  try {
+    const adapter = new RCSChatAdapter('session', () => {})
+    const id = await adapter.setUltracode(true, requestId => {
+      registered = requestId
+    })
+    expect(registered).toBe(id)
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
 test('uses the sent message UUID to deduplicate a bridge echo', async () => {
   const originalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -580,6 +825,65 @@ test('a resync completes a running tool card whose tool_use left the replay wind
   }
 })
 
+test('a device-view (metadata) resync applies replayed tool results', async () => {
+  // The parent view owns the transcript, but a tool completion replayed by the
+  // bridge must still land on the live card or it spins forever.
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    input: RequestInfo | URL,
+  ) => {
+    if (String(input).includes('/history')) {
+      return Response.json({
+        events: [
+          {
+            id: 'e1',
+            type: 'tool_result',
+            direction: 'inbound',
+            payload: { tool_call_id: 'tool-9', content: 'done' },
+          },
+        ],
+      })
+    }
+    return Response.json({ ok: true })
+  }) as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = [
+      {
+        type: 'tool_call',
+        toolCall: { id: 'tool-9', title: 'Bash', status: 'running' },
+      },
+    ]
+    const adapter = new RCSChatAdapter(
+      'session',
+      action => {
+        entries = typeof action === 'function' ? action(entries) : action
+      },
+      { historyMode: 'metadata' },
+    )
+    await adapter.loadHistory()
+    expect(entries[0]).toMatchObject({
+      type: 'tool_call',
+      toolCall: {
+        id: 'tool-9',
+        status: 'complete',
+        rawOutput: { output: 'done' },
+      },
+    })
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
 test('a resync keeps the sent message above the reply it triggered', async () => {
   const originalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -644,4 +948,343 @@ test('a resync keeps the sent message above the reply it triggered', async () =>
       Object.defineProperty(globalThis, 'localStorage', originalStorage)
     else Reflect.deleteProperty(globalThis, 'localStorage')
   }
+})
+
+test('a resync adoption stays correct when React invokes the updater twice', async () => {
+  // React may replay a state updater (StrictMode, concurrent re-render). The
+  // adoption must be decided from a snapshot, not from a set the first run
+  // drains — otherwise run 2 appends the echo below the reply.
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  let historyEvents: unknown[] = []
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    input: RequestInfo | URL,
+  ) => {
+    if (String(input).includes('/history')) {
+      return Response.json({ events: historyEvents })
+    }
+    return Response.json({ ok: true })
+  }) as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = []
+    const apply = (action: SetStateAction<ThreadEntry[]>) => {
+      if (typeof action !== 'function') {
+        entries = action
+        return
+      }
+      action(entries) // discarded render
+      entries = action(entries)
+    }
+    const adapter = new RCSChatAdapter('session', apply)
+    await adapter.sendMessage('继续')
+    adapter.handleEvent({
+      type: 'assistant',
+      direction: 'inbound',
+      payload: { uuid: 'a1', content: '明白了' },
+    })
+    historyEvents = [
+      {
+        id: 'e1',
+        type: 'user',
+        direction: 'inbound',
+        payload: { uuid: 'server-uuid', content: '继续' },
+      },
+      {
+        id: 'e2',
+        type: 'assistant',
+        direction: 'inbound',
+        payload: { uuid: 'a1', content: '明白了' },
+      },
+    ]
+    await adapter.loadHistory()
+    expect(
+      entries.map(entry =>
+        entry.type === 'user_message' ? `user:${entry.content}` : entry.type,
+      ),
+    ).toEqual(['user:继续', 'assistant_message'])
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('a web send with no inbound echo survives a full-mode history reload', async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    input: RequestInfo | URL,
+  ) => {
+    if (String(input).includes('/history')) {
+      return Response.json({
+        events: [
+          {
+            id: 'e1',
+            type: 'user',
+            direction: 'outbound',
+            payload: { uuid: 'u-send', message: { content: 'mid-turn send' } },
+          },
+          {
+            id: 'e2',
+            type: 'assistant',
+            direction: 'inbound',
+            seqNum: 2,
+            payload: {
+              uuid: 'a1',
+              message: { content: [{ type: 'text', text: 'answer' }] },
+            },
+          },
+        ],
+      })
+    }
+    return Response.json({ ok: true })
+  }) as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await adapter.loadHistory()
+    expect(
+      entries.some(
+        entry =>
+          entry.type === 'user_message' && entry.content === 'mid-turn send',
+      ),
+    ).toBe(true)
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('an outbound send is folded into its inbound echo on reload', async () => {
+  const originalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  )
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test-identity', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    input: RequestInfo | URL,
+  ) => {
+    if (String(input).includes('/history')) {
+      return Response.json({
+        events: [
+          {
+            id: 'e1',
+            type: 'user',
+            direction: 'outbound',
+            payload: { uuid: 'u-send', message: { content: 'hello' } },
+          },
+          {
+            id: 'e2',
+            type: 'user',
+            direction: 'inbound',
+            payload: { uuid: 'u-echo', message: { content: 'hello' } },
+          },
+        ],
+      })
+    }
+    return Response.json({ ok: true })
+  }) as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await adapter.loadHistory()
+    const users = entries.filter(entry => entry.type === 'user_message')
+    expect(users).toHaveLength(1)
+    expect(users[0]?.id).toBe('user-u-echo')
+  } finally {
+    fetchSpy.mockRestore()
+    if (originalStorage)
+      Object.defineProperty(globalThis, 'localStorage', originalStorage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('a permission answered elsewhere releases the inline tool card', () => {
+  let entries: ThreadEntry[] = []
+  const resolved: string[] = []
+  const adapter = new RCSChatAdapter(
+    'session',
+    action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    },
+    {
+      onPermissionResolved: id => resolved.push(id),
+    },
+  )
+
+  adapter.handleEvent({
+    type: 'tool_use',
+    direction: 'inbound',
+    payload: { tool_call_id: 'toolu_1', tool_name: 'Bash', tool_input: {} },
+  })
+  adapter.handleEvent({
+    type: 'control_request',
+    direction: 'inbound',
+    payload: {
+      request_id: 'req-9',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Bash',
+        input: {},
+        description: '',
+        tool_use_id: 'toolu_1',
+      },
+    },
+  })
+
+  const waiting = entries.find(e => e.type === 'tool_call')
+  expect(waiting).toMatchObject({
+    type: 'tool_call',
+    toolCall: { status: 'waiting_for_confirmation' },
+  })
+
+  adapter.handleEvent({
+    type: 'control_response',
+    direction: 'inbound',
+    payload: {
+      response: { subtype: 'success', request_id: 'req-9', response: {} },
+    },
+  })
+
+  expect(resolved).toEqual(['req-9'])
+  const card = entries.find(e => e.type === 'tool_call')
+  expect(card).toMatchObject({
+    type: 'tool_call',
+    toolCall: { status: 'running', permissionRequest: undefined },
+  })
+})
+
+test('a permission_response from another client releases the inline tool card', () => {
+  let entries: ThreadEntry[] = []
+  const adapter = new RCSChatAdapter('session', action => {
+    entries = typeof action === 'function' ? action(entries) : action
+  })
+
+  adapter.handleEvent({
+    type: 'tool_use',
+    direction: 'inbound',
+    payload: { tool_call_id: 'toolu_2', tool_name: 'Edit', tool_input: {} },
+  })
+  adapter.handleEvent({
+    type: 'control_request',
+    direction: 'inbound',
+    payload: {
+      request_id: 'req-10',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Edit',
+        input: {},
+        description: '',
+        tool_use_id: 'toolu_2',
+      },
+    },
+  })
+  adapter.handleEvent({
+    type: 'permission_response',
+    direction: 'outbound',
+    payload: { approved: true, request_id: 'req-10' },
+  })
+
+  const card = entries.find(e => e.type === 'tool_call')
+  expect(card).toMatchObject({
+    type: 'tool_call',
+    toolCall: { status: 'running', permissionRequest: undefined },
+  })
+})
+
+test('a terminal_queue snapshot reports queued terminal prompts', () => {
+  let entries: ThreadEntry[] = []
+  const snapshots: Array<unknown | undefined> = []
+  const adapter = new RCSChatAdapter(
+    'session',
+    action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    },
+    {
+      onTerminalQueue: snapshot => snapshots.push(snapshot),
+    },
+  )
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: {
+      raw: { type: 'terminal_queue', count: 2, previews: ['first', 'second'] },
+    },
+  })
+  expect(snapshots).toEqual([{ count: 2, previews: ['first', 'second'] }])
+  // No transcript rows: the executed message mirrors normally later.
+  expect(entries).toEqual([])
+})
+
+test('an empty terminal_queue snapshot clears the state', () => {
+  const snapshots: Array<unknown | undefined> = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onTerminalQueue: snapshot => snapshots.push(snapshot),
+  })
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: {
+      raw: { type: 'terminal_queue', count: 1, previews: ['queued'] },
+    },
+  })
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: { raw: { type: 'terminal_queue', count: 0, previews: [] } },
+  })
+  expect(snapshots).toEqual([{ count: 1, previews: ['queued'] }, undefined])
+})
+
+test('a malformed terminal_queue snapshot is ignored', () => {
+  const snapshots: Array<unknown | undefined> = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onTerminalQueue: snapshot => snapshots.push(snapshot),
+  })
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: { raw: { type: 'terminal_queue' } },
+  })
+  expect(snapshots).toEqual([])
+})
+
+test('a bridge disconnect clears the queued-terminal-prompts state', () => {
+  const snapshots: Array<unknown | undefined> = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onTerminalQueue: snapshot => snapshots.push(snapshot),
+  })
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: { raw: { type: 'terminal_queue', count: 1, previews: ['stale'] } },
+  })
+  adapter.handleEvent({
+    type: 'bridge_state',
+    direction: 'inbound',
+    payload: { raw: { connected: false } },
+  })
+  expect(snapshots).toEqual([{ count: 1, previews: ['stale'] }, undefined])
 })

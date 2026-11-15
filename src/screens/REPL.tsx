@@ -75,6 +75,7 @@ import {
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from '../utils/debug.js';
 import { QueryGuard } from '../utils/QueryGuard.js';
+import { shouldShowPromptPlaceholder } from '../utils/promptPlaceholder.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { formatTokens, truncateToWidth } from '../utils/format.js';
 import { consumeEarlyInput } from '../utils/earlyInput.js';
@@ -1204,14 +1205,10 @@ export function REPL({
   // Elapsed time is computed by SpinnerWithVerb from these refs on each
   // animation frame, avoiding a useInterval that re-renders the entire REPL.
   const [userInputOnProcessing, setUserInputOnProcessingRaw] = React.useState<string | undefined>(undefined);
-  // messagesRef.current.length at the moment userInputOnProcessing was set.
-  // The placeholder hides once displayedMessages grows past this — i.e. the
-  // real user message has landed in the visible transcript.
-  const userInputBaselineRef = React.useRef(0);
-  // True while the submitted prompt is being processed but its user message
-  // hasn't reached setMessages yet. setMessages uses this to keep the
-  // baseline in sync when unrelated async messages (bridge status, hook
-  // results, scheduled tasks) land during that window.
+  // Identify the actual submitted message: the deferred view can be capped
+  // at 500 entries, so comparing its length with the full transcript fails.
+  const submittedUserMessageIdRef = React.useRef<string | undefined>(undefined);
+  // Unrelated bridge status or hook messages can arrive before the prompt.
   const userMessagePendingRef = React.useRef(false);
 
   // Wall-clock time tracking refs for accurate elapsed time calculation
@@ -1503,36 +1500,21 @@ export function REPL({
     const prev = messagesRef.current;
     const next = typeof action === 'function' ? action(messagesRef.current) : action;
     messagesRef.current = next;
-    if (next.length < userInputBaselineRef.current) {
-      // Shrank (compact/rewind/clear) — clamp so placeholderText's length
-      // check can't go stale.
-      userInputBaselineRef.current = 0;
-    } else if (next.length > prev.length && userMessagePendingRef.current) {
-      // Grew while the submitted user message hasn't landed yet. If the
-      // added messages don't include it (bridge status, hook results,
-      // scheduled tasks landing async during processUserInputBase), bump
-      // baseline so the placeholder stays visible. Once the user message
-      // lands, stop tracking — later additions (assistant stream) should
-      // not re-show the placeholder.
-      const delta = next.length - prev.length;
-      const added = prev.length === 0 || next[0] === prev[0] ? next.slice(-delta) : next.slice(0, delta);
-      if (added.some(isHumanTurn)) {
+    if (next.length > prev.length && userMessagePendingRef.current) {
+      // History may be prepended in the same update that appends the prompt.
+      // Compare ids instead of assuming all additions are at one end.
+      const previousIds = new Set(prev.map(message => message.uuid));
+      const addedHuman = next.findLast(message => isHumanTurn(message) && !previousIds.has(message.uuid));
+      if (addedHuman) {
+        submittedUserMessageIdRef.current = addedHuman.uuid;
         userMessagePendingRef.current = false;
-      } else {
-        userInputBaselineRef.current = next.length;
       }
     }
     rawSetMessages(next);
   }, []);
-  // Capture the baseline message count alongside the placeholder text so
-  // the render can hide it once displayedMessages grows past the baseline.
   const setUserInputOnProcessing = useCallback((input: string | undefined) => {
-    if (input !== undefined) {
-      userInputBaselineRef.current = messagesRef.current.length;
-      userMessagePendingRef.current = true;
-    } else {
-      userMessagePendingRef.current = false;
-    }
+    submittedUserMessageIdRef.current = undefined;
+    userMessagePendingRef.current = input !== undefined;
     setUserInputOnProcessingRaw(input);
   }, []);
   // Fullscreen: track the unseen-divider position. dividerIndex changes
@@ -3647,10 +3629,16 @@ export function REPL({
         // replayed as user-visible text.
         newMessages
           .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
-          .map(_ => getContentText(_.message.content as string | ContentBlockParam[]))
-          .filter(_ => _ !== null)
+          .map(m => ({
+            text: getContentText(m.message.content as string | ContentBlockParam[]),
+            uuid: m.uuid,
+          }))
+          .filter((m): m is { text: string; uuid: UUID } => m.text !== null)
           .forEach((msg, i) => {
-            enqueue({ value: msg, mode: 'prompt' });
+            // Keep the original uuid: a remote client rendered this send
+            // optimistically under it, and re-queueing with a fresh uuid made
+            // the terminal echo a second bubble on the phone.
+            enqueue({ value: msg.text, mode: 'prompt', uuid: msg.uuid });
             if (i === 0) {
               logEvent('tengu_concurrent_onquery_enqueued', {});
             }
@@ -4834,10 +4822,24 @@ export function REPL({
     ],
   );
 
+  // A queued prompt is dequeued before its turn runs. If that turn throws, the
+  // prompt is gone; silence looked like the message was never sent at all.
+  const onQueuedCommandError = useCallback(
+    (error: unknown) => {
+      addNotification({
+        key: 'queued-command-error',
+        text: `排队消息执行失败：${error instanceof Error ? error.message : String(error)}`,
+        priority: 'medium',
+      });
+    },
+    [addNotification],
+  );
+
   useQueueProcessor({
     executeQueuedInput,
     hasActiveLocalJsxUI: isShowingLocalJSXCommand,
     queryGuard,
+    onError: onQueuedCommandError,
   });
 
   // We'll use the global lastInteractionTime from state.ts
@@ -5789,18 +5791,61 @@ export function REPL({
     return transcriptReturn;
   }
 
-  // Show the placeholder until the real user message appears in
-  // displayedMessages. userInputOnProcessing stays set for the whole turn
-  // (cleared in resetLoadingState); this length check hides it once
-  // displayedMessages grows past the baseline captured at submit time.
-  // Covers both gaps: before setMessages is called (processUserInput), and
-  // while deferredMessages lags behind messages. Suppressed when viewing an
-  // agent — displayedMessages is a different array there, and onAgentSubmit
-  // doesn't use the placeholder anyway.
-  const placeholderText =
-    userInputOnProcessing && !viewedAgentTask && displayedMessages.length <= userInputBaselineRef.current
-      ? userInputOnProcessing
-      : undefined;
+  // The deferred view may be a capped tail, so use the actual message id to
+  // keep the placeholder only until that message reaches the visible view.
+  const placeholderText = shouldShowPromptPlaceholder(
+    userInputOnProcessing,
+    Boolean(viewedAgentTask),
+    submittedUserMessageIdRef.current,
+    displayedMessages,
+  )
+    ? userInputOnProcessing
+    : undefined;
+
+  // Render-dupe detector: a committed assistant text row was observed
+  // rendering twice for the duration of a turn (visual ghost), while the
+  // transcript always holds exactly one row and the pure display pipeline is
+  // provably single-copy. Log which layer holds the second copy — a live
+  // streaming preview surviving past the commit, a duplicated row inside
+  // displayedMessages, or the user-input placeholder — so the next live
+  // occurrence identifies the mechanism from the debug log alone.
+  const renderDupeSignature = (() => {
+    const tail = displayedMessages.slice(-4);
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const msg = tail[i];
+      if (!msg || msg.type !== 'assistant') continue;
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (typeof block !== 'object' || block.type !== 'text' || !block.text || block.text.length < 8) continue;
+        if (visibleStreamingText && visibleStreamingText.includes(block.text.slice(0, 24))) {
+          return `preview-alive-after-commit len=${block.text.length}`;
+        }
+        for (let j = i - 1; j >= 0; j--) {
+          const other = tail[j];
+          if (!other || other.type !== 'assistant') continue;
+          const otherContent = other.message?.content;
+          if (!Array.isArray(otherContent)) continue;
+          for (const otherBlock of otherContent) {
+            if (typeof otherBlock === 'object' && otherBlock.type === 'text' && otherBlock.text === block.text) {
+              return `duplicate-assistant-rows uuids=${msg.uuid?.slice(0, 8)},${other.uuid?.slice(0, 8)} len=${block.text.length}`;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  })();
+  const renderDupeLoggedAtRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!renderDupeSignature) return;
+    const now = Date.now();
+    if (now - renderDupeLoggedAtRef.current < 5000) return;
+    renderDupeLoggedAtRef.current = now;
+    logForDebugging(
+      `[render-dupe] ${renderDupeSignature} placeholder=${placeholderText ? 'visible' : 'none'} streamMode=${streamMode}`,
+    );
+  }, [renderDupeSignature, placeholderText, streamMode]);
 
   const toolPermissionOverlay =
     focusedInputDialog === 'tool-permission' ? (

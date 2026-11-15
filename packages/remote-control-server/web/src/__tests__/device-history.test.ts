@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  appendLiveEntry,
   mergeHistoryPage,
   mergeThreadEntries,
   transcriptToEntries,
@@ -135,6 +136,24 @@ describe('mergeThreadEntries', () => {
     expect(merged).toHaveLength(2)
   })
 
+  test('does not adopt another device’s same-text message with a different photo', () => {
+    const pending: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-local',
+      content: 'look',
+      pending: true,
+      images: [{ mimeType: 'image/png', data: 'first' }],
+    }
+    const other: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-other',
+      content: 'look',
+      images: [{ mimeType: 'image/png', data: 'second' }],
+    }
+    expect(mergeThreadEntries([pending], [other])).toHaveLength(2)
+    expect(mergeHistoryPage([pending], [other])).toHaveLength(2)
+  })
+
   test('adopts an un-echoed optimistic bubble after its pending flag was cleared', () => {
     // A missed echo plus a live assistant chunk clears `pending`, so the
     // resync replay must still recognize the bubble as ours and keep it in
@@ -229,6 +248,28 @@ describe('mergeThreadEntries', () => {
     ])
     expect(mergeThreadEntries(onScreen, replayed)).toHaveLength(2)
   })
+
+  test('identical long answers after different questions are both retained', () => {
+    const prose = 'The same legitimate long reply. '.repeat(4)
+    const first = transcriptToEntries([
+      message('u1', 'user', [{ type: 'text', text: 'first question' }]),
+      message('a1', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    const second = transcriptToEntries([
+      message('u2', 'user', [{ type: 'text', text: 'second question' }]),
+      message('a2', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    expect(
+      mergeThreadEntries(first, second).filter(
+        row => row.type === 'assistant_message',
+      ),
+    ).toHaveLength(2)
+    expect(
+      mergeHistoryPage(first, second, { pagePosition: 'newer' }).filter(
+        row => row.type === 'assistant_message',
+      ),
+    ).toHaveLength(2)
+  })
 })
 
 const entryId = (entry: ThreadEntry): string =>
@@ -266,6 +307,18 @@ describe('mergeHistoryPage', () => {
       'assistant-live',
     )
     expect(merged).toHaveLength(101)
+  })
+
+  test('keeps live-only entries between their shared history neighbours', () => {
+    const liveOnly: ThreadEntry = {
+      type: 'assistant_message',
+      id: 'assistant-live-between',
+      chunks: [{ type: 'message', text: 'streamed in between' }],
+    }
+    const onScreen = [page[0]!, liveOnly, page[2]!]
+    expect(
+      mergeHistoryPage(onScreen, [page[0]!, page[2]!]).map(entryId),
+    ).toEqual(onScreen.map(entryId))
   })
 
   test('adopts an optimistic pending user bubble', () => {
@@ -329,6 +382,217 @@ describe('mergeHistoryPage', () => {
       old,
       echoed,
       second,
+    ])
+  })
+
+  test('does not downgrade a completed tool card with a page row missing its result', () => {
+    const live: ThreadEntry[] = [
+      {
+        type: 'tool_call',
+        toolCall: {
+          id: 't1',
+          title: 'Bash',
+          status: 'complete',
+          rawInput: { command: 'ls' },
+          rawOutput: { output: 'file1' },
+        },
+      },
+    ]
+    const pageRows = transcriptToEntries([
+      message('a1', 'assistant', [
+        { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+      ]),
+    ])
+    const merged = mergeHistoryPage(live, pageRows)
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({
+      type: 'tool_call',
+      toolCall: { status: 'complete', rawOutput: { output: 'file1' } },
+    })
+  })
+
+  test('a mid-stream page snapshot does not truncate the streamed reply', () => {
+    const live: ThreadEntry[] = [
+      {
+        type: 'assistant_message',
+        id: 'assistant-a1',
+        chunks: [{ type: 'message', text: 'The full streamed answer.' }],
+      },
+    ]
+    const pageRows = transcriptToEntries([
+      message('a1', 'assistant', [{ type: 'text', text: 'The full' }]),
+    ])
+    const merged = mergeHistoryPage(live, pageRows)
+    const first = merged[0]
+    expect(first?.type === 'assistant_message' && first.chunks[0]?.text).toBe(
+      'The full streamed answer.',
+    )
+  })
+
+  test('a newest page with no shared id is appended after the older on-screen rows', () => {
+    const older = transcriptToEntries([
+      message('u1', 'user', [{ type: 'text', text: 'old question' }]),
+      message('a1', 'assistant', [{ type: 'text', text: 'old answer' }]),
+    ])
+    // Backgrounded app: >30 rows were produced, so the newest window shares
+    // no id with what is on screen.
+    const newest = transcriptToEntries([
+      message('u9', 'user', [{ type: 'text', text: 'new question' }]),
+      message('a9', 'assistant', [{ type: 'text', text: 'new answer' }]),
+    ])
+    expect(
+      mergeHistoryPage(older, newest, { pagePosition: 'newer' }).map(entryId),
+    ).toEqual([...older.map(entryId), ...newest.map(entryId)])
+  })
+
+  test('adopts an un-echoed optimistic bubble after pending was cleared', () => {
+    const onScreen: ThreadEntry[] = [
+      {
+        type: 'user_message',
+        id: 'user-client',
+        content: 'hello',
+        optimistic: true,
+      },
+      {
+        type: 'assistant_message',
+        id: 'assistant-live',
+        chunks: [{ type: 'message', text: 'answer' }],
+      },
+    ]
+    const pageRows = transcriptToEntries([
+      message('server-uuid', 'user', [{ type: 'text', text: 'hello' }]),
+      message('history-a1', 'assistant', [{ type: 'text', text: 'answer' }]),
+    ])
+    const merged = mergeHistoryPage(onScreen, pageRows, {
+      pagePosition: 'newer',
+    })
+    // One bubble (the echo adopted in place), one reply — not the replayed
+    // pair appended below the original.
+    expect(
+      merged.map(entry =>
+        entry.type === 'user_message' ? `user:${entry.content}` : entry.type,
+      ),
+    ).toEqual(['user:hello', 'assistant_message'])
+  })
+
+  test('an image-only queued bubble is not confirmed by another photo', () => {
+    const onScreen: ThreadEntry[] = [
+      {
+        type: 'user_message',
+        id: 'pending-1',
+        content: '',
+        images: [{ mimeType: 'image/png', data: 'MINE' }],
+        pending: true,
+      },
+    ]
+    const pageRows = transcriptToEntries([
+      message('other-device', 'user', [
+        { type: 'image', mimeType: 'image/png', data: 'OTHER' },
+      ]),
+    ])
+    const merged = mergeHistoryPage(onScreen, pageRows)
+    const queued = merged.find(
+      entry => entry.type === 'user_message' && entry.id === 'pending-1',
+    )
+    expect(queued).toMatchObject({ pending: true })
+    expect(
+      merged.some(
+        entry =>
+          entry.type === 'user_message' && entry.id === 'user-other-device',
+      ),
+    ).toBe(true)
+  })
+
+  test('a replayed assistant turn under a fresh uuid is not duplicated by a sync', () => {
+    const prose =
+      '实锤了：历史同步时同一段长文本在重新挂接后以新的 uuid 再次到达，必须合并成一条回复而不是在聊天记录里显示两遍，否则用户会以为自己问了两遍或者终端执行了两次。'
+    const onScreen = transcriptToEntries([
+      message('live-uuid', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    const pageRows = transcriptToEntries([
+      message('history-uuid', 'assistant', [{ type: 'text', text: prose }]),
+    ])
+    expect(
+      mergeHistoryPage(onScreen, pageRows, { pagePosition: 'newer' }),
+    ).toHaveLength(1)
+  })
+})
+
+describe('appendLiveEntry', () => {
+  test('keeps a queued prompt at the tail while the running turn replies', () => {
+    const queued: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-q',
+      content: 'queued',
+      pending: true,
+    }
+    const output: ThreadEntry = {
+      type: 'assistant_message',
+      id: 'assistant-a',
+      chunks: [{ type: 'message', text: 'working' }],
+    }
+    expect(appendLiveEntry([queued], output)).toEqual([output, queued])
+  })
+
+  test('appends normally when no prompt is queued', () => {
+    const reply: ThreadEntry = {
+      type: 'assistant_message',
+      id: 'assistant-a',
+      chunks: [{ type: 'message', text: 'hi' }],
+    }
+    const tool: ThreadEntry = {
+      type: 'tool_call',
+      toolCall: { id: 't1', title: 'Bash', status: 'running' },
+    }
+    expect(appendLiveEntry([reply], tool)).toEqual([reply, tool])
+  })
+})
+
+describe('echo confirmation', () => {
+  test('a same-id echo clears optimistic so it cannot claim another send', () => {
+    const optimistic: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-1',
+      clientId: 'user-1',
+      content: 'hello',
+      optimistic: true,
+      pending: true,
+    }
+    const echo: ThreadEntry = {
+      type: 'user_message',
+      id: 'user-1',
+      content: 'hello',
+    }
+    const [merged] = mergeThreadEntries([optimistic], [echo])
+    expect(merged).toEqual({ ...echo, clientId: 'user-1' })
+    expect(
+      merged && 'optimistic' in merged ? merged.optimistic : undefined,
+    ).toBeUndefined()
+  })
+
+  test('mergeHistoryPage adopts an unconfirmed bubble via adoptableIds', () => {
+    const onScreen: ThreadEntry[] = [
+      {
+        type: 'user_message',
+        id: 'user-local',
+        content: '继续',
+        clientId: 'user-local',
+      },
+    ]
+    const pageRows: ThreadEntry[] = [
+      { type: 'user_message', id: 'user-server', content: '继续' },
+    ]
+    const merged = mergeHistoryPage(onScreen, pageRows, {
+      pagePosition: 'newer',
+      adoptableIds: new Set(['user-local']),
+    })
+    expect(merged).toEqual([
+      {
+        type: 'user_message',
+        id: 'user-server',
+        content: '继续',
+        clientId: 'user-local',
+      },
     ])
   })
 })

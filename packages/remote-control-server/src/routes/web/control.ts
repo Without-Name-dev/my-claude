@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { debug, error as logError } from '../../logger'
 import { Hono } from 'hono'
 import { uuidAuth } from '../../auth/middleware'
+import { findMappingByBridgeId } from '../../device/state'
+import { saveWebUserMessage } from '../../device/conversation-store'
+import { deliverNow } from '../../device/operations'
+import type { UserContent } from '../../device/protocol'
 import {
   getSession,
   isSessionClosedStatus,
@@ -64,16 +69,104 @@ app.post('/sessions/:id/events', uuidAuth, async c => {
 
   const body = await c.req.json()
   const eventType = body.type || 'user'
+  // One identity from the start: the outbound event, the optimistic row below
+  // and the CLI's echo are deduped by uuid. A client that omits it (older
+  // builds) used to get two ids — the event's and a fresh randomUUID for the
+  // stored row — so the phone rendered the same send twice after a reload.
+  if (
+    eventType === 'user' &&
+    body.isSynthetic !== true &&
+    (typeof body.uuid !== 'string' || body.uuid === '')
+  ) {
+    body.uuid = randomUUID()
+  }
   // Everything published here (messages, slash commands, control frames) is
   // replayed to the bridge on its next attach — see handleWebSocketOpen — so
   // accepting while the transport is briefly down is queueing, not losing.
   debug(
     `[RC-DEBUG] web -> server: POST /web/sessions/${sessionId}/events type=${eventType}`,
   )
-  const event = publishSessionEvent(sessionId, eventType, body, 'outbound')
+  const mapping =
+    eventType === 'user' && body.isSynthetic !== true
+      ? findMappingByBridgeId(sessionId)
+      : undefined
+  let event
+  if (mapping) {
+    if (typeof body.content !== 'string' && !Array.isArray(body.content)) {
+      return c.json(
+        { error: { type: 'bad_request', message: '消息内容无效' } },
+        400,
+      )
+    }
+    try {
+      const delivered = await deliverNow(
+        sessionId,
+        mapping.deviceId,
+        mapping.localSessionId,
+        body.content as UserContent,
+        body.uuid,
+      )
+      event = delivered.event
+    } catch (error) {
+      logError(`[RC-DEBUG] durable web message failed:`, error)
+      return c.json(
+        {
+          error: { type: 'send_failed', message: '保存或发送消息失败，请重试' },
+        },
+        503,
+      )
+    }
+  } else {
+    event = publishSessionEvent(sessionId, eventType, body, 'outbound')
+  }
   debug(
-    `[RC-DEBUG] web -> server: published outbound event id=${event.id} type=${event.type} direction=${event.direction} subscribers=${getEventBus(sessionId).subscriberCount()}`,
+    `[RC-DEBUG] web -> server: outbound event id=${event?.id ?? 'existing'} type=${eventType} subscribers=${getEventBus(sessionId).subscriberCount()}`,
   )
+  // A live-chat user message only lives in the rolling in-memory event bus —
+  // a long streaming turn evicts it, so a reload mid-run made the sender's
+  // own bubble vanish. Persist it under the client uuid: reloads restore it
+  // from the conversation cache, and the CLI's transcript echo upserts the
+  // same primary key when the message is actually submitted (mid-turn
+  // consumption as a queued-command attachment never echoes, so this row is
+  // the only durable record).
+  if (eventType === 'user' && body.isSynthetic !== true) {
+    if (mapping) {
+      const uuid =
+        typeof body.uuid === 'string' && body.uuid ? body.uuid : randomUUID()
+      let text = ''
+      let images: Array<{ mimeType: string; data: string }> | undefined
+      const content = body.content
+      if (typeof content === 'string') {
+        text = content
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (!block || typeof block !== 'object') continue
+          const record = block as Record<string, unknown>
+          if (record.type === 'text' && typeof record.text === 'string') {
+            text += record.text
+          } else if (
+            record.type === 'image' &&
+            typeof (record.source as Record<string, unknown> | undefined)
+              ?.media_type === 'string' &&
+            typeof (record.source as Record<string, unknown>)?.data === 'string'
+          ) {
+            const source = record.source as { media_type: string; data: string }
+            images ??= []
+            images.push({ mimeType: source.media_type, data: source.data })
+          }
+        }
+      }
+      if (text.trim() || (images && images.length > 0)) {
+        saveWebUserMessage(
+          mapping.deviceId,
+          mapping.localSessionId,
+          uuid,
+          text,
+          images,
+        )
+      }
+    }
+  }
   return c.json({ status: 'ok', event }, 200)
 })
 

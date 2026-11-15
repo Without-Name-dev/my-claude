@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'bun:test'
+import { getEventBus, removeEventBus } from '../transport/event-bus'
 
 const { normalizePayload, publishSessionEvent } = await import(
   '../services/transport'
@@ -37,6 +38,42 @@ describe('outbound user message deduplication', () => {
       'outbound',
     )
     expect(retry.id).toBe(first.id)
+  })
+
+  test('keeps retry identity after other messages and assistant events', () => {
+    const session = `message-interleaved-${crypto.randomUUID()}`
+    const payload = { uuid: 'original', content: 'first' }
+    const first = publishSessionEvent(session, 'user', payload, 'outbound')
+    publishSessionEvent(
+      session,
+      'user',
+      { uuid: 'other', content: 'next' },
+      'outbound',
+    )
+    publishSessionEvent(session, 'assistant', { content: 'working' }, 'inbound')
+    const retry = publishSessionEvent(session, 'user', payload, 'outbound')
+    expect(retry.id).toBe(first.id)
+    expect(getEventBus(session).getEventsSince(0)).toHaveLength(3)
+  })
+
+  test('allows an outbox retry when its original event was evicted', () => {
+    const session = `message-evicted-${crypto.randomUUID()}`
+    const payload = { uuid: 'retry', content: 'queued' }
+    const first = publishSessionEvent(session, 'user', payload, 'outbound')
+    for (let i = 0; i < 5001; i++) {
+      publishSessionEvent(session, 'partial_assistant', {}, 'inbound')
+    }
+    const retry = publishSessionEvent(session, 'user', payload, 'outbound')
+    expect(retry.id).not.toBe(first.id)
+  })
+
+  test('does not carry retry state across bus generations', () => {
+    const session = `message-generation-${crypto.randomUUID()}`
+    const payload = { uuid: 'same', content: 'hello' }
+    const first = publishSessionEvent(session, 'user', payload, 'outbound')
+    removeEventBus(session)
+    const retry = publishSessionEvent(session, 'user', payload, 'outbound')
+    expect(retry.id).not.toBe(first.id)
   })
 })
 

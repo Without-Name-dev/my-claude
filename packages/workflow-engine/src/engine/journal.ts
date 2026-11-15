@@ -44,7 +44,10 @@ export function createFileJournalStore(runsDir: string): JournalStore {
       await appendFile(pathOf(runId), JSON.stringify(entry) + '\n', 'utf-8')
     },
     async truncate(runId) {
-      await rm(join(runsDir, runId), { recursive: true, force: true })
+      // Only the checkpoints: the run directory also holds script.js (needed
+      // to resume an inline run) and state.json (the previous attempt's
+      // result/history). Deleting the directory destroyed both.
+      await rm(pathOf(runId), { force: true })
     },
   }
 }

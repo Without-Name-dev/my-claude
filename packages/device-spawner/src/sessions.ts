@@ -348,7 +348,15 @@ function normalizeEntry(
   entry: Record<string, unknown>,
   index: number,
 ): TranscriptMessage | undefined {
-  if (entry.isSidechain === true || entry.isMeta === true) return undefined
+  // isVisibleInTranscriptOnly entries (compaction summaries) are isSynthetic
+  // in toSDKMessages: the terminal never shows them, so neither may the
+  // history the web reloads. Without this they arrived as multi-KB bubbles.
+  if (
+    entry.isSidechain === true ||
+    entry.isMeta === true ||
+    entry.isVisibleInTranscriptOnly === true
+  )
+    return undefined
   const message = entry.message
   if (!message || typeof message !== 'object' || Array.isArray(message)) {
     return undefined

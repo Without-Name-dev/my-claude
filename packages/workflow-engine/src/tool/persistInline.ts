@@ -10,7 +10,8 @@ import { WORKFLOW_RUNS_DIR } from '../constants.js'
  *
  * Mirrors engine/journal.ts: writes directly via node:fs/promises (no port) to
  * `<cwd>/<WORKFLOW_RUNS_DIR>/<runId>/script.js` — the same directory as
- * journal.jsonl, so journalStore.truncate(runId) cleans it up alongside the journal.
+ * journal.jsonl. journalStore.truncate(runId) only clears the journal, so the
+ * script (and state.json) survive a divergent resume.
  *
  * Fixed filename `script.js`: parseScript ignores the extension and the runId
  * already makes the directory unique, so a stable name aids muscle memory.

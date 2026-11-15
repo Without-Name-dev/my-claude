@@ -68,3 +68,6 @@ apps/ios-native/out/
 
 # local deploy tarballs
 packages/remote-control-server/web/cc-rcs-web-*.tgz
+
+# local audit scratch (probes, diffs) — not part of the product
+.probe*/

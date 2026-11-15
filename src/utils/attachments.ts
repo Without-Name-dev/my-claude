@@ -1124,7 +1124,15 @@ export async function getQueuedCommandAttachments(
   )
   return Promise.all(
     filtered.map(async _ => {
-      const imageBlocks = await buildImageContentBlocks(_.pastedContents)
+      // One corrupt photo must not reject the whole batch: the caller treats a
+      // rejected batch as "no attachment produced" and still removes every
+      // command, silently losing unrelated prompts. Degrade to text instead.
+      let imageBlocks: ImageBlockParam[] = []
+      try {
+        imageBlocks = await buildImageContentBlocks(_.pastedContents)
+      } catch (error) {
+        logError(error)
+      }
       let prompt: string | Array<ContentBlockParam> = _.value
       if (imageBlocks.length > 0) {
         // Build content block array with text + images so the model sees them
@@ -1177,20 +1185,27 @@ async function buildImageContentBlocks(
   }
   const results = await Promise.all(
     imageContents.map(async img => {
-      const imageBlock: ImageBlockParam = {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: (img.mediaType ||
-            'image/png') as Base64ImageSource['media_type'],
-          data: img.content,
-        },
+      try {
+        const imageBlock: ImageBlockParam = {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: (img.mediaType ||
+              'image/png') as Base64ImageSource['media_type'],
+            data: img.content,
+          },
+        }
+        const resized = await maybeResizeAndDownsampleImageBlock(imageBlock)
+        return resized.block
+      } catch (error) {
+        // Drop only the bad image; the prompt text (and its other photos)
+        // must still reach the model.
+        logError(error)
+        return null
       }
-      const resized = await maybeResizeAndDownsampleImageBlock(imageBlock)
-      return resized.block
     }),
   )
-  return results
+  return results.filter((block): block is ImageBlockParam => block !== null)
 }
 
 function getPlanModeAttachmentTurnCount(messages: Message[]): {

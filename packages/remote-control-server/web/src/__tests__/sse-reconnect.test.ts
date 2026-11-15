@@ -16,18 +16,21 @@ class FakeEventSource {
   close() {
     this.closed = true
   }
-  message(seqNum: number) {
+  message(seqNum: number, generation?: string) {
     this.listeners.get('message')?.({
       data: JSON.stringify({
         type: 'user',
         direction: 'inbound',
         payload: {},
         seqNum,
+        ...(generation ? { generation } : {}),
       }),
     })
   }
-  resync(seqNum: number) {
-    this.listeners.get('resync')?.({ data: JSON.stringify({ seqNum }) })
+  resync(seqNum: number, generation?: string) {
+    this.listeners.get('resync')?.({
+      data: JSON.stringify({ seqNum, ...(generation ? { generation } : {}) }),
+    })
   }
 }
 
@@ -122,6 +125,27 @@ describe('SSE reconnection', () => {
     source.message(1)
     unsubscribe()
     expect(received).toEqual([1, 2, 3, 1])
+    expect(resyncs).toBe(1)
+  })
+
+  test('accepts a restarted server bus instead of swallowing its events', () => {
+    const received: number[] = []
+    let resyncs = 0
+    const unsubscribe = sseBus.onEvent(event => received.push(event.seqNum!))
+    sseBus.connect('restart-test', undefined, undefined, () => {
+      resyncs += 1
+    })
+    const source = FakeEventSource.instances[0]!
+    source.onopen?.()
+    source.message(499, 'bus-a')
+    source.message(500, 'bus-a')
+    // The server restarted: numbering begins at 1 again while the stored
+    // cursor is still 500. Every new-epoch event below it must arrive.
+    source.message(1, 'bus-b')
+    source.message(2, 'bus-b')
+    unsubscribe()
+    expect(received).toEqual([499, 500, 1, 2])
+    // The view is told to reload history, once.
     expect(resyncs).toBe(1)
   })
 

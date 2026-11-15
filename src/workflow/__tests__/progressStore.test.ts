@@ -304,3 +304,40 @@ test('hydrate existing runId → skip (memory first, not overwritten by disk)', 
   expect(got.workflowName).toBe('live')
   expect(got.status).toBe('running')
 })
+
+// ---- terminal reconciliation & resume reset ----
+
+test('run_done settles agents still running (killed run never emits their agent_done)', () => {
+  const { bus, store } = newStore()
+  bus.emit({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null })
+  bus.emit({ type: 'agent_started', runId: 'r1', agentId: 1, label: 'a' })
+  bus.emit({ type: 'agent_started', runId: 'r1', agentId: 2, label: 'b' })
+  bus.emit({ type: 'run_done', runId: 'r1', status: 'killed' })
+  const run = store.get('r1')!
+  expect(run.agents.every(agent => agent.status === 'done')).toBe(true)
+  expect(run.agents.map(agent => agent.resultKind)).toEqual([
+    'aborted',
+    'aborted',
+  ])
+})
+
+test('run_started on a resumed run clears the previous attempt state', () => {
+  const { bus, store } = newStore()
+  bus.emit({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null })
+  bus.emit({ type: 'agent_started', runId: 'r1', agentId: 1, label: 'a' })
+  bus.emit({ type: 'phase_started', runId: 'r1', phase: 'Scan' })
+  bus.emit({
+    type: 'run_done',
+    runId: 'r1',
+    status: 'failed',
+    error: 'boom',
+  })
+  bus.emit({ type: 'run_started', runId: 'r1', workflowName: 'w', meta: null })
+  const run = store.get('r1')!
+  expect(run.status).toBe('running')
+  expect(run.agents).toEqual([])
+  expect(run.agentCount).toBe(0)
+  expect(run.phases).toEqual([])
+  expect(run.currentPhase).toBeNull()
+  expect(run.error).toBeUndefined()
+})

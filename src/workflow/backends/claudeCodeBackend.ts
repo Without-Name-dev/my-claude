@@ -331,7 +331,9 @@ export const claudeCodeBackend: AgentAdapter = {
       // otherwise hooks.agent will swallow the abort as an ordinary failure into dead, and the workflow won't know it was killed
       // (the other side of the 'x' kill path being ineffective: the signal did arrive, but the result was disguised as a normal completion).
       if (agentAbort.signal.aborted || (e as Error)?.name === 'AbortError') {
-        throw new WorkflowAbortedError()
+        // Only this agent's controller fired → single-agent kill. The run
+        // signal is still live, so the engine must not unwind the script.
+        throw new WorkflowAbortedError(ctx.signal.aborted ? 'run' : 'agent')
       }
       const detail = (e as Error).message
       logForDebugging(

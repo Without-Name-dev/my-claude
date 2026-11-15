@@ -12,7 +12,7 @@ export interface SSEWriter {
 
 /** Keep large image blocks once in the web event rather than in both the
  * normalized message and its raw copy. Other raw metadata is retained. */
-function webEventPayload(event: SessionEvent): unknown {
+export function webEventPayload(event: SessionEvent): unknown {
   if (
     event.type !== 'user' ||
     !event.payload ||
@@ -92,9 +92,16 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
       // replayed in full (evicted buffer, restarted bus) say so explicitly:
       // silently streaming the surviving tail leaves a hole in the transcript
       // that no later event can fill.
+      // Every frame carries the bus generation: the client can only tell a
+      // restarted bus apart from a normal reconnect by that id, because the
+      // numbering restarts at 1 and a stale cursor looks like a future one
+      // until the fresh bus catches up.
       if (fromSeqNum > 0) {
         if (bus.hasGapFrom(fromSeqNum)) {
-          const data = JSON.stringify({ seqNum: bus.getLastSeqNum() })
+          const data = JSON.stringify({
+            seqNum: bus.getLastSeqNum(),
+            generation: bus.generation,
+          })
           controller.enqueue(encoder.encode(`event: resync\ndata: ${data}\n\n`))
         } else {
           const missed = bus.getEventsSince(fromSeqNum)
@@ -104,6 +111,7 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
               payload: webEventPayload(event),
               direction: event.direction,
               seqNum: event.seqNum,
+              generation: bus.generation,
             })
             controller.enqueue(
               encoder.encode(
@@ -146,6 +154,7 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
           payload: webEventPayload(event),
           direction: event.direction,
           seqNum: event.seqNum,
+          generation: bus.generation,
         })
         try {
           debug(
@@ -161,8 +170,20 @@ export function createSSEStream(c: Context, sessionId: string, fromSeqNum = 0) {
         }
       })
 
-      // Keepalive interval
+      // Keepalive interval. A closed bus (session archived) clears its
+      // subscribers without telling them, so this tick is also where an
+      // orphaned stream notices and ends instead of pinging forever.
       const keepalive = setInterval(() => {
+        if (bus.isClosed()) {
+          clearInterval(keepalive)
+          unsub()
+          try {
+            controller.close()
+          } catch {
+            // already closed
+          }
+          return
+        }
         try {
           controller.enqueue(encoder.encode(': keepalive\n\n'))
         } catch {

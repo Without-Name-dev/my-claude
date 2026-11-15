@@ -86,6 +86,22 @@ export function parseTaskSnapshot(
   })
 }
 
+/** Terminal prompts queued while a turn runs, mirrored by the CLI. */
+export type TerminalQueueSnapshot = {
+  count: number
+  previews: string[]
+}
+
+export function parseTerminalQueueSnapshot(
+  payload: unknown,
+): TerminalQueueSnapshot | undefined {
+  const root = payloadRecord(payload)
+  if (!root || typeof root.count !== 'number') return undefined
+  if (!Array.isArray(root.previews)) return undefined
+  const previews = strings(root.previews)
+  return { count: Math.max(0, Math.floor(root.count)), previews }
+}
+
 export function parseWorkflowSnapshot(
   payload: unknown,
 ): WorkflowRun[] | undefined {

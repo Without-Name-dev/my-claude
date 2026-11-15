@@ -522,6 +522,24 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         (appState.toolPermissionContext.mode === 'plan' &&
           (autoModeStateModule?.isAutoModeActive() ?? false)))
     ) {
+      // A user-configured ask rule is authoritative, including in auto mode.
+      // Never let the classifier or acceptEdits fast path override it.
+      if (
+        result.decisionReason?.type === 'rule' &&
+        result.decisionReason.rule.ruleBehavior === 'ask'
+      ) {
+        if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+          return {
+            behavior: 'deny',
+            message: result.message,
+            decisionReason: {
+              type: 'asyncAgent',
+              reason: 'An explicit ask rule requires interactive approval',
+            },
+          }
+        }
+        return result
+      }
       // Non-classifier-approvable safetyCheck decisions stay immune to ALL
       // auto-approve paths: the acceptEdits fast-path, the safe-tool allowlist,
       // and the classifier. Step 1g only guards bypassPermissions; this guards

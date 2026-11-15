@@ -627,3 +627,28 @@ test('getRunAsync memory miss + disk miss → undefined', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('resume of an inline run reads its persisted script instead of failing name lookup', async () => {
+  __resetWorkflowServiceForTests()
+  const runsDir = await mkdtemp(join(tmpdir(), 'wf-svc-runs-'))
+  try {
+    // The panel passes the run's display title as `name`, and an inline run has
+    // no named workflow file — resume must fall back to <runsDir>/<id>/script.js.
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(join(runsDir, 'hist-1'), { recursive: true })
+    await writeFile(join(runsDir, 'hist-1', 'script.js'), `return 'resumed'`)
+    const { ports, store } = fakePorts()
+    const svc = makeService(ports, store, runsDir, () => runsDir)
+    const { runId } = await svc.launch(
+      { resumeFromRunId: 'hist-1', name: 'Repo Health Audit' },
+      stubTUC,
+      stubCanUseTool,
+    )
+    // The fake registrar assigns its own id; the point is that source
+    // resolution succeeded instead of throwing "Named workflow not found".
+    await settle()
+    expect(svc.getRun(runId)?.workflowName).toBe('Repo Health Audit')
+  } finally {
+    await rm(runsDir, { recursive: true, force: true })
+  }
+})

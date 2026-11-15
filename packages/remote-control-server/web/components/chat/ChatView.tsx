@@ -10,6 +10,7 @@ import type {
 } from '../../src/lib/types';
 import { cn, stripAnsi } from '../../src/lib/utils';
 import { UserBubble, AssistantTurn } from './MessageBubble';
+import { isUnconfirmedUserEntry } from '../../src/lib/device-history';
 import { PlanDisplay } from './PlanView';
 import { Conversation, ConversationContent, ConversationScrollButtons } from '../ai-elements/conversation';
 
@@ -77,11 +78,25 @@ export function ChatView({
     void import('streamdown').catch(() => {});
   }, []);
   const visibleItems = revealAll ? items : items.slice(-6);
-  const lastItemKey = items.length > 0 ? items[items.length - 1]!.key : '';
+  // A prompt queued behind the running turn sits at the tail, so "the last
+  // item" is that bubble rather than the answer still being produced. Key
+  // streaming off the last turn item, ignoring trailing unconfirmed prompts.
+  let lastTurnKey = '';
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind === 'turn') {
+      lastTurnKey = items[index]!.key;
+      break;
+    }
+  }
 
   // Dots only mean "sent, nothing back yet". Once a turn has started, the
-  // thinking shimmer / running tool / streaming prose already say it.
-  const showThinking = isLoading && entries.length > 0 && entries[entries.length - 1]?.type === 'user_message';
+  // thinking shimmer / running tool / streaming prose already say it. Trailing
+  // unconfirmed prompts do not count as "something back".
+  let lastContentIndex = entries.length - 1;
+  while (lastContentIndex >= 0 && isUnconfirmedUserEntry(entries[lastContentIndex]!)) {
+    lastContentIndex -= 1;
+  }
+  const showThinking = isLoading && lastContentIndex >= 0 && entries[lastContentIndex]?.type === 'user_message';
 
   // Pull down at the top of the transcript to fetch the previous page.
   const { containerRef, pull, hint } = usePullToLoadOlder({
@@ -155,7 +170,7 @@ export function ChatView({
                     <div key={item.key} className={cn('pt-1 pb-2', animate && 'rcs-enter')}>
                       <AssistantTurn
                         entries={item.entries}
-                        isStreaming={isLoading && item.key === lastItemKey}
+                        isStreaming={isLoading && item.key === lastTurnKey}
                         onPermissionRespond={onPermissionRespond}
                       />
                     </div>
@@ -242,7 +257,7 @@ function buildChatItems(entries: ThreadEntry[]): ChatItem[] {
 
 /** Stable key shared by the React list and the entrance-animation ledger. */
 function itemKey(entry: ThreadEntry): string {
-  if (entry.type === 'user_message') return `user-${entry.id}`;
+  if (entry.type === 'user_message') return `user-${entry.clientId ?? entry.id}`;
   if (entry.type === 'assistant_message') return `assistant-${entry.id}`;
   if (entry.type === 'tool_call') return `tool-${entry.toolCall.id}`;
   if (entry.type === 'command_output') return `output-${entry.id}`;

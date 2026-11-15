@@ -135,6 +135,62 @@ describe('processQueueIfReady', () => {
     expect(hasQueuedCommands()).toBe(true)
   })
 
+  test('returns the execution promise so a failed turn is observable', async () => {
+    enqueue({ value: 'hello', mode: 'prompt' } as any)
+    const result = processQueueIfReady({
+      executeInput: async () => {
+        throw new Error('boom')
+      },
+    })
+    expect(result.processed).toBe(true)
+    await expect(result.execution).rejects.toThrow('boom')
+  })
+
+  test('a later prompt never overtakes an intervening slash command', () => {
+    const executed: string[][] = []
+    enqueue({ value: 'first prompt', mode: 'prompt' } as any)
+    enqueue({ value: '/help', mode: 'prompt' } as any)
+    enqueue({ value: 'second prompt', mode: 'prompt' } as any)
+
+    const run = () =>
+      processQueueIfReady({
+        executeInput: async cmds => {
+          executed.push(cmds.map(c => c.value as string))
+        },
+      })
+
+    expect(run().processed).toBe(true)
+    // The batch stops at the slash command; it does not reach past it.
+    expect(executed[0]).toEqual(['first prompt'])
+
+    expect(run().processed).toBe(true)
+    expect(executed[1]).toEqual(['/help'])
+
+    expect(run().processed).toBe(true)
+    expect(executed[2]).toEqual(['second prompt'])
+  })
+
+  test('a non-string, non-array value does not wedge the drain', () => {
+    const executed: string[][] = []
+    // A bridge client can deliver a stray object as content. Iterating it
+    // used to throw before the dequeue, stalling every later message.
+    enqueue({ value: { text: 'oops' }, mode: 'prompt' } as any)
+    enqueue({ value: 'after', mode: 'prompt' } as any)
+
+    expect(() =>
+      processQueueIfReady({
+        executeInput: async cmds => {
+          executed.push(
+            cmds.map(c =>
+              String((c.value as { text?: string }).text ?? c.value),
+            ),
+          )
+        },
+      }),
+    ).not.toThrow()
+    expect(executed[0]).toEqual(['oops', 'after'])
+  })
+
   test('processes main-thread command but skips subagent command', () => {
     const executed: string[][] = []
     enqueuePendingNotification({

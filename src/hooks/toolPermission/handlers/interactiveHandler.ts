@@ -576,6 +576,19 @@ function handleInteractivePermission(
       channelSignal.addEventListener('abort', channelUnsubscribe, {
         once: true,
       })
+
+      // An interrupt aborts the prompt locally. Without telling the bridge,
+      // its can_use_tool card stayed on the phone and re-raised on reload.
+      if (bridgeCallbacks && bridgeRequestId) {
+        channelSignal.addEventListener(
+          'abort',
+          () => {
+            if (isResolved()) return
+            bridgeCallbacks?.cancelRequest(bridgeRequestId)
+          },
+          { once: true },
+        )
+      }
     }
   }
 

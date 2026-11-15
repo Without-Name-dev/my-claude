@@ -245,6 +245,26 @@ describe('messageQueueManager.isQueuedCommandVisible', () => {
   })
 })
 
+describe('messageQueueManager.isQueuedCommandEditable', () => {
+  test('a queued remote prompt cannot be pulled into the terminal input', async () => {
+    const { isQueuedCommandEditable } = await import(
+      '../messageQueueManager.js'
+    )
+    // UP/ESC pops editable commands out of the queue. A remote prompt belongs
+    // to the sending client; popping it here would strand the phone.
+    expect(
+      isQueuedCommandEditable({
+        value: '你好',
+        mode: 'prompt',
+        bridgeOrigin: true,
+      } as any),
+    ).toBe(false)
+    expect(
+      isQueuedCommandEditable({ value: 'typed', mode: 'prompt' } as any),
+    ).toBe(true)
+  })
+})
+
 describe('messageQueueManager.getBridgeQueuedNotices', () => {
   test('shows a dynamic status line for queued remote prompts only', async () => {
     const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')

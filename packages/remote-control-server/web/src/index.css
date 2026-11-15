@@ -199,7 +199,9 @@
 
 /* A landscape phone is wide enough to cross the desktop breakpoint but too
    short for a permanent sidebar. Keep the single-panel phone navigation. */
-@media (hover: none) and (pointer: coarse) and (max-width: 1000px) and (max-height: 500px) {
+@media (hover: none) and (pointer: coarse) and (max-width: 1000px) and (
+    max-height: 500px
+  ) {
   .workspace-sidebar[data-chat-open="true"] {
     display: none;
   }

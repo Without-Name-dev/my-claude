@@ -15,17 +15,26 @@ function entryKey(entry: ThreadEntry): string {
   return `${entry.type}:${entry.id}`
 }
 
-/** Text-less (image-only) echoes may only adopt a bubble with the same photos. */
+/** Do not adopt another client's message when the available photos differ. */
 function sameMessageAttachments(
   a: UserMessageEntry,
   b: UserMessageEntry,
 ): boolean {
-  if (a.content !== '' || b.content !== '') return true
   const aImages = a.images ?? []
   const bImages = b.images ?? []
+  // Some older transcript readers return text without attachments. Preserve
+  // that fallback only for a text-bearing message; image-only sends need
+  // matching photos to establish identity.
+  if ((aImages.length === 0 || bImages.length === 0) && a.content !== '') {
+    return true
+  }
   return (
     aImages.length === bImages.length &&
-    aImages.every((image, index) => image.data === bImages[index]?.data)
+    aImages.every(
+      (image, index) =>
+        image.data === bImages[index]?.data &&
+        image.mimeType === bImages[index]?.mimeType,
+    )
   )
 }
 
@@ -47,9 +56,9 @@ export function assistantProse(entry: ThreadEntry): string {
  * A bridge reattach (server restart, terminal resume) can replay transcript
  * entries under fresh uuids. Id-based dedupe then misses them and an entire
  * old turn appears again at the bottom of the transcript. For long messages
- * the prose itself is a reliable identity, so fall back to an exact-text
- * match. Short replies ("ok") stay id-only: identical short texts do occur
- * legitimately and must keep both bubbles.
+ * exact-text matching is only a fallback within the current turn. A user
+ * message is a hard boundary: the same answer can legitimately recur after
+ * another question, regardless of how long it is.
  */
 const REPLAY_TEXT_FALLBACK_MIN = 60
 
@@ -61,10 +70,64 @@ export function findAssistantReplayTwin(
   if (prose.length < REPLAY_TEXT_FALLBACK_MIN) return -1
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]
+    if (entry?.type === 'user_message') break
     if (entry?.type !== 'assistant_message') continue
     if (assistantProse(entry) === prose) return index
   }
   return -1
+}
+
+/**
+ * Resolve a row that exists on both sides under the same stable id. History
+ * may know more than the streamed snapshot (the tool_result that completed a
+ * card, the rest of a reply) but it may also know less (a page cached before
+ * the result landed, a snapshot taken mid-stream). Always keep the richer
+ * copy so neither direction can downgrade what the person already sees.
+ */
+function preferRicherEntry(
+  current: ThreadEntry,
+  incoming: ThreadEntry,
+): ThreadEntry {
+  if (incoming.type === 'user_message' && current.type === 'user_message') {
+    // A same-id non-optimistic copy is the terminal's confirmation of this
+    // bubble. Swapping the whole entry (not just clearing `pending`) also
+    // drops `optimistic`, so a confirmed bubble can never later claim another
+    // identical send's echo, and keeps the stable render identity.
+    if ((current.pending || current.optimistic) && !incoming.pending) {
+      // `incoming` carries neither flag, so dropping the live copy's flags
+      // here is what confirms the bubble and frees it from later adoption.
+      return {
+        ...incoming,
+        ...(current.clientId ? { clientId: current.clientId } : {}),
+        images: current.images ?? incoming.images,
+      }
+    }
+    return current
+  }
+  if (incoming.type === 'tool_call' && current.type === 'tool_call') {
+    const next = incoming.toolCall
+    const prev = current.toolCall
+    const upgrade =
+      (next.status !== 'running' &&
+        next.status !== 'unknown' &&
+        (prev.status === 'running' || prev.status === 'unknown')) ||
+      (next.rawOutput !== undefined && prev.rawOutput === undefined)
+    return upgrade
+      ? { type: 'tool_call', toolCall: { ...prev, ...next } }
+      : current
+  }
+  if (
+    incoming.type === 'assistant_message' &&
+    current.type === 'assistant_message'
+  ) {
+    const textLength = (chunks: AssistantChunk[]) =>
+      chunks.map(chunk => chunk.text).join('').length
+    return incoming.chunks.length > current.chunks.length ||
+      textLength(incoming.chunks) > textLength(current.chunks)
+      ? incoming
+      : current
+  }
+  return current
 }
 
 /**
@@ -108,6 +171,7 @@ export function mergeThreadEntries(
         existing =>
           existing.type === 'user_message' &&
           (existing.pending === true ||
+            existing.optimistic === true ||
             existing.id.startsWith('pending-') ||
             adoptableIds?.has(existing.id) === true) &&
           existing.content === entry.content &&
@@ -118,8 +182,14 @@ export function mergeThreadEntries(
         // the photos the browser sent with it.
         const optimistic = merged[pendingIndex] as UserMessageEntry
         merged[pendingIndex] =
-          optimistic.images && entry.type === 'user_message'
-            ? { ...entry, images: optimistic.images }
+          entry.type === 'user_message'
+            ? {
+                ...entry,
+                ...(optimistic.clientId
+                  ? { clientId: optimistic.clientId }
+                  : {}),
+                ...(optimistic.images ? { images: optimistic.images } : {}),
+              }
             : entry
         indexByKey.set(entryKey(entry), pendingIndex)
         adoptableIds?.delete(optimistic.id)
@@ -128,43 +198,13 @@ export function mergeThreadEntries(
     }
     if (existingIndex !== undefined) {
       const existing = merged[existingIndex]
-      // Same id: history may know more than the streamed snapshot. Upgrade a
-      // running tool card to its completed result instead of keeping it stuck.
-      if (entry.type === 'user_message' && existing?.type === 'user_message') {
-        if (existing.pending && !entry.pending) {
-          merged[existingIndex] = {
-            ...entry,
-            images: existing.images ?? entry.images,
-          }
-        }
-      } else if (entry.type === 'tool_call' && existing?.type === 'tool_call') {
-        const incoming = entry.toolCall
-        const current = existing.toolCall
-        if (
-          (incoming.status !== 'running' &&
-            incoming.status !== 'unknown' &&
-            (current.status === 'running' || current.status === 'unknown')) ||
-          (incoming.rawOutput !== undefined && current.rawOutput === undefined)
-        ) {
-          merged[existingIndex] = {
-            type: 'tool_call',
-            toolCall: { ...current, ...incoming },
-          }
-        }
-      } else if (
-        entry.type === 'assistant_message' &&
-        existing?.type === 'assistant_message'
-      ) {
-        // History may know more than the streamed snapshot. A resync after an
-        // SSE gap can deliver the full text in the SAME chunk count (the live
-        // entry already had one message chunk), so compare content length
-        // too, not just chunk count — otherwise a truncated reply sticks.
-        const chunkText = (chunks: AssistantChunk[]) =>
-          chunks.map(chunk => chunk.text).join('')
-        const longer =
-          entry.chunks.length > existing.chunks.length ||
-          chunkText(entry.chunks).length > chunkText(existing.chunks).length
-        if (longer) merged[existingIndex] = entry
+      // Same id: never downgrade what is already on screen (a running tool
+      // card must keep its completed result, a streamed reply must keep its
+      // full text). A resync after an SSE gap can deliver the full text in
+      // the SAME chunk count, so content length is compared too.
+      if (existing) {
+        const preferred = preferRicherEntry(existing, entry)
+        if (preferred !== existing) merged[existingIndex] = preferred
       }
       continue
     }
@@ -174,6 +214,34 @@ export function mergeThreadEntries(
   return merged
 }
 
+/** A bubble sent locally whose echo has not arrived yet. */
+export function isUnconfirmedUserEntry(entry: ThreadEntry): boolean {
+  return (
+    entry.type === 'user_message' &&
+    (entry.pending === true ||
+      entry.optimistic === true ||
+      entry.id.startsWith('pending-'))
+  )
+}
+
+/**
+ * Append a live transcript entry (assistant chunk, tool card) after the
+ * conversation but before any trailing unconfirmed prompt bubbles. A prompt
+ * sent mid-turn sits in the terminal's queue until the turn drains it; the
+ * reply to the *current* turn still belongs above it. Blindly appending put
+ * the assistant's output below the queued bubble, permanently disagreeing
+ * with the terminal and every other client.
+ */
+export function appendLiveEntry(
+  entries: ThreadEntry[],
+  entry: ThreadEntry,
+): ThreadEntry[] {
+  let index = entries.length
+  while (index > 0 && isUnconfirmedUserEntry(entries[index - 1]!)) index -= 1
+  if (index === entries.length) return [...entries, entry]
+  return [...entries.slice(0, index), entry, ...entries.slice(index)]
+}
+
 /**
  * Merge a contiguous oldest-first transcript page into the on-screen list
  * without reordering either side. Rows older than the first shared anchor are
@@ -181,9 +249,27 @@ export function mergeThreadEntries(
  * at the end. `mergeThreadEntries` is insertion-only and must not be used for
  * this direction (it appends older history after newer messages).
  */
+export interface MergeHistoryPageOptions {
+  /**
+   * Ids of optimistic bubbles this client created that were not echoed yet
+   * (survives `clearStalePending`, unlike `pending`). The caller must pass a
+   * fresh snapshot per invocation: a React state updater may run twice.
+   */
+  adoptableIds?: Set<string>
+  /**
+   * Where the page sits when the two sides share no id at all. `older` is the
+   * historical assumption: an on-demand backfill racing a live tail, where
+   * the page is the past and the on-screen rows are the newest events.
+   * `newer` is what a *newest-window* sync must pass: on-screen rows the page
+   * does not contain have simply aged out of the window and belong above it.
+   */
+  pagePosition?: 'older' | 'newer'
+}
+
 export function mergeHistoryPage(
   onScreen: ThreadEntry[],
   page: ThreadEntry[],
+  options?: MergeHistoryPageOptions,
 ): ThreadEntry[] {
   if (page.length === 0) return onScreen
   const pageKeys = new Set(page.map(entryKey))
@@ -203,11 +289,22 @@ export function mergeHistoryPage(
   // key), so the optimistic photos must ride on THAT copy or they vanish.
   const enhancedPage = new Map<number, ThreadEntry>()
   const onScreenKeys = new Set(onScreen.map(entryKey))
+  // Shared ids are resolved to the richer copy, never the page copy alone:
+  // the cache can be missing a tool result or a mid-stream snapshot can be
+  // shorter than what already streamed.
+  const liveByKey = new Map(onScreen.map(entry => [entryKey(entry), entry]))
+  // Page rows that are the reply to an adopted echo under the history uuid:
+  // the live copy already renders it, so emitting both shows the answer twice.
+  const skipPageRows = new Set<number>()
   const base: ThreadEntry[] = []
-  for (const entry of onScreen) {
+  for (let screenIndex = 0; screenIndex < onScreen.length; screenIndex += 1) {
+    const entry = onScreen[screenIndex]!
     if (
       entry.type !== 'user_message' ||
-      !(entry.pending === true || entry.id.startsWith('pending-'))
+      !(
+        isUnconfirmedUserEntry(entry) ||
+        options?.adoptableIds?.has(entry.id) === true
+      )
     ) {
       base.push(entry)
       continue
@@ -219,17 +316,31 @@ export function mergeHistoryPage(
       base.push(entry)
       continue
     }
-    // Adopt the NEWEST unclaimed row with this text that is not already on
-    // screen under another id; otherwise the merge below would dedupe one of
-    // the two copies away.
+    // Adopts the echo at `pageIndex`. The turn it started may already be on
+    // screen under a different uuid (resync after a replay); that reply row
+    // is then the same answer, not a second one.
+    const adoptReplyTwin = (pageIndex: number): void => {
+      const pageReply = page[pageIndex + 1]
+      const liveReply = onScreen[screenIndex + 1]
+      const prose = pageReply ? assistantProse(pageReply) : ''
+      if (prose !== '' && liveReply && prose === assistantProse(liveReply)) {
+        skipPageRows.add(pageIndex + 1)
+      }
+    }
     const exactIndex = page.findIndex(row => entryKey(row) === entryKey(entry))
     if (exactIndex >= 0) {
       const echo = page[exactIndex]
-      if (echo?.type === 'user_message' && entry.images) {
-        enhancedPage.set(exactIndex, { ...echo, images: entry.images })
+      if (echo?.type === 'user_message') {
+        enhancedPage.set(exactIndex, {
+          ...echo,
+          ...(entry.clientId ? { clientId: entry.clientId } : {}),
+          ...(entry.images ? { images: entry.images } : {}),
+        })
       }
       if (echo) base.push(echo)
       usedEcho.add(exactIndex)
+      options?.adoptableIds?.delete(entry.id)
+      adoptReplyTwin(exactIndex)
       continue
     }
     let echoIndex = -1
@@ -239,6 +350,9 @@ export function mergeHistoryPage(
         !usedEcho.has(i) &&
         candidate?.type === 'user_message' &&
         candidate.content === entry.content &&
+        // Carries no text at all ("", photo only): another device's photo
+        // must not be claimed as this send's echo.
+        sameMessageAttachments(entry, candidate) &&
         !onScreenKeys.has(entryKey(candidate))
       ) {
         echoIndex = i
@@ -248,12 +362,19 @@ export function mergeHistoryPage(
     if (echoIndex >= 0) {
       usedEcho.add(echoIndex)
       const echo = page[echoIndex]
-      // Keep the optimistic attachments: history carries the text but not the
-      // photos the browser sent with it — same rule as mergeThreadEntries.
-      if (echo && echo.type === 'user_message' && entry.images) {
-        enhancedPage.set(echoIndex, { ...echo, images: entry.images })
+      // Keep the optimistic attachments and render identity: history carries
+      // the text but not the photos the browser sent with it — same rule as
+      // mergeThreadEntries.
+      if (echo && echo.type === 'user_message') {
+        enhancedPage.set(echoIndex, {
+          ...echo,
+          ...(entry.clientId ? { clientId: entry.clientId } : {}),
+          ...(entry.images ? { images: entry.images } : {}),
+        })
       }
+      options?.adoptableIds?.delete(entry.id)
       if (echo) base.push(echo)
+      adoptReplyTwin(echoIndex)
     }
     // An older row with the same text is not evidence that this queued
     // message was delivered. Keep it until a distinct echo appears.
@@ -261,11 +382,41 @@ export function mergeHistoryPage(
   }
   if (base.length === 0) return page
 
-  const pageRows = page.map((row, index) => enhancedPage.get(index) ?? row)
+  const pageHasUserTurns = page.some(entry => entry.type === 'user_message')
+  const pageRows = page
+    .map((row, index) =>
+      skipPageRows.has(index) ? null : (enhancedPage.get(index) ?? row),
+    )
+    .filter((row): row is ThreadEntry => row !== null)
+    .map(row => {
+      const live = liveByKey.get(entryKey(row))
+      return live ? preferRicherEntry(live, row) : row
+    })
+    // A page row under a fresh uuid for a long reply already on screen is the
+    // same turn replayed (server restart / terminal resume), not a new one.
+    .filter(row => {
+      if (row.type !== 'assistant_message' || liveByKey.has(entryKey(row))) {
+        return true
+      }
+      // When a page includes user turns, identical prose can belong to a
+      // different question. Only the anchored adoption above can prove that
+      // such a reply is the same turn.
+      if (pageHasUserTurns) return true
+      return findAssistantReplayTwin(base, row) < 0
+    })
   const anchor = base.findIndex(entry => pageKeys.has(entryKey(entry)))
   if (anchor < 0) {
-    // Disjoint: assume the on-screen rows are a newer live tail (they are
-    // written to the store before broadcast, so a real overlap would exist).
+    if (options?.pagePosition === 'newer') {
+      // The page is the newest window: on-screen rows it no longer contains
+      // have aged out and stay above it. Prepending the page here moved the
+      // older conversation below the newest messages.
+      const liveKeys = new Set(base.map(entryKey))
+      return [
+        ...base,
+        ...pageRows.filter(entry => !liveKeys.has(entryKey(entry))),
+      ]
+    }
+    // Disjoint backfill: the on-screen rows are the newer tail.
     return [
       ...pageRows.filter(
         entry => !onScreen.some(e => entryKey(e) === entryKey(entry)),
@@ -273,11 +424,30 @@ export function mergeHistoryPage(
       ...base,
     ]
   }
+  // Keep live-only entries between their surrounding shared rows. Moving all
+  // of them to the tail puts a streamed message after a later history row.
+  const beforeAnchor = new Map<string, ThreadEntry[]>()
   const olderOnly = base.slice(0, anchor)
-  const newerOnly = base
-    .slice(anchor)
-    .filter(entry => !pageKeys.has(entryKey(entry)))
-  return [...olderOnly, ...pageRows, ...newerOnly]
+  let between: ThreadEntry[] = []
+  for (const entry of base.slice(anchor)) {
+    const key = entryKey(entry)
+    if (pageKeys.has(key)) {
+      if (between.length > 0) {
+        beforeAnchor.set(key, [...(beforeAnchor.get(key) ?? []), ...between])
+        between = []
+      }
+    } else {
+      between.push(entry)
+    }
+  }
+  return [
+    ...olderOnly,
+    ...pageRows.flatMap(row => [
+      ...(beforeAnchor.get(entryKey(row)) ?? []),
+      row,
+    ]),
+    ...between,
+  ]
 }
 
 export function transcriptToEntries(

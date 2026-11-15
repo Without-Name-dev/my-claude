@@ -16,7 +16,9 @@ import {
   failWorkflowTask,
   killWorkflowTask,
   registerLocalWorkflowTask,
+  type LocalWorkflowTaskState,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { updateTaskState } from '../utils/task/framework.js'
 import {
   buildHostBundle,
   makeHostHandle,
@@ -89,8 +91,30 @@ export function createWorkflowPorts(opts: {
     }
   })
 
+  // The task row renders "N agents" while running; mirror the live count from
+  // the progress store (nothing else ever assigned agentCount, so the row
+  // showed "undefined agents").
+  opts.bus.subscribe(e => {
+    if (e.type !== 'agent_started' && e.type !== 'agent_done') return
+    const binding = bindings.get(e.runId)
+    if (!binding) return
+    const count = opts.store.get(e.runId)?.agents.length
+    if (count === undefined) return
+    updateTaskState<LocalWorkflowTaskState>(
+      binding.taskId,
+      binding.setAppState,
+      task =>
+        task.agentCount === count ? task : { ...task, agentCount: count },
+    )
+  })
+
   const taskRegistrar: WorkflowPorts['taskRegistrar'] = {
     register(regOpts, host) {
+      // Resuming a run that is still in flight would register a second live
+      // execution under the same runId and silently orphan the first one.
+      if (regOpts.runId && bindings.has(regOpts.runId)) {
+        throw new Error(`工作流 ${regOpts.runId} 仍在运行，请先停止再恢复。`)
+      }
       const bundle = readHostBundle(host)
       const setAppState =
         bundle.toolUseContext.setAppStateForTasks ??

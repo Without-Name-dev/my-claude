@@ -17,7 +17,7 @@ import {
   storeGetSessionWorker,
 } from '../../store'
 import { createWorkItem } from '../../services/work-dispatch'
-import { createSSEStream } from '../../transport/sse-writer'
+import { createSSEStream, webEventPayload } from '../../transport/sse-writer'
 import { getEventBus } from '../../transport/event-bus'
 
 const app = new Hono()
@@ -120,7 +120,17 @@ app.get('/sessions/:id/history', uuidAuth, async c => {
     if (!ids.has(snapshot.id)) events.push(snapshot)
   }
   events.sort((a, b) => a.seqNum - b.seqNum)
-  return c.json({ events }, 200)
+  // Same compaction as the SSE stream: an inbound user image turn otherwise
+  // carries the base64 photo twice (message + raw.message) on every reload.
+  return c.json(
+    {
+      events: events.map(event => ({
+        ...event,
+        payload: webEventPayload(event),
+      })),
+    },
+    200,
+  )
 })
 
 /** SSE /web/sessions/:id/events — Real-time event stream */

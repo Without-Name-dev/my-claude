@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { debug, error as logError } from '../logger'
 
 export interface SessionEvent {
@@ -15,6 +16,13 @@ type Subscriber = (event: SessionEvent) => void
 const MAX_EVENTS_PER_BUS = 5000
 
 export class EventBus {
+  /**
+   * Identity of this bus instance. Sequence numbers restart at 1 whenever the
+   * process restarts, so a client cursor is only meaningful together with the
+   * generation it was issued by. Without it a stale cursor silently swallowed
+   * every new-epoch event whose seqNum happened to be below it.
+   */
+  readonly generation = randomUUID()
   private subscribers = new Set<Subscriber>()
   private events: SessionEvent[] = []
   private seqNum = 0
@@ -38,11 +46,22 @@ export class EventBus {
       createdAt: Date.now(),
     }
     this.events.push(full)
-    if (
-      event.direction === 'inbound' &&
-      (event.type === 'task_state' || event.type === 'workflow_state')
-    ) {
-      this.snapshots.set(event.type, full)
+    if (event.direction === 'inbound') {
+      const payload = event.payload as Record<string, unknown> | null
+      const raw = payload?.raw as Record<string, unknown> | undefined
+      const isInit =
+        event.type === 'system' && (raw?.subtype ?? payload?.subtype) === 'init'
+      if (
+        isInit ||
+        event.type === 'task_state' ||
+        event.type === 'workflow_state' ||
+        event.type === 'usage_state' ||
+        // Latest terminal queue snapshot: a long turn can evict the event from
+        // the rolling history before a browser opens mid-run.
+        event.type === 'terminal_queue'
+      ) {
+        this.snapshots.set(isInit ? 'system/init' : event.type, full)
+      }
     }
     // Evict oldest events when exceeding limit
     if (this.events.length > MAX_EVENTS_PER_BUS) {
@@ -63,6 +82,11 @@ export class EventBus {
 
   getLastSeqNum(): number {
     return this.seqNum
+  }
+
+  /** True once removeEventBus()/close() retired this bus (session archived). */
+  isClosed(): boolean {
+    return this.closed
   }
 
   getOldestSeqNum(): number {

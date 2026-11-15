@@ -85,7 +85,39 @@ export async function readRunState(
     if (!run || typeof run !== 'object') return null
     if (typeof run.runId !== 'string') return null
     if (typeof run.status !== 'string') return null
-    return run as RunProgress
+    // Same schemaVersion can still be missing fields added by a later build
+    // (an old state.json passes the version check but has no `agentCount`).
+    // Normalize every collection here so the panel never renders
+    // `undefined/N agents` or iterates a missing array.
+    const rawRun = run as unknown as Record<string, unknown>
+    const agents = Array.isArray(rawRun.agents) ? rawRun.agents : []
+    const phases = Array.isArray(rawRun.phases) ? rawRun.phases : []
+    const declaredPhases = Array.isArray(rawRun.declaredPhases)
+      ? rawRun.declaredPhases.filter(
+          (title): title is string => typeof title === 'string',
+        )
+      : []
+    return {
+      ...(run as RunProgress),
+      runId: run.runId,
+      workflowName:
+        typeof rawRun.workflowName === 'string'
+          ? rawRun.workflowName
+          : run.runId,
+      status: rawRun.status as RunProgress['status'],
+      phases: phases as RunProgress['phases'],
+      declaredPhases,
+      agents: agents as RunProgress['agents'],
+      agentCount:
+        typeof rawRun.agentCount === 'number' &&
+        Number.isFinite(rawRun.agentCount)
+          ? rawRun.agentCount
+          : agents.length,
+      currentPhase:
+        typeof rawRun.currentPhase === 'string' ? rawRun.currentPhase : null,
+      startedAt: typeof rawRun.startedAt === 'number' ? rawRun.startedAt : 0,
+      updatedAt: typeof rawRun.updatedAt === 'number' ? rawRun.updatedAt : 0,
+    }
   } catch (e) {
     logForDebugging(
       `[workflow warn] readRunState parse failed for ${runId}: ${(e as Error).message}`,

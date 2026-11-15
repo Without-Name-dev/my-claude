@@ -55,6 +55,13 @@ export interface UserMessageImage {
 export interface UserMessageEntry {
   type: 'user_message'
   id: string
+  /**
+   * Stable render identity of a locally created bubble. Echo adoption may
+   * rewrite `id` to the server uuid; deriving the React key from it remounted
+   * the bubble (replaying its entrance animation and resetting local state).
+   * `clientId` never changes once assigned.
+   */
+  clientId?: string
   content: string
   images?: UserMessageImage[]
   /**
@@ -63,6 +70,13 @@ export interface UserMessageEntry {
    * back — the same state the terminal shows for queued input.
    */
   pending?: boolean
+  /**
+   * This bubble was created locally by the sender and has not been echoed
+   * yet. Unlike `pending` the flag survives clearStalePending and an adapter
+   * remount, so a later history merge can still recognise the bubble as ours
+   * and adopt the server row instead of showing a duplicate.
+   */
+  optimistic?: boolean
 }
 
 // 助手消息条目
@@ -115,6 +129,8 @@ export interface PendingPermission {
   requestId: string
   toolName: string
   toolInput: Record<string, unknown>
+  /** The tool call this request belongs to, when the CLI included it. */
+  toolUseId?: string
   description?: string
   options?: PermissionOption[]
 }

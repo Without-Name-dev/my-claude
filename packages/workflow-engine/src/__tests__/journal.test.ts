@@ -111,3 +111,30 @@ test('FileJournalStore read for non-existent run → []', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('truncate clears the journal but keeps script.js and state.json', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wf-journal-keep-'))
+  try {
+    const store = createFileJournalStore(dir)
+    await store.append('run-1', {
+      key: 'k1',
+      seq: 0,
+      result: { kind: 'ok', output: 'x', usage: { outputTokens: 1 } },
+    })
+    const runDir = join(dir, 'run-1')
+    await Bun.write(join(runDir, 'script.js'), '// inline script')
+    await Bun.write(join(runDir, 'state.json'), '{"schemaVersion":1}')
+    await store.truncate('run-1')
+    expect(await store.read('run-1')).toEqual([])
+    // A divergent resume must still be able to re-run the persisted script
+    // and keep the previous attempt's recorded result.
+    expect(await Bun.file(join(runDir, 'script.js')).text()).toBe(
+      '// inline script',
+    )
+    expect(await Bun.file(join(runDir, 'state.json')).text()).toBe(
+      '{"schemaVersion":1}',
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

@@ -11,6 +11,8 @@ type UseQueueProcessorParams = {
   executeQueuedInput: (commands: QueuedCommand[]) => Promise<void>
   hasActiveLocalJsxUI: boolean
   queryGuard: QueryGuard
+  /** The dequeued turn threw; the commands are gone, so say so. */
+  onError?: (error: unknown) => void
 }
 
 /**
@@ -29,6 +31,7 @@ export function useQueueProcessor({
   executeQueuedInput,
   hasActiveLocalJsxUI,
   queryGuard,
+  onError,
 }: UseQueueProcessorParams): void {
   // Subscribe to the query guard. Re-renders when a query starts or ends
   // (or when reserve/cancelReservation transitions dispatching state).
@@ -57,12 +60,19 @@ export function useQueueProcessor({
     // snapshot change), isQueryActive is already true (dispatching) and the
     // guard above returns early. handlePromptSubmit's finally releases the
     // reservation via cancelReservation() (no-op if onQuery already ran end()).
-    processQueueIfReady({ executeInput: executeQueuedInput })
+    const result = processQueueIfReady({
+      executeInput: executeQueuedInput,
+    })
+    // Surface a failed turn instead of leaving an unhandled rejection. The
+    // commands were already dequeued; re-enqueueing would risk running a
+    // prompt whose user message was already committed.
+    result.execution?.catch(error => onError?.(error))
   }, [
     queueSnapshot,
     isQueryActive,
     executeQueuedInput,
     hasActiveLocalJsxUI,
     queryGuard,
+    onError,
   ])
 }

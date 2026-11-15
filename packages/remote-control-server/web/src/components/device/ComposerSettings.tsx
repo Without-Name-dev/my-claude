@@ -23,7 +23,7 @@ export type ComposerSettingsProps = {
   controlError?: string;
   effort: string;
   ultracode: boolean;
-  ultracodeUsable: boolean;
+  ultracodeUsable: boolean | null;
   permissionMode: string;
   permissionOptions: { id: string; label: string }[];
   modelId: string;
@@ -94,7 +94,7 @@ export function ComposerSettings({
       open={open}
       onClose={onClose}
       label="会话设置"
-      className="max-h-[calc(var(--app-height,100dvh)*0.86)] overflow-y-auto overscroll-contain rounded-t-[20px] border border-border bg-surface-0 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 shadow-2xl sm:max-w-md sm:rounded-2xl sm:px-5 sm:pt-4 sm:pb-4"
+      className="flex max-h-[calc(var(--app-height,100dvh)*0.86)] flex-col overflow-hidden rounded-t-[20px] border border-border bg-surface-0 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 shadow-2xl sm:max-w-md sm:rounded-2xl sm:px-5 sm:pt-4 sm:pb-4"
     >
       <div className="flex justify-center pb-1 sm:hidden">
         <span className="h-1 w-9 rounded-full bg-border" />
@@ -113,130 +113,136 @@ export function ComposerSettings({
         </button>
       </div>
 
-      {controlError && (
-        <div
-          role="alert"
-          className="mb-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] leading-relaxed text-destructive"
-        >
-          {controlError}
-        </div>
-      )}
-
-      <section>
-        <div className={sectionLabel}>思考强度</div>
-        {!effort && <p className="mb-2 px-1 text-xs text-text-muted">终端尚未报告当前强度，可手动选择。</p>}
-        <div role="radiogroup" aria-label="思考强度" className="grid grid-cols-3 gap-1.5">
-          {EFFORT_LEVELS.map(level => {
-            const active = effort === level;
-            return (
-              <button
-                key={level}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                aria-label={`${EFFORT_LABELS[level] ?? level}（${level}）`}
-                disabled={pending}
-                onClick={() => void onChangeEffort(level)}
-                className={cn(
-                  'flex h-9 items-center justify-center rounded-[10px] border text-[13px] font-medium transition-colors disabled:opacity-60',
-                  active
-                    ? 'border-brand/50 bg-brand/10 text-brand-dark dark:text-brand'
-                    : 'border-transparent bg-surface-1 text-text-secondary active:bg-surface-2 sm:hover:bg-surface-2',
-                )}
-              >
-                {EFFORT_LABELS[level] ?? level}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* Ultracode is a switch, not a level: toggling it never changes the
-            thinking level above, and choosing a level never toggles it. */}
-      <div
-        className={cn(
-          'mt-2 flex items-center gap-3 rounded-[12px] border px-3.5 py-2.5',
-          ultracode ? 'border-brand/35 bg-brand/5' : 'border-border/70 bg-surface-1',
-          !ultracodeUsable && 'opacity-60',
+      <div className="min-h-0 overflow-y-auto overscroll-contain">
+        {controlError && (
+          <div
+            role="alert"
+            className="mb-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] leading-relaxed text-destructive"
+          >
+            {controlError}
+          </div>
         )}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[14px] font-medium text-text-primary">
-            Ultracode
-            {ultracode && (
-              <span className="rounded-full bg-brand/15 px-1.5 py-0.5 text-[10px] font-medium text-brand-dark dark:text-brand">
-                已开启
-              </span>
-            )}
+
+        <section>
+          <div className={sectionLabel}>思考强度</div>
+          {!effort && <p className="mb-2 px-1 text-xs text-text-muted">终端尚未报告当前强度，可手动选择。</p>}
+          <div role="radiogroup" aria-label="思考强度" className="grid grid-cols-3 gap-1.5">
+            {EFFORT_LEVELS.map(level => {
+              const active = effort === level;
+              return (
+                <button
+                  key={level}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  aria-label={`${EFFORT_LABELS[level] ?? level}（${level}）`}
+                  disabled={pending}
+                  onClick={() => void onChangeEffort(level)}
+                  className={cn(
+                    'flex h-9 items-center justify-center rounded-[10px] border text-[13px] font-medium transition-colors disabled:opacity-60',
+                    active
+                      ? 'border-brand/50 bg-brand/10 text-brand-dark dark:text-brand'
+                      : 'border-transparent bg-surface-1 text-text-secondary active:bg-surface-2 sm:hover:bg-surface-2',
+                  )}
+                >
+                  {EFFORT_LABELS[level] ?? level}
+                </button>
+              );
+            })}
           </div>
-          <div className="mt-0.5 text-[11.5px] text-text-muted">
-            {ultracodeUsable ? '仅本会话 · 每个任务启用动态工作流' : '当前终端不可用或尚未报告支持状态'}
-          </div>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={ultracode}
-          aria-label="Ultracode"
-          disabled={pending || !ultracodeUsable}
-          onClick={() => void onToggleUltracode()}
+        </section>
+
+        {/* Ultracode is a switch, not a level: toggling it never changes the
+            thinking level above, and choosing a level never toggles it. */}
+        <div
           className={cn(
-            'relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors disabled:cursor-not-allowed',
-            ultracode ? 'bg-brand' : 'bg-surface-3',
+            'mt-2 flex items-center gap-3 rounded-[12px] border px-3.5 py-2.5',
+            ultracode ? 'border-brand/35 bg-brand/5' : 'border-border/70 bg-surface-1',
+            !ultracodeUsable && 'opacity-60',
           )}
         >
-          {/* Explicit left + transform: a bare translate-x utility
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[14px] font-medium text-text-primary">
+              Ultracode
+              {ultracode && (
+                <span className="rounded-full bg-brand/15 px-1.5 py-0.5 text-[10px] font-medium text-brand-dark dark:text-brand">
+                  已开启
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 text-[11.5px] text-text-muted">
+              {ultracodeUsable === null
+                ? '等待终端同步支持状态'
+                : ultracodeUsable
+                  ? '仅本会话 · 每个任务启用动态工作流'
+                  : '当前终端或模型不支持'}
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={ultracode}
+            aria-label="Ultracode"
+            disabled={pending || !ultracodeUsable}
+            onClick={() => void onToggleUltracode()}
+            className={cn(
+              'relative h-[26px] w-[46px] shrink-0 rounded-full transition-colors disabled:cursor-not-allowed',
+              ultracode ? 'bg-brand' : 'bg-surface-3',
+            )}
+          >
+            {/* Explicit left + transform: a bare translate-x utility
                 depends on the button's static position, which centered the
                 knob even when the switch was off. */}
-          <span
-            className="absolute left-[3px] top-[3px] h-5 w-5 rounded-full bg-white shadow-sm transition-transform"
-            style={{ transform: ultracode ? 'translateX(20px)' : 'translateX(0px)' }}
-          />
-        </button>
-      </div>
-
-      <section className="mt-4">
-        <div className={sectionLabel}>权限模式</div>
-        {!permissionMode && <p className="mb-2 px-1 text-xs text-text-muted">终端尚未报告当前权限模式。</p>}
-        <div className="overflow-hidden rounded-[12px] border border-border/70 bg-surface-1 divide-y divide-border/50">
-          {permissionOptions.map(option =>
-            optionRow(
-              option.id,
-              option.label,
-              permissionMode === option.id,
-              () => void onChangePermissionMode(option.id),
-            ),
-          )}
+            <span
+              className="absolute left-[3px] top-[3px] h-5 w-5 rounded-full bg-white shadow-sm transition-transform"
+              style={{ transform: ultracode ? 'translateX(20px)' : 'translateX(0px)' }}
+            />
+          </button>
         </div>
-      </section>
 
-      <section className="mt-4">
-        <div className={sectionLabel}>模型</div>
-        {models.length > 0 ? (
+        <section className="mt-4">
+          <div className={sectionLabel}>权限模式</div>
+          {!permissionMode && <p className="mb-2 px-1 text-xs text-text-muted">终端尚未报告当前权限模式。</p>}
           <div className="overflow-hidden rounded-[12px] border border-border/70 bg-surface-1 divide-y divide-border/50">
-            {models.map(model =>
-              optionRow(model.id, model.label, modelId === model.id, () => void onChangeModel(model.id), model.title),
+            {permissionOptions.map(option =>
+              optionRow(
+                option.id,
+                option.label,
+                permissionMode === option.id,
+                () => void onChangePermissionMode(option.id),
+              ),
             )}
           </div>
-        ) : (
-          <p className="px-1 text-xs text-text-muted">终端尚未提供模型信息。</p>
-        )}
-      </section>
+        </section>
 
-      {onCloseTerminal && (
-        <button
-          type="button"
-          onClick={onCloseTerminal}
-          className="mt-4 w-full rounded-[12px] border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-[13px] text-destructive transition-colors active:bg-destructive/10 sm:hover:bg-destructive/10"
-        >
-          关闭电脑上的终端
-        </button>
-      )}
+        <section className="mt-4">
+          <div className={sectionLabel}>模型</div>
+          {models.length > 0 ? (
+            <div className="overflow-hidden rounded-[12px] border border-border/70 bg-surface-1 divide-y divide-border/50">
+              {models.map(model =>
+                optionRow(model.id, model.label, modelId === model.id, () => void onChangeModel(model.id), model.title),
+              )}
+            </div>
+          ) : (
+            <p className="px-1 text-xs text-text-muted">终端尚未提供模型信息。</p>
+          )}
+        </section>
+
+        {onCloseTerminal && (
+          <button
+            type="button"
+            onClick={onCloseTerminal}
+            className="mt-4 w-full rounded-[12px] border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-[13px] text-destructive transition-colors active:bg-destructive/10 sm:hover:bg-destructive/10"
+          >
+            关闭电脑上的终端
+          </button>
+        )}
+      </div>
 
       <button
         type="button"
         onClick={onClose}
-        className="mt-3 h-11 w-full rounded-[12px] bg-brand text-[14px] font-medium text-white transition-transform active:scale-[0.99]"
+        className="mt-3 h-11 w-full shrink-0 rounded-[12px] bg-brand text-[14px] font-medium text-white transition-transform active:scale-[0.99]"
       >
         完成
       </button>

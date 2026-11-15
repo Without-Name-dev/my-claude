@@ -193,6 +193,39 @@ test('writeRunState writes full AgentProgress (no output content, includes label
   }
 })
 
+test('readRunState normalizes state written before agentCount/arrays existed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wf-'))
+  try {
+    await mkdir(join(dir, 'legacy'), { recursive: true })
+    await fsWriteFile(
+      join(dir, 'legacy', 'state.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        run: {
+          runId: 'legacy',
+          status: 'completed',
+          workflowName: 'old-build',
+          // agentCount / phases / declaredPhases / currentPhase omitted, as a
+          // state.json from an earlier build of the same schema would be.
+          agents: [{ id: 1, label: 'a', status: 'done' }],
+          startedAt: 1,
+          updatedAt: 2,
+        },
+      }),
+      'utf-8',
+    )
+    const got = await readRunState(dir, 'legacy')
+    expect(got).not.toBeNull()
+    expect(got!.agentCount).toBe(1)
+    expect(got!.agents).toHaveLength(1)
+    expect(got!.phases).toEqual([])
+    expect(got!.declaredPhases).toEqual([])
+    expect(got!.currentPhase).toBeNull()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('getRunsDir returns <projectRoot>/.claude/workflow-runs shape', () => {
   const dir = getRunsDir()
   // do not hard-code projectRoot (differs across machines), only check suffix structure

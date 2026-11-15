@@ -26,6 +26,8 @@ export interface SessionEvent {
   direction?: 'inbound' | 'outbound'
   seqNum?: number
   id?: string
+  /** Identity of the server bus that issued seqNum; changes on server restart. */
+  generation?: string
 }
 
 export interface EventPayload {

@@ -5,6 +5,7 @@ import { useVirtualScroll } from '../hooks/useVirtualScroll.js';
 import { Box, type DOMElement, type ScrollBoxHandle, type MatchPosition } from '@anthropic/ink';
 import { TextHoverColorContext } from './design-system/ThemedText.js';
 import { ScrollChromeContext } from './FullscreenLayout.js';
+import { reconcileVirtualMessageKeys } from './virtualMessageKeys.js';
 
 // Rows of breathing room above the target when we scrollTo.
 const HEADROOM = 3;
@@ -270,20 +271,8 @@ export function VirtualMessageList({
   // churn at 27k messages). Append-only delta push when the prefix matches;
   // fall back to full rebuild on compaction, /clear, or itemKey change.
   const keysRef = useRef<string[]>([]);
-  const prevMessagesRef = useRef<typeof messages>(messages);
   const prevItemKeyRef = useRef(itemKey);
-  if (
-    prevItemKeyRef.current !== itemKey ||
-    messages.length < keysRef.current.length ||
-    messages[0] !== prevMessagesRef.current[0]
-  ) {
-    keysRef.current = messages.map(m => itemKey(m));
-  } else {
-    for (let i = keysRef.current.length; i < messages.length; i++) {
-      keysRef.current.push(itemKey(messages[i]!));
-    }
-  }
-  prevMessagesRef.current = messages;
+  keysRef.current = reconcileVirtualMessageKeys(keysRef.current, messages, itemKey, prevItemKeyRef.current !== itemKey);
   prevItemKeyRef.current = itemKey;
   const keys = keysRef.current;
   const {

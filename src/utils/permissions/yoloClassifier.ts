@@ -529,7 +529,7 @@ export async function buildYoloSystemPrompt(
     ? !usingExternal
     : false
   const includePowerShellGuidance = feature('POWERSHELL_AUTO_MODE')
-    ? !usingExternal
+    ? true
     : false
   const allowDescriptions = [
     ...(includeBashPromptRules ? getBashPromptAllowDescriptions(context) : []),
@@ -537,7 +537,9 @@ export async function buildYoloSystemPrompt(
   ]
   const denyDescriptions = [
     ...(includeBashPromptRules ? getBashPromptDenyDescriptions(context) : []),
-    ...(includePowerShellGuidance ? POWERSHELL_DENY_GUIDANCE : []),
+    ...(!usingExternal && includePowerShellGuidance
+      ? POWERSHELL_DENY_GUIDANCE
+      : []),
     ...(autoMode?.soft_deny ?? []),
   ]
 
@@ -557,7 +559,7 @@ export async function buildYoloSystemPrompt(
     ? autoMode.environment.map(e => `- ${e}`).join('\n')
     : undefined
 
-  return systemPrompt
+  const configuredPrompt = systemPrompt
     .replace(
       /<user_allow_rules_to_replace>([\s\S]*?)<\/user_allow_rules_to_replace>/,
       (_m, defaults: string) => userAllow ?? defaults,
@@ -570,6 +572,12 @@ export async function buildYoloSystemPrompt(
       /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,
       (_m, defaults: string) => userEnvironment ?? defaults,
     )
+  // External rules use replacement tags. Appending the PowerShell guidance
+  // afterwards retains both the existing default/user deny rules and these
+  // shell-specific examples instead of replacing the entire deny section.
+  return usingExternal && includePowerShellGuidance
+    ? `${configuredPrompt}\n\nPowerShell safety guidance:\n${POWERSHELL_DENY_GUIDANCE.map(rule => `- ${rule}`).join('\n')}`
+    : configuredPrompt
 }
 // ============================================================================
 // 2-Stage XML Classifier

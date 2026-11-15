@@ -12,6 +12,9 @@ const BASE = ''
 /** Same ceiling as the device API: a hung request must surface, not spin. */
 const REQUEST_TIMEOUT_MS = 30_000
 
+/** The server may have accepted the request before the connection failed. */
+export class ApiConnectionError extends Error {}
+
 export function getUuid(): string {
   let uuid = localStorage.getItem('rcs_uuid')
   if (!uuid) {
@@ -64,6 +67,7 @@ export function setAccessKey(key: string): void {
   } catch {
     // Private mode: the cookie below still authenticates this page lifetime.
   }
+  // biome-ignore lint/suspicious/noDocumentCookie: the access key is a client-set credential; only the SPA can write it
   document.cookie = `rcs_access_key=${encodeURIComponent(key)}; path=/; max-age=31536000; samesite=strict`
 }
 
@@ -74,6 +78,7 @@ export function clearAccessKey(): void {
   } catch {
     // ignore
   }
+  // biome-ignore lint/suspicious/noDocumentCookie: clearing the client-set credential on sign-out
   document.cookie = 'rcs_access_key=; path=/; max-age=0; samesite=strict'
 }
 
@@ -106,7 +111,7 @@ async function api<T>(
       'api',
       `${method} ${path} → ${aborted ? 'timeout' : 'network error'}`,
     )
-    throw new Error(
+    throw new ApiConnectionError(
       aborted ? '请求超时，请检查网络后重试' : '网络异常，请检查连接',
     )
   } finally {
@@ -115,7 +120,11 @@ async function api<T>(
   let raw = ''
   let data: unknown = null
   if (typeof res.text === 'function') {
-    raw = await res.text()
+    try {
+      raw = await res.text()
+    } catch {
+      throw new ApiConnectionError('网络中断，未能读取服务器响应')
+    }
     try {
       data = raw ? JSON.parse(raw) : null
     } catch {

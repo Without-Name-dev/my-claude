@@ -367,6 +367,10 @@ export function isPromptInputModeEditable(
  * the user's input.
  */
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
+  // A remote (phone/web) prompt is owned by the sending client: it already
+  // shows the bubble as pending. Pulling it into the terminal input on
+  // UP/ESC removes it from the queue and strands the phone waiting forever.
+  if (isBridgeQueuedCommand(cmd)) return false
   return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta
 }
 

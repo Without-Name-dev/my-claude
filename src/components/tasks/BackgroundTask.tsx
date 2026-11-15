@@ -68,6 +68,10 @@ export function BackgroundTask({ task, maxActivityWidth }: Props): React.ReactNo
     }
     case 'local_workflow': {
       const _task = task as Record<string, unknown>;
+      // The count is a live mirror of the progress store; absent means the
+      // workflow has not reported an agent yet, not "undefined agents".
+      const agentCount =
+        typeof _task.agentCount === 'number' && Number.isFinite(_task.agentCount) ? _task.agentCount : undefined;
       return (
         <Text>
           {truncate(
@@ -78,8 +82,8 @@ export function BackgroundTask({ task, maxActivityWidth }: Props): React.ReactNo
           <TaskStatusText
             status={task.status}
             label={
-              task.status === 'running'
-                ? `${_task.agentCount as number} ${plural(_task.agentCount as number, 'agent')}`
+              task.status === 'running' && agentCount !== undefined
+                ? `${agentCount} ${plural(agentCount, 'agent')}`
                 : task.status === 'completed'
                   ? 'done'
                   : undefined

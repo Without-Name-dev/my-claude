@@ -308,6 +308,24 @@ export function enqueueOutbox(entry: OutboxEntry): void {
   scheduleSave()
 }
 
+/** Includes completed rows so a retry cannot enqueue a previously sent UUID. */
+export function findOutboxEntry(
+  deviceId: string,
+  localSessionId: string,
+  id: string,
+): OutboxEntry | undefined {
+  return state.outbox.find(
+    entry =>
+      entry.id === id &&
+      entry.deviceId === deviceId &&
+      entry.localSessionId === localSessionId,
+  )
+}
+
+export function findOutboxEntryById(id: string): OutboxEntry | undefined {
+  return state.outbox.find(entry => entry.id === id)
+}
+
 /**
  * Local sessions with messages waiting to be delivered. Used when a Spawner
  * reconnects: the queued prompt is only useful if the terminal is opened for

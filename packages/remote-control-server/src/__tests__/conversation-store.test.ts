@@ -5,6 +5,7 @@ import {
   describe,
   expect,
   test,
+  spyOn,
 } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -59,6 +60,46 @@ function transcript(
 }
 
 describe('conversation store', () => {
+  test('replayed bridge messages do not move behind newer messages', () => {
+    const now = spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(1000)
+      recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+        uuid: 'first',
+        message: { content: 'first' },
+      })
+      now.mockReturnValue(2000)
+      recordBridgeEvent(deviceId, localSessionId, 'user', {
+        uuid: 'second',
+        message: { content: 'second' },
+      })
+      now.mockReturnValue(3000)
+      recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+        uuid: 'first',
+        message: { content: 'first updated' },
+      })
+      expect(
+        listStoredMessages(deviceId, localSessionId, 10).messages.map(
+          m => m.id,
+        ),
+      ).toEqual(['first', 'second'])
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  test('transcript ordering survives a later bridge replay', () => {
+    const messages = transcript(0, 1)
+    saveTranscript(deviceId, localSessionId, messages)
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'm0',
+      message: { content: 'message 0' },
+    })
+    expect(
+      listStoredMessages(deviceId, localSessionId, 10).messages.map(m => m.id),
+    ).toEqual(['m0', 'm1'])
+  })
+
   test('orders by message time even when older pages are backfilled later', () => {
     // Newest page first, then the older page (the order the UI asks for).
     saveTranscript(deviceId, localSessionId, transcript(20, 29))
@@ -117,6 +158,27 @@ describe('conversation store', () => {
       'message 4',
     ])
     expect(page.hasMore).toBe(false)
+  })
+
+  test('legacy cursor pages retain assistant token usage', () => {
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'usage-older',
+      message: {
+        content: [{ type: 'text', text: 'hello' }],
+        usage: {
+          input_tokens: 7,
+          output_tokens: 3,
+          cache_read_input_tokens: 5,
+        },
+      },
+    })
+    saveWebUserMessage(deviceId, localSessionId, 'newer', 'next')
+    const page = listStoredMessages(deviceId, localSessionId, 10, '2')
+    expect(page.messages[0]?.usage).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadInputTokens: 5,
+    })
   })
 
   test('dedupes by id and never downgrades richer content', () => {
@@ -220,6 +282,20 @@ describe('conversation store', () => {
     ])
   })
 
+  test('a long text-only echo cannot erase a previously saved photo', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'outbox-long', '', [
+      { mimeType: 'image/png', data: 'aGk=' },
+    ])
+    const text = 'long text '.repeat(100)
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'outbox-long',
+      message: { content: text },
+    })
+    const row = listStoredMessages(deviceId, localSessionId, 10).messages[0]
+    expect(row?.text).toBe(text)
+    expect(row?.blocks.some(block => block.type === 'image')).toBe(true)
+  })
+
   test('image-only web message survives a full image-block echo (same uuid)', () => {
     saveWebUserMessage(deviceId, localSessionId, 'outbox-6', '', [
       { mimeType: 'image/png', data: 'aGk=' },
@@ -244,17 +320,26 @@ describe('conversation store', () => {
     ])
   })
 
-  test('ignores synthetic user turns and assistant noise', () => {
+  test('stores synthetic tool-result turns but ignores other synthetic noise', () => {
+    // Tool results are the durable record of a completed tool call.
     recordBridgeEvent(deviceId, localSessionId, 'user', {
       uuid: 'tool-result',
       isSynthetic: true,
       message: { content: [{ type: 'tool_result', content: 'ok' }] },
     })
+    // Ordinary synthetic prompts stay out of the transcript.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'synthetic-chatty',
+      isSynthetic: true,
+      message: { content: 'No response requested.' },
+    })
     recordBridgeEvent(deviceId, localSessionId, 'assistant', {
       uuid: 'empty',
       message: { content: [] },
     })
-    expect(listStoredMessages(deviceId, localSessionId, 10).total).toBe(0)
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.total).toBe(1)
+    expect(page.messages[0]?.id).toBe('tool-result')
   })
 
   test('a synthetic assistant echo is not stored (transcript backfill owns it)', () => {
@@ -263,5 +348,136 @@ describe('conversation store', () => {
       message: { model: '<synthetic>', content: 'No response requested.' },
     })
     expect(listStoredMessages(deviceId, localSessionId, 10).total).toBe(0)
+  })
+})
+
+describe('tool results', () => {
+  test('a synthetic tool-result turn is stored and folds into its card on reload', () => {
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'a-tool',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-x',
+            name: 'Bash',
+            input: { cmd: 'ls' },
+          },
+        ],
+      },
+    })
+    // Tool results arrive as synthetic user turns with no text of their own.
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'u-tool',
+      isSynthetic: true,
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-x',
+            content: 'file1\nfile2',
+          },
+        ],
+      },
+    })
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    const row = page.messages.find(message => message.id === 'u-tool')
+    expect(row?.blocks).toEqual([
+      { type: 'tool_result', toolUseId: 'tool-x', text: 'file1\nfile2' },
+    ])
+    // No text and no photos: never renders as an empty user bubble.
+    expect(row?.text).toBe('')
+  })
+
+  test('other synthetic user turns are still dropped', () => {
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'synthetic-1',
+      isSynthetic: true,
+      message: { content: 'No response requested.' },
+    })
+    expect(
+      listStoredMessages(deviceId, localSessionId, 10).messages.some(
+        message => message.id === 'synthetic-1',
+      ),
+    ).toBe(false)
+  })
+})
+
+describe('conversation ordering', () => {
+  test('live rows keep receive order even when the wall clock steps back', () => {
+    const now = spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(5000)
+      recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+        uuid: 'a1',
+        message: { content: 'first' },
+      })
+      now.mockReturnValue(3000)
+      recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+        uuid: 'a2',
+        message: { content: 'second' },
+      })
+      expect(
+        listStoredMessages(deviceId, localSessionId, 10).messages.map(
+          m => m.id,
+        ),
+      ).toEqual(['a1', 'a2'])
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  test('a transcript refresh never relocates an already-stored row', () => {
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'a1',
+      message: { content: 'first' },
+    })
+    recordBridgeEvent(deviceId, localSessionId, 'assistant', {
+      uuid: 'a2',
+      message: { content: 'second' },
+    })
+    // The device clock is far ahead; re-reading the same row must not move it
+    // past the row that arrived after it.
+    saveTranscript(deviceId, localSessionId, [
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'first',
+        timestamp: new Date(Date.now() + 86_400_000).toISOString(),
+        blocks: [{ type: 'text', text: 'first' }],
+      },
+    ])
+    expect(
+      listStoredMessages(deviceId, localSessionId, 10).messages.map(m => m.id),
+    ).toEqual(['a1', 'a2'])
+  })
+
+  test('a leading undated prompt sorts before its already-stored reply', () => {
+    const replyTime = Date.UTC(2026, 0, 1, 12, 0, 0)
+    const reply: TranscriptMessage = {
+      id: 'm2',
+      role: 'assistant',
+      text: 'reply',
+      timestamp: new Date(replyTime).toISOString(),
+      blocks: [{ type: 'text', text: 'reply' }],
+    }
+    saveTranscript(deviceId, localSessionId, [reply], 'newest')
+    saveTranscript(
+      deviceId,
+      localSessionId,
+      [
+        {
+          id: 'm1',
+          role: 'user',
+          text: 'prompt',
+          blocks: [{ type: 'text', text: 'prompt' }],
+        },
+        reply,
+      ],
+      'older',
+    )
+    expect(
+      listStoredMessages(deviceId, localSessionId, 10).messages.map(m => m.id),
+    ).toEqual(['m1', 'm2'])
   })
 })

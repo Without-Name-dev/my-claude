@@ -4,7 +4,7 @@ import { ChatInput } from '../../../components/chat/ChatInput';
 import { ChatView } from '../../../components/chat/ChatView';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import type { ChatInputMessage, ThreadEntry } from '../../lib/types';
-import { mergeHistoryPage, mergeThreadEntries, transcriptToEntries } from '../../lib/device-history';
+import { mergeHistoryPage, transcriptToEntries } from '../../lib/device-history';
 import { cn } from '../../lib/utils';
 import { createSerialQueue } from '../../lib/serial-queue';
 import {
@@ -115,7 +115,7 @@ export function DeviceSessionChat({
   const [terminalActionPending, setTerminalActionPending] = useState(false);
   const terminalActionInFlight = useRef(false);
   /** Assistant history rows with billed usage; seeds the live token ledger. */
-  const [usageSeed, setUsageSeed] = useState<{ id: string; usage: TranscriptUsage }[]>([]);
+  const [usageSeed, setUsageSeed] = useState<{ id: string; timestamp?: string; usage: TranscriptUsage }[]>([]);
   const loadedKey = useRef('');
   // The 10s poll's closure captures operationId from mount (null); a plain
   // state read made the poll decide "no operation" forever and flip the
@@ -157,6 +157,7 @@ export function DeviceSessionChat({
       // token/cache-rate row matches the terminal immediately after a reload.
       const usageRows = page.messages.filter(message => message.role === 'assistant' && message.usage) as {
         id: string;
+        timestamp?: string;
         usage: TranscriptUsage;
       }[];
       if (usageRows.length > 0) {
@@ -169,8 +170,10 @@ export function DeviceSessionChat({
       setEntries(previous => {
         if (!before) {
           // A live bridge may have appended entries while this async load was
-          // in flight. Merge instead of replacing, keeping history first.
-          return previous.length === 0 ? converted : mergeHistoryPage(previous, converted);
+          // in flight. Merge instead of replacing. This is the NEWEST window
+          // (there is no cursor), so rows that aged out of it stay above — the
+          // default 'older' semantics prepended it above the older transcript.
+          return previous.length === 0 ? converted : mergeHistoryPage(previous, converted, { pagePosition: 'newer' });
         }
         // Guard against a double-click sending the same cursor twice.
         const key = (entry: ThreadEntry) => (entry.type === 'tool_call' ? `tool-${entry.toolCall.id}` : entry.id);
@@ -221,7 +224,10 @@ export function DeviceSessionChat({
     try {
       const page = await fetchHistory(deviceId, localSessionId, { limit: HISTORY_PAGE });
       const converted = transcriptToEntries(page.messages);
-      setEntries(previous => mergeHistoryPage(previous, converted));
+      // This is always the NEWEST window (no `before` cursor): when it shares
+      // no id with what is on screen, the on-screen rows that aged out of the
+      // window are older and must stay above, not be pushed below.
+      setEntries(previous => mergeHistoryPage(previous, converted, { pagePosition: 'newer' }));
       // Recovery: a background sync that succeeds means history is reachable
       // again — a stale load error would otherwise stick above a transcript
       // that visibly recovered. Same for the offline notice once the server
@@ -452,6 +458,9 @@ export function DeviceSessionChat({
           {
             type: 'user_message',
             id: pendingId,
+            // History adopts this row under the server uuid; the stable key
+            // keeps the bubble from remounting (and replaying its entrance).
+            clientId: pendingId,
             content: text,
             images: images && images.length > 0 ? images : undefined,
             pending: true,

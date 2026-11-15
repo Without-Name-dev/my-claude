@@ -14,6 +14,80 @@ describe('EventBus', () => {
   })
 
   describe('publish', () => {
+    test('keeps latest terminal init and usage snapshots after streaming eviction', () => {
+      bus.publish({
+        id: 'init',
+        sessionId: 's1',
+        type: 'system',
+        direction: 'inbound',
+        payload: { raw: { subtype: 'init', model: 'model-a' } },
+      })
+      bus.publish({
+        id: 'usage',
+        sessionId: 's1',
+        type: 'usage_state',
+        direction: 'inbound',
+        payload: { raw: { total_input_tokens: 100 } },
+      })
+      for (let i = 0; i < 5100; i++) {
+        bus.publish({
+          id: `stream-${i}`,
+          sessionId: 's1',
+          type: 'assistant',
+          direction: 'inbound',
+          payload: {},
+        })
+      }
+      expect(bus.getEventsSince(0).some(event => event.id === 'init')).toBe(
+        false,
+      )
+      expect(bus.getStateSnapshots().map(event => event.id)).toEqual([
+        'init',
+        'usage',
+      ])
+      bus.publish({
+        id: 'other-system',
+        sessionId: 's1',
+        type: 'system',
+        direction: 'inbound',
+        payload: { raw: { subtype: 'other' } },
+      })
+      expect(bus.getStateSnapshots().map(event => event.id)).toEqual([
+        'init',
+        'usage',
+      ])
+    })
+
+    test('keeps only the latest terminal_queue snapshot', () => {
+      bus.publish({
+        id: 'q1',
+        sessionId: 's1',
+        type: 'terminal_queue',
+        direction: 'inbound',
+        payload: { raw: { type: 'terminal_queue', count: 1, previews: ['a'] } },
+      })
+      bus.publish({
+        id: 'q2',
+        sessionId: 's1',
+        type: 'terminal_queue',
+        direction: 'inbound',
+        payload: { raw: { type: 'terminal_queue', count: 0, previews: [] } },
+      })
+      for (let i = 0; i < 5100; i++) {
+        bus.publish({
+          id: `stream-${i}`,
+          sessionId: 's1',
+          type: 'assistant',
+          direction: 'inbound',
+          payload: {},
+        })
+      }
+      const snapshots = bus
+        .getStateSnapshots()
+        .filter(event => event.type === 'terminal_queue')
+      expect(snapshots).toHaveLength(1)
+      expect(snapshots[0]?.id).toBe('q2')
+    })
     test('publishes event with seqNum starting at 1', () => {
       const event = bus.publish({
         id: 'e1',

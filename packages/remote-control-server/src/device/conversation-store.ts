@@ -87,6 +87,7 @@ let countStmt: Statement | undefined
 let minSortStmt: Statement | undefined
 let maxSortStmt: Statement | undefined
 let listSeqBeforeStmt: Statement | undefined
+let messageSourceStmt: Statement | undefined
 let backfillDoneStmt: Statement | undefined
 let markBackfillStmt: Statement | undefined
 let oldestStmt: Statement | undefined
@@ -140,17 +141,33 @@ function ensureDb(): Database {
   // Blocks compare by encoded length: a text-only re-read of a row the bridge
   // stored with image blocks is "non-empty" but strictly poorer, and the old
   // <> '[]' test let it strip the images back out.
+  //
+  // Only the optimistic web row may be *moved* by a later write: the CLI echo
+  // stamps its true position (when the terminal consumed it). A transcript
+  // refresh must never relocate a row that is already stored — mixing the
+  // device clock into an RCS-clock session reordered whole turns.
   insertStmt = db.query(`
     INSERT INTO conversation_messages
       (device_id, local_session_id, message_id, role, text, timestamp, sort_ms, blocks, usage, source, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id, local_session_id, message_id) DO UPDATE SET
       text = CASE WHEN excluded.text <> '' THEN excluded.text ELSE text END,
-      timestamp = COALESCE(excluded.timestamp, timestamp),
-      sort_ms = excluded.sort_ms,
-      blocks = CASE WHEN length(excluded.blocks) > length(blocks) THEN excluded.blocks ELSE blocks END,
+      timestamp = CASE
+        WHEN excluded.source = 'transcript' OR source = 'web'
+          THEN COALESCE(excluded.timestamp, timestamp)
+        ELSE timestamp
+      END,
+      sort_ms = CASE
+        WHEN source = 'web' THEN excluded.sort_ms
+        ELSE sort_ms
+      END,
+      blocks = CASE
+        WHEN (SELECT count(*) FROM json_each(excluded.blocks) WHERE json_extract(value, '$.type') = 'image')
+             < (SELECT count(*) FROM json_each(blocks) WHERE json_extract(value, '$.type') = 'image') THEN blocks
+        WHEN length(excluded.blocks) > length(blocks) THEN excluded.blocks ELSE blocks END,
       usage = COALESCE(excluded.usage, usage),
-      source = excluded.source
+      source = CASE WHEN source = 'transcript' AND excluded.source = 'bridge'
+        THEN source ELSE excluded.source END
   `)
   // The web's optimistic row is the weakest source: if the CLI echoed it
   // first (same uuid), keep the bridge row's richer content untouched.
@@ -186,10 +203,14 @@ function ensureDb(): Database {
     WHERE device_id = ? AND local_session_id = ?
   `)
   listSeqBeforeStmt = db.query(`
-    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, source
+    SELECT seq, sort_ms, message_id, role, text, timestamp, blocks, usage, source
     FROM conversation_messages
     WHERE device_id = ? AND local_session_id = ? AND seq < ?
     ORDER BY seq DESC LIMIT ?
+  `)
+  messageSourceStmt = db.query(`
+    SELECT source FROM conversation_messages
+    WHERE device_id = ? AND local_session_id = ? AND message_id = ?
   `)
   backfillDoneStmt = db.query(`
     SELECT 1 AS ok FROM backfill_state
@@ -341,6 +362,15 @@ function writeRow(
 ): void {
   try {
     ensureDb()
+    // Live rows are stamped with the RCS clock; transcript rows carry the
+    // device clock. Placing a live insert after the session's current maximum
+    // keeps receive order monotonic regardless of either clock being skewed,
+    // and a burst within one millisecond still keeps arrival order.
+    const maxRow = maxSortStmt!.get(deviceId, localSessionId) as {
+      n: number | null
+    } | null
+    const max = typeof maxRow?.n === 'number' && maxRow.n > 0 ? maxRow.n : 0
+    const sortMs = Math.max(message.sortMs, max + 1)
     ;(ifAbsent ? insertIfAbsentStmt! : insertStmt!).run(
       deviceId,
       localSessionId,
@@ -348,7 +378,7 @@ function writeRow(
       message.role,
       message.text,
       message.timestamp ?? null,
-      message.sortMs,
+      sortMs,
       safeJson(message.blocks),
       message.usage ? safeJson(message.usage) : null,
       message.source,
@@ -375,10 +405,18 @@ function effectiveSortTimes(
     if (!Number.isNaN(times[index]!)) last = times[index]!
     else if (!Number.isNaN(last)) times[index] = last
   }
+  // Backward fill must land *strictly* below the following dated row: copying
+  // its timestamp made a leading undated prompt tie with its own reply, and
+  // the insertion-seq tiebreak then rendered the reply first when the older
+  // page was cached after the newer one.
   let next = Number.NaN
   for (let index = times.length - 1; index >= 0; index -= 1) {
-    if (!Number.isNaN(times[index]!)) next = times[index]!
-    else if (!Number.isNaN(next)) times[index] = next
+    if (!Number.isNaN(times[index]!)) {
+      next = times[index]!
+    } else if (!Number.isNaN(next)) {
+      next -= 1
+      times[index] = next
+    }
   }
   for (let index = 0; index < times.length; index += 1) {
     if (Number.isNaN(times[index]!)) {
@@ -512,14 +550,19 @@ export function recordBridgeEvent(
         : undefined
 
   if (eventType === 'user') {
-    // Synthetic user turns are tool results, not something a human typed.
-    if (payload.isSynthetic === true) return
     const blocks = blocksFromContent(content)
     const text = textFromBlocks(blocks)
     // Image-only turns carry no text; requiring it made every photo sent from
     // the phone vanish from history on the next reload.
     const hasImage = blocks.some(block => block.type === 'image')
-    if ((!text.trim() && !hasImage) || !uuid) return
+    // Tool results arrive as (often synthetic) user turns with no text. They
+    // are the only durable record of how a tool call finished: dropping them
+    // rebuilt every card as status=unknown and lost the bash output after a
+    // reload. They never render as a bubble (no text, no images) — the
+    // history converter folds them into the tool card.
+    const hasToolResult = blocks.some(block => block.type === 'tool_result')
+    if (!hasToolResult && payload.isSynthetic === true) return
+    if ((!text.trim() && !hasImage && !hasToolResult) || !uuid) return
     // Same uuid as the web-accepted row (the outbox reuses its id), so the
     // upsert merges them instead of adding a duplicate bubble.
     writeRow(deviceId, localSessionId, {
@@ -591,6 +634,28 @@ function trim(deviceId: string, localSessionId: string): void {
     trimStmt!.run(deviceId, localSessionId, MAX_STORED_PER_SESSION)
   } catch {
     // Best-effort; the read path still works without trimming.
+  }
+}
+
+/**
+ * Whether the terminal actually took in a web-sent prompt: either the CLI
+ * echoed the message (source 'bridge') or the spawner transcript cache
+ * contains it (source 'transcript'). The optimistic row written by
+ * saveWebUserMessage is source 'web' and proves nothing on its own.
+ */
+export function hasTerminalReceivedMessage(
+  deviceId: string,
+  localSessionId: string,
+  messageId: string,
+): boolean {
+  try {
+    ensureDb()
+    const row = messageSourceStmt!.get(deviceId, localSessionId, messageId) as {
+      source?: string
+    } | null
+    return row?.source === 'bridge' || row?.source === 'transcript'
+  } catch {
+    return false
   }
 }
 
@@ -755,6 +820,7 @@ export function resetConversationStoreForTest(): void {
   minSortStmt = undefined
   maxSortStmt = undefined
   listSeqBeforeStmt = undefined
+  messageSourceStmt = undefined
   backfillDoneStmt = undefined
   markBackfillStmt = undefined
   oldestStmt = undefined

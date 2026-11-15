@@ -854,6 +854,36 @@ describe('Web Session Routes', () => {
     ])
   })
 
+  test('GET history serializes an inbound image payload once, like SSE', async () => {
+    const createRes = await app.request('/web/sessions?uuid=user-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const { id } = await resJson(createRes)
+
+    const message = {
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: 'QUJD',
+          },
+        },
+      ],
+    }
+    publishSessionEvent(id, 'user', { uuid: 'u-img', message }, 'inbound')
+
+    const histRes = await app.request(`/web/sessions/${id}/history?uuid=user-1`)
+    expect(histRes.status).toBe(200)
+    const text = await histRes.text()
+    // message and raw.message are the same object; the response must carry
+    // the base64 bytes once, exactly as the live SSE frame does.
+    expect(text.split('QUJD').length - 1).toBe(1)
+  })
+
   test('GET history keeps the latest execution state after stream history rolls over', async () => {
     const createRes = await app.request('/web/sessions?uuid=user-1', {
       method: 'POST',
@@ -2097,5 +2127,170 @@ describe('Web device message route (photo pipeline)', () => {
       handleWebSocketClose(ws, bridgeId, 1000, '', token)
       removeEventBus(bridgeId)
     }
+  })
+})
+
+describe('Web Control Routes — live-chat persistence', () => {
+  const deviceId = 'dev_persist'
+  const localSessionId = 'lpersist0001'
+  const dirs: string[] = []
+  let app: Hono
+  let bridgeId: string
+
+  beforeEach(async () => {
+    storeReset()
+    resetStateForTest()
+    resetConversationStoreForTest()
+    for (const [key] of getAllEventBuses()) {
+      removeEventBus(key)
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'rcs-livechat-'))
+    dirs.push(dir)
+    process.env.RCS_DATA_DIR = dir
+    await loadState()
+    upsertDevice({
+      id: deviceId,
+      name: 'Persist PC',
+      platform: 'win32',
+      configDir: 'C:Usersp.claude',
+      secretHash: 'hash',
+      secretPrefix: 'pre',
+      capabilities: [],
+      createdAt: Date.now(),
+      lastSeenAt: null,
+    })
+    app = createApp()
+    const createRes = await app.request('/web/sessions?uuid=user-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    bridgeId = (await resJson(createRes)).id
+    // The live chat posts to /web/sessions/:id/events with the BRIDGE session
+    // id; persistence needs the mapping back to device + local session.
+    setMapping({
+      deviceId,
+      localSessionId,
+      bridgeSessionId: bridgeId,
+      cwd: 'C:proj',
+      updatedAt: Date.now(),
+    })
+  })
+
+  afterAll(async () => {
+    resetStateForTest()
+    resetConversationStoreForTest()
+    delete process.env.RCS_DATA_DIR
+    for (const dir of dirs) await rm(dir, { recursive: true, force: true })
+  })
+
+  test('POST /web/sessions/:id/events — persists a text message under the client uuid', async () => {
+    const res = await app.request(
+      `/web/sessions/${bridgeId}/events?uuid=user-1`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'user',
+          uuid: '11111111-2222-3333-4444-555555555555',
+          content: '手机发的测试',
+        }),
+      },
+    )
+    expect(res.status).toBe(200)
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    const row = page.messages.find(
+      message => message.id === '11111111-2222-3333-4444-555555555555',
+    )
+    expect(row?.text).toBe('手机发的测试')
+    expect(row?.source).toBe('web')
+  })
+
+  test('live-chat sends use the durable outbox and retries do not enqueue twice', async () => {
+    const request = () =>
+      app.request(`/web/sessions/${bridgeId}/events?uuid=user-1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'user',
+          uuid: 'retry-live',
+          content: 'queued',
+        }),
+      })
+    const [first, retry] = await Promise.all([request(), request()])
+    expect(first.status).toBe(200)
+    expect(retry.status).toBe(200)
+    expect(listOutbox(deviceId, localSessionId)).toHaveLength(1)
+    expect(
+      getEventBus(bridgeId)
+        .getEventsSince(0)
+        .filter(event => event.direction === 'outbound'),
+    ).toHaveLength(1)
+    resetStateForTest()
+    await loadState()
+    expect(listOutbox(deviceId, localSessionId)[0]?.requiresReview).toBe(true)
+  })
+
+  test('POST /web/sessions/:id/events — persists image blocks from a photo send', async () => {
+    const res = await app.request(
+      `/web/sessions/${bridgeId}/events?uuid=user-1`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'user',
+          uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+          content: [
+            { type: 'text', text: '看这张图' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
+            },
+          ],
+        }),
+      },
+    )
+    expect(res.status).toBe(200)
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    const row = page.messages.find(
+      message => message.id === 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    )
+    expect(row?.text).toBe('看这张图')
+    expect(row?.blocks).toContainEqual({
+      type: 'image',
+      mimeType: 'image/png',
+      data: 'aGk=',
+    })
+  })
+
+  test('POST /web/sessions/:id/events — no mapping or non-user events never touch the store', async () => {
+    // Non-user type: nothing persisted.
+    await app.request(`/web/sessions/${bridgeId}/events?uuid=user-1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'permission_response',
+        approved: true,
+        request_id: 'r1',
+      }),
+    })
+    // A session without a device mapping (pure web worker session).
+    const createRes = await app.request('/web/sessions?uuid=user-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const orphanId = (await resJson(createRes)).id
+    const res = await app.request(
+      `/web/sessions/${orphanId}/events?uuid=user-1`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'user', content: '不落库' }),
+      },
+    )
+    expect(res.status).toBe(200)
+    const page = listStoredMessages(deviceId, localSessionId, 10)
+    expect(page.messages).toHaveLength(0)
   })
 })

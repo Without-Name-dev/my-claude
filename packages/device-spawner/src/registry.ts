@@ -343,18 +343,28 @@ export async function verifySession(
     candidates = entries.filter(entry => entry.pid === options.pid)
   }
   if (candidates.length === 0 && options.bridgeSessionId) {
+    // Same session-identity requirement as the command-line fallback below:
+    // a bridge id alone must not attach a request for session A to an entry
+    // that has since been retargeted to session B by `/resume`.
     candidates = entries.filter(
-      entry => entry.bridgeSessionId === options.bridgeSessionId,
+      entry =>
+        entry.bridgeSessionId === options.bridgeSessionId &&
+        entry.sessionId === localSessionId,
     )
   }
   if (candidates.length === 0 && options.verifyCommandLine !== false) {
     // The terminal was launched with `--resume <localSessionId>`, so the
-    // command line identifies it even when the PID file carries a different
-    // sessionId. Never guess from cwd alone: two sessions can share a cwd and
-    // that would attach the wrong bridge.
+    // command line can identify the process. But the registry entry it points
+    // to must still claim the requested session: after `/resume B` the PID
+    // file is rewritten to B while the immutable command line keeps
+    // `--resume A`, and matching on the pid alone attached session A's web
+    // view to B's bridge. Never guess from cwd alone either: two sessions can
+    // share a cwd and that would attach the wrong bridge.
     const pids = (await findLaunchPids(localSessionId)).filter(isProcessAlive)
     if (pids.length > 0) {
-      candidates = entries.filter(entry => pids.includes(entry.pid))
+      candidates = entries.filter(
+        entry => pids.includes(entry.pid) && entry.sessionId === localSessionId,
+      )
     }
   }
   candidates = candidates.sort(

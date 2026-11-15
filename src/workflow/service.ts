@@ -143,6 +143,7 @@ export function makeService(
     name?: string
     scriptPath?: string
     title?: string
+    resumeFromRunId?: string
   }): Promise<{
     script: string
     workflowFile?: string
@@ -164,15 +165,36 @@ export function makeService(
     if (input.name) {
       const dir = join(getProjectRoot(), WORKFLOW_DIR_NAME)
       const found = await resolveNamedWorkflow(dir, input.name)
-      if (!found) {
+      if (found) {
+        return {
+          script: found.content,
+          workflowFile: found.path,
+          workflowName: input.name,
+        }
+      }
+      if (!input.resumeFromRunId) {
         throw new Error(
           `Named workflow "${input.name}" not found (looked in ${WORKFLOW_DIR_NAME}/)`,
         )
       }
-      return {
-        script: found.content,
-        workflowFile: found.path,
-        workflowName: input.name,
+      // Fall through: an inline Workflow-tool run has no named file, but its
+      // script was persisted into the run directory for exactly this resume.
+    }
+    // `name` in the workflow panel is the display title, so resuming an inline
+    // run must read the script it persisted instead of failing name lookup.
+    if (input.resumeFromRunId) {
+      const scriptFile = join(
+        runsDirProvider(),
+        input.resumeFromRunId,
+        'script.js',
+      )
+      try {
+        const script = await readFile(scriptFile, 'utf-8')
+        return { script, workflowFile: scriptFile, workflowName }
+      } catch {
+        throw new Error(
+          `Workflow "${input.name ?? input.resumeFromRunId}" not found (no named file and no script.js in its run directory)`,
+        )
       }
     }
     throw new Error('One of script, name, or scriptPath must be provided')

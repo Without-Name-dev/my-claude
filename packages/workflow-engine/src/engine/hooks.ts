@@ -199,18 +199,27 @@ export function makeHooks(
       type BackendAttempt =
         | { kind: 'result'; value: AgentRunResult }
         | { kind: 'error'; error: unknown }
+        | { kind: 'aborted' }
       const attemptBackend = async (): Promise<BackendAttempt> => {
         try {
           return { kind: 'result', value: await invokeBackend() }
         } catch (error) {
-          if (error instanceof WorkflowAbortedError) throw error
+          if (error instanceof WorkflowAbortedError) {
+            // Single-agent kill: this agent ends dead, the run continues.
+            // Run-level abort still unwinds the whole script.
+            if (error.scope === 'agent') return { kind: 'aborted' }
+            throw error
+          }
           return { kind: 'error', error }
         }
       }
 
       const first = await attemptBackend()
       let result: AgentRunResult
-      if (first.kind === 'result' && first.value.kind !== 'dead') {
+      if (first.kind === 'aborted') {
+        // The user killed this agent; never retry an intentional abort.
+        result = { kind: 'dead', reason: 'aborted' }
+      } else if (first.kind === 'result' && first.value.kind !== 'dead') {
         result = first.value
       } else {
         if (first.kind === 'error') {
@@ -233,17 +242,21 @@ export function makeHooks(
         }
 
         const retry = await attemptBackend()
-        result =
-          retry.kind === 'result'
-            ? retry.value
-            : {
-                kind: 'dead',
-                reason: 'runagent-threw',
-                detail:
-                  retry.error instanceof Error
-                    ? retry.error.message
-                    : String(retry.error),
-              }
+        if (retry.kind === 'aborted') {
+          result = { kind: 'dead', reason: 'aborted' }
+        } else {
+          result =
+            retry.kind === 'result'
+              ? retry.value
+              : {
+                  kind: 'dead',
+                  reason: 'runagent-threw',
+                  detail:
+                    retry.error instanceof Error
+                      ? retry.error.message
+                      : String(retry.error),
+                }
+        }
       }
       if (result.kind === 'ok') {
         ctx.resources.budget.addOutputTokens(result.usage.outputTokens)

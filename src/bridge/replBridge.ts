@@ -68,6 +68,7 @@ import type { StdoutMessage } from '../entrypoints/sdk/controlTypes.js'
 type TransportMessage = StdoutMessage & { session_id?: string }
 import { createCapacityWake, type CapacitySignal } from './capacityWake.js'
 import { FlushGate } from './flushGate.js'
+import { createPendingControlFrameQueue } from './pendingControlFrames.js'
 import {
   DEFAULT_POLL_CONFIG,
   type PollIntervalConfig,
@@ -188,7 +189,7 @@ export type BridgeCoreParams = {
   // Same REPL-flush machinery as InitBridgeOptions — daemon omits these.
   initialMessages?: Message[]
   previouslyFlushedUUIDs?: Set<string>
-  onInboundMessage?: (msg: SDKMessage) => void
+  onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
   onSetModel?: (model: string | undefined) => void
@@ -603,6 +604,40 @@ export async function initBridgeCore(
   // Gates message writes during the initial flush to prevent ordering
   // races where new messages arrive at the server interleaved with history.
   const flushGate = new FlushGate<Message>()
+
+  /**
+   * Control frames produced while `transport === null` (permanent close,
+   * onWorkReceived handshake window, heartbeat teardown). A remote permission
+   * answer or cancel is a promise to the user that the prompt was handled;
+   * dropping it left the card pending forever on every client. Keyed by
+   * type+request_id so a retry of the same answer cannot pile up.
+   */
+  const pendingControlFrames = createPendingControlFrameQueue(
+    (label, pending) =>
+      logForDebugging(
+        `[bridge:repl] Transport not configured, queued ${label} (${pending} pending)`,
+      ),
+    flushed =>
+      logForDebugging(
+        `[bridge:repl] Flushed ${flushed} queued control frame(s)`,
+      ),
+  )
+
+  function queueControlFrame(
+    key: string,
+    frame: TransportMessage,
+    label: string,
+  ): void {
+    pendingControlFrames.queue(key, frame)
+  }
+
+  function drainPendingControlFrames(): void {
+    const active = transport
+    if (!active) return
+    pendingControlFrames.drain(frame => {
+      void active.write(frame as StdoutMessage)
+    })
+  }
 
   // Latch for onUserMessage — flips true when the callback returns true
   // (policy says "done deriving"). If no callback, skip scanning entirely
@@ -1274,6 +1309,10 @@ export async function initBridgeCore(
           // Reset teardownStarted so future teardowns are not blocked.
           teardownStarted = false
 
+          // Flush any control frames (permission responses/cancels) that were
+          // queued while the transport was disconnected.
+          drainPendingControlFrames()
+
           // Flush initial messages only on first connect, not on every
           // WS reconnection. Re-flushing would cause duplicate messages.
           // IMPORTANT: onStateChange('connected') is deferred until the
@@ -1640,6 +1679,10 @@ export async function initBridgeCore(
     pollController.abort()
     logForDebugging('[bridge:repl] Teardown: poll loop aborted')
 
+    // Drop any control frames queued while disconnected — the session is
+    // ending, so a late permission response would be meaningless.
+    pendingControlFrames.clear()
+
     // Capture the live transport's seq BEFORE close() — close() is sync
     // (just aborts the SSE fetch) and does NOT invoke onClose, so the
     // setOnClose capture path never runs for explicit teardown.
@@ -1862,8 +1905,16 @@ export async function initBridgeCore(
     },
     sendControlResponse(response: SDKControlResponse) {
       if (!transport) {
-        logForDebugging(
-          '[bridge:repl] Transport not configured, skipping control_response',
+        // Queue instead of dropping: a permission decision made while the
+        // transport is reconnecting must still reach the server, otherwise
+        // the remote permission request stays unresolved forever.
+        queueControlFrame(
+          `response\u0000${response.response.request_id ?? ''}`,
+          {
+            ...response,
+            session_id: currentSessionId,
+          } as TransportMessage,
+          'control_response',
         )
         return
       }
@@ -1876,8 +1927,14 @@ export async function initBridgeCore(
     },
     sendControlCancelRequest(requestId: string) {
       if (!transport) {
-        logForDebugging(
-          '[bridge:repl] Transport not configured, skipping control_cancel_request',
+        queueControlFrame(
+          `cancel\u0000${requestId}`,
+          {
+            type: 'control_cancel_request' as const,
+            request_id: requestId,
+            session_id: currentSessionId,
+          } as TransportMessage,
+          'control_cancel_request',
         )
         return
       }

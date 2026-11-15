@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Check, ChevronDown, Circle, Loader2, Square, X } from 'lucide-react';
 import type { ExecutionTask, WorkflowRun } from '../../lib/execution-state';
 import { cn } from '../../lib/utils';
 
 /** Only render state received from the terminal's Bridge. */
-export function ExecutionPanel({
+export const ExecutionPanel = memo(function ExecutionPanel({
   tasks,
   workflows,
   compact = false,
@@ -88,7 +88,7 @@ export function ExecutionPanel({
       </div>
     </section>
   );
-}
+});
 
 function TaskIcon({ status }: { status: ExecutionTask['status'] }) {
   if (status === 'completed') return <Check aria-hidden="true" className="mt-1 h-4 w-4 shrink-0 text-status-success" />;
@@ -97,64 +97,79 @@ function TaskIcon({ status }: { status: ExecutionTask['status'] }) {
   return <Square aria-hidden="true" className="mt-1 h-3.5 w-3.5 shrink-0 text-text-muted" />;
 }
 
-function WorkflowCard({ run }: { run: WorkflowRun }) {
+const WorkflowCard = memo(function WorkflowCard({ run }: { run: WorkflowRun }) {
   const [expanded, setExpanded] = useState(false);
-  const phases = [...run.declaredPhases];
-  for (const phase of run.phases) if (!phases.includes(phase.title)) phases.push(phase.title);
+  // A script's meta.phases is user-authored and may repeat a title; verbatim
+  // copying rendered duplicate blocks, duplicate agent rows and duplicate
+  // React keys. The terminal's mergePhases dedupes — match it.
+  const phases: string[] = [];
+  for (const title of [...run.declaredPhases, ...run.phases.map(phase => phase.title)]) {
+    if (!phases.includes(title)) phases.push(title);
+  }
   const status = { running: '运行中', completed: '已完成', failed: '失败', killed: '已停止' }[run.status];
   return (
-    <details
-      open={expanded}
-      onToggle={event => setExpanded(event.currentTarget.open)}
-      className="rounded-xl border border-border/70 bg-surface-1/50"
-    >
-      <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] text-text-primary">
+    <div className="rounded-xl border border-border/70 bg-surface-1/50">
+      {/* A controlled <details open onToggle> re-applies `open` on every
+          snapshot update; with workflow_state arriving continuously that
+          showed up on the phone as a card that kept flickering open/closed.
+          A button + conditional body keeps expansion purely in React state. */}
+      <button
+        type="button"
+        onClick={() => setExpanded(value => !value)}
+        aria-expanded={expanded}
+        className="flex min-h-11 w-full items-center gap-2 px-3 text-left text-[13px] text-text-primary active:bg-surface-2/60"
+      >
         {run.status === 'running' ? (
-          <Loader2 className="h-4 w-4 animate-spin text-brand" />
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand" />
         ) : run.status === 'completed' ? (
-          <Check className="h-4 w-4 text-status-success" />
+          <Check className="h-4 w-4 shrink-0 text-status-success" />
         ) : (
-          <X className="h-4 w-4 text-status-error" />
+          <X className="h-4 w-4 shrink-0 text-status-error" />
         )}
         <span className="min-w-0 flex-1 break-words font-medium">{run.workflowName}</span>
         <span className="shrink-0 text-xs text-text-muted">{status}</span>
-      </summary>
-      <div className="space-y-2 border-t border-border/60 px-3 py-2 text-[12px] leading-5">
-        {run.description && <p className="break-words text-text-secondary">{run.description}</p>}
-        {run.error && <p className="break-words text-status-error">{run.error}</p>}
-        {phases.map(phase => {
-          const state = run.phases.find(item => item.title === phase)?.status;
-          const agents = run.agents.filter(agent => agent.phase === phase);
-          return (
-            <div key={phase} className="space-y-1">
-              <div className="flex items-center gap-1.5 text-text-secondary">
-                {state === 'done' ? (
-                  <Check className="h-3.5 w-3.5 text-status-success" />
-                ) : state === 'running' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
-                ) : (
-                  <Circle className="h-3.5 w-3.5 text-text-muted" />
-                )}
-                <span className="break-words">{phase}</span>
-                <span className="text-text-muted">
-                  {state === 'done' ? '已完成' : state === 'running' ? '进行中' : '待开始'}
-                </span>
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 shrink-0 text-text-muted transition-transform', !expanded && '-rotate-90')}
+        />
+      </button>
+      {expanded && (
+        <div className="space-y-2 border-t border-border/60 px-3 py-2 text-[12px] leading-5">
+          {run.description && <p className="break-words text-text-secondary">{run.description}</p>}
+          {run.error && <p className="break-words text-status-error">{run.error}</p>}
+          {phases.map(phase => {
+            const state = run.phases.find(item => item.title === phase)?.status;
+            const agents = run.agents.filter(agent => agent.phase === phase);
+            return (
+              <div key={phase} className="space-y-1">
+                <div className="flex items-center gap-1.5 text-text-secondary">
+                  {state === 'done' ? (
+                    <Check className="h-3.5 w-3.5 text-status-success" />
+                  ) : state === 'running' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-brand" />
+                  ) : (
+                    <Circle className="h-3.5 w-3.5 text-text-muted" />
+                  )}
+                  <span className="break-words">{phase}</span>
+                  <span className="text-text-muted">
+                    {state === 'done' ? '已完成' : state === 'running' ? '进行中' : '待开始'}
+                  </span>
+                </div>
+                {agents.map(agent => (
+                  <AgentRow key={agent.id} agent={agent} />
+                ))}
               </div>
-              {agents.map(agent => (
-                <AgentRow key={agent.id} agent={agent} />
-              ))}
-            </div>
-          );
-        })}
-        {run.agents
-          .filter(agent => !agent.phase || !phases.includes(agent.phase))
-          .map(agent => (
-            <AgentRow key={agent.id} agent={agent} />
-          ))}
-      </div>
-    </details>
+            );
+          })}
+          {run.agents
+            .filter(agent => !agent.phase || !phases.includes(agent.phase))
+            .map(agent => (
+              <AgentRow key={agent.id} agent={agent} />
+            ))}
+        </div>
+      )}
+    </div>
   );
-}
+});
 
 function AgentRow({ agent }: { agent: WorkflowRun['agents'][number] }) {
   const label = agent.label || `agent-${agent.id}`;

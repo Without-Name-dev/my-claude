@@ -976,3 +976,38 @@ test('taskRegistrar does not provide registerAgentAbort → adapterCtx also lack
     (capturedCtx! as Record<string, unknown>).registerAgentAbort,
   ).toBeUndefined()
 })
+
+test('agent-scoped abort ends only that agent dead; run-scoped abort still unwinds', async () => {
+  const registry = new AgentAdapterRegistry()
+    .register({
+      id: 'ad',
+      capabilities: { structuredOutput: true },
+      async run() {
+        throw new WorkflowAbortedError('agent')
+      },
+    })
+    .default('ad')
+  const { ctx, hooks } = buildCtx({
+    agentAdapterRegistry: registry,
+    loggerWarn: () => {},
+  })
+  // A single-agent kill must not unwind the script: the agent ends dead.
+  expect(await hooks.agent('x')).toBeNull()
+  const final = ctx.journal[0]!.result
+  expect(final.kind).toBe('dead')
+  expect(final.kind === 'dead' ? final.reason : undefined).toBe('aborted')
+
+  const runAbortRegistry = new AgentAdapterRegistry()
+    .register({
+      id: 'ad',
+      capabilities: { structuredOutput: true },
+      async run() {
+        throw new WorkflowAbortedError('run')
+      },
+    })
+    .default('ad')
+  const second = buildCtx({ agentAdapterRegistry: runAbortRegistry })
+  await expect(second.hooks.agent('x')).rejects.toBeInstanceOf(
+    WorkflowAbortedError,
+  )
+})

@@ -23,13 +23,14 @@ import {
   agentProgressParentId,
   applyAgentProgress,
   type ExecutionTask,
+  type TerminalQueueSnapshot,
   type WorkflowRun,
 } from '../../lib/execution-state';
 import { TooltipProvider } from '../../../components/ui/tooltip';
 import { cn } from '../../lib/utils';
 import { haptic } from '../../lib/view-transition';
 import { turnFinished } from '../../lib/turn-notice';
-import { SlidersHorizontal } from 'lucide-react';
+import { SlidersHorizontal, TerminalSquare } from 'lucide-react';
 import { PermissionPromptView, AskUserPanelView, PlanPanelView } from '../../components/PermissionViews';
 import type { Question } from '../../types';
 import type { AvailableCommand } from '../../acp/types';
@@ -98,7 +99,7 @@ export function BridgeChat({
    * Seeds the token/cache-rate row so it matches the terminal right after a
    * reload instead of restarting from zero.
    */
-  usageSeed?: { id: string; usage: TranscriptUsage }[];
+  usageSeed?: { id: string; timestamp?: string; usage: TranscriptUsage }[];
   /**
    * Shared draft key. The device view passes its own key so an unsent draft
    * survives the switch from the history view to this live view; the default
@@ -113,6 +114,8 @@ export function BridgeChat({
   const [isLoading, setIsLoading] = useState(false);
   const [tasks, setTasks] = useState<ExecutionTask[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  /** Prompts typed at the terminal, waiting for the running turn to finish. */
+  const [terminalQueue, setTerminalQueue] = useState<TerminalQueueSnapshot | null>(null);
   const agentProgressEvents = useRef<unknown[]>([]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
@@ -153,7 +156,7 @@ export function BridgeChat({
   const [permissionMode, setPermissionMode] = useState('');
   const [effort, setEffort] = useState('');
   const [ultracode, setUltracode] = useState(false);
-  const [ultracodeUsable, setUltracodeUsable] = useState(false);
+  const [ultracodeUsable, setUltracodeUsable] = useState<boolean | null>(null);
   const [usage, setUsage] = useState<SessionUsage | null>(null);
   const [controlError, setControlError] = useState('');
   /** False until the bridge handshake (init) returns; sending is held until then. */
@@ -235,6 +238,8 @@ export function BridgeChat({
       setControlPending(false);
       const rollbacks = [...pendingControls.current.values()];
       pendingControls.current.clear();
+      userChangedModel.current = false;
+      userChangedMode.current = false;
       for (const rollback of rollbacks) rollback();
       if (rollbacks.length > 0) setControlError('切换超时，已保持原来的设置');
     }, 8000);
@@ -251,6 +256,9 @@ export function BridgeChat({
       new RCSChatAdapter(sessionId, setEntries, {
         onTasks: setTasks,
         onWorkflows: setWorkflows,
+        // Mirrored from the CLI: prompts typed at the terminal while a turn
+        // runs. Without this the phone sees nothing until the turn ends.
+        onTerminalQueue: next => setTerminalQueue(next ?? null),
         onAgentProgress: payload => {
           const parentId = agentProgressParentId(payload);
           if (
@@ -266,6 +274,11 @@ export function BridgeChat({
         // the prompt must not linger on this phone.
         onPermissionResolved: requestId => {
           setPermissions(previous => previous.filter(item => item.requestId !== requestId));
+        },
+        // The tool finished: its prompt is spent even if the resolving control
+        // frame never arrived (interrupt or a transport gap drops those).
+        onPermissionToolResult: toolUseId => {
+          setPermissions(previous => previous.filter(item => item.toolUseId !== toolUseId));
         },
         onPermissionRequest: permission => {
           setPermissions(previous =>
@@ -284,12 +297,15 @@ export function BridgeChat({
           if (typeof info.ultracodeActive === 'boolean') setUltracode(info.ultracodeActive);
         },
         onControlResponse: response => {
-          if (response.requestId) {
-            const rollback = pendingControls.current.get(response.requestId);
-            pendingControls.current.delete(response.requestId);
-            if (response.error) rollback?.();
-          }
+          // Permission answers and controls from other clients share this
+          // stream. They must not change this sheet's pending/error state.
+          if (!response.requestId || !pendingControls.current.has(response.requestId)) return;
+          const rollback = pendingControls.current.get(response.requestId);
+          pendingControls.current.delete(response.requestId);
+          if (response.error) rollback?.();
           if (pendingControls.current.size === 0) {
+            userChangedModel.current = false;
+            userChangedMode.current = false;
             if (controlTimer.current) {
               clearTimeout(controlTimer.current);
               controlTimer.current = null;
@@ -432,10 +448,19 @@ export function BridgeChat({
         }
         setControlPending(true);
         setControlError('');
+        armControlTimeout();
         try {
-          await adapter.setEffort(arg);
+          // Register the request id: the CLI rejects invalid levels (e.g.
+          // 'max' for non-ant users) asynchronously via control_response, and
+          // an unregistered response was dropped instead of surfacing the error.
+          await adapter.setEffort(arg, requestId => pendingControls.current.set(requestId, () => {}));
           appendCommandOutput(`已设置 effort：${arg}`);
         } catch (err) {
+          if (controlTimer.current) {
+            clearTimeout(controlTimer.current);
+            controlTimer.current = null;
+          }
+          pendingControls.current.clear();
           const message = err instanceof Error ? err.message : '切换 effort 失败';
           setControlError(message);
           throw new Error(message);
@@ -486,13 +511,12 @@ export function BridgeChat({
 
   /** Send a control request and remember how to undo its optimistic value. */
   const runControl = useCallback(
-    async (send: () => Promise<string>, rollback: () => void, failure: string) => {
+    async (send: (register: (id: string) => void) => Promise<string>, rollback: () => void, failure: string) => {
       setControlError('');
       setControlPending(true);
       armControlTimeout();
       try {
-        const requestId = await send();
-        pendingControls.current.set(requestId, rollback);
+        await send(requestId => pendingControls.current.set(requestId, rollback));
       } catch (err) {
         if (controlTimer.current) {
           clearTimeout(controlTimer.current);
@@ -500,6 +524,8 @@ export function BridgeChat({
         }
         rollback();
         pendingControls.current.clear();
+        userChangedModel.current = false;
+        userChangedMode.current = false;
         setControlPending(false);
         setControlError(`${failure}：${err instanceof Error ? err.message : '未知原因'}`);
       }
@@ -513,7 +539,7 @@ export function BridgeChat({
       userChangedModel.current = true;
       setModelId(id);
       await runControl(
-        () => adapter.setModel(id),
+        register => adapter.setModel(id, register),
         () => setModelId(previous),
         '切换模型失败，已保持原模型',
       );
@@ -527,7 +553,7 @@ export function BridgeChat({
       userChangedMode.current = true;
       setPermissionMode(mode);
       await runControl(
-        () => adapter.setPermissionMode(mode),
+        register => adapter.setPermissionMode(mode, register),
         () => setPermissionMode(previous),
         '切换权限模式失败，已保持原模式',
       );
@@ -540,7 +566,7 @@ export function BridgeChat({
       const previous = effort;
       setEffort(value);
       await runControl(
-        () => adapter.setEffort(value),
+        register => adapter.setEffort(value, register),
         () => setEffort(previous),
         '切换思考等级失败，已保持原等级',
       );
@@ -552,7 +578,7 @@ export function BridgeChat({
     const next = !ultracode;
     setUltracode(next);
     await runControl(
-      () => adapter.setUltracode(next),
+      register => adapter.setUltracode(next, register),
       () => setUltracode(!next),
       '切换 Ultracode 失败',
     );
@@ -672,8 +698,11 @@ export function BridgeChat({
     name: command.name,
     description: command.description || '命令',
   }));
+  const reportedModels = sessionInfo?.models ?? [];
   const models =
-    sessionInfo && sessionInfo.models.length > 0 ? sessionInfo.models : modelId ? [{ id: modelId, name: modelId }] : [];
+    modelId && !reportedModels.some(model => model.id === modelId)
+      ? [{ id: modelId, name: modelId }, ...reportedModels]
+      : reportedModels;
   const permissionOptions = PERMISSION_MODES.some(option => option.id === permissionMode)
     ? PERMISSION_MODES
     : permissionMode
@@ -779,10 +808,23 @@ export function BridgeChat({
             </span>
           </div>
         )}
-        {usage && usage.current && <ContextStats usage={usage} contextWindow={sessionInfo?.contextWindow} />}
+        {usage && <ContextStats usage={usage} contextWindow={sessionInfo?.contextWindow} />}
         {/* Status strip sits below the transcript, right above the composer:
             collapsed by default so it never pushes messages off-screen. */}
         <ExecutionPanel tasks={tasks} workflows={workflows} compact={permissions.length > 0} />
+        {terminalQueue && terminalQueue.count > 0 && (
+          <div role="status" aria-label="终端排队消息" className="shrink-0 px-4 pb-1.5 sm:px-8">
+            <div className="mx-auto flex max-w-[56rem] items-center gap-2 rounded-xl border border-border/60 bg-surface-1/60 px-3 py-2 text-[12px] leading-5 text-text-secondary">
+              <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+              <span className="shrink-0 font-medium text-text-primary">
+                终端排队中{terminalQueue.count > 1 ? `（${terminalQueue.count} 条）` : ''}
+              </span>
+              {terminalQueue.previews[0] && (
+                <span className="min-w-0 flex-1 truncate text-text-muted">{terminalQueue.previews[0]}</span>
+              )}
+            </div>
+          </div>
+        )}
         <ChatInput
           key={sessionId}
           draftKey={draftKeyProp ?? `bridge:${sessionId}`}
@@ -818,7 +860,7 @@ export function BridgeChat({
                 >
                   {effort || '设置'}
                   {ultracode ? ' · Ultra' : ''}
-                  {activeModelName && <span className="hidden sm:inline">{` · ${activeModelName}`}</span>}
+                  {activeModelName && <span>{` · ${activeModelName}`}</span>}
                 </span>
               </button>
             </>
@@ -883,7 +925,9 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
   const totals = usage?.totals ?? { input: 0, output: 0 };
   const contextTokens = current.input + current.cacheCreation + current.cacheRead;
   const pct =
-    contextWindow && contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : null;
+    usage?.current && contextWindow && contextWindow > 0
+      ? Math.min(100, Math.round((contextTokens / contextWindow) * 100))
+      : null;
   // 10 cells, matching the terminal's ███░░░░░░░ bar.
   const filled = pct === null ? 0 : Math.round(pct / 10);
   // Conversation average (cumulative cache reads / all prompt tokens), the
@@ -892,7 +936,7 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
   return (
     <div
       role="status"
-      className="mx-auto flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-4 pb-0.5 text-[11px] leading-4 text-text-muted"
+      className="mx-auto flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-1 text-xs leading-5 text-text-secondary"
     >
       {pct !== null && (
         <span className="font-mono tracking-tight" title={`上下文 ${contextWindow?.toLocaleString()} tokens`}>
@@ -900,8 +944,8 @@ function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; co
           {'░'.repeat(10 - filled)} {pct}%
         </span>
       )}
-      <span>
-        Tokens {formatTokenCount(totals.input + totals.output)}
+      <span title={usage?.estimated ? '根据已加载的部分历史估算；终端更新后显示实时总量' : '与终端会话统计一致'}>
+        {usage?.estimated ? '约 ' : ''}Tokens {formatTokenCount(totals.input + totals.output)}
         {cache !== null ? ` (cache ${cache})` : ''}
       </span>
     </div>

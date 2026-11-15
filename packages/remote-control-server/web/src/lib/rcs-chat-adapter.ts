@@ -8,15 +8,18 @@ import {
   apiSendControl,
   apiInterrupt,
   getUuid,
+  ApiConnectionError,
 } from '../api/client'
 import { generateMessageUuid } from './utils'
-import { findAssistantReplayTwin, mergeThreadEntries } from './device-history'
+import { appendLiveEntry, mergeHistoryPage } from './device-history'
 import { debugLog } from './debug-log'
 import {
   applyAgentProgress,
   parseTaskSnapshot,
+  parseTerminalQueueSnapshot,
   parseWorkflowSnapshot,
   type ExecutionTask,
+  type TerminalQueueSnapshot,
   type WorkflowRun,
 } from './execution-state'
 import type { SessionEvent, EventPayload } from '../types'
@@ -205,6 +208,34 @@ function storeCursor(sessionId: string, seqNum: number): void {
   }
 }
 
+/**
+ * Identity of the server event bus that issued the stored cursor. Sequence
+ * numbers restart at 1 when the server restarts, so a cursor without its bus
+ * identity is meaningless — comparing them is the only way to notice the
+ * swap before the fresh numbering passes the stale cursor.
+ */
+function generationStorageKey(sessionId: string): string {
+  return `rcs.gen.${sessionId}`
+}
+
+function readStoredGeneration(sessionId: string): string {
+  try {
+    return sessionStorage.getItem(generationStorageKey(sessionId)) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function storeGeneration(sessionId: string, generation: string): void {
+  try {
+    if (generation)
+      sessionStorage.setItem(generationStorageKey(sessionId), generation)
+    else sessionStorage.removeItem(generationStorageKey(sessionId))
+  } catch {
+    // Private mode: handled in memory for this page's lifetime.
+  }
+}
+
 class SSEBus {
   private listeners: Set<SSEEventHandler> = new Set()
   private eventSource: EventSource | null = null
@@ -213,6 +244,8 @@ class SSEBus {
   private lastProbe = 0
   /** Server sequence cursor: a reconnect may replay events we already have. */
   private lastSeqNum = 0
+  /** Bus that issued lastSeqNum; a different one means the numbering reset. */
+  private lastGeneration = ''
   private seqSessionId = ''
   /** The server admitted it cannot replay the gap; the transcript is stale. */
   private onResync: (() => void) | null = null
@@ -240,6 +273,7 @@ class SSEBus {
     // bus is reused for a different one. A reload restores it from storage.
     if (this.seqSessionId !== sessionId) {
       this.lastSeqNum = readStoredCursor(sessionId)
+      this.lastGeneration = readStoredGeneration(sessionId)
       this.seqSessionId = sessionId
     } else {
       this.lastSeqNum = Math.max(this.lastSeqNum, readStoredCursor(sessionId))
@@ -254,6 +288,22 @@ class SSEBus {
       if (this.eventSource !== es) return
       try {
         const data = JSON.parse(e.data) as SessionEvent
+        // A different bus generation means the server process restarted and
+        // numbering began again at 1. The stored cursor belongs to the old
+        // epoch; keeping it would silently drop every event below it (the
+        // fresh bus can pass a stale 500 within a minute of traffic).
+        const generation =
+          typeof data.generation === 'string' ? data.generation : ''
+        if (generation && generation !== this.lastGeneration) {
+          const staleCursor = this.lastSeqNum
+          this.lastGeneration = generation
+          storeGeneration(sessionId, generation)
+          if (staleCursor > 0) {
+            this.lastSeqNum = 0
+            storeCursor(sessionId, 0)
+            this.onResync?.()
+          }
+        }
         // Auto-replay after a reconnect re-sends everything since the cursor;
         // without this the duplicate assistant text/tool cards piled up.
         if (typeof data.seqNum === 'number') {
@@ -279,8 +329,15 @@ class SSEBus {
       if (this.eventSource !== es) return
       let cursor = 0
       try {
-        const data = JSON.parse(e.data || '{}') as { seqNum?: unknown }
+        const data = JSON.parse(e.data || '{}') as {
+          seqNum?: unknown
+          generation?: unknown
+        }
         if (typeof data.seqNum === 'number') cursor = data.seqNum
+        if (typeof data.generation === 'string' && data.generation) {
+          this.lastGeneration = data.generation
+          storeGeneration(sessionId, data.generation)
+        }
       } catch {
         // Keep 0: the next event after the reload re-establishes the cursor.
       }
@@ -535,6 +592,8 @@ export type SessionUsage = {
   totals: { input: number; output: number }
   /** Conversation average: cache_read / (input + cache_creation + cache_read). */
   cacheHitRate: number | null
+  /** Older terminals only provide partial history, not session totals. */
+  estimated?: boolean
 }
 
 export type BridgeControlResponse = {
@@ -553,6 +612,12 @@ export class RCSChatAdapter {
   private onError?: (error: string) => void
   private onPermissionRequest?: (permission: PendingPermission) => void
   private onPermissionResolved?: (requestId: string) => void
+  /**
+   * A tool call completed. If a permission request belonged to that call it is
+   * spent even when no control_response was ever published (interrupts and
+   * transport-null windows drop them), so the parent removes it.
+   */
+  private onPermissionToolResult?: (toolUseId: string) => void
   private onSessionInfo?: (info: BridgeSessionInfo) => void
   private onControlResponse?: (response: BridgeControlResponse) => void
   private onBridgeState?: (connected: boolean) => void
@@ -563,6 +628,10 @@ export class RCSChatAdapter {
   private onTasks?: (tasks: ExecutionTask[]) => void
   private onWorkflows?: (runs: WorkflowRun[]) => void
   private onAgentProgress?: (payload: unknown) => void
+  /** Terminal prompts waiting in the local queue; undefined = none. */
+  private onTerminalQueue?: (
+    snapshot: TerminalQueueSnapshot | undefined,
+  ) => void
   private historyMode: 'full' | 'metadata'
   private disposed = false
   /**
@@ -572,6 +641,9 @@ export class RCSChatAdapter {
    */
   private usageByMessage = new Map<string, SessionUsage['current'] & object>()
   private usageOrder: string[] = []
+  private liveUsageIds = new Set<string>()
+  private historyUsageTimes = new Map<string, number>()
+  private hasTerminalUsage = false
   // Direct handleEvent() calls (and tests) work without init(); init() flips
   // this off while the history snapshot is being merged.
   private historyReady = true
@@ -586,6 +658,8 @@ export class RCSChatAdapter {
       onPermissionRequest?: (permission: PendingPermission) => void
       /** The request was answered elsewhere (the terminal, another device). */
       onPermissionResolved?: (requestId: string) => void
+      /** A tool_result arrived for this tool call; its request is spent. */
+      onPermissionToolResult?: (toolUseId: string) => void
       onSessionInfo?: (info: BridgeSessionInfo) => void
       onControlResponse?: (response: BridgeControlResponse) => void
       onBridgeState?: (connected: boolean) => void
@@ -598,6 +672,8 @@ export class RCSChatAdapter {
       onTasks?: (tasks: ExecutionTask[]) => void
       onWorkflows?: (runs: WorkflowRun[]) => void
       onAgentProgress?: (payload: unknown) => void
+      /** Terminal prompts waiting in the local queue; undefined = none. */
+      onTerminalQueue?: (snapshot: TerminalQueueSnapshot | undefined) => void
       /**
        * 'metadata' still reads the bridge's system/init and bridge_state so
        * the pickers work, but leaves the transcript to the caller.
@@ -611,6 +687,7 @@ export class RCSChatAdapter {
     this.onError = options?.onError
     this.onPermissionRequest = options?.onPermissionRequest
     this.onPermissionResolved = options?.onPermissionResolved
+    this.onPermissionToolResult = options?.onPermissionToolResult
     this.onSessionInfo = options?.onSessionInfo
     this.onControlResponse = options?.onControlResponse
     this.onBridgeState = options?.onBridgeState
@@ -621,6 +698,7 @@ export class RCSChatAdapter {
     this.onTasks = options?.onTasks
     this.onWorkflows = options?.onWorkflows
     this.onAgentProgress = options?.onAgentProgress
+    this.onTerminalQueue = options?.onTerminalQueue
     this.historyMode = options?.historyMode ?? 'full'
   }
 
@@ -631,7 +709,25 @@ export class RCSChatAdapter {
       root.raw && typeof root.raw === 'object' && !Array.isArray(root.raw)
         ? (root.raw as Record<string, unknown>)
         : root
-    this.onBridgeState?.(record.connected !== false)
+    const connected = record.connected !== false
+    // A dead terminal cannot drain its queue; the queued-prompts row would
+    // otherwise outlive the session it described (stale retained snapshot).
+    if (!connected) this.onTerminalQueue?.(undefined)
+    this.onBridgeState?.(connected)
+  }
+
+  /**
+   * Publish the terminal's queue snapshot. A count of 0 clears the row; a
+   * malformed or missing payload is treated as "no statement" and ignored.
+   */
+  private applyTerminalQueue(payload: EventPayload | undefined): void {
+    if (payload === undefined) {
+      this.onTerminalQueue?.(undefined)
+      return
+    }
+    const snapshot = parseTerminalQueueSnapshot(payload)
+    if (!snapshot) return
+    this.onTerminalQueue?.(snapshot.count > 0 ? snapshot : undefined)
   }
 
   /**
@@ -769,8 +865,32 @@ export class RCSChatAdapter {
       toolName: string
       toolInput: Record<string, unknown>
       description: string
+      toolUseId?: string
     }> = []
     const answeredPermissions = new Set<string>()
+    // A tool call that has a result finished whatever it was asking about.
+    const resolvedToolUseIds = new Set<string>()
+    // Latest terminal queue snapshot in the replay window; undefined = none.
+    let lastTerminalQueue: EventPayload | undefined
+
+    // Outbound user events are this client's and other clients' sends. An
+    // inbound echo (the CLI actually taking the prompt) is the authoritative
+    // row; a send with no echo at all — consumed mid-turn as a queued
+    // attachment, or echoed after eviction — would otherwise vanish from the
+    // transcript entirely. Count the echoes by text so a replay can keep at
+    // most as many outbound rows as were never echoed.
+    const inboundUserTexts = new Map<string, number>()
+    // The same user turn can appear twice in the rolling bus (a bridge retry
+    // plus its echo). Both carry the same uuid; emitting both would render
+    // one prompt twice on reload.
+    const emittedUserIds = new Set<string>()
+    for (const event of events) {
+      if (event.type !== 'user' || event.direction === 'outbound') continue
+      const text = extractEventText(
+        event.payload || ({} as EventPayload),
+      ).trim()
+      inboundUserTexts.set(text, (inboundUserTexts.get(text) ?? 0) + 1)
+    }
 
     const flushAssistant = () => {
       if (currentAssistant) {
@@ -783,13 +903,28 @@ export class RCSChatAdapter {
       const payload = event.payload || ({} as EventPayload)
 
       if (event.type === 'user') {
-        if (event.direction === 'outbound') continue // skip echoed user messages
+        if (event.direction === 'outbound') {
+          // Pair this outbound send with an inbound echo of the same text.
+          // Matching by uuid too would miss a restart replay that rewrote
+          // ids; text counting preserves repeated identical sends.
+          const text = extractEventText(payload).trim()
+          const echoes = inboundUserTexts.get(text) ?? 0
+          if (echoes > 0) {
+            inboundUserTexts.set(text, echoes - 1)
+            continue
+          }
+        }
         flushAssistant()
         // Tool results arrive as user turns with no text; fold them into the
         // tool cards instead of dropping them.
         const asRecord = payload as Record<string, unknown>
         if (toolResultBlocks(asRecord).length > 0) {
           toolResultPayloads.push(asRecord)
+          for (const block of toolResultBlocks(asRecord)) {
+            if (typeof block.tool_use_id === 'string') {
+              resolvedToolUseIds.add(block.tool_use_id)
+            }
+          }
           const updated = applyToolResult(historyEntries, asRecord)
           historyEntries.length = 0
           historyEntries.push(...updated)
@@ -810,6 +945,8 @@ export class RCSChatAdapter {
           const id = payload.uuid
             ? `user-${payload.uuid}`
             : event.id || `hist-user-${historyEntries.length}`
+          if (emittedUserIds.has(id)) continue
+          emittedUserIds.add(id)
           if (classified.kind === 'output') {
             historyEntries.push({
               type: 'command_output',
@@ -883,6 +1020,11 @@ export class RCSChatAdapter {
       } else if (event.type === 'tool_result') {
         const result = payload as Record<string, unknown>
         toolResultPayloads.push(result)
+        for (const block of toolResultBlocks(result)) {
+          if (typeof block.tool_use_id === 'string') {
+            resolvedToolUseIds.add(block.tool_use_id)
+          }
+        }
         const updated = applyToolResult(historyEntries, result)
         historyEntries.length = 0
         historyEntries.push(...updated)
@@ -900,8 +1042,18 @@ export class RCSChatAdapter {
           }
         }
         this.handleInit(payload)
+      } else if (event.type === 'usage_state') {
+        this.handleTerminalUsage(payload)
       } else if (event.type === 'bridge_state') {
         this.emitBridgeState(payload)
+        // A disconnect after the last queue snapshot invalidates it; otherwise
+        // the post-loop apply would resurrect a dead terminal's queue.
+        const root = payload as Record<string, unknown>
+        const record =
+          root.raw && typeof root.raw === 'object' && !Array.isArray(root.raw)
+            ? (root.raw as Record<string, unknown>)
+            : root
+        if (record.connected === false) lastTerminalQueue = undefined
       } else if (
         event.type === 'task_state' ||
         event.type === 'workflow_state'
@@ -910,6 +1062,10 @@ export class RCSChatAdapter {
       } else if (event.type === 'agent_progress') {
         agentProgress.push(payload)
         this.onAgentProgress?.(payload)
+      } else if (event.type === 'terminal_queue') {
+        // Latest snapshot wins; applied once below so ordering with the
+        // trailing bridge_state disconnect is preserved.
+        lastTerminalQueue = payload
       } else if (
         event.type === 'control_request' ||
         event.type === 'permission_request'
@@ -930,6 +1086,9 @@ export class RCSChatAdapter {
               typeof request.description === 'string'
                 ? request.description
                 : '',
+            ...(typeof request.tool_use_id === 'string'
+              ? { toolUseId: request.tool_use_id }
+              : {}),
           })
         }
       } else if (
@@ -950,19 +1109,34 @@ export class RCSChatAdapter {
     }
 
     flushAssistant()
+    // Apply after the loop: the trailing snapshot is the current queue state,
+    // and any later bridge_state disconnect already cleared it via
+    // emitBridgeState during the replay.
+    this.applyTerminalQueue(lastTerminalQueue)
     for (const permission of pendingPermissions) {
-      if (!answeredPermissions.has(permission.requestId)) {
+      if (
+        !answeredPermissions.has(permission.requestId) &&
+        !(permission.toolUseId && resolvedToolUseIds.has(permission.toolUseId))
+      ) {
         this.onPermissionRequest?.(permission)
       }
     }
     if (this.historyMode === 'metadata') {
-      if (agentProgress.length)
-        this.setEntries(prev =>
-          agentProgress.reduce<ThreadEntry[]>(
-            (items, event) => applyAgentProgress(items, event),
-            prev,
-          ),
+      // The parent owns the transcript (it merges the device page), so the
+      // replayed history entries are not merged here. Tool completions still
+      // must be: the page may not have the tool_result yet, and discarding it
+      // left bash/tool cards spinning after every reconnect.
+      if (agentProgress.length === 0 && toolResultPayloads.length === 0) return
+      this.setEntries(prev => {
+        const withResults = toolResultPayloads.reduce<ThreadEntry[]>(
+          (items, result) => applyToolResult(items, result),
+          prev,
         )
+        return agentProgress.reduce<ThreadEntry[]>(
+          (items, event) => applyAgentProgress(items, event),
+          withResults,
+        )
+      })
       return
     }
     if (this.disposed) return
@@ -970,11 +1144,16 @@ export class RCSChatAdapter {
     // device history survives terminal restarts). Merge instead of replacing
     // so the bridge replay only fills the gaps.
     this.setEntries(prev => {
-      const merged = mergeThreadEntries(
-        prev,
-        historyEntries,
-        this.optimisticUserIds,
-      )
+      // A bus re-read is oldest-first chronology, so it must be assembled
+      // against the on-screen rows (shared ids anchor live-only rows). The old
+      // insertion-only append pushed re-read history below the newer live tail
+      // and inverted whole turns after every resync.
+      // Snapshot the id set: the merge drains what it adopts and the updater
+      // may run twice (StrictMode / concurrent replay).
+      const merged = mergeHistoryPage(prev, historyEntries, {
+        pagePosition: 'newer',
+        adoptableIds: new Set(this.optimisticUserIds),
+      })
       // Complete cards that only exist in the live transcript: their
       // tool_use event may predate the surviving replay window.
       const withResults = toolResultPayloads.reduce<ThreadEntry[]>(
@@ -994,12 +1173,22 @@ export class RCSChatAdapter {
    * message's (cumulative) usage; only the newest value per message counts.
    */
   private trackUsage(assistantId: string, payload: EventPayload): void {
+    if (this.hasTerminalUsage) return
     const message = (payload as Record<string, unknown>).message as
       | Record<string, unknown>
       | undefined
     const usage = message?.usage
     if (!usage || typeof usage !== 'object') return
     const record = usage as Record<string, unknown>
+    if (!this.liveUsageIds.has(assistantId)) {
+      // A live update may arrive for a row seeded from history. Its current
+      // usage is newer than every historical page, including pages loaded later.
+      if (this.usageByMessage.has(assistantId)) {
+        this.usageOrder = this.usageOrder.filter(id => id !== assistantId)
+        this.usageOrder.push(assistantId)
+      }
+      this.liveUsageIds.add(assistantId)
+    }
     this.recordUsage(assistantId, {
       input: Number(record.input_tokens) || 0,
       output: Number(record.output_tokens) || 0,
@@ -1017,12 +1206,18 @@ export class RCSChatAdapter {
    * overwrites its seed — nothing is counted twice.
    */
   seedUsageFromHistory(
-    messages: { id: string; usage?: TranscriptUsage }[],
+    messages: { id: string; timestamp?: string; usage?: TranscriptUsage }[],
   ): void {
+    if (this.hasTerminalUsage) return
     let touched = false
     for (const message of messages) {
       if (!message.usage) continue
-      this.recordUsage(`assistant-${message.id}`, {
+      const id = `assistant-${message.id}`
+      const timestamp = message.timestamp ? Date.parse(message.timestamp) : NaN
+      if (Number.isFinite(timestamp)) this.historyUsageTimes.set(id, timestamp)
+      if (this.liveUsageIds.has(id)) continue
+      if (!this.usageByMessage.has(id)) this.usageOrder.push(id)
+      this.usageByMessage.set(id, {
         input: message.usage.inputTokens,
         output: message.usage.outputTokens,
         cacheCreation: message.usage.cacheCreationInputTokens,
@@ -1030,6 +1225,19 @@ export class RCSChatAdapter {
       })
       touched = true
     }
+    // Loading an older page later must not make it the current context or
+    // evict newer live rows merely because it was appended last.
+    this.usageOrder.sort((a, b) => {
+      const liveA = this.liveUsageIds.has(a)
+      const liveB = this.liveUsageIds.has(b)
+      if (liveA !== liveB) return liveA ? 1 : -1
+      if (liveA) return 0
+      return (
+        (this.historyUsageTimes.get(a) ?? -Infinity) -
+        (this.historyUsageTimes.get(b) ?? -Infinity)
+      )
+    })
+    this.trimUsageLedger()
     if (touched) this.publishUsageLedger()
   }
 
@@ -1044,11 +1252,18 @@ export class RCSChatAdapter {
   ): void {
     if (!this.usageByMessage.has(id)) this.usageOrder.push(id)
     this.usageByMessage.set(id, entry)
-    // Bound the ledger: totals drift slightly once old messages drop off,
-    // which is the same trade-off the terminal status line makes.
+    this.trimUsageLedger()
+  }
+
+  private trimUsageLedger(): void {
+    // This is an approximation for older CLIs; new CLIs send real totals.
     while (this.usageOrder.length > 200) {
       const dropped = this.usageOrder.shift()
-      if (dropped) this.usageByMessage.delete(dropped)
+      if (dropped) {
+        this.usageByMessage.delete(dropped)
+        this.liveUsageIds.delete(dropped)
+        this.historyUsageTimes.delete(dropped)
+      }
     }
   }
 
@@ -1078,6 +1293,61 @@ export class RCSChatAdapter {
       // cache share is reported separately as a rate.
       totals: { input, output },
       cacheHitRate: readTotal > 0 ? cacheRead / readTotal : null,
+      estimated: true,
+    })
+  }
+
+  /** The running terminal is authoritative for its session-wide totals. */
+  private handleTerminalUsage(payload: EventPayload): void {
+    const root = payload as Record<string, unknown>
+    const raw = root.raw
+    const record =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : root
+    const number = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0
+        ? value
+        : null
+    const input = number(record.total_input_tokens)
+    const output = number(record.total_output_tokens)
+    const creation = number(record.total_cache_creation_input_tokens)
+    const read = number(record.total_cache_read_input_tokens)
+    if (input === null || output === null || creation === null || read === null)
+      return
+    const currentRaw = record.current
+    let current: SessionUsage['current'] = null
+    if (
+      currentRaw &&
+      typeof currentRaw === 'object' &&
+      !Array.isArray(currentRaw)
+    ) {
+      const row = currentRaw as Record<string, unknown>
+      const currentInput = number(row.input_tokens)
+      const currentOutput = number(row.output_tokens)
+      const currentCreation = number(row.cache_creation_input_tokens)
+      const currentRead = number(row.cache_read_input_tokens)
+      if (
+        currentInput !== null &&
+        currentOutput !== null &&
+        currentCreation !== null &&
+        currentRead !== null
+      ) {
+        current = {
+          input: currentInput,
+          output: currentOutput,
+          cacheCreation: currentCreation,
+          cacheRead: currentRead,
+        }
+      }
+    }
+    this.hasTerminalUsage = true
+    const totalPrompt = input + creation + read
+    this.onUsage?.({
+      current,
+      totals: { input, output },
+      cacheHitRate: totalPrompt > 0 ? read / totalPrompt : null,
+      estimated: false,
     })
   }
 
@@ -1138,15 +1408,45 @@ export class RCSChatAdapter {
 
   /**
    * The stream lost events that no replay can recover. Re-read the stored
-   * transcript; `mergeThreadEntries` is id-based, so whatever the live stream
-   * already applied is not duplicated. In the controlled device view the
-   * parent owns the transcript, so ask it to sync instead.
+   * transcript. In the controlled device view the parent owns the transcript,
+   * but the bridge replay also carries tool completions for cards that were
+   * running when the gap began and the freshest system/init (model, effort,
+   * permission mode). Both are applied without merging transcript rows, so the
+   * device page still decides order.
    */
   private requestResync(): void {
     if (this.disposed || !this.historyReady) return
     debugLog('sse', `事件流断档，重新同步历史: ${this.sessionId}`)
     if (this.historyMode === 'metadata') {
-      this.onStreamOpen?.()
+      if (this.resyncing) {
+        this.onStreamOpen?.()
+        return
+      }
+      this.resyncing = true
+      this.historyReady = false
+      void (async () => {
+        try {
+          // Only the idempotent parts apply in metadata mode (tool results,
+          // agent progress, handleInit); the transcript itself is untouched.
+          await this.loadHistory()
+        } catch (error) {
+          this.onError?.(
+            error instanceof Error ? error.message : '重新加载历史失败',
+          )
+        } finally {
+          this.resyncing = false
+          if (!this.disposed) {
+            this.historyReady = true
+            const buffered = this.bufferedEvents
+            this.bufferedEvents = []
+            for (const event of buffered) this.handleEvent(event)
+          } else {
+            this.historyReady = true
+          }
+          // Ask the parent to re-read the device page too.
+          this.onStreamOpen?.()
+        }
+      })()
       return
     }
     if (this.resyncing) return
@@ -1289,12 +1589,17 @@ export class RCSChatAdapter {
             // Idempotent side effect only: control flow above never reads the
             // live set, so a StrictMode double-invocation stays deterministic.
             this.optimisticUserIds.delete(entry.id)
-            if (!entry.pending && (entry.images?.length || !images.length))
+            if (
+              !entry.pending &&
+              entry.optimistic !== true &&
+              (entry.images?.length || !images.length)
+            )
               return prev
             const next = [...prev]
             next[echoed] = {
               ...entry,
               pending: false,
+              optimistic: false,
               ...(!entry.images?.length && images.length ? { images } : {}),
             }
             return next
@@ -1319,6 +1624,7 @@ export class RCSChatAdapter {
                   (image, index) => image.data === images[index]?.data,
                 ))) &&
             (entry.pending === true ||
+              entry.optimistic === true ||
               entry.id.startsWith('pending-') ||
               adoptableIds.has(entry.id))
           let pending = -1
@@ -1341,6 +1647,7 @@ export class RCSChatAdapter {
               type: 'user_message',
               id,
               content: cleanContent,
+              ...(optimistic.clientId ? { clientId: optimistic.clientId } : {}),
               ...(optimistic.images?.length
                 ? { images: optimistic.images }
                 : images.length
@@ -1404,15 +1711,8 @@ export class RCSChatAdapter {
           )
 
           if (existingIndex < 0) {
-            // A bridge reattach (server restart, terminal resume) replays the
-            // transcript tail under fresh uuids; without this fallback the
-            // whole old turn renders again at the bottom of the chat.
-            const replayTwin = findAssistantReplayTwin(prev, {
-              type: 'assistant_message',
-              id: assistantId,
-              chunks: [{ type: 'message', text: content }],
-            })
-            if (replayTwin >= 0) return prev
+            // A different message id can legitimately contain identical text.
+            // Live events must not be dropped based on content alone.
             if (!thoughts.length && !content.trim()) return prev
             const newEntry: AssistantMessageEntry = {
               type: 'assistant_message',
@@ -1424,7 +1724,8 @@ export class RCSChatAdapter {
                   : []),
               ],
             }
-            return [...prev, newEntry]
+            // Stay above any prompt still waiting in the terminal's queue.
+            return appendLiveEntry(prev, newEntry)
           }
 
           // Same message seen again: a bridge reattach replay, or a growing
@@ -1494,18 +1795,15 @@ export class RCSChatAdapter {
               }
               return next
             }
-            return [
-              ...prev,
-              {
-                type: 'tool_call',
-                toolCall: {
-                  id: toolCallId,
-                  title: (block.name as string) || 'tool',
-                  status: 'running',
-                  rawInput,
-                },
+            return appendLiveEntry(prev, {
+              type: 'tool_call',
+              toolCall: {
+                id: toolCallId,
+                title: (block.name as string) || 'tool',
+                status: 'running',
+                rawInput,
               },
-            ]
+            })
           })
         }
         break
@@ -1525,7 +1823,7 @@ export class RCSChatAdapter {
         this.setEntries(prev =>
           findToolCallIndex(prev, toolCallId) >= 0
             ? prev
-            : [...prev, { type: 'tool_call', toolCall: toolData }],
+            : appendLiveEntry(prev, { type: 'tool_call', toolCall: toolData }),
         )
         break
       }
@@ -1534,6 +1832,12 @@ export class RCSChatAdapter {
       case 'tool_result': {
         const p = payload as Record<string, unknown>
         this.clearStalePending()
+        // A completed call proves any permission prompt it was showing has
+        // been resolved, even when the control_response was lost (interrupt,
+        // transport-null window). Without this the card re-raised on reload.
+        if (typeof p.tool_use_id === 'string') {
+          this.onPermissionToolResult?.(p.tool_use_id)
+        }
         this.setEntries(prev => applyToolResult(prev, p))
         break
       }
@@ -1550,42 +1854,52 @@ export class RCSChatAdapter {
             unknown
           >
           const description = (req.description as string) || ''
+          // The CLI stamps the exact tool call onto the request. With parallel
+          // calls of the same tool the name heuristic attached the prompt to
+          // the newest card instead of the one being asked about.
+          const toolUseId =
+            typeof req.tool_use_id === 'string' ? req.tool_use_id : ''
 
-          // Update tool call status. The request carries no tool_use id, so
-          // match by name: with parallel calls the permission can belong to an
-          // earlier tool, and "the newest running card" was the wrong one.
           this.setEntries(prev => {
-            const candidates = prev
-              .map((entry, index) => ({ entry, index }))
-              .filter(
-                item =>
-                  item.entry.type === 'tool_call' &&
-                  item.entry.toolCall.status === 'running' &&
-                  (toolName === 'unknown' ||
-                    item.entry.toolCall.title.toLowerCase() ===
-                      toolName.toLowerCase()),
-              )
-            const match = candidates[candidates.length - 1]
-            if (match && match.entry.type === 'tool_call') {
-              // Hoisted so the narrowing survives the map callback below.
-              const matched = match.entry
-              return prev.map((e, i) =>
-                i === match.index
-                  ? {
-                      type: 'tool_call' as const,
-                      toolCall: {
-                        ...matched.toolCall,
-                        status: 'waiting_for_confirmation' as ToolCallStatus,
-                        permissionRequest: {
-                          requestId,
-                          options: permissionOptions(req),
-                        },
-                      },
-                    }
-                  : e,
-              )
+            const exact = toolUseId
+              ? prev.findIndex(
+                  entry =>
+                    entry.type === 'tool_call' &&
+                    entry.toolCall.id === toolUseId,
+                )
+              : -1
+            let matchIndex = exact
+            if (matchIndex < 0) {
+              const candidates = prev
+                .map((entry, index) => ({ entry, index }))
+                .filter(
+                  item =>
+                    item.entry.type === 'tool_call' &&
+                    item.entry.toolCall.status === 'running' &&
+                    (toolName === 'unknown' ||
+                      item.entry.toolCall.title.toLowerCase() ===
+                        toolName.toLowerCase()),
+                )
+              matchIndex = candidates[candidates.length - 1]?.index ?? -1
             }
-            return prev
+            if (matchIndex < 0) return prev
+            const matched = prev[matchIndex]
+            if (matched?.type !== 'tool_call') return prev
+            return prev.map((e, i) =>
+              i === matchIndex
+                ? {
+                    type: 'tool_call' as const,
+                    toolCall: {
+                      ...matched.toolCall,
+                      status: 'waiting_for_confirmation' as ToolCallStatus,
+                      permissionRequest: {
+                        requestId,
+                        options: permissionOptions(req),
+                      },
+                    },
+                  }
+                : e,
+            )
           })
 
           // Notify parent
@@ -1595,6 +1909,7 @@ export class RCSChatAdapter {
             toolInput,
             description,
             options: permissionOptions(req),
+            ...(toolUseId ? { toolUseId } : {}),
           })
         }
         break
@@ -1666,6 +1981,11 @@ export class RCSChatAdapter {
         break
       }
 
+      case 'usage_state': {
+        this.handleTerminalUsage(payload)
+        break
+      }
+
       case 'control_response': {
         const root = payload as unknown as Record<string, unknown>
         // The bridge transport wraps messages as {content, raw}; server
@@ -1680,6 +2000,7 @@ export class RCSChatAdapter {
           // control_response. Without this the permission card stayed on
           // screen until a reload, long after the terminal had moved on.
           if (typeof response.request_id === 'string') {
+            this.resolvePermissionCard(response.request_id)
             this.onPermissionResolved?.(response.request_id)
           }
           if (typeof response.error === 'string' && response.error) {
@@ -1713,6 +2034,12 @@ export class RCSChatAdapter {
         this.setEntries(prev => applyAgentProgress(prev, payload))
         break
 
+      // Prompts typed at the terminal while a turn runs — transient status,
+      // not a transcript row: the executed message mirrors normally later.
+      case 'terminal_queue':
+        this.applyTerminalQueue(payload)
+        break
+
       // ---- 权限已在别处解决 ----
       case 'permission_response':
       case 'control_cancel_request': {
@@ -1721,7 +2048,10 @@ export class RCSChatAdapter {
         // connected client; ignoring these left a stale prompt that a reload
         // then re-raised from history.
         const requestId = resolvedRequestId(payload)
-        if (requestId) this.onPermissionResolved?.(requestId)
+        if (requestId) {
+          this.resolvePermissionCard(requestId)
+          this.onPermissionResolved?.(requestId)
+        }
         break
       }
 
@@ -1737,8 +2067,14 @@ export class RCSChatAdapter {
    * Send a control_request to the CLI bridge. The CLI answers with a
    * control_response event, surfaced through onControlResponse.
    */
-  async sendControlRequest(request: Record<string, unknown>): Promise<string> {
+  async sendControlRequest(
+    request: Record<string, unknown>,
+    onRequestId?: (id: string) => void,
+  ): Promise<string> {
     const requestId = generateMessageUuid()
+    // Register before the POST: a fast terminal can respond over SSE before
+    // fetch resolves, and the UI must already know which control it answers.
+    onRequestId?.(requestId)
     await apiSendEvent(this.sessionId, {
       type: 'control_request',
       request_id: requestId,
@@ -1747,25 +2083,46 @@ export class RCSChatAdapter {
     return requestId
   }
 
-  setModel(model: string): Promise<string> {
-    return this.sendControlRequest({
-      subtype: 'set_model',
-      model: model === 'default' ? undefined : model,
-    })
+  setModel(model: string, onRequestId?: (id: string) => void): Promise<string> {
+    return this.sendControlRequest(
+      {
+        subtype: 'set_model',
+        model: model === 'default' ? undefined : model,
+      },
+      onRequestId,
+    )
   }
 
-  setPermissionMode(mode: string): Promise<string> {
-    return this.sendControlRequest({ subtype: 'set_permission_mode', mode })
+  setPermissionMode(
+    mode: string,
+    onRequestId?: (id: string) => void,
+  ): Promise<string> {
+    return this.sendControlRequest(
+      { subtype: 'set_permission_mode', mode },
+      onRequestId,
+    )
   }
 
   /** Change the model effort level; the CLI applies it to the live session. */
-  setEffort(effort: string): Promise<string> {
-    return this.sendControlRequest({ subtype: 'set_effort', effort })
+  setEffort(
+    effort: string,
+    onRequestId?: (id: string) => void,
+  ): Promise<string> {
+    return this.sendControlRequest(
+      { subtype: 'set_effort', effort },
+      onRequestId,
+    )
   }
 
   /** Toggle session-only Ultracode. */
-  setUltracode(enabled: boolean): Promise<string> {
-    return this.sendControlRequest({ subtype: 'set_ultracode', enabled })
+  setUltracode(
+    enabled: boolean,
+    onRequestId?: (id: string) => void,
+  ): Promise<string> {
+    return this.sendControlRequest(
+      { subtype: 'set_ultracode', enabled },
+      onRequestId,
+    )
   }
 
   /** 发送用户消息 */
@@ -1777,11 +2134,16 @@ export class RCSChatAdapter {
     const userEntry: UserMessageEntry = {
       type: 'user_message',
       id: `user-${uuid}`,
+      // Stable render identity: an echo adopted under a different uuid must
+      // not remount the bubble (entrance animation, local state).
+      clientId: `user-${uuid}`,
       content: text,
       images: images && images.length > 0 ? images : undefined,
       // The CLI queues a message that arrives mid-turn; until it echoes the
       // message back the bubble stays muted ("排队中"), matching the terminal.
       pending: true,
+      // Survives clearStalePending and an adapter remount, unlike the id set.
+      optimistic: true,
     }
     this.optimisticUserIds.add(userEntry.id)
     this.setEntries(prev => [...prev, userEntry])
@@ -1805,13 +2167,30 @@ export class RCSChatAdapter {
         : text
     // Send to backend; a failed POST must not leave a phantom message that
     // never reached the terminal.
+    let hadAmbiguousSend = false
     try {
-      await apiSendEvent(this.sessionId, {
+      const payload = {
         type: 'user',
         uuid,
         content,
-      })
+      }
+      try {
+        await apiSendEvent(this.sessionId, payload)
+      } catch (error) {
+        if (!(error instanceof ApiConnectionError)) throw error
+        hadAmbiguousSend = true
+        // A failed response can follow a successful server write. Retry the
+        // exact same UUID so the durable outbox recognizes the same send.
+        await apiSendEvent(this.sessionId, payload)
+      }
     } catch (error) {
+      if (hadAmbiguousSend || error instanceof ApiConnectionError) {
+        // It may have arrived despite both responses failing; retain the
+        // pending bubble and avoid asserting that no send happened.
+        throw new Error(
+          '网络中断，消息是否送达暂时无法确认，请先检查终端再重试',
+        )
+      }
       this.optimisticUserIds.delete(userEntry.id)
       this.setEntries(prev =>
         prev.filter(
@@ -1847,6 +2226,30 @@ export class RCSChatAdapter {
           toolCall: {
             ...entry.toolCall,
             status: approved ? 'running' : ('rejected' as ToolCallStatus),
+            permissionRequest: undefined,
+          },
+        }
+      }),
+    )
+  }
+
+  /**
+   * Another client (or the terminal itself) resolved the request. The card
+   * must leave waiting_for_confirmation on this client too — a later
+   * tool_result will set the final status. Without this the inline card kept
+   * showing the prompt after the question had already been answered elsewhere.
+   */
+  private resolvePermissionCard(requestId: string): void {
+    this.setEntries(prev =>
+      prev.map(entry => {
+        if (entry.type !== 'tool_call') return entry
+        if (entry.toolCall.permissionRequest?.requestId !== requestId)
+          return entry
+        return {
+          type: 'tool_call',
+          toolCall: {
+            ...entry.toolCall,
+            status: 'running' as ToolCallStatus,
             permissionRequest: undefined,
           },
         }

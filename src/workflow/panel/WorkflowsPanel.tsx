@@ -209,6 +209,9 @@ export function WorkflowsPanel({
   const done = runs.length - running;
   const phaseHeader = selectedPhaseTitle ?? ALL_PHASE;
   const agentDone = focused ? focused.agents.filter(a => a.status === 'done').length : 0;
+  // `agentCount` can be absent on runs restored from an older state.json or a
+  // remote snapshot; the agents list is the source of truth when present.
+  const agentTotal = focused ? (focused.agents.length > 0 ? focused.agents.length : (focused.agentCount ?? 0)) : 0;
   // Refresh the header duration every second (shared clock; subscribing triggers re-render, duration follows wall clock).
   const [clockRef] = useAnimationFrame(1000);
   const elapsed = focused ? Date.now() - focused.startedAt : 0;
@@ -219,7 +222,7 @@ export function WorkflowsPanel({
         <Text bold>{focused?.workflowName ?? 'Workflows'}</Text>
         {focused ? (
           <Text color="subtle">
-            {agentDone}/{focused.agentCount} agents · {formatDuration(elapsed)} ·{' '}
+            {agentDone}/{agentTotal} agents · {formatDuration(elapsed)} ·{' '}
             <Text color={RUN_STATUS_COLOR[focused.status] as keyof Theme}>{RUN_STATUS_TEXT[focused.status]}</Text>
           </Text>
         ) : (

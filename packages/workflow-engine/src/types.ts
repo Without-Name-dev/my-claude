@@ -61,6 +61,7 @@ export type AgentRunResult =
        * - invalid-structured-output: adapter returned structured output that did not match the caller-provided JSON Schema
        * - runagent-threw: runAgent threw a non-abort error (API failure / context overflow / runtime error)
        * - worktree-failed: isolation:'worktree' creation failed (fail-closed degradation)
+       * - aborted: this agent alone was killed by the user; the run keeps going
        * - unknown: unclassified (compatible with old backends / third-party adapters)
        */
       reason?:
@@ -68,6 +69,7 @@ export type AgentRunResult =
         | 'invalid-structured-output'
         | 'runagent-threw'
         | 'worktree-failed'
+        | 'aborted'
         | 'unknown'
       /** Detail (error message / text preview) for logs; not shown to end users. */
       detail?: string

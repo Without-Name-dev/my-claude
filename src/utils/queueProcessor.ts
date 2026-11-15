@@ -1,9 +1,10 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
 import {
   dequeue,
-  dequeueAllMatching,
+  getCommandQueue,
   hasCommandsInQueue,
   peek,
+  remove,
 } from './messageQueueManager.js'
 
 type ProcessQueueParams = {
@@ -12,6 +13,8 @@ type ProcessQueueParams = {
 
 type ProcessQueueResult = {
   processed: boolean
+  /** Rejects if the executed turn throws; the commands are already dequeued. */
+  execution?: Promise<void>
 }
 
 /**
@@ -24,6 +27,10 @@ function isSlashCommand(cmd: QueuedCommand): boolean {
       (!cmd.skipSlashCommands || cmd.bridgeOrigin === true)
     )
   }
+  // A bridge client can hand us content that is neither a string nor an array
+  // (a stray object). Iterating it threw inside processQueueIfReady *before*
+  // dequeueing, permanently wedging the drain; treat it as plain text.
+  if (!Array.isArray(cmd.value)) return false
   // For ContentBlockParam[], check the first text block
   for (const block of cmd.value) {
     if (block.type === 'text') {
@@ -75,21 +82,32 @@ export function processQueueIfReady({
   // Bash commands need per-command error isolation, exit codes, and progress UI.
   if (isSlashCommand(next) || next.mode === 'bash') {
     const cmd = dequeue(isMainThread)!
-    void executeInput([cmd])
-    return { processed: true }
+    // Hand the promise back: silently discarding it turned a turn error into
+    // an unhandled rejection with the prompt already dequeued and lost.
+    return { processed: true, execution: executeInput([cmd]) }
   }
 
-  // Drain all non-slash-command items with the same mode at once.
+  // Drain a contiguous FIFO run starting at the peeked head, same mode only.
+  // The old dequeueAllMatching reached across an intervening slash/bash
+  // command, so a later prompt executed before input queued earlier.
+  // Subagent-scoped and differently-moded entries stay in the queue.
   const targetMode = next.mode
-  const commands = dequeueAllMatching(
-    cmd => isMainThread(cmd) && !isSlashCommand(cmd) && cmd.mode === targetMode,
-  )
+  const queue = getCommandQueue()
+  const headIndex = queue.indexOf(next)
+  const commands: QueuedCommand[] = []
+  for (let index = headIndex; index < queue.length; index += 1) {
+    const cmd = queue[index]!
+    if (!isMainThread(cmd)) continue
+    if (isSlashCommand(cmd) || cmd.mode === 'bash') break
+    if (cmd.mode !== targetMode) continue
+    commands.push(cmd)
+  }
   if (commands.length === 0) {
     return { processed: false }
   }
 
-  void executeInput(commands)
-  return { processed: true }
+  remove(commands)
+  return { processed: true, execution: executeInput(commands) }
 }
 
 /**

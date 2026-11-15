@@ -94,6 +94,16 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
         p.status = 'running'
         p.declaredPhases = event.meta?.phases?.map(ph => ph.title) ?? []
         p.description = event.meta?.description ?? undefined
+        // A resume reuses the runId. Derived state from the previous attempt
+        // (ghost agents, stale spinners, an old error/result) must not leak
+        // into the new attempt; it is rebuilt as the engine replays.
+        p.agents = []
+        p.agentCount = 0
+        p.phases = []
+        p.currentPhase = null
+        p.error = undefined
+        p.returnValue = undefined
+        p.startedAt = Date.now()
         break
       case 'phase_started':
         if (!p.phases.some(ph => ph.title === event.phase)) {
@@ -177,6 +187,15 @@ export function createProgressStoreFromBus(bus: ProgressBus): ProgressStore {
         p.status = event.status
         if (event.returnValue !== undefined) p.returnValue = event.returnValue
         if (event.error !== undefined) p.error = event.error
+        // Nothing can settle these afterwards: a killed workflow never emits
+        // their agent_done. Without the sweep they stay 'running' forever in
+        // the terminal panel, the persisted state.json and the phone card.
+        for (const agent of p.agents) {
+          if (agent.status === 'running') {
+            agent.status = 'done'
+            agent.resultKind = 'aborted'
+          }
+        }
         break
     }
     notify()

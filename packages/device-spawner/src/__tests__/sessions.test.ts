@@ -106,6 +106,17 @@ beforeAll(async () => {
         content: [{ type: 'text', text: 'hidden' }],
       },
     }),
+    // Compaction summaries are isSynthetic in the terminal: no bubble there,
+    // so no multi-KB bubble in the web history either.
+    line({
+      type: 'user',
+      uuid: 'compact1',
+      isVisibleInTranscriptOnly: true,
+      message: {
+        role: 'user',
+        content: 'compaction summary that must stay hidden',
+      },
+    }),
   ].join('\n')
   await writeFile(
     join(projectDir, `${localSessionId}.jsonl`),
@@ -228,6 +239,11 @@ describe('local session catalog', () => {
     const thought = page.messages.find(message => message.id === 'a2')
     expect(thought?.blocks[0]).toEqual({ type: 'thinking', text: 'hmm' })
     expect(page.messages.some(message => message.text === 'hidden')).toBe(false)
+    expect(
+      page.messages.some(
+        message => message.text === 'compaction summary that must stay hidden',
+      ),
+    ).toBe(false)
   })
 
   test('an unknown cursor returns an empty page instead of a wrong slice', async () => {

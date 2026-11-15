@@ -113,7 +113,7 @@ function parseCapabilities(value: unknown): DeviceCapability[] {
   return result
 }
 
-function parseEvent(value: unknown): DeviceEvent | undefined {
+export function parseEvent(value: unknown): DeviceEvent | undefined {
   if (!isRecord(value) || typeof value.type !== 'string') return undefined
   switch (value.type) {
     case 'operation': {
@@ -121,7 +121,14 @@ function parseEvent(value: unknown): DeviceEvent | undefined {
       const localSessionId = stringField(value, 'localSessionId', 128)
       const rawState = stringField(value, 'state', 40)
       if (!operationId || !localSessionId || !rawState) return undefined
-      if (!isLocalSessionId(localSessionId)) return undefined
+      // open_new_session events fired before the CLI registers its real
+      // session id carry the `pending-<operationId>` placeholder. Rejecting
+      // them hid every early failure behind the 120s generic watchdog.
+      if (
+        !isLocalSessionId(localSessionId) &&
+        localSessionId !== `pending-${operationId}`
+      )
+        return undefined
       if (!OPERATION_STATES.has(rawState as OpenOperationState))
         return undefined
       const rawFailure = stringField(value, 'failureCode', 80)
