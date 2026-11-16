@@ -40,6 +40,8 @@ test('server-managed provider is selected and receives a direct streaming reques
     fetchServerProviders,
     getServerProvider,
     selectServerProvider,
+    rememberServerProvider,
+    initializeNewSessionProvider,
     restoreSessionProvider,
     setServerProvider,
   } = await import('../serverProviders')
@@ -102,6 +104,43 @@ test('server-managed provider is selected and receives a direct streaming reques
     expect(list.map(item => item.id)).toEqual([created.provider.id])
     expect(JSON.stringify(list)).not.toContain('fixture-provider-key')
     await selectServerProvider(created.provider.id, 'model-a', 'session-a')
+    await rememberServerProvider(getServerProvider()!)
+    // The preference is durable and is only a provider/model identifier.
+    resetProviderStoreForTest()
+    setServerProvider(null)
+    expect((await initializeNewSessionProvider('new-session'))?.model).toBe(
+      'model-a',
+    )
+    expect((await restoreSessionProvider('session-a'))?.model).toBe('model-a')
+    const second = await fetch(`${rcs.url.origin}/web/providers?uuid=fixture`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Second',
+        protocol: 'openai',
+        baseUrl: `${provider.url.origin}/v1`,
+        apiKey: 'fixture-second-key',
+        models: ['model-b'],
+        modelDetails: [{ model: 'model-b', displayName: 'B', context1m: true }],
+      }),
+    })
+    const secondId = ((await second.json()) as { provider: { id: string } })
+      .provider.id
+    const secondProvider = await selectServerProvider(
+      secondId,
+      'model-b',
+      'session-b',
+    )
+    await rememberServerProvider(secondProvider)
+    setServerProvider(null)
+    expect((await initializeNewSessionProvider('new-session-b'))?.model).toBe(
+      'model-b',
+    )
+    expect((await restoreSessionProvider('session-a'))?.model).toBe('model-a')
+    // Restoring another session does not alter the next session's preference.
+    expect((await initializeNewSessionProvider('new-session-c'))?.model).toBe(
+      'model-b',
+    )
     setServerProvider(null)
     expect((await restoreSessionProvider('session-a'))?.id).toBe(
       created.provider.id,
@@ -128,6 +167,20 @@ test('server-managed provider is selected and receives a direct streaming reques
     expect(getServerProvider()?.id).toBe(created.provider.id)
     saveSessionProvider('bad-session', { id: 'missing', model: 'model-a' })
     await expect(restoreSessionProvider('bad-session')).rejects.toThrow()
+    expect(getServerProvider()?.id).toBe(created.provider.id)
+    const unauthorized = await fetch(
+      `${rcs.url.origin}/web/provider-preference`,
+    )
+    expect(unauthorized.status).toBe(401)
+    const deletion = await fetch(
+      `${rcs.url.origin}/web/providers/${secondId}?uuid=fixture`,
+      { method: 'DELETE' },
+    )
+    expect(deletion.status).toBe(200)
+    await expect(
+      initializeNewSessionProvider('deleted-provider'),
+    ).rejects.toThrow()
+    // A missing new-session provider must not switch an existing session.
     expect(getServerProvider()?.id).toBe(created.provider.id)
 
     // An Anthropic-compatible server profile is not the SSH tunnel to the
