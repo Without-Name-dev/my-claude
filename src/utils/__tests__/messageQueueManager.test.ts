@@ -215,15 +215,16 @@ describe('messageQueueManager priority ordering', () => {
 })
 
 describe('messageQueueManager.isQueuedCommandVisible', () => {
-  test('hides bridge-injected prompts from the queue preview', async () => {
+  test('renders bridge-injected prompts as queue-preview bubbles', async () => {
     const { isQueuedCommandVisible } = await import('../messageQueueManager.js')
+    // Remote prompts must look identical to locally-typed ones while queued.
     expect(
       isQueuedCommandVisible({
         value: '你好',
         mode: 'prompt',
         bridgeOrigin: true,
       } as any),
-    ).toBe(false)
+    ).toBe(true)
   })
 
   test('local typed prompts still show in the queue preview', async () => {
@@ -265,47 +266,17 @@ describe('messageQueueManager.isQueuedCommandEditable', () => {
   })
 })
 
-describe('messageQueueManager.getBridgeQueuedNotices', () => {
-  test('shows a dynamic status line for queued remote prompts only', async () => {
-    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
-    expect(
-      getBridgeQueuedNotices([
-        { value: '你好', mode: 'prompt', bridgeOrigin: true } as any,
-        { value: 'typed locally', mode: 'prompt' } as any,
-        { value: 'ls', mode: 'bash', bridgeOrigin: true } as any,
-      ]),
-    ).toEqual(['Queued from remote: 你好 (runs after this turn)'])
-  })
+describe('messageQueueManager.hasPoppableCommandsInQueue', () => {
+  test('bridge-only queues must not claim the ESC-pop press', async () => {
+    const { hasPoppableCommandsInQueue } = await import(
+      '../messageQueueManager.js'
+    )
+    // Remote prompts render as bubbles but belong to the sending client;
+    // ESC-pop would delete them with no visual cue and strand the phone.
+    enqueue({ value: 'from web', mode: 'prompt', bridgeOrigin: true } as any)
+    expect(hasPoppableCommandsInQueue()).toBe(false)
 
-  test('summarizes image-only remote prompts', async () => {
-    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
-    expect(
-      getBridgeQueuedNotices([
-        {
-          value: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: 'aGk=' },
-            },
-          ],
-          mode: 'prompt',
-          bridgeOrigin: true,
-        } as any,
-      ]),
-    ).toEqual(['Queued from remote: [1 image] (runs after this turn)'])
-  })
-
-  test('truncates long remote prompts to one line', async () => {
-    const { getBridgeQueuedNotices } = await import('../messageQueueManager.js')
-    const notices = getBridgeQueuedNotices([
-      {
-        value: `first line\n${'x'.repeat(200)}`,
-        mode: 'prompt',
-        bridgeOrigin: true,
-      } as any,
-    ])
-    expect(notices[0]).toContain('first line xxx')
-    expect(notices[0]).toContain('…')
-    expect(notices[0]!.length).toBeLessThan(160)
+    enqueue({ value: 'typed locally', mode: 'prompt' } as any)
+    expect(hasPoppableCommandsInQueue()).toBe(true)
   })
 })

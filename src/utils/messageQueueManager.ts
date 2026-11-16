@@ -106,13 +106,14 @@ export function hasCommandsInQueue(): boolean {
 }
 
 /**
- * Whether any queued command can be popped back into the input buffer. Bridge
- * prompts render as a status notice, not an editable bubble, so a queue
- * holding only those must not offer ESC-pop (it would delete a phone-sent
- * message with no visual feedback).
+ * Whether any queued command can be popped back into the input buffer. Gates
+ * ESC-pop in useCancelRequest: popAllEditable only handles editable commands,
+ * so a queue holding only remote (bridge) prompts — which render as bubbles
+ * but are not editable — must not claim the ESC press (it would strand the
+ * phone-sent message with no visual feedback).
  */
-export function hasVisibleCommandsInQueue(): boolean {
-  return commandQueue.some(command => isQueuedCommandVisible(command))
+export function hasPoppableCommandsInQueue(): boolean {
+  return commandQueue.some(command => isQueuedCommandEditable(command))
 }
 
 /**
@@ -376,8 +377,9 @@ export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
 
 /**
  * Whether this queued command should render in the queue preview under the
- * prompt. Superset of editable — channel messages show (so the keyboard user
- * sees what arrived) but stay non-editable (raw XML).
+ * prompt. Superset of editable — remote (bridge) prompts and channel messages
+ * show as bubbles (so the keyboard user sees what arrived, identical to
+ * locally-typed input) but stay non-editable.
  */
 export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
   if (
@@ -387,63 +389,17 @@ export function isQueuedCommandVisible(cmd: QueuedCommand): boolean {
       ?.kind === 'channel'
   )
     return true
-  // Bridge-injected prompts skip the message-bubble preview: that preview
-  // prints to scrollback and cannot be unprinted, so the queued bubble plus
-  // the real message rendered twice. They are shown instead through
-  // getBridgeQueuedNotices() as a dynamic status line that disappears when
-  // the command is submitted.
-  if (isBridgeQueuedCommand(cmd)) return false
+  // Remote (phone/web) prompts render in the queue preview as real message
+  // bubbles — same as locally-typed prompts — so both input paths look
+  // identical while waiting. They remain non-editable (UP/ESC cannot pull
+  // them out; the sending client owns them).
+  if (isBridgeQueuedCommand(cmd)) return true
   return isQueuedCommandEditable(cmd)
 }
 
 /** A prompt injected by the Remote Control bridge (phone/web send). */
 export function isBridgeQueuedCommand(cmd: QueuedCommand): boolean {
   return cmd.mode === 'prompt' && cmd.bridgeOrigin === true
-}
-
-const BRIDGE_QUEUE_NOTICE_PREVIEW_CHARS = 80
-
-/**
- * Status lines shown above the prompt for remote (bridge) messages waiting in
- * the queue. They are rendered dynamically — unlike the static queue preview,
- * nothing is committed to scrollback, so answering/submitting removes the
- * line and the message then appears once as a normal user turn.
- */
-export function getBridgeQueuedNotices(
-  commands: readonly QueuedCommand[],
-): string[] {
-  const notices: string[] = []
-  for (const command of commands) {
-    if (!isBridgeQueuedCommand(command)) continue
-    const preview = summarizeQueuedCommand(command)
-    notices.push(
-      preview
-        ? `Queued from remote: ${preview} (runs after this turn)`
-        : 'Message from remote queued (runs after this turn)',
-    )
-  }
-  return notices
-}
-
-function summarizeQueuedCommand(cmd: QueuedCommand): string {
-  let text: string
-  if (typeof cmd.value === 'string') {
-    text = cmd.value
-  } else {
-    text = cmd.value
-      .filter(block => block.type === 'text')
-      .map(block => (block as { text: string }).text)
-      .join(' ')
-    const images = cmd.value.filter(block => block.type === 'image').length
-    if (images > 0) {
-      text = text
-        ? `${text} [${images} image${images > 1 ? 's' : ''}]`
-        : `[${images} image${images > 1 ? 's' : ''}]`
-    }
-  }
-  const flattened = text.replace(/\s+/g, ' ').trim()
-  if (flattened.length <= BRIDGE_QUEUE_NOTICE_PREVIEW_CHARS) return flattened
-  return `${flattened.slice(0, BRIDGE_QUEUE_NOTICE_PREVIEW_CHARS - 1)}…`
 }
 
 /**

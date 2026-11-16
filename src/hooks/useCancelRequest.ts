@@ -31,7 +31,7 @@ import {
   clearCommandQueue,
   enqueuePendingNotification,
   hasCommandsInQueue,
-  hasVisibleCommandsInQueue,
+  hasPoppableCommandsInQueue,
 } from '../utils/messageQueueManager.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 
@@ -103,10 +103,11 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     }
 
     // Priority 2: Pop queue when Claude is idle (no running task to cancel).
-    // Hidden queue entries (bridge-injected prompts) are not poppable here —
-    // ESC would otherwise delete a phone-sent message with no visual cue.
+    // Only editable commands are poppable — bridge-injected prompts render in
+    // the preview but belong to the sending client; popping them here would
+    // delete a phone-sent message with no visual cue.
     if (hasCommandsInQueue()) {
-      if (popCommandFromQueue && hasVisibleCommandsInQueue()) {
+      if (popCommandFromQueue && hasPoppableCommandsInQueue()) {
         popCommandFromQueue()
         return
       }
