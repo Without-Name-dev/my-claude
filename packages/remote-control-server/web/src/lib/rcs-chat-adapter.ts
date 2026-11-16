@@ -2205,7 +2205,9 @@ export class RCSChatAdapter {
         // exact same UUID so the durable outbox recognizes the same send.
         await apiSendEvent(this.sessionId, payload)
       }
-      debugLog('send', `消息已送达 ${uuid}`)
+      // POST 200 only proves the server accepted the message — the terminal
+      // may still queue it mid-turn. The real receipt signal is the 回显 log.
+      debugLog('send', `已提交服务器 ${uuid}（终端接收见"回显"）`)
     } catch (error) {
       if (hadAmbiguousSend || error instanceof ApiConnectionError) {
         // It may have arrived despite both responses failing; retain the
