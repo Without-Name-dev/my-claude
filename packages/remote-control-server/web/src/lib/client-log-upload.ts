@@ -37,6 +37,13 @@ let inFlight = false
 let started = false
 let errorFlushTimer: ReturnType<typeof setTimeout> | null = null
 let shippedTotal = 0
+/**
+ * The credential that last drew a 401 from the upload endpoint. An
+ * unpaired client (splash screen, fresh WebView) would otherwise retry the
+ * POST every 30s forever. Uploads resume as soon as the credential changes
+ * (the pairing gate stores the access key) or a config fetch succeeds.
+ */
+let authBlockedCredential: string | null | undefined
 const settingListeners = new Set<() => void>()
 
 function readOverride(): boolean | null {
@@ -120,6 +127,11 @@ export async function refreshUploadConfig(): Promise<void> {
       { headers: authHeaders() },
     )
     if (!res.ok) return
+    // Reaching the endpoint proves our credential works again.
+    if (authBlockedCredential !== undefined) {
+      authBlockedCredential = undefined
+      notifySetting()
+    }
     const data = (await res.json().catch(() => null)) as {
       enabled?: unknown
     } | null
@@ -139,6 +151,12 @@ export async function refreshUploadConfig(): Promise<void> {
 /** Flush pending entries now. Uses fetch (auth header) — safe on live pages. */
 export async function flushClientLogs(reason: string): Promise<void> {
   if (!isUploadEnabled() || inFlight) return
+  const credential = getActiveApiToken() ?? getAccessKey()
+  if (
+    authBlockedCredential !== undefined &&
+    authBlockedCredential === credential
+  )
+    return
   const pending = getDebugEntriesSince(lastShippedSeq)
   if (pending.length === 0) return
   const batch = pending.slice(0, MAX_BATCH)
@@ -148,6 +166,13 @@ export async function flushClientLogs(reason: string): Promise<void> {
       `/web/client-logs?uuid=${encodeURIComponent(getUuid())}`,
       { method: 'POST', headers: authHeaders(), body: buildUploadBody(batch) },
     )
+    if (res.status === 401) {
+      if (authBlockedCredential === undefined) {
+        debugLog('upload', '日志上报未授权，等待完成密钥配对')
+      }
+      authBlockedCredential = credential
+      return
+    }
     if (res.status === 403) {
       // client_logs_disabled — stop until the server says otherwise.
       serverEnabled = false
@@ -155,6 +180,7 @@ export async function flushClientLogs(reason: string): Promise<void> {
       return
     }
     if (res.ok) {
+      authBlockedCredential = undefined
       lastShippedSeq = Math.max(lastShippedSeq, batch[batch.length - 1].seq)
       shippedTotal += batch.length
       notifySetting()
@@ -174,6 +200,12 @@ export async function flushClientLogs(reason: string): Promise<void> {
  */
 export function flushClientLogsBeacon(): void {
   if (!isUploadEnabled()) return
+  const credential = getActiveApiToken() ?? getAccessKey()
+  if (
+    authBlockedCredential !== undefined &&
+    authBlockedCredential === credential
+  )
+    return
   const pending = getDebugEntriesSince(lastShippedSeq)
   if (pending.length === 0) return
   const batch = pending.slice(0, MAX_BATCH)

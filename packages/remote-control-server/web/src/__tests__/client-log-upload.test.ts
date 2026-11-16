@@ -145,6 +145,35 @@ describe('client-log-upload', () => {
     expect(uploader.getUploadState().enabled).toBe(true)
   })
 
+  test('a 401 backs off until the credential changes or config succeeds', async () => {
+    await enableUpload()
+    // Only count upload POSTs; refreshUploadConfig also fetches /config.
+    const uploads = () => calls.filter(call => !call.url.includes('/config'))
+    respond.ok = false
+    respond.status = 401
+    debugLog('api', 'unauthorized-marker')
+    await uploader.flushClientLogs('test')
+    expect(uploads().length).toBe(1)
+    // Same (missing) credential → no more retry hammering.
+    debugLog('api', 'after-401')
+    await uploader.flushClientLogs('test')
+    uploader.flushClientLogsBeacon()
+    expect(uploads().length).toBe(1)
+    // A successful config fetch lifts the block.
+    respond.ok = true
+    respond.status = 200
+    await uploader.refreshUploadConfig()
+    debugLog('api', 'post-pairing')
+    await uploader.flushClientLogs('test')
+    expect(uploads().length).toBe(2)
+    const sent = JSON.parse(uploads()[1].opts.body as string)
+    expect(
+      sent.entries.some(
+        (e: { message: string }) => e.message === 'post-pairing',
+      ),
+    ).toBe(true)
+  })
+
   test('sendBeacon ships pending entries and advances the cursor on success', async () => {
     const beaconCalls: Array<{ url: string; blob: unknown }> = []
     ;(globalThis as any).navigator = {
