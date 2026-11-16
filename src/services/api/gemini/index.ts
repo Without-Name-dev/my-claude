@@ -29,6 +29,10 @@ import {
 } from '../../../services/langfuse/convert.js'
 import { streamGeminiGenerateContent } from './client.js'
 import {
+  getServerProvider,
+  resolveServerModel,
+} from '../../../utils/model/serverProviders.js'
+import {
   anthropicMessagesToGemini,
   resolveGeminiModel,
   adaptGeminiStreamToAnthropic,
@@ -49,7 +53,9 @@ export async function* queryModelGemini(
   void
 > {
   try {
-    const geminiModel = resolveGeminiModel(options.model)
+    const geminiModel = getServerProvider()
+      ? resolveServerModel(options.model)
+      : resolveGeminiModel(options.model)
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(

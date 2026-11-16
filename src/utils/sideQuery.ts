@@ -31,6 +31,10 @@ import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
 import { getAPIProvider } from './model/providers.js'
+import {
+  getServerProvider,
+  resolveServerModel,
+} from './model/serverProviders.js'
 import { normalizeModelStringForAPI } from './model/model.js'
 import { getOpenAIClient } from '../services/api/openai/client.js'
 import { getGrokClient } from '../services/api/grok/client.js'
@@ -647,8 +651,9 @@ async function sideQueryViaOpenAICompatible(
   const normalizedModel = normalizeModelStringForAPI(model)
 
   // Resolve model name per provider
-  const openaiModel =
-    provider === 'grok'
+  const openaiModel = getServerProvider()
+    ? resolveServerModel(normalizedModel)
+    : provider === 'grok'
       ? resolveGrokModel(normalizedModel)
       : resolveOpenAIModel(normalizedModel)
 
@@ -675,7 +680,7 @@ async function sideQueryViaOpenAICompatible(
     : undefined
 
   // ChatGPT subscription auth: use Responses API + OAuth, never empty API key.
-  if (provider === 'openai' && isChatGPTAuthEnabled()) {
+  if (provider === 'openai' && !getServerProvider() && isChatGPTAuthEnabled()) {
     return sideQueryViaChatGPTResponses(
       opts,
       openaiModel,
@@ -702,7 +707,7 @@ async function sideQueryViaOpenAICompatible(
   const promptCacheKey =
     provider === 'openai'
       ? getOfficialOpenAIPromptCacheKey(
-          process.env.OPENAI_BASE_URL,
+          getServerProvider()?.baseUrl ?? process.env.OPENAI_BASE_URL,
           getSessionId(),
         )
       : undefined
@@ -826,7 +831,9 @@ async function sideQueryViaGemini(
   } = opts
 
   const normalizedModel = normalizeModelStringForAPI(model)
-  const geminiModel = resolveGeminiModel(normalizedModel)
+  const geminiModel = getServerProvider()
+    ? resolveServerModel(normalizedModel)
+    : resolveGeminiModel(normalizedModel)
 
   // Build Gemini contents from Anthropic MessageParam[]
   const contents: Array<{

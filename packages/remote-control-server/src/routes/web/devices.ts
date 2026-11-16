@@ -17,7 +17,9 @@ import {
   getDevice,
   getMapping,
   getRuntime,
+  getSessionSettings,
   flushState,
+  findOutboxEntryById,
   listOutbox,
   listDevices,
   listMappingsForDevice,
@@ -28,6 +30,14 @@ import {
   setRuntime,
   updateOutbox,
 } from '../../device/state'
+import {
+  updateSessionSettings,
+  validateSettings,
+} from '../../device/session-settings'
+import {
+  readProvider,
+  saveLastProviderSelection,
+} from '../../device/provider-store'
 import { isDeviceOnline, requestDevice } from '../../device/hub'
 import { isBridgeConnected } from '../../transport/ws-handler'
 import {
@@ -300,11 +310,65 @@ app.get('/devices/:deviceId/sessions/:localSessionId', uuidAuth, async c => {
       ? { ...runtime.state, reportedAt: runtime.reportedAt }
       : null,
     operation: operation ?? null,
+    settings: getSessionSettings(device.id, localSessionId) ?? null,
     deliveryReviewRequired: listOutbox(device.id, localSessionId).filter(
       entry => entry.requiresReview,
     ).length,
   })
 })
+
+app.patch(
+  '/devices/:deviceId/sessions/:localSessionId/settings',
+  uuidAuth,
+  async c => {
+    const device = deviceFromParam(c)
+    const localSessionId = c.req.param('localSessionId')
+    if (!device || !localSessionId || !isLocalSessionId(localSessionId))
+      return errorJson(c, 400, 'bad_request', '无效的设备或会话 ID')
+    if (!getDevice(device.id))
+      return errorJson(c, 404, 'device_not_found', '设备不存在')
+    if (!(await resolveSession(device.id, localSessionId)))
+      return errorJson(c, 404, 'session_not_found', '找不到该本地会话')
+    let patch
+    try {
+      patch = validateSettings(await c.req.json())
+      if (patch.model?.startsWith('rcs-provider:')) {
+        const match = /^rcs-provider:([^:]+):(.+)$/.exec(patch.model)
+        const provider = match && readProvider(match[1]!)
+        const model = match && decodeURIComponent(match[2]!)
+        if (!provider || !model || !provider.models.includes(model))
+          throw new Error('供应商或模型不存在')
+      }
+    } catch (error) {
+      return errorJson(
+        c,
+        400,
+        'bad_request',
+        error instanceof Error ? error.message : '设置无效',
+      )
+    }
+    try {
+      await updateSessionSettings(device.id, localSessionId, patch)
+      if (patch.model?.startsWith('rcs-provider:')) {
+        const match = /^rcs-provider:([^:]+):(.+)$/.exec(patch.model)!
+        saveLastProviderSelection(match[1]!, decodeURIComponent(match[2]!))
+      }
+    } catch {
+      return errorJson(c, 503, 'storage_unavailable', '保存设置失败')
+    }
+    const mapping = getMapping(device.id, localSessionId)
+    if (
+      mapping &&
+      isBridgeConnected(mapping.bridgeSessionId) &&
+      !getSessionSettings(device.id, localSessionId)?.error
+    ) {
+      void flushOutbox(device.id, localSessionId, mapping.bridgeSessionId)
+    }
+    return c.json({
+      settings: getSessionSettings(device.id, localSessionId) ?? null,
+    })
+  },
+)
 
 app.post(
   '/devices/:deviceId/sessions/:localSessionId/review-delivery',
@@ -582,8 +646,13 @@ app.post(
     // remote control. Never inferred: it stops the existing process.
     const body = (await c.req.json().catch(() => null)) as {
       force?: unknown
+      retryFailed?: unknown
     } | null
     const force = body?.force === true
+    // An explicit retry may redeliver rows marked failed by an earlier
+    // non-recoverable launch error, without force-killing an existing terminal.
+    if (body?.retryFailed === true)
+      requeueFailedOutbox(device.id, localSessionId)
 
     // A fresh bridge report is enough to reuse; otherwise verify before
     // deciding to spawn, so a closed terminal is never treated as running.
@@ -595,7 +664,7 @@ app.post(
       isBridgeConnected(cached.state.bridgeSessionId) &&
       Date.now() - cached.reportedAt < 120_000
     ) {
-      if (force) {
+      if (force || body?.retryFailed === true) {
         requeueFailedOutbox(device.id, localSessionId)
         void flushOutbox(
           device.id,
@@ -651,7 +720,7 @@ app.post(
       // not attached right now (reconnecting, or closed minutes ago). Only
       // call it ready when the transport is actually live.
       if (isBridgeConnected(state.bridgeSessionId)) {
-        if (force) {
+        if (force || body?.retryFailed === true) {
           requeueFailedOutbox(device.id, localSessionId)
           void flushOutbox(device.id, localSessionId, state.bridgeSessionId)
         }
@@ -721,11 +790,22 @@ app.post(
     const record = getDevice(device.id)
     if (!record) return errorJson(c, 404, 'device_not_found', '设备不存在')
     const body: unknown = await c.req.json().catch(() => null)
-    const payload: { text?: unknown; images?: unknown } =
+    const payload: { text?: unknown; images?: unknown; messageId?: unknown } =
       body && typeof body === 'object'
         ? (body as { text?: unknown; images?: unknown })
         : {}
     const text = typeof payload.text === 'string' ? payload.text : ''
+    if (
+      payload.messageId !== undefined &&
+      (typeof payload.messageId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          payload.messageId,
+        ))
+    ) {
+      return errorJson(c, 400, 'bad_request', '无效的消息 ID')
+    }
+    const messageId =
+      typeof payload.messageId === 'string' ? payload.messageId : undefined
     // Photos travel as base64 blocks on the same wire the live bridge chat
     // uses, so a send from the history view behaves like a send from the
     // phone's live chat instead of uploading files and naming their paths.
@@ -769,6 +849,60 @@ app.post(
       return errorJson(c, 404, 'session_not_found', '找不到该本地会话')
     }
 
+    // A response may be lost after the first request was committed. Reuse the
+    // caller's id even when a retry arrives concurrently or after reconnect.
+    const previous = messageId ? findOutboxEntryById(messageId) : undefined
+    if (previous) {
+      if (
+        previous.deviceId !== device.id ||
+        previous.localSessionId !== localSessionId ||
+        JSON.stringify((previous.payload as { content?: unknown }).content) !==
+          JSON.stringify(content)
+      ) {
+        return errorJson(
+          c,
+          409,
+          'message_id_conflict',
+          '消息标识已被其他内容使用',
+        )
+      }
+      if (previous.state !== 'failed') {
+        try {
+          await flushState({ throwOnError: true })
+        } catch {
+          return errorJson(
+            c,
+            503,
+            'storage_unavailable',
+            '保存消息失败，请稍后重试',
+          )
+        }
+        saveWebUserMessage(
+          device.id,
+          localSessionId,
+          previous.id,
+          text,
+          images.length ? images : undefined,
+        )
+        return c.json({
+          state:
+            previous.state === 'sent'
+              ? 'sent'
+              : previous.state === 'queued'
+                ? 'queued'
+                : 'unconfirmed',
+          messageId: previous.id,
+          operationId:
+            getOperationForSession(device.id, localSessionId)?.id ?? null,
+          ...(previous.bridgeSessionId &&
+          isBridgeConnected(previous.bridgeSessionId)
+            ? { bridgeSessionId: previous.bridgeSessionId }
+            : {}),
+          detail: previous.detail,
+        })
+      }
+    }
+
     const mapping = getMapping(device.id, localSessionId)
     const runtime = getRuntime(device.id, localSessionId)
     if (
@@ -787,6 +921,7 @@ app.post(
           device.id,
           localSessionId,
           content,
+          messageId,
         )
       } catch (error) {
         // deliverNow marks the outbox row failed itself; surface a readable
@@ -812,7 +947,10 @@ app.post(
       })
     }
 
-    const entry = queueMessage(device.id, localSessionId, content)
+    const entry =
+      previous ?? queueMessage(device.id, localSessionId, content, messageId)
+    if (previous?.state === 'failed')
+      updateOutbox(previous.id, { state: 'queued', detail: undefined })
     try {
       await flushState({ throwOnError: true })
     } catch {

@@ -11,6 +11,7 @@ import {
 } from '../utils/imagePaste.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { getPlatform } from '../utils/platform.js'
+import { splitPastedPaths } from '../utils/pastePaths.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
@@ -123,10 +124,7 @@ export function usePasteHandler({
             // - Unix: space followed by `/` (e.g., `/Users/...`)
             // - Windows: space followed by drive letter and `:\` (e.g., `C:\Users\...`)
             // This works because spaces within paths are escaped (e.g., `file\ name.png`)
-            const lines = pastedText
-              .split(/ (?=\/|[A-Za-z]:\\)/)
-              .flatMap(part => part.split('\n'))
-              .filter(line => line.trim())
+            const lines = splitPastedPaths(pastedText)
             const imagePaths = lines.filter(line => isImageFilePath(line))
 
             if (onImagePaste && imagePaths.length > 0) {
@@ -136,12 +134,14 @@ export function usePasteHandler({
                 )
 
               // Process all image paths
-              void Promise.all(
+              void Promise.allSettled(
                 imagePaths.map(imagePath => tryReadImageFromPath(imagePath)),
               ).then(results => {
-                const validImages = results.filter(
-                  (r): r is NonNullable<typeof r> => r !== null,
-                )
+                const validImages = results
+                  .map(result =>
+                    result.status === 'fulfilled' ? result.value : null,
+                  )
+                  .filter((r): r is NonNullable<typeof r> => r !== null)
 
                 if (validImages.length > 0) {
                   // Successfully read at least one image
@@ -156,8 +156,16 @@ export function usePasteHandler({
                     )
                   }
                   // If some paths weren't images, paste them as text
+                  const failedPaths = new Set(
+                    imagePaths.filter(
+                      (_, i) =>
+                        results[i]?.status === 'rejected' ||
+                        (results[i]?.status === 'fulfilled' &&
+                          results[i].value === null),
+                    ),
+                  )
                   const nonImageLines = lines.filter(
-                    line => !isImageFilePath(line),
+                    line => !isImageFilePath(line) || failedPaths.has(line),
                   )
                   if (nonImageLines.length > 0 && onPaste) {
                     onPaste(nonImageLines.join('\n'))
@@ -233,10 +241,9 @@ export function usePasteHandler({
     // When dragging multiple images, they may come as newline-separated or
     // space-separated paths. Split on spaces preceding absolute paths:
     // - Unix: ` /` - Windows: ` C:\` etc.
-    const hasImageFilePath = input
-      .split(/ (?=\/|[A-Za-z]:\\)/)
-      .flatMap(part => part.split('\n'))
-      .some(line => isImageFilePath(line.trim()))
+    const hasImageFilePath = splitPastedPaths(input).some(line =>
+      isImageFilePath(line.trim()),
+    )
 
     // Handle empty paste (clipboard image on macOS)
     // When the user pastes an image with Cmd+V, the terminal sends an empty

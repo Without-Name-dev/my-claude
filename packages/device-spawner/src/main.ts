@@ -58,6 +58,8 @@ import {
 import { copyPaths, listDirectory, uploadFiles } from './files'
 import { managedSessions, openSession } from './open'
 import { closeSession, openNewSession } from './control'
+import { enqueueEvent, flushEventQueue } from './event-queue'
+import { createHeartbeatTick, heartbeatInterval } from './heartbeat'
 
 const CAPABILITIES: DeviceCapability[] = [
   'list_projects',
@@ -78,9 +80,11 @@ const trackedSessions = new Set<string>()
 
 let config: SpawnerConfig
 let socket: WebSocket | undefined
+let serverReady = false
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined
 let reconnectAttempt = 0
+let lastHeartbeatAckAt = 0
 let stopping = false
 let registryWatcher: FSWatcher | undefined
 let stateReportTimer: ReturnType<typeof setTimeout> | undefined
@@ -218,21 +222,24 @@ function isOpen(): boolean {
   return socket?.readyState === 1
 }
 
-function send(message: unknown): boolean {
-  if (!isOpen()) return false
+function sendSerialized(message: string): boolean {
+  const current = socket
+  if (!current || current.readyState !== 1) return false
   try {
-    socket?.send(JSON.stringify(message))
+    current.send(message)
     return true
   } catch {
     return false
   }
 }
 
+function send(message: unknown): boolean {
+  return sendSerialized(JSON.stringify(message))
+}
+
 function sendEvent(event: DeviceEvent): void {
-  const message = JSON.stringify({ type: 'event', event })
-  if (!send({ type: 'event', event })) {
-    if (eventQueue.length < 100) eventQueue.push(message)
-  }
+  if (!serverReady || !send({ type: 'event', event }))
+    enqueueEvent(eventQueue, event)
 }
 
 function respond(id: string, result: unknown): void {
@@ -334,17 +341,26 @@ function startHeartbeat(): void {
   // forever; retry on every heartbeat tick's setup.
   if (!registryWatcher) watchRegistry()
   if (heartbeatTimer) clearInterval(heartbeatTimer)
-  const interval = Math.max(config.heartbeatMs, 5_000)
-  heartbeatTimer = setInterval(() => {
-    if (!registryWatcher) watchRegistry()
-    void (async () => {
+  const interval = heartbeatInterval(config.heartbeatMs)
+  const tick = createHeartbeatTick({
+    currentConnection: () => socket,
+    isCurrentConnection: connection => socket === connection && isOpen(),
+    send: running =>
+      send({
+        type: 'heartbeat',
+        ts: Date.now(),
+        ...(running ? { running } : {}),
+      }),
+    collect: async () => {
+      if (!registryWatcher) watchRegistry()
       // Pick up terminals started since the last tick (including manual
       // ones), then report every tracked session.
       const snapshot = await discoverRunningSessions()
-      const running = await collectRuntimeStates(snapshot)
-      send({ type: 'heartbeat', ts: Date.now(), running })
-    })()
-  }, interval)
+      return collectRuntimeStates(snapshot)
+    },
+    onError: error => errorLog('[spawner] heartbeat discovery failed', error),
+  })
+  heartbeatTimer = setInterval(tick, interval)
 }
 
 function stopHeartbeat(): void {
@@ -382,21 +398,31 @@ function connect(): void {
     return
   }
   socket = next
+  let openedAt = 0
 
   next.onopen = () => {
+    if (socket !== next) return
+    serverReady = false
+    openedAt = Date.now()
+    lastHeartbeatAckAt = 0
     reconnectAttempt = 0
     sendHello()
   }
   next.onmessage = event => {
     const text =
       typeof event.data === 'string' ? event.data : String(event.data)
-    void handleServerMessage(text)
+    if (socket === next) void handleServerMessage(text, next)
   }
   next.onerror = () => {
     log('[spawner] websocket error')
   }
   next.onclose = event => {
-    if (socket === next) socket = undefined
+    if (socket !== next) return
+    serverReady = false
+    socket = undefined
+    log(
+      `[spawner] socket closed: code=${event.code} clean=${event.wasClean} connectedMs=${openedAt ? Date.now() - openedAt : 0} lastAckAgeMs=${lastHeartbeatAckAt ? Date.now() - lastHeartbeatAckAt : 'none'}`,
+    )
     if (event.code === 4003 && config.enrolled) {
       // The server no longer knows this device token (e.g. state reset).
       // Fall back to the enrollment key once and re-enroll.
@@ -408,7 +434,10 @@ function connect(): void {
   }
 }
 
-async function handleServerMessage(text: string): Promise<void> {
+async function handleServerMessage(
+  text: string,
+  source: WebSocket,
+): Promise<void> {
   let message: DeviceServerMessage
   try {
     const value: unknown = JSON.parse(text)
@@ -423,6 +452,8 @@ async function handleServerMessage(text: string): Promise<void> {
       config.enrolled = true
       await saveConfig(config)
     }
+    if (socket !== source || source.readyState !== 1) return
+    serverReady = true
     log('[spawner] server accepted the device')
     watchRegistry()
     startHeartbeat()
@@ -431,18 +462,13 @@ async function handleServerMessage(text: string): Promise<void> {
     void reportTrackedStates()
     // Drain one at a time: a failed send keeps the remaining events queued
     // instead of discarding them with splice().
-    while (eventQueue.length > 0) {
-      const queued = eventQueue[0]!
-      try {
-        socket?.send(queued)
-        eventQueue.shift()
-      } catch {
-        break
-      }
-    }
+    flushEventQueue(eventQueue, sendSerialized)
     return
   }
-  if (message.type === 'heartbeat_ack') return
+  if (message.type === 'heartbeat_ack') {
+    if (socket === source) lastHeartbeatAckAt = Date.now()
+    return
+  }
   if (message.type === 'error') {
     log(`[spawner] server error ${message.code}: ${message.message}`)
     return

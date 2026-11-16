@@ -16,6 +16,10 @@ import type { Tools } from '../../../Tool.js'
 import { getSessionId } from '../../../bootstrap/state.js'
 import { getOpenAIClient } from './client.js'
 import {
+  getServerProvider,
+  resolveServerModel,
+} from '../../../utils/model/serverProviders.js'
+import {
   formatOpenAIPromptCacheKey,
   getOfficialOpenAIPromptCacheKey,
   updateOpenAIUsage,
@@ -229,7 +233,9 @@ export async function* queryModelOpenAI(
 > {
   try {
     // 1. Resolve model name
-    const openaiModel = resolveOpenAIModel(options.model)
+    const openaiModel = getServerProvider()
+      ? resolveServerModel(options.model)
+      : resolveOpenAIModel(options.model)
 
     // 2. Normalize messages using shared preprocessing
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
@@ -351,7 +357,7 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    const useChatGPTResponses = isChatGPTAuthEnabled()
+    const useChatGPTResponses = !getServerProvider() && isChatGPTAuthEnabled()
     // OpenAI's official OAuth and API-key routes share the same prompt-cache
     // contract. Scope the key to the real conversation so resumed turns stay
     // sticky while unrelated sessions do not share a routing bucket. Generic
@@ -360,7 +366,10 @@ export async function* queryModelOpenAI(
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
     const promptCacheKey = useChatGPTResponses
       ? sessionPromptCacheKey
-      : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
+      : getOfficialOpenAIPromptCacheKey(
+          getServerProvider()?.baseUrl ?? process.env.OPENAI_BASE_URL,
+          sessionId,
+        )
     const useOfficialOpenAICache = promptCacheKey !== undefined
 
     logForDebugging(

@@ -6,8 +6,14 @@ import {
   ensureOpenNew,
   getOperation,
   handleDeviceEvent,
+  queueMessage,
 } from '../device/operations'
-import { loadState, resetStateForTest } from '../device/state'
+import { listOutbox, loadState, resetStateForTest } from '../device/state'
+import {
+  handleWebSocketClose,
+  handleWebSocketOpen,
+} from '../transport/ws-handler'
+import { removeEventBus } from '../transport/event-bus'
 import { resetConversationStoreForTest } from '../device/conversation-store'
 
 const deviceId = 'dev_test1'
@@ -61,6 +67,20 @@ describe('open_new_session operation events', () => {
     expect(getOperation(record.id)?.resolvedLocalSessionId).toBeUndefined()
   })
 
+  test('an operation event from another device cannot modify this device operation', async () => {
+    const record = await ensureOpenNew(deviceId, 'C:\\work', '')
+    const previousState = record.state
+    handleDeviceEvent('dev_other', {
+      type: 'operation',
+      operationId: record.id,
+      localSessionId: `pending-${record.id}`,
+      state: 'starting',
+      detail: 'wrong device',
+    })
+    expect(getOperation(record.id)?.state).toBe(previousState)
+    expect(getOperation(record.id)?.detail).not.toBe('wrong device')
+  })
+
   test('a ready event resolves the real session id', async () => {
     const record = await ensureOpenNew(deviceId, 'C:\\work', '')
     const realId = '11111111-2222-3333-4444-555555555555'
@@ -73,5 +93,44 @@ describe('open_new_session operation events', () => {
     })
 
     expect(getOperation(record.id)?.resolvedLocalSessionId).toBe(realId)
+  })
+
+  test('does not report ready or publish queued messages until the bridge actually attaches', async () => {
+    const record = await ensureOpenNew(deviceId, 'C:\\work', '')
+    const realId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    const bridge = 'session_abcdef0123456789'
+    const queued = queueMessage(deviceId, realId, 'fixture message')
+    handleDeviceEvent(deviceId, {
+      type: 'operation',
+      operationId: record.id,
+      localSessionId: realId,
+      state: 'ready',
+      bridgeSessionId: bridge,
+    })
+    expect(getOperation(record.id)?.state).toBe('waiting_for_user')
+    expect(
+      listOutbox(deviceId, realId).find(row => row.id === queued.id)?.state,
+    ).toBe('queued')
+    const sent: string[] = []
+    const ws = {
+      readyState: 1,
+      send: (value: string) => sent.push(value),
+      close: () => {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridge)
+    try {
+      for (
+        let i = 0;
+        i < 100 && !sent.some(frame => frame.includes(queued.id));
+        i++
+      ) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      expect(getOperation(record.id)?.state).toBe('ready')
+      expect(sent.filter(frame => frame.includes(queued.id))).toHaveLength(1)
+    } finally {
+      handleWebSocketClose(ws, bridge, 1000, '', token)
+      removeEventBus(bridge)
+    }
   })
 })

@@ -102,6 +102,8 @@ const {
   killAsyncAgent,
   enqueueAgentNotification,
   registerAsyncAgent,
+  unregisterAgentForeground,
+  appendRetainedAgentMessage,
   updateAgentProgress,
   isLocalAgentTask,
 } = await import('../LocalAgentTask.js')
@@ -164,6 +166,58 @@ afterEach(() => {
 })
 
 // ─── Tests ───
+
+describe('foreground agent completion', () => {
+  test('streams viewed foreground output once without keeping unviewed output', () => {
+    const { getState, setAppState } = createSetAppState({
+      tasks: {
+        'test-agent-001': makeRunningTask({
+          isBackgrounded: false,
+          retain: false,
+        }),
+      },
+    })
+    const message = { type: 'assistant', uuid: 'message-1' } as any
+    appendRetainedAgentMessage('test-agent-001', message, setAppState as any)
+    expect(getState().tasks['test-agent-001'].messages).toBeUndefined()
+    setAppState(state => ({
+      ...state,
+      tasks: {
+        ...state.tasks,
+        'test-agent-001': { ...state.tasks['test-agent-001'], retain: true },
+      },
+    }))
+    appendRetainedAgentMessage('test-agent-001', message, setAppState as any)
+    appendRetainedAgentMessage('test-agent-001', message, setAppState as any)
+    expect(getState().tasks['test-agent-001'].messages).toEqual([message])
+  })
+
+  test('keeps a viewed agent completed so its transcript stays visible', () => {
+    const { getState, setAppState } = createSetAppState({
+      tasks: {
+        'test-agent-001': makeRunningTask({
+          isBackgrounded: false,
+          retain: true,
+          messages: ['visible'],
+        }),
+      },
+    })
+    unregisterAgentForeground('test-agent-001', setAppState as any, 'completed')
+    expect(getState().tasks['test-agent-001']).toMatchObject({
+      status: 'completed',
+      retain: true,
+      messages: ['visible'],
+    })
+  })
+
+  test('removes an unviewed foreground task as before', () => {
+    const { getState, setAppState } = createSetAppState({
+      tasks: { 'test-agent-001': makeRunningTask({ isBackgrounded: false }) },
+    })
+    unregisterAgentForeground('test-agent-001', setAppState as any, 'completed')
+    expect(getState().tasks['test-agent-001']).toBeUndefined()
+  })
+})
 
 describe('createProgressTracker', () => {
   test('returns initial state with zero counts', () => {

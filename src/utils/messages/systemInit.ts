@@ -30,6 +30,8 @@ export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
   mcpClients: ReadonlyArray<{ name: string; type: string }>
   model: string
+  modelSelection?: string
+  serverProviderSwitch?: boolean
   permissionMode: PermissionMode
   commands: ReadonlyArray<CommandLike>
   agents: ReadonlyArray<{ agentType: string }>
@@ -109,6 +111,8 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   // Extra fields for remote-control clients. They are additive and ignored by
   // SDK consumers that only know the generated wire type.
   const remote = initMessage as SDKMessage & {
+    model_selection?: string
+    server_provider_switch?: boolean
     models?: ReadonlyArray<{ id: string; name: string; description?: string }>
     command_details?: ReadonlyArray<{ name: string; description: string }>
     effort?: string
@@ -117,6 +121,8 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     context_window?: number
   }
   remote.models = inputs.models ?? []
+  if (inputs.modelSelection) remote.model_selection = inputs.modelSelection
+  if (inputs.serverProviderSwitch) remote.server_provider_switch = true
   remote.command_details = inputs.commandDetails ?? []
   if (inputs.effort !== undefined) remote.effort = inputs.effort
   if (inputs.ultracodeAvailable !== undefined) {

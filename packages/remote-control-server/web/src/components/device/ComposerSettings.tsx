@@ -27,7 +27,17 @@ export type ComposerSettingsProps = {
   permissionMode: string;
   permissionOptions: { id: string; label: string }[];
   modelId: string;
-  models: { id: string; label: string; title?: string }[];
+  models: {
+    id: string;
+    label: string;
+    title?: string;
+    quota?: { label: string; remaining: number; resetAt?: number }[];
+  }[];
+  currentModelName: string;
+  currentModelIsLocal: boolean;
+  providerSwitchAvailable: boolean;
+  providersLoading: boolean;
+  providersError: boolean;
   /** Present when the remote terminal can be closed (bridge connected). */
   onCloseTerminal?: () => void;
   onChangeEffort: (value: string) => void | Promise<void>;
@@ -57,6 +67,11 @@ export function ComposerSettings({
   permissionOptions,
   modelId,
   models,
+  currentModelName,
+  currentModelIsLocal,
+  providerSwitchAvailable,
+  providersLoading,
+  providersError,
   onCloseTerminal,
   onChangeEffort,
   onToggleUltracode,
@@ -67,13 +82,21 @@ export function ComposerSettings({
 
   const sectionLabel = 'mb-1.5 px-1 text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted';
 
-  const optionRow = (key: string, label: string, active: boolean, onSelect: () => void, title?: string) => (
+  const optionRow = (
+    key: string,
+    label: string,
+    active: boolean,
+    onSelect: () => void,
+    title?: string,
+    unavailable = false,
+    quota?: { label: string; remaining: number; resetAt?: number }[],
+  ) => (
     <button
       key={key}
       type="button"
       aria-pressed={active}
       title={title}
-      disabled={pending}
+      disabled={pending || unavailable}
       onClick={onSelect}
       className={cn(
         'flex min-h-11 w-full items-center gap-3 px-3.5 text-left text-[14px] transition-colors disabled:opacity-60',
@@ -82,6 +105,24 @@ export function ComposerSettings({
       )}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
+      {quota && quota.length > 0 && (
+        <span className="shrink-0 text-right text-[10px] leading-4 text-text-muted">
+          {quota.map((window, index) => {
+            const minutes = window.resetAt ? Math.max(0, Math.ceil((window.resetAt - Date.now()) / 60000)) : undefined;
+            const reset =
+              minutes === undefined
+                ? ''
+                : minutes >= 1440
+                  ? ` · ${Math.floor(minutes / 1440)}天${Math.floor((minutes % 1440) / 60)}时`
+                  : ` · ${Math.floor(minutes / 60)}时${minutes % 60}分`;
+            return (
+              <span className="block" key={index}>
+                {window.label}剩余 {window.remaining}%{reset}
+              </span>
+            );
+          })}
+        </span>
+      )}
       <Check
         className={cn('h-4 w-4 shrink-0 transition-opacity', active ? 'text-brand opacity-100' : 'opacity-0')}
         strokeWidth={2.5}
@@ -113,7 +154,7 @@ export function ComposerSettings({
         </button>
       </div>
 
-      <div className="min-h-0 overflow-y-auto overscroll-contain">
+      <div className="min-h-0 overflow-y-auto overscroll-contain hide-scrollbar">
         {controlError && (
           <div
             role="alert"
@@ -216,15 +257,39 @@ export function ComposerSettings({
         </section>
 
         <section className="mt-4">
-          <div className={sectionLabel}>模型</div>
+          <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+            <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">服务器供应商模型</div>
+          </div>
+          {currentModelName && currentModelIsLocal && (
+            <p className="mb-2 px-1 text-xs text-text-muted">当前使用：{currentModelName}（终端本地配置）</p>
+          )}
+          {!providerSwitchAvailable && (
+            <p className="mb-2 px-1 text-xs text-text-muted">
+              当前终端尚未报告支持服务器供应商；请更新 CCB 并重新打开该会话。
+            </p>
+          )}
           {models.length > 0 ? (
             <div className="overflow-hidden rounded-[12px] border border-border/70 bg-surface-1 divide-y divide-border/50">
               {models.map(model =>
-                optionRow(model.id, model.label, modelId === model.id, () => void onChangeModel(model.id), model.title),
+                optionRow(
+                  model.id,
+                  model.label,
+                  modelId === model.id,
+                  () => void onChangeModel(model.id),
+                  model.title,
+                  !providerSwitchAvailable,
+                  model.quota,
+                ),
               )}
             </div>
           ) : (
-            <p className="px-1 text-xs text-text-muted">终端尚未提供模型信息。</p>
+            <p className="px-1 text-xs text-text-muted">
+              {providersLoading
+                ? '正在读取服务器供应商…'
+                : providersError
+                  ? '无法读取服务器供应商，请稍后重试。'
+                  : '还没有配置供应商模型，请先添加。'}
+            </p>
           )}
         </section>
 
@@ -238,14 +303,6 @@ export function ComposerSettings({
           </button>
         )}
       </div>
-
-      <button
-        type="button"
-        onClick={onClose}
-        className="mt-3 h-11 w-full shrink-0 rounded-[12px] bg-brand text-[14px] font-medium text-white transition-transform active:scale-[0.99]"
-      >
-        完成
-      </button>
     </ModalSheet>
   );
 }

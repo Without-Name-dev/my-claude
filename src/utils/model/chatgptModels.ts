@@ -1,3 +1,5 @@
+import { getServerProvider } from './serverProviders.js'
+
 export type ChatGPTCodexModelOption = {
   value: string
   label: string
@@ -110,7 +112,7 @@ export const CHATGPT_CODEX_MODEL_OPTIONS: ChatGPTCodexModelOption[] = [
 ]
 
 export function isChatGPTAuthMode(): boolean {
-  return process.env.OPENAI_AUTH_MODE === 'chatgpt'
+  return !getServerProvider() && process.env.OPENAI_AUTH_MODE === 'chatgpt'
 }
 
 function normalizeChatGPTModelId(model: string): string {

@@ -17,6 +17,7 @@ import type { Message } from '../../types/message.js';
 import type { PromptInputMode, VimMode } from '../../types/textInputTypes.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { findLastCompactBoundaryIndex } from '../../utils/messages.js';
 import { getPipeDisplayRole, isPipeControlled } from '../../utils/pipeTransport.js';
 import { isUndercover } from '../../utils/undercover.js';
 import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
@@ -105,6 +106,7 @@ function PromptInputFooter({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const lastAssistantMessageId = useMemo(() => getLastAssistantMessageId(messages), [messages]);
+  const compactBoundaryId = useMemo(() => messages[findLastCompactBoundaryIndex(messages)]?.uuid ?? null, [messages]);
   const isNarrow = columns < 80;
   // In fullscreen the bottom slot is flexShrink:0, so every row here is a row
   // stolen from the ScrollBox. Drop the optional StatusLine first. Non-fullscreen
@@ -154,7 +156,12 @@ function PromptInputFooter({
             transient footer notification ("● high · /effort") appeared, and Ink
             then wrapped the status segments inside their columns. */}
         {mode === 'prompt' && !isShort && !exitMessage.show && !isPasting && statusLineShouldDisplay(settings) && (
-          <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} vimMode={vimMode} />
+          <StatusLine
+            messagesRef={messagesRef}
+            lastAssistantMessageId={lastAssistantMessageId}
+            compactBoundaryId={compactBoundaryId}
+            vimMode={vimMode}
+          />
         )}
         <Box
           flexDirection={isNarrow ? 'column' : 'row'}

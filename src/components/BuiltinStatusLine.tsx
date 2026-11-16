@@ -16,6 +16,7 @@ type BuiltinStatusLineProps = {
   ultracodeActive?: boolean;
   contextUsedPct: number;
   usedTokens: number;
+  contextEstimated?: boolean;
   contextWindowSize: number;
   /** Cumulative session input tokens (all requests so far). */
   totalInputTokens: number;
@@ -78,6 +79,7 @@ export type StatusRowInput = {
   ultracodeActive?: boolean;
   contextUsedPct: number;
   usedTokens: number;
+  contextEstimated?: boolean;
   contextWindowSize: number;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -115,7 +117,7 @@ export function composeStatusRow(input: StatusRowInput, columns: number): string
   let line = shortModel + modeSuffix;
 
   const contextCore = `${contextBar(input.contextUsedPct)} ${input.contextUsedPct}%`;
-  let ctx = `${contextCore} (${formatTokens(input.usedTokens)}/${formatTokens(input.contextWindowSize)})`;
+  let ctx = `${contextCore} (${input.contextEstimated ? '~' : ''}${formatTokens(input.usedTokens)}/${formatTokens(input.contextWindowSize)})`;
 
   // Tokens: session total plus the conversation-average cache hit rate. The
   // in/out split was dropped — rarely actionable, and it doubled the width.
@@ -155,6 +157,7 @@ function BuiltinStatusLineInner({
   ultracodeActive,
   contextUsedPct,
   usedTokens,
+  contextEstimated,
   contextWindowSize,
   totalInputTokens,
   totalOutputTokens,
@@ -198,6 +201,7 @@ function BuiltinStatusLineInner({
       ultracodeActive,
       contextUsedPct,
       usedTokens,
+      contextEstimated,
       contextWindowSize,
       totalInputTokens,
       totalOutputTokens,

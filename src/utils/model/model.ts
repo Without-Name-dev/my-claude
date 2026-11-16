@@ -25,6 +25,7 @@ import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import { getServerProvider } from './serverProviders.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
@@ -60,6 +61,8 @@ function getOpenAIModelForTier(
 }
 
 export function getSmallFastModel(): ModelName {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const provider = getAPIProvider()
   if (provider === 'openai' && isChatGPTAuthMode()) {
     const chatGPTModel = resolveChatGPTCodexModelForTier({
@@ -135,6 +138,8 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
  * @returns The resolved model name to use
  */
 export function getMainLoopModel(): ModelName {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const model = getUserSpecifiedModelSetting()
   if (model !== undefined && model !== null) {
     return parseUserSpecifiedModel(model)
@@ -152,6 +157,8 @@ export function getBestModel(): ModelName {
  * (Bedrock, Vertex, Foundry, firstParty).
  */
 function getProviderPrimaryModel(): ModelName | undefined {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const provider = getAPIProvider()
   if (provider === 'openai') return process.env.OPENAI_MODEL
   if (provider === 'gemini') return process.env.GEMINI_MODEL
@@ -161,6 +168,8 @@ function getProviderPrimaryModel(): ModelName | undefined {
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'opus')
   if (openAIModel) return openAIModel
@@ -186,6 +195,8 @@ export function getDefaultOpusModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
 export function getDefaultSonnetModel(): ModelName {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'sonnet')
   if (openAIModel) return openAIModel
@@ -210,6 +221,8 @@ export function getDefaultSonnetModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
 export function getDefaultHaikuModel(): ModelName {
+  const remote = getServerProvider()
+  if (remote) return remote.model
   const provider = getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'haiku')
   if (openAIModel) return openAIModel
@@ -241,6 +254,7 @@ export function getRuntimeMainLoopModel(params: {
   exceeds200kTokens?: boolean
 }): ModelName {
   const { permissionMode, mainLoopModel, exceeds200kTokens = false } = params
+  if (getServerProvider()) return mainLoopModel
 
   // opusplan uses Opus in plan mode without [1m] suffix.
   if (
@@ -547,6 +561,8 @@ export function parseUserSpecifiedModel(
   modelInput: ModelName | ModelAlias,
 ): ModelName {
   const modelInputTrimmed = modelInput.trim()
+  if (getServerProvider()?.models.includes(modelInputTrimmed))
+    return modelInputTrimmed
   const normalizedModel = modelInputTrimmed.toLowerCase()
 
   const has1mTag = has1mContext(normalizedModel)

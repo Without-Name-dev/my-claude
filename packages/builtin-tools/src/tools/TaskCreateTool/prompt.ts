@@ -50,6 +50,8 @@ All tasks are created with status \`pending\`.
 ## Tips
 
 - Create tasks with clear, specific subjects that describe the outcome
+- Split broad work into independently verifiable tasks with explicit completion criteria; avoid tasks that can never be shown to be complete
+- Before finishing work, reconcile tasks you worked on: mark a task completed only after meeting its full criteria; record any remaining work or blocker in its description. Respect new user instructions and do not claim unfinished work is complete
 - After creating tasks, use TaskUpdate to set up dependencies (blocks/blockedBy) if needed
 ${teammateTips}- Check TaskList first to avoid creating duplicate tasks
 `

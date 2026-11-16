@@ -116,8 +116,15 @@ describe('Session Service', () => {
   describe('updateSessionTitle', () => {
     test('updates title', () => {
       const s = createSession({})
+      const bus = getEventBus(s.id)
       updateSessionTitle(s.id, 'New Title')
       expect(getSession(s.id)?.title).toBe('New Title')
+      expect(bus.getEventsSince(0)).toContainEqual(
+        expect.objectContaining({
+          type: 'session_title',
+          payload: { title: 'New Title' },
+        }),
+      )
     })
   })
 

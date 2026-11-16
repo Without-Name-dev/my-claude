@@ -19,6 +19,10 @@ import {
 import { publishSessionEvent } from '../services/transport'
 import type { SessionEvent } from '../transport/event-bus'
 import { hasTerminalReceivedMessage } from './conversation-store'
+import {
+  ensureSessionSettings,
+  onSessionSettingsReady,
+} from './session-settings'
 import { requestDevice } from './hub'
 import {
   clearMapping,
@@ -74,6 +78,14 @@ const activeBySession = new Map<string, string>()
 const publishingOutboxIds = new Set<string>()
 const OPERATION_TTL_MS = 10 * 60 * 1000
 const OPERATION_TIMEOUT_MS = 120_000
+
+// If an operator fixes a rejected setting at the terminal, release prompts
+// that were deliberately held while the setting was unconfirmed.
+onSessionSettingsReady((deviceId, localSessionId, bridgeSessionId) => {
+  queueMicrotask(
+    () => void flushOutbox(deviceId, localSessionId, bridgeSessionId),
+  )
+})
 
 function sessionKey(deviceId: string, localSessionId: string): string {
   return `${deviceId}\u0000${localSessionId}`
@@ -318,6 +330,10 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
   switch (event.type) {
     case 'operation': {
       const record = operations.get(event.operationId)
+      if (record && record.deviceId !== deviceId) {
+        log(`[device] ignored operation event from a different device`)
+        return
+      }
       if (!record) {
         // The operation began before an RCS restart. A ready event still
         // carries enough information to repair the mapping — but only for a
@@ -337,11 +353,13 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
           })
           // The pre-restart operation is gone, but its queued messages are
           // still valid: the bridge just became reachable.
-          void flushOutbox(
-            deviceId,
-            event.localSessionId,
-            event.bridgeSessionId,
-          )
+          if (isBridgeConnected(event.bridgeSessionId)) {
+            void flushOutbox(
+              deviceId,
+              event.localSessionId,
+              event.bridgeSessionId,
+            )
+          }
         }
         return
       }
@@ -376,7 +394,14 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
           cwd: record.cwd,
           updatedAt: Date.now(),
         })
-        void flushOutbox(deviceId, mappedId, event.bridgeSessionId)
+        if (isBridgeConnected(event.bridgeSessionId)) {
+          void flushOutbox(deviceId, mappedId, event.bridgeSessionId)
+        } else {
+          // A registry entry can outlive its transport, or the WS handshake
+          // can still be in flight. Do not publish prompts into a dead bus.
+          record.state = 'waiting_for_user'
+          record.detail = '终端已启动，正在等待 Bridge 连接'
+        }
       } else if (event.state === 'failed') {
         void markQueuedFailed(
           deviceId,
@@ -387,7 +412,7 @@ export function handleDeviceEvent(deviceId: string, event: DeviceEvent): void {
       }
       // `waiting_for_user` keeps the operation active: the terminal is still
       // starting and a second request must not spawn a duplicate window.
-      if (event.state === 'ready' || event.state === 'failed') {
+      if (record.state === 'ready' || record.state === 'failed') {
         const key = sessionKey(deviceId, record.localSessionId)
         if (activeBySession.get(key) === record.id) activeBySession.delete(key)
       }
@@ -408,6 +433,19 @@ export async function flushOutbox(
   localSessionId: string,
   bridgeSessionId: string,
 ): Promise<void> {
+  try {
+    await ensureSessionSettings(deviceId, localSessionId, bridgeSessionId)
+  } catch (error) {
+    log(
+      `[device] settings not confirmed; queued messages held: ${(error as Error).message}`,
+    )
+    return
+  }
+  if (
+    getMapping(deviceId, localSessionId)?.bridgeSessionId !== bridgeSessionId &&
+    getMapping(deviceId, localSessionId)
+  )
+    return
   // Only `queued` entries were never published. `unconfirmed` entries were
   // already published to the event bus, and the bridge's attach replay in
   // handleWebSocketOpen delivers them; re-publishing here would run the same
@@ -451,9 +489,13 @@ export async function flushOutbox(
       )
       const written = wasBridgeEventWritten(bridgeSessionId, event)
       updateOutbox(entry.id, {
-        state: written ? 'sent' : 'unconfirmed',
+        state: hasTerminalReceivedMessage(deviceId, localSessionId, entry.id)
+          ? 'sent'
+          : 'unconfirmed',
         bridgeSessionId,
-        detail: written ? undefined : '已放入服务端队列，但尚未确认终端已连接',
+        detail: written
+          ? '已发送到终端连接，等待终端确认'
+          : '已放入服务端队列，但尚未确认终端已连接',
       })
     } catch (error) {
       updateOutbox(entry.id, {
@@ -486,13 +528,6 @@ export function markUnconfirmedSent(
     ) {
       continue
     }
-    if (
-      entry.bridgeSessionId === bridgeSessionId &&
-      wasBridgeMessageWritten(bridgeSessionId, entry.id)
-    ) {
-      updateOutbox(entry.id, { state: 'sent', detail: undefined })
-      continue
-    }
     // The publish event is not in the current bus: it was evicted, or the
     // server restarted and the bus with it (attach replays nothing then).
     // The terminal may still have received it — its echo proves that — but
@@ -501,6 +536,13 @@ export function markUnconfirmedSent(
       updateOutbox(entry.id, { state: 'sent', detail: undefined })
       continue
     }
+    // A successful socket write is not proof that the CLI accepted the
+    // message. Keep it unconfirmed while the event remains replayable.
+    if (
+      entry.bridgeSessionId === bridgeSessionId &&
+      wasBridgeMessageWritten(bridgeSessionId, entry.id)
+    )
+      continue
     // Re-queue instead of losing it. flushOutbox re-publishes under the SAME
     // uuid, and the CLI drops a re-delivered inbound prompt by uuid, so this
     // cannot queue it twice in a live terminal.
@@ -550,6 +592,19 @@ export async function resumeQueuedSessions(
 onBridgeAttached(bridgeSessionId => {
   const mapping = findMappingByBridgeId(bridgeSessionId)
   if (!mapping) return
+  for (const record of operations.values()) {
+    if (
+      record.deviceId !== mapping.deviceId ||
+      record.bridgeSessionId !== bridgeSessionId ||
+      record.state !== 'waiting_for_user'
+    )
+      continue
+    record.state = 'ready'
+    record.detail = '终端与 Bridge 已就绪'
+    record.updatedAt = Date.now()
+    const key = sessionKey(record.deviceId, record.localSessionId)
+    if (activeBySession.get(key) === record.id) activeBySession.delete(key)
+  }
   markUnconfirmedSent(mapping.deviceId, mapping.localSessionId, bridgeSessionId)
   void flushOutbox(mapping.deviceId, mapping.localSessionId, bridgeSessionId)
 })
@@ -676,6 +731,10 @@ async function deliverNowOnce(
   content: UserContent,
   messageId?: string,
 ): Promise<DeliveryResult> {
+  await ensureSessionSettings(deviceId, localSessionId, bridgeSessionId)
+  const currentMapping = getMapping(deviceId, localSessionId)
+  if (currentMapping && currentMapping.bridgeSessionId !== bridgeSessionId)
+    throw new Error('终端连接已切换，请重试')
   const existing = messageId
     ? findOutboxEntry(deviceId, localSessionId, messageId)
     : undefined
@@ -717,14 +776,23 @@ async function deliverNowOnce(
       'outbound',
     )
     const written = wasBridgeEventWritten(bridgeSessionId, event)
+    const confirmed = hasTerminalReceivedMessage(
+      deviceId,
+      localSessionId,
+      entry.id,
+    )
     updateOutbox(entry.id, {
-      state: written ? 'sent' : 'unconfirmed',
+      state: confirmed ? 'sent' : 'unconfirmed',
       bridgeSessionId,
-      detail: written ? undefined : '已放入服务端队列，但尚未确认终端已连接',
+      detail: confirmed
+        ? undefined
+        : written
+          ? '已发送到终端连接，等待终端确认'
+          : '已放入服务端队列，但尚未确认终端已连接',
     })
     return {
-      state: written ? 'sent' : 'unconfirmed',
-      entry: { ...entry, state: written ? 'sent' : 'unconfirmed' },
+      state: confirmed ? 'sent' : 'unconfirmed',
+      entry: { ...entry, state: confirmed ? 'sent' : 'unconfirmed' },
       event,
     }
   } catch (error) {

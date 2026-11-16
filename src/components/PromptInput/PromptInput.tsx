@@ -111,6 +111,7 @@ import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
+import { handleBackgroundAgentShortcut } from '../../state/backgroundAgentFocus.js';
 import { getFastIconString } from '../FastIcon.js';
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../HistorySearchDialog.js';
@@ -406,6 +407,11 @@ function PromptInput({
   // printable, inputFilter prepends a space before it. Any other input
   // (arrow, escape, backspace, paste, space) disarms without inserting.
   const pendingSpaceAfterPillRef = useRef(false);
+  // Image files resolve asynchronously and multiple callbacks can arrive in
+  // one render batch. Keep the latest draft/cursor synchronously so each
+  // image appends to the previous one instead of overwriting its placeholder.
+  const imageInsertionRef = useRef({ input, cursorOffset });
+  imageInsertionRef.current = { input, cursorOffset };
 
   const [showTeamsDialog, setShowTeamsDialog] = useState(false);
   const [showBridgeDialog, setShowBridgeDialog] = useState(false);
@@ -554,6 +560,13 @@ function PromptInput({
   const teamsSelected = footerItemSelected === 'teams';
   const bridgeSelected = footerItemSelected === 'bridge';
   const bgAgentSelected = footerItemSelected === 'bg_agent';
+
+  // A completed/dismissed agent may disappear while its row is selected.
+  // Keep the cursor on a valid row or main so Enter can always recover.
+  useEffect(() => {
+    if (!bgAgentSelected) return;
+    setSelectedBgAgentIndex(index => Math.max(-1, Math.min(index, bgAgentList.length - 1)));
+  }, [bgAgentSelected, bgAgentList.length, setSelectedBgAgentIndex]);
 
   function selectFooterItem(item: FooterItem | null): void {
     setAppState(prev => (prev.footerSelection === item ? prev : { ...prev, footerSelection: item }));
@@ -1350,7 +1363,14 @@ function PromptInput({
     // armed, the previous pill's lazy space fires now (before this pill)
     // rather than being lost.
     const prefix = pendingSpaceAfterPillRef.current ? ' ' : '';
-    insertTextAtCursor(prefix + formatImageRef(pasteId));
+    const text = prefix + formatImageRef(pasteId);
+    const current = imageInsertionRef.current;
+    pushToBuffer(current.input, current.cursorOffset, pastedContents);
+    const nextInput = current.input.slice(0, current.cursorOffset) + text + current.input.slice(current.cursorOffset);
+    const nextOffset = current.cursorOffset + text.length;
+    imageInsertionRef.current = { input: nextInput, cursorOffset: nextOffset };
+    trackAndSetInput(nextInput);
+    setCursorOffset(nextOffset);
     pendingSpaceAfterPillRef.current = true;
   }
 
@@ -1980,11 +2000,25 @@ function PromptInput({
     },
   );
 
-  useInput((char, key) => {
+  useInput((char, key, event) => {
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
     if (showTeamsDialog || showQuickOpen || showGlobalSearch || showHistoryPicker) {
+      return;
+    }
+
+    // The visible local-agent list is independent of prompt history. Give
+    // Shift+Down its advertised meaning even after an agent has completed;
+    // consume the original input event so REPL's legacy task handler cannot
+    // also open a dialog for the same keystroke.
+    if (
+      !isModalOverlayActive &&
+      !showBashesDialog &&
+      !helpOpen &&
+      !isSearchingHistory &&
+      handleBackgroundAgentShortcut(event, store)
+    ) {
       return;
     }
 

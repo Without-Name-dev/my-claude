@@ -1,7 +1,8 @@
 import { feature } from 'bun:bundle';
 import { type FSWatcher, watch } from 'fs';
 import React, { useCallback, useEffect, useRef } from 'react';
-import { getSdkBetas, setMainLoopModelOverride } from '../bootstrap/state.js';
+import { getSdkBetas, getSessionId, setMainLoopModelOverride } from '../bootstrap/state.js';
+import { saveSessionProvider } from '../utils/model/serverProviderSession.js';
 import { getContextWindowForModel } from '../utils/context.js';
 import {
   type BridgePermissionCallbacks,
@@ -26,16 +27,26 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
 import type { Message } from '../types/message.js';
 import { getCwd } from '../utils/cwd.js';
-import { isEffortLevel, toPersistableEffort } from '../utils/effort.js';
+import { getEffortEnvOverride, isEffortLevel } from '../utils/effort.js';
 import { isUltracodeAvailable } from '../utils/ultracode.js';
-import { updateSettingsForSource } from '../utils/settings/settings.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
 import { enqueue, getCommandQueue, subscribeToCommandQueue } from '../utils/messageQueueManager.js';
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
-import { createSystemMessage } from '../utils/messages.js';
+import {
+  selectServerProvider,
+  getServerProvider,
+  serverProviderSelection,
+  serverProviderRuntimeModel,
+  serverProvidersAvailable,
+  setServerProvider,
+  subscribeServerProvider,
+} from '../utils/model/serverProviders.js';
+import { isModelAllowed } from '../utils/model/modelAllowlist.js';
+import { createSystemMessage, findLastCompactBoundaryIndex } from '../utils/messages.js';
 import { buildTaskStateMessage, getTaskStateSnapshotKey } from '../utils/taskStateMessage.js';
+import { buildAgentStateSnapshot } from '../utils/agentStateMessage.js';
 import { buildAgentProgressMessage } from '../bridge/agentProgressMessage.js';
 import {
   buildTerminalQueueMessage,
@@ -59,7 +70,7 @@ import {
   getTotalCacheCreationInputTokens,
   getTotalCacheReadInputTokens,
 } from '../cost-tracker.js';
-import { getCurrentUsage } from '../utils/tokens.js';
+import { getContextDisplayUsage } from '../utils/tokens.js';
 
 const TASK_STATE_DEBOUNCE_MS = 50;
 const TASK_STATE_POLL_MS = 5000;
@@ -95,8 +106,14 @@ export function useReplBridge(
   abortControllerRef: React.RefObject<AbortController | null>,
   commands: readonly Command[],
   mainLoopModel: string,
-): { sendBridgeResult: () => void } {
+): { sendBridgeResult: () => void; sendCompactionStatus: (active: boolean) => void } {
   const handleRef = useRef<ReplBridgeHandle | null>(null);
+  // Reconnects recreate the bridge effect, but not the running REPL's queue.
+  // Preserve inbound ids across those reconnects so replay cannot enqueue a
+  // prompt a second time while its first copy is still waiting for execution.
+  const inboundDeduplicatorRef = useRef<ReturnType<
+    typeof import('../bridge/inboundDeduplicator.js').createInboundDeduplicator
+  > | null>(null);
   // Re-publishes system/init after a control that changes session metadata
   // (effort, ultracode), so remote pickers do not keep showing stale values.
   const sendSystemInitRef = useRef<() => void>(() => {});
@@ -235,73 +252,57 @@ export function useReplBridge(
           //
           // File attachments need a network fetch and disk write. Preserve
           // arrival order even if the next prompt has no attachment.
-          const injectedInboundUuids = new Set<string>();
+          const { createInboundDeduplicator } = await import('../bridge/inboundDeduplicator.js');
+          const deduplicateInbound = (inboundDeduplicatorRef.current ??= createInboundDeduplicator());
           async function handleInboundMessage(msg: SDKMessage): Promise<void> {
-            let uuid: `${string}-${string}-${string}-${string}-${string}` | undefined;
             try {
               const fields = extractInboundMessageFields(msg);
               if (!fields) return;
+              const uuid = fields.uuid;
+              await deduplicateInbound(uuid, async () => {
+                if (cancelled) return false;
 
-              uuid = fields.uuid;
-
-              // Idempotency guard: a web send that gets redelivered (client
-              // retry, server outbox flush racing a direct delivery) would
-              // inject the same message twice and the terminal renders both —
-              // the user sees one prompt go out as two. Drop exact re-deliveries.
-              if (uuid) {
-                if (injectedInboundUuids.has(uuid)) {
-                  logForDebugging(`[bridge:repl] Dropping duplicate inbound message uuid=${uuid}`);
-                  return;
+                // Dynamic import keeps the bridge code out of non-BRIDGE_MODE builds.
+                const { resolveAndPrepend } = await import('../bridge/inboundAttachments.js');
+                const rawContent = fields.content;
+                let sanitized: string | Array<{ type: string; [key: string]: unknown }> =
+                  typeof rawContent === 'string'
+                    ? rawContent
+                    : (rawContent as unknown as Array<{ type: string; [key: string]: unknown }>);
+                if (feature('KAIROS_GITHUB_WEBHOOKS')) {
+                  /* eslint-disable @typescript-eslint/no-require-imports */
+                  const { sanitizeInboundWebhookContent } =
+                    require('../bridge/webhookSanitizer.js') as typeof import('../bridge/webhookSanitizer.js');
+                  /* eslint-enable @typescript-eslint/no-require-imports */
+                  if (typeof sanitized === 'string') {
+                    sanitized = sanitizeInboundWebhookContent(sanitized);
+                  }
                 }
-                injectedInboundUuids.add(uuid);
-                while (injectedInboundUuids.size > 500) {
-                  const oldest = injectedInboundUuids.keys().next().value;
-                  if (oldest === undefined) break;
-                  injectedInboundUuids.delete(oldest);
+                const content = await resolveAndPrepend(msg, sanitized as string | ContentBlockParam[]);
+                if (cancelled) {
+                  return false;
                 }
-              }
 
-              // Dynamic import keeps the bridge code out of non-BRIDGE_MODE builds.
-              const { resolveAndPrepend } = await import('../bridge/inboundAttachments.js');
-              const rawContent = fields.content;
-              let sanitized: string | Array<{ type: string; [key: string]: unknown }> =
-                typeof rawContent === 'string'
-                  ? rawContent
-                  : (rawContent as unknown as Array<{ type: string; [key: string]: unknown }>);
-              if (feature('KAIROS_GITHUB_WEBHOOKS')) {
-                /* eslint-disable @typescript-eslint/no-require-imports */
-                const { sanitizeInboundWebhookContent } =
-                  require('../bridge/webhookSanitizer.js') as typeof import('../bridge/webhookSanitizer.js');
-                /* eslint-enable @typescript-eslint/no-require-imports */
-                if (typeof sanitized === 'string') {
-                  sanitized = sanitizeInboundWebhookContent(sanitized);
-                }
-              }
-              const content = await resolveAndPrepend(msg, sanitized as string | ContentBlockParam[]);
-              if (cancelled) {
-                if (uuid !== undefined) injectedInboundUuids.delete(uuid);
-                return;
-              }
-
-              const preview = typeof content === 'string' ? content.slice(0, 80) : `[${content.length} content blocks]`;
-              logForDebugging(`[bridge:repl] Injecting inbound user message: ${preview}${uuid ? ` uuid=${uuid}` : ''}`);
-              enqueue({
-                value: content,
-                mode: 'prompt' as const,
-                uuid,
-                // skipSlashCommands stays true as defense-in-depth —
-                // processUserInputBase overrides it internally when bridgeOrigin
-                // is set AND the resolved command passes isBridgeSafeCommand.
-                // This keeps exit-word suppression and immediate-command blocks
-                // intact for any code path that checks skipSlashCommands directly.
-                skipSlashCommands: true,
-                bridgeOrigin: true,
+                const preview =
+                  typeof content === 'string' ? content.slice(0, 80) : `[${content.length} content blocks]`;
+                logForDebugging(
+                  `[bridge:repl] Injecting inbound user message: ${preview}${uuid ? ` uuid=${uuid}` : ''}`,
+                );
+                enqueue({
+                  value: content,
+                  mode: 'prompt' as const,
+                  uuid,
+                  // skipSlashCommands stays true as defense-in-depth —
+                  // processUserInputBase overrides it internally when bridgeOrigin
+                  // is set AND the resolved command passes isBridgeSafeCommand.
+                  // This keeps exit-word suppression and immediate-command blocks
+                  // intact for any code path that checks skipSlashCommands directly.
+                  skipSlashCommands: true,
+                  bridgeOrigin: true,
+                });
+                return true;
               });
             } catch (e) {
-              // The uuid was marked as injected up front; if anything below
-              // that mark threw, a redelivery of the same message must be
-              // allowed through again or it is silently lost.
-              if (uuid !== undefined) injectedInboundUuids.delete(uuid);
               logForDebugging(`[bridge:repl] handleInboundMessage failed: ${e}`, { level: 'error' });
               throw e;
             }
@@ -501,7 +502,12 @@ export function useReplBridge(
                     // full lists — SDK consumers expect full telemetry.
                     tools: [],
                     mcpClients: [],
-                    model: mainLoopModelRef.current,
+                    model: getServerProvider()?.model ?? mainLoopModelRef.current,
+                    modelSelection: (() => {
+                      const provider = getServerProvider();
+                      return provider ? serverProviderSelection(provider) : undefined;
+                    })(),
+                    serverProviderSwitch: serverProvidersAvailable(),
                     permissionMode: state.toolPermissionContext.mode as PermissionMode, // TODO: avoid the cast
                     // Remote clients can only invoke bridge-safe commands —
                     // advertising unsafe ones (local-jsx, unallowed local)
@@ -562,6 +568,19 @@ export function useReplBridge(
               handleRemoteInterrupt(abortControllerRef.current);
             },
             onSetModel(model) {
+              if (model?.startsWith('rcs-provider:')) {
+                const match = /^rcs-provider:([^:]+):(.+)$/.exec(model);
+                if (!match) throw new Error('供应商选择无效');
+                const modelName = decodeURIComponent(match[2]!);
+                if (!isModelAllowed(modelName)) throw new Error('模型不在允许列表中');
+                return selectServerProvider(match[1]!, modelName, getSessionId()).then(provider => {
+                  const runtimeModel = serverProviderRuntimeModel(provider);
+                  setMainLoopModelOverride(runtimeModel);
+                  setAppState(prev => ({ ...prev, mainLoopModel: runtimeModel, mainLoopModelForSession: null }));
+                });
+              }
+              saveSessionProvider(getSessionId(), null);
+              setServerProvider(null);
               const resolved = model === 'default' ? null : (model ?? null);
               setMainLoopModelOverride(resolved);
               setAppState(prev => {
@@ -571,11 +590,11 @@ export function useReplBridge(
             },
             onSetEffort(effort) {
               const value = effort.trim().toLowerCase();
+              const forcedEffort = getEffortEnvOverride();
+              if (forcedEffort !== undefined && !(forcedEffort === null ? value === 'auto' : forcedEffort === value)) {
+                return { ok: false, error: '思考强度被终端环境变量 CLAUDE_CODE_EFFORT_LEVEL 固定，无法切换' };
+              }
               if (value === 'auto') {
-                const result = updateSettingsForSource('userSettings', {
-                  effortLevel: undefined,
-                });
-                if (result.error) return { ok: false, error: result.error.message };
                 setAppState(prev => ({ ...prev, effortValue: undefined }));
                 return { ok: true };
               }
@@ -585,23 +604,13 @@ export function useReplBridge(
                   error: 'Invalid effort. Valid options are: low, medium, high, xhigh, max, auto',
                 };
               }
-              // 'max' is session-scoped for external users: writing
-              // `effortLevel: undefined` would delete a pinned value from
-              // settings.json, unlike the local /effort max command.
-              const persistable = toPersistableEffort(value);
-              if (persistable !== undefined) {
-                const result = updateSettingsForSource('userSettings', {
-                  effortLevel: persistable,
-                });
-                if (result.error) return { ok: false, error: result.error.message };
-              }
               setAppState(prev => ({ ...prev, effortValue: value }));
               return { ok: true };
             },
             onSetUltracode(enabled) {
               // Session-only, exactly like the /effort panel: never persisted
               // and never touches effortValue.
-              if (!isUltracodeAvailable(mainLoopModelRef.current)) {
+              if (enabled && !isUltracodeAvailable(mainLoopModelRef.current)) {
                 return {
                   ok: false,
                   error: 'Ultracode is unavailable for this model (needs dynamic workflows and xhigh effort)',
@@ -992,6 +1001,7 @@ export function useReplBridge(
 
       let cancelled = false;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+      let agentTimer: ReturnType<typeof setTimeout> | undefined;
       let pollTimer: ReturnType<typeof setInterval> | undefined;
       let watcher: FSWatcher | null = null;
       let watchedDir: string | null = null;
@@ -1022,11 +1032,13 @@ export function useReplBridge(
         try {
           const tasks = await listTasks(taskListId);
           if (cancelled || handleRef.current !== handle) return;
-          const snapshotKey = getTaskStateSnapshotKey(taskListId, tasks);
+          const currentState = store.getState();
+          const agents = buildAgentStateSnapshot(currentState.tasks, currentState.agentNameRegistry);
+          const snapshotKey = getTaskStateSnapshotKey(taskListId, tasks, agents);
           if (snapshotKey === lastPublishedSnapshotKey && handle === lastPublishedHandle) {
             return;
           }
-          handle.writeSdkMessages([buildTaskStateMessage(taskListId, tasks)]);
+          handle.writeSdkMessages([buildTaskStateMessage(taskListId, tasks, agents)]);
           lastPublishedSnapshotKey = snapshotKey;
           lastPublishedHandle = handle;
         } catch (err) {
@@ -1045,6 +1057,21 @@ export function useReplBridge(
 
       void publishTaskState();
       const unsubscribe = onTasksUpdated(schedulePublish);
+      let previousTasks = store.getState().tasks;
+      let previousNames = store.getState().agentNameRegistry;
+      const unsubscribeStore = store.subscribe(() => {
+        const state = store.getState();
+        if (state.tasks === previousTasks && state.agentNameRegistry === previousNames) return;
+        previousTasks = state.tasks;
+        previousNames = state.agentNameRegistry;
+        if (!agentTimer) {
+          agentTimer = setTimeout(() => {
+            agentTimer = undefined;
+            void publishTaskState();
+          }, 250);
+          agentTimer.unref?.();
+        }
+      });
       pollTimer = setInterval(() => {
         void publishTaskState();
       }, TASK_STATE_POLL_MS);
@@ -1053,12 +1080,14 @@ export function useReplBridge(
       return () => {
         cancelled = true;
         unsubscribe();
+        unsubscribeStore();
         if (debounceTimer) clearTimeout(debounceTimer);
+        if (agentTimer) clearTimeout(agentTimer);
         if (pollTimer) clearInterval(pollTimer);
         watcher?.close();
       };
     }
-  }, [replBridgeSessionActive, replBridgeOutboundOnly]);
+  }, [replBridgeSessionActive, replBridgeOutboundOnly, store]);
 
   // Workflows have their own progress store; those updates are not normal
   // conversation messages. Forward the same snapshot that the terminal's
@@ -1148,17 +1177,27 @@ export function useReplBridge(
     sendSystemInitRef.current();
   }, [mainLoopModel, sessionEffort, sessionUltracode, sessionPermissionMode, sessionFastMode, replBridgeSessionActive]);
 
+  useEffect(
+    () =>
+      subscribeServerProvider(() => {
+        if (replBridgeSessionActive) queueMicrotask(() => sendSystemInitRef.current());
+      }),
+    [replBridgeSessionActive],
+  );
+
   // Publish the same session totals used by the terminal status line. The web
   // cannot reconstruct these from a paged transcript or replay buffer.
+  const usageCompactBoundaryId = messages[findLastCompactBoundaryIndex(messages)]?.uuid ?? null;
   useEffect(() => {
     if (!replBridgeSessionActive || replBridgeOutboundOnly || !isSelfHostedBridge()) return;
     let lastSnapshot = '';
     const publish = () => {
       const handle = handleRef.current;
       if (!handle) return;
-      const current = getCurrentUsage(messagesRef.current);
+      const { usage: current, estimated } = getContextDisplayUsage(messagesRef.current);
       const snapshot = {
         current,
+        current_estimated: estimated,
         total_input_tokens: getTotalInputTokens(),
         total_output_tokens: getTotalOutputTokens(),
         total_cache_creation_input_tokens: getTotalCacheCreationInputTokens(),
@@ -1172,7 +1211,7 @@ export function useReplBridge(
     publish();
     const timer = setInterval(publish, 2000);
     return () => clearInterval(timer);
-  }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected]);
+  }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected, usageCompactBoundaryId]);
 
   // Mirror the terminal's local command queue: prompts typed while a turn runs
   // are invisible to remote clients until executed, which read as "the phone
@@ -1216,5 +1255,21 @@ export function useReplBridge(
     }
   }, [replBridgeSessionActive, replBridgeOutboundOnly, replBridgeConnected]);
 
-  return { sendBridgeResult };
+  const sendCompactionStatus = useCallback((active: boolean) => {
+    if (feature('BRIDGE_MODE')) {
+      const handle = handleRef.current;
+      if (!handle) return;
+      handle.writeSdkMessages([
+        {
+          type: 'system',
+          subtype: 'status',
+          status: active ? 'compacting' : null,
+          uuid: randomUUID(),
+          session_id: handle.bridgeSessionId,
+        } as unknown as SDKMessage,
+      ]);
+    }
+  }, []);
+
+  return { sendBridgeResult, sendCompactionStatus };
 }

@@ -15,6 +15,7 @@ import {
 } from 'src/services/analytics/index.js';
 import { clearDumpState } from 'src/services/api/dumpPrompts.js';
 import {
+  appendRetainedAgentMessage,
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
   createProgressTracker,
@@ -1104,6 +1105,7 @@ export const AgentTool = buildTool({
                           : undefined,
                       })) {
                         agentMessages.push(msg);
+                        appendRetainedAgentMessage(backgroundedTaskId, msg, rootSetAppState);
 
                         // Track progress for backgrounded agents
                         updateProgressFromMessage(tracker, msg, resolveActivity2, toolUseContext.options.tools);
@@ -1241,10 +1243,14 @@ export const AgentTool = buildTool({
               const message = result.value as MessageType;
 
               agentMessages.push(message);
+              if (foregroundTaskId) {
+                appendRetainedAgentMessage(foregroundTaskId, message, rootSetAppState);
+              }
 
               // Emit task_progress for the VS Code subagent panel
               updateProgressFromMessage(syncTracker, message, syncResolveActivity, toolUseContext.options.tools);
               if (foregroundTaskId) {
+                updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
                 const lastToolName = getLastToolUseName(message);
                 if (lastToolName) {
                   emitTaskProgress(
@@ -1255,12 +1261,6 @@ export const AgentTool = buildTool({
                     agentStartTime,
                     lastToolName,
                   );
-                  // Keep AppState task.progress in sync when SDK summaries are
-                  // enabled, so updateAgentSummary reads correct token/tool counts
-                  // instead of zeros.
-                  if (getSdkAgentProgressSummariesEnabled()) {
-                    updateAsyncAgentProgress(foregroundTaskId, getProgressUpdate(syncTracker), rootSetAppState);
-                  }
                 }
               }
 
@@ -1352,7 +1352,11 @@ export const AgentTool = buildTool({
 
             // Unregister foreground task if agent completed without being backgrounded
             if (foregroundTaskId) {
-              unregisterAgentForeground(foregroundTaskId, rootSetAppState);
+              unregisterAgentForeground(
+                foregroundTaskId,
+                rootSetAppState,
+                syncAgentError ? 'failed' : wasAborted ? 'killed' : 'completed',
+              );
               // Notify SDK consumers (e.g. VS Code subagent panel) that this
               // foreground agent is done. Goes through drainSdkEvents() — does
               // NOT trigger the print.ts XML task_notification parser or the LLM loop.

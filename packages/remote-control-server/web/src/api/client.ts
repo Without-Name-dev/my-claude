@@ -97,9 +97,14 @@ async function api<T>(
   const uuid = getUuid()
   const sep = path.includes('?') ? '&' : '?'
   const url = `${BASE}${path}${sep}uuid=${encodeURIComponent(uuid)}`
-  const opts: RequestInit = { method, headers }
+  const opts: RequestInit = {
+    method,
+    headers,
+    ...(path.endsWith('/secret') ? { cache: 'no-store' } : {}),
+  }
   if (body !== undefined) opts.body = JSON.stringify(body)
 
+  const startedAt = Date.now()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   let res: Response
@@ -109,7 +114,7 @@ async function api<T>(
     const aborted = error instanceof Error && error.name === 'AbortError'
     debugLog(
       'api',
-      `${method} ${path} → ${aborted ? 'timeout' : 'network error'}`,
+      `${method} ${path} → ${aborted ? 'timeout' : 'network error'} (${Date.now() - startedAt}ms)`,
     )
     throw new ApiConnectionError(
       aborted ? '请求超时，请检查网络后重试' : '网络异常，请检查连接',
@@ -155,8 +160,16 @@ async function api<T>(
             ? '找不到这个会话，终端可能已关闭'
             : '服务器暂时不可用，请稍后重试'
           : raw.trim().slice(0, 200) || res.statusText || '请求失败'
+    debugLog(
+      'api',
+      `${method} ${path} → ${res.status} (${Date.now() - startedAt}ms): ${message}`,
+    )
     throw new Error(message)
   }
+  debugLog(
+    'api',
+    `${method} ${path} → ${res.status} (${Date.now() - startedAt}ms)`,
+  )
   return data as T
 }
 
@@ -182,6 +195,50 @@ export function apiFetchSessionHistory(id: string) {
 
 export function apiFetchEnvironments() {
   return api<Environment[]>('GET', '/web/environments')
+}
+
+export type ProviderInfo = {
+  id: string
+  name: string
+  protocol: 'anthropic' | 'openai' | 'gemini' | 'grok'
+  baseUrl: string
+  authMode?: 'api-key' | 'bearer'
+  hasApiKey: boolean
+  models: string[]
+  modelDetails?: { model: string; displayName: string; context1m: boolean }[]
+  revision: number
+}
+export type ProviderInput = Pick<
+  ProviderInfo,
+  'name' | 'protocol' | 'baseUrl' | 'authMode' | 'models' | 'modelDetails'
+> & { apiKey?: string }
+
+export function apiFetchProviders() {
+  return api<{ providers: ProviderInfo[] }>('GET', '/web/providers')
+}
+export function apiFetchProviderSecret(id: string) {
+  return api<{ apiKey: string }>(
+    'GET',
+    `/web/providers/${encodeURIComponent(id)}/secret`,
+  )
+}
+export function apiFetchProviderQuota(id: string) {
+  return api<{
+    windows: { label: string; remaining: number; resetAt?: number }[]
+  }>('GET', `/web/providers/${encodeURIComponent(id)}/quota`)
+}
+export function apiSaveProvider(provider: ProviderInput, id?: string) {
+  return api<{ provider: ProviderInfo }>(
+    id ? 'PUT' : 'POST',
+    id ? `/web/providers/${encodeURIComponent(id)}` : '/web/providers',
+    provider,
+  )
+}
+export function apiDeleteProvider(id: string) {
+  return api<{ ok: boolean }>(
+    'DELETE',
+    `/web/providers/${encodeURIComponent(id)}`,
+  )
 }
 
 export function apiSendEvent(sessionId: string, body: Record<string, unknown>) {

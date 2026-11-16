@@ -2612,6 +2612,25 @@ async function run(): Promise<CommanderCommand> {
         effectiveModel = parseUserSpecifiedModel(mainThreadAgentDefinition.model);
       }
 
+      // Fresh interactive sessions inherit the server's last explicit choice.
+      // Resumed/forked sessions restore their own selection later instead.
+      if (!isNonInteractiveSession && !options.continue && !options.resume && !options.forkSession && !effectiveModel) {
+        const providers = await import('./utils/model/serverProviders.js');
+        if (providers.serverProvidersAvailable()) {
+          try {
+            const provider = await providers.initializeNewSessionProvider(getSessionId());
+            if (provider) effectiveModel = providers.serverProviderRuntimeModel(provider);
+          } catch (error) {
+            process.stderr.write(
+              chalk.red(
+                `无法加载服务器模型配置：${error instanceof Error ? error.message : '未知错误'}。请检查服务器连接和供应商配置。\n`,
+              ),
+            );
+            process.exit(1);
+          }
+        }
+      }
+
       setMainLoopModelOverride(effectiveModel);
 
       // Compute resolved model for hooks (use user-specified model at launch)
@@ -4330,7 +4349,7 @@ async function run(): Promise<CommanderCommand> {
               success: false,
             });
             logError(error);
-            await exitWithError(root, `Failed to resume session ${sessionId}`);
+            await exitWithError(root, `Failed to resume session ${sessionId}: ${errorMessage(error)}`);
           }
         }
 

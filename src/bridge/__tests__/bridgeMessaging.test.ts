@@ -4,9 +4,22 @@ import {
   shouldReportRunningForMessage,
   shouldReportRunningForMessages,
 } from '../bridgeMessaging.js'
-import { createUserMessage } from '../../utils/messages.js'
+import {
+  createUserInterruptionMessage,
+  createUserMessage,
+} from '../../utils/messages.js'
 
 describe('bridge running-state classification', () => {
+  test('a synthetic interruption does not start a new turn', () => {
+    expect(
+      shouldReportRunningForMessage(createUserInterruptionMessage({})),
+    ).toBe(false)
+    expect(
+      shouldReportRunningForMessage(
+        createUserMessage({ content: '[Request interrupted by user]' }),
+      ),
+    ).toBe(true)
+  })
   test('treats real user prompts as turn-starting work', () => {
     expect(
       shouldReportRunningForMessage(

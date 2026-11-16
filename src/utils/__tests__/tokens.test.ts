@@ -34,6 +34,7 @@ const {
   tokenCountFromLastAPIResponse,
   messageTokenCountFromLastAPIResponse,
   getCurrentUsage,
+  getContextDisplayUsage,
   doesMostRecentAssistantMessageExceed200k,
   getAssistantMessageContentLength,
 } = await import('../tokens')
@@ -214,6 +215,64 @@ describe('getCurrentUsage', () => {
     const usage = getCurrentUsage(msgs as any)
     expect(usage!.cache_creation_input_tokens).toBe(0)
     expect(usage!.cache_read_input_tokens).toBe(0)
+  })
+
+  test('uses the compact estimate until a new response, ignoring retained old usage', () => {
+    const old = makeAssistantMessage([{ type: 'text', text: 'old' }], {
+      input_tokens: 111000,
+    })
+    const kept = makeAssistantMessage([{ type: 'text', text: 'kept' }], {
+      input_tokens: 100000,
+    })
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'compact',
+      compactMetadata: {
+        estimatedPostTokens: 17600,
+        preservedUsageIds: [kept.uuid],
+      },
+    }
+    const messages = [old, boundary, kept]
+    expect(getCurrentUsage(messages as any)).toBeNull()
+    expect(getContextDisplayUsage(messages as any)).toEqual({
+      usage: {
+        input_tokens: 17600,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      estimated: true,
+    })
+    const next = makeAssistantMessage([{ type: 'text', text: 'new' }], {
+      input_tokens: 19000,
+      output_tokens: 10,
+    })
+    expect(getContextDisplayUsage([...messages, next] as any)).toEqual({
+      usage: {
+        input_tokens: 19000,
+        output_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      estimated: false,
+    })
+  })
+
+  test('never falls back to pre-compact usage for older boundaries without an estimate', () => {
+    const old = makeAssistantMessage([{ type: 'text', text: 'old' }], {
+      input_tokens: 111000,
+    })
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'old-compact',
+      compactMetadata: {},
+    }
+    expect(getContextDisplayUsage([old, boundary] as any)).toEqual({
+      usage: null,
+      estimated: false,
+    })
   })
 })
 

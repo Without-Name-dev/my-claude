@@ -8,9 +8,19 @@ import { debugMock } from '../../../../tests/mocks/debug';
 // stub Box/Pane/Text/useTheme leak into other test files (e.g.
 // AgentsPlatformView.test.tsx) that need real ink components.
 const _realOnboardingInkMod = (await import('@anthropic/ink')) as Record<string, unknown>;
+// The namespace object above is LIVE: mock.module patches its bindings in
+// place, so it would read back the stubs by the time afterAll runs. A spread
+// snapshot copies the pristine function references into a plain object that
+// later patches cannot reach.
+const _realOnboardingInkSnapshot: Record<string, unknown> = { ..._realOnboardingInkMod };
 let _useStubInkForOnboarding = true;
 afterAll(() => {
   _useStubInkForOnboarding = false;
+  // Bun patches mocked bindings in place and does not re-run this file's
+  // factory for imports by later test files — the flag flip alone leaves the
+  // stub installed process-wide. Re-register the pristine snapshot so later
+  // files really do see real components.
+  mock.module('@anthropic/ink', () => _realOnboardingInkSnapshot);
 });
 
 mock.module('bun:bundle', () => ({

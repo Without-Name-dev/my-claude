@@ -9,6 +9,8 @@ import {
   getTotalInputTokens,
 } from '../bootstrap/state.js';
 import { parseTokenBudget } from '../utils/tokenBudget.js';
+import { loadSessionProvider, setServerProvider, serverProviderRuntimeModel } from '../utils/model/serverProviders.js';
+import { setMainLoopModelOverride } from '../bootstrap/state.js';
 import { count } from '../utils/array.js';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
@@ -254,6 +256,9 @@ import {
 } from '../constants/xml.js';
 import { FORK_SUBAGENT_TYPE } from '@claude-code-best/builtin-tools/tools/AgentTool/forkSubagent.js';
 import { escapeXml } from '../utils/xml.js';
+import { getReplBridgeHandle } from '../bridge/replBridgeHandle.js';
+import { isSelfHostedBridge } from '../bridge/bridgeConfig.js';
+import type { SDKMessage } from '../entrypoints/agentSdkTypes.js';
 import type { ThinkingConfig } from '../utils/thinking.js';
 import { gracefulShutdownSync } from '../utils/gracefulShutdown.js';
 import { handlePromptSubmit, type PromptInputHelpers } from '../utils/handlePromptSubmit.js';
@@ -1158,6 +1163,7 @@ export function REPL({
   // Ref for the bridge result callback — set after useReplBridge initializes,
   // read in the onQuery finally block to notify mobile clients that a turn ended.
   const sendBridgeResultRef = useRef<() => void>(() => {});
+  const sendCompactionStatusRef = useRef<(active: boolean) => void>(() => {});
 
   // Ref for the synchronous restore callback — set after restoreMessageSync is
   // defined, read in the onQuery finally block for auto-restore on interrupt.
@@ -2106,6 +2112,9 @@ export function REPL({
     async (sessionId: UUID, log: LogOption, entrypoint: ResumeEntrypoint) => {
       const resumeStart = performance.now();
       try {
+        // Resolve before switching sessions, so a server failure cannot leave
+        // the current conversation using a different session's credentials.
+        const restoredProvider = entrypoint === 'fork' ? null : await loadSessionProvider(sessionId);
         // Deserialize messages to properly clean up the conversation
         // This filters unresolved tool uses and adds a synthetic assistant message if needed
         const messages = deserializeMessages(log.messages);
@@ -2215,6 +2224,12 @@ export function REPL({
         // a different project (cross-worktree, /branch); null derives from
         // current originalCwd.
         switchSession(asSessionId(sessionId), log.fullPath ? dirname(log.fullPath) : null);
+        if (entrypoint !== 'fork') {
+          setServerProvider(restoredProvider);
+          const model = restoredProvider ? serverProviderRuntimeModel(restoredProvider) : null;
+          setMainLoopModelOverride(model);
+          setAppState(prev => ({ ...prev, mainLoopModel: model, mainLoopModelForSession: null }));
+        }
         // Rename asciicast recording to match the resumed session ID
         const { renameRecordingForSession } = await import('../utils/asciicast.js');
         await renameRecordingForSession();
@@ -2993,10 +3008,12 @@ export function REPL({
               );
               break;
             case 'compact_start':
+              sendCompactionStatusRef.current(true);
               setSpinnerMessage('Compacting conversation');
               compactProgressActiveRef.current = true;
               break;
             case 'compact_end':
+              sendCompactionStatusRef.current(false);
               setSpinnerMessage(null);
               setSpinnerColor(null);
               setSpinnerShimmerColor(null);
@@ -3791,6 +3808,11 @@ export function REPL({
           // controller makes ctrl+c fire onCancel() (aborting nothing) instead of
           // propagating to the double-press exit flow.
           setAbortController(null);
+        } else if (queryGuard.wasForceEnded(thisGeneration)) {
+          // onCancel force-ends the guard, so the regular cleanup above is
+          // skipped. Publish completion only once the canceled query exits,
+          // and never after a newer query has taken ownership of the guard.
+          sendBridgeResultRef.current();
         }
 
         // Auto-restore: if the user interrupted before any meaningful response
@@ -3819,6 +3841,18 @@ export function REPL({
           if (lastUserMsg) {
             const idx = msgs.lastIndexOf(lastUserMsg);
             if (messagesAfterAreOnlySynthetic(msgs, idx)) {
+              // A restored prompt is no longer part of the terminal transcript.
+              // Tell self-hosted peers to remove this exact message, rather than
+              // guessing from its text when the user submits the draft again.
+              if (isSelfHostedBridge()) {
+                getReplBridgeHandle()?.writeSdkMessages([
+                  {
+                    type: 'user_message_retracted',
+                    uuid: randomUUID(),
+                    message_uuid: lastUserMsg.uuid,
+                  } as unknown as SDKMessage,
+                ]);
+              }
               // The submit is being undone — undo its history entry too,
               // otherwise Up-arrow shows the restored text twice.
               removeLastFromHistory();
@@ -4748,8 +4782,15 @@ export function REPL({
 
   // REPL Bridge: replicate user/assistant messages to the bridge session
   // for remote access via claude.ai. No-op in external builds or when not enabled.
-  const { sendBridgeResult } = useReplBridge(messages, setMessages, abortControllerRef, commands, mainLoopModel);
+  const { sendBridgeResult, sendCompactionStatus } = useReplBridge(
+    messages,
+    setMessages,
+    abortControllerRef,
+    commands,
+    mainLoopModel,
+  );
   sendBridgeResultRef.current = sendBridgeResult;
+  sendCompactionStatusRef.current = sendCompactionStatus;
 
   useAfterFirstRender();
 
@@ -5616,6 +5657,62 @@ export function REPL({
       ? messages
       : deferredMessages;
 
+  // The deferred view may be a capped tail, so use the actual message id to
+  // keep the placeholder only until that message reaches the visible view.
+  const placeholderText = shouldShowPromptPlaceholder(
+    userInputOnProcessing,
+    Boolean(viewedAgentTask),
+    submittedUserMessageIdRef.current,
+    displayedMessages,
+  )
+    ? userInputOnProcessing
+    : undefined;
+
+  // Render-dupe detector: a committed assistant text row was observed
+  // rendering twice for the duration of a turn (visual ghost), while the
+  // transcript always holds exactly one row and the pure display pipeline is
+  // provably single-copy. Log which layer holds the second copy — a live
+  // streaming preview surviving past the commit, a duplicated row inside
+  // displayedMessages, or the user-input placeholder — so the next live
+  // occurrence identifies the mechanism from the debug log alone.
+  const renderDupeSignature = (() => {
+    const tail = displayedMessages.slice(-4);
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const msg = tail[i];
+      if (!msg || msg.type !== 'assistant') continue;
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (typeof block !== 'object' || block.type !== 'text' || !block.text || block.text.length < 8) continue;
+        if (visibleStreamingText && visibleStreamingText.includes(block.text.slice(0, 24))) {
+          return `preview-alive-after-commit len=${block.text.length}`;
+        }
+        for (let j = i - 1; j >= 0; j--) {
+          const other = tail[j];
+          if (!other || other.type !== 'assistant') continue;
+          const otherContent = other.message?.content;
+          if (!Array.isArray(otherContent)) continue;
+          for (const otherBlock of otherContent) {
+            if (typeof otherBlock === 'object' && otherBlock.type === 'text' && otherBlock.text === block.text) {
+              return `duplicate-assistant-rows uuids=${msg.uuid?.slice(0, 8)},${other.uuid?.slice(0, 8)} len=${block.text.length}`;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  })();
+  const renderDupeLoggedAtRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!renderDupeSignature) return;
+    const now = Date.now();
+    if (now - renderDupeLoggedAtRef.current < 5000) return;
+    renderDupeLoggedAtRef.current = now;
+    logForDebugging(
+      `[render-dupe] ${renderDupeSignature} placeholder=${placeholderText ? 'visible' : 'none'} streamMode=${streamMode}`,
+    );
+  }, [renderDupeSignature, placeholderText, streamMode]);
+
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable
     // and memory is bounded by the viewport. Without it, wrapping transcript
@@ -5790,62 +5887,6 @@ export function REPL({
     }
     return transcriptReturn;
   }
-
-  // The deferred view may be a capped tail, so use the actual message id to
-  // keep the placeholder only until that message reaches the visible view.
-  const placeholderText = shouldShowPromptPlaceholder(
-    userInputOnProcessing,
-    Boolean(viewedAgentTask),
-    submittedUserMessageIdRef.current,
-    displayedMessages,
-  )
-    ? userInputOnProcessing
-    : undefined;
-
-  // Render-dupe detector: a committed assistant text row was observed
-  // rendering twice for the duration of a turn (visual ghost), while the
-  // transcript always holds exactly one row and the pure display pipeline is
-  // provably single-copy. Log which layer holds the second copy — a live
-  // streaming preview surviving past the commit, a duplicated row inside
-  // displayedMessages, or the user-input placeholder — so the next live
-  // occurrence identifies the mechanism from the debug log alone.
-  const renderDupeSignature = (() => {
-    const tail = displayedMessages.slice(-4);
-    for (let i = tail.length - 1; i >= 0; i--) {
-      const msg = tail[i];
-      if (!msg || msg.type !== 'assistant') continue;
-      const content = msg.message?.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        if (typeof block !== 'object' || block.type !== 'text' || !block.text || block.text.length < 8) continue;
-        if (visibleStreamingText && visibleStreamingText.includes(block.text.slice(0, 24))) {
-          return `preview-alive-after-commit len=${block.text.length}`;
-        }
-        for (let j = i - 1; j >= 0; j--) {
-          const other = tail[j];
-          if (!other || other.type !== 'assistant') continue;
-          const otherContent = other.message?.content;
-          if (!Array.isArray(otherContent)) continue;
-          for (const otherBlock of otherContent) {
-            if (typeof otherBlock === 'object' && otherBlock.type === 'text' && otherBlock.text === block.text) {
-              return `duplicate-assistant-rows uuids=${msg.uuid?.slice(0, 8)},${other.uuid?.slice(0, 8)} len=${block.text.length}`;
-            }
-          }
-        }
-      }
-    }
-    return null;
-  })();
-  const renderDupeLoggedAtRef = React.useRef(0);
-  React.useEffect(() => {
-    if (!renderDupeSignature) return;
-    const now = Date.now();
-    if (now - renderDupeLoggedAtRef.current < 5000) return;
-    renderDupeLoggedAtRef.current = now;
-    logForDebugging(
-      `[render-dupe] ${renderDupeSignature} placeholder=${placeholderText ? 'visible' : 'none'} streamMode=${streamMode}`,
-    );
-  }, [renderDupeSignature, placeholderText, streamMode]);
 
   const toolPermissionOverlay =
     focusedInputDialog === 'tool-permission' ? (

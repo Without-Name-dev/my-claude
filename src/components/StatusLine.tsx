@@ -43,7 +43,7 @@ import { createBaseHookInput, executeStatusLineCommand } from '../utils/hooks.js
 import { getLastAssistantMessage } from '../utils/messages.js';
 import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../utils/model/model.js';
 import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
-import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../utils/tokens.js';
+import { doesMostRecentAssistantMessageExceed200k, getContextDisplayUsage } from '../utils/tokens.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
 import { BuiltinStatusLine } from './BuiltinStatusLine.js';
@@ -124,7 +124,7 @@ function buildStatusLineCommandInput(
   });
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
 
-  const currentUsage = getCurrentUsage(messages);
+  const currentUsage = getContextDisplayUsage(messages).usage;
   const contextWindowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
 
@@ -212,6 +212,7 @@ type Props = {
   // lastAssistantMessageId is the actual re-render trigger.
   messagesRef: React.RefObject<Message[]>;
   lastAssistantMessageId: string | null;
+  compactBoundaryId: string | null;
   vimMode?: VimMode;
 };
 
@@ -219,7 +220,7 @@ export function getLastAssistantMessageId(messages: Message[]): string | null {
   return getLastAssistantMessage(messages)?.uuid ?? null;
 }
 
-function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props): React.ReactNode {
+function StatusLineInner({ messagesRef, lastAssistantMessageId, compactBoundaryId, vimMode }: Props): React.ReactNode {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
   const permissionMode = useAppState(s => s.toolPermissionContext.mode);
   // The bottom row is the one place that stays on screen all session (the
@@ -262,12 +263,14 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
   // Track previous state to detect changes and cache expensive calculations
   const previousStateRef = useRef<{
     messageId: string | null;
+    compactBoundaryId: string | null;
     exceeds200kTokens: boolean;
     permissionMode: PermissionMode;
     vimMode: VimMode | undefined;
     mainLoopModel: ModelName;
   }>({
     messageId: null,
+    compactBoundaryId: null,
     exceeds200kTokens: false,
     permissionMode,
     vimMode,
@@ -353,6 +356,7 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
   useEffect(() => {
     if (
       lastAssistantMessageId !== previousStateRef.current.messageId ||
+      compactBoundaryId !== previousStateRef.current.compactBoundaryId ||
       permissionMode !== previousStateRef.current.permissionMode ||
       vimMode !== previousStateRef.current.vimMode ||
       mainLoopModel !== previousStateRef.current.mainLoopModel
@@ -360,11 +364,12 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode;
+      previousStateRef.current.compactBoundaryId = compactBoundaryId;
       previousStateRef.current.vimMode = vimMode;
       previousStateRef.current.mainLoopModel = mainLoopModel;
       scheduleUpdate();
     }
-  }, [lastAssistantMessageId, permissionMode, vimMode, mainLoopModel, scheduleUpdate]);
+  }, [lastAssistantMessageId, compactBoundaryId, permissionMode, vimMode, mainLoopModel, scheduleUpdate]);
 
   // When the statusLine command changes (hot reload), log the next result
   const statusLineCommand = settings?.statusLine?.command;
@@ -429,7 +434,8 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
     exceeds200kTokens: previousStateRef.current.exceeds200kTokens,
   });
   const builtinContextWindowSize = getContextWindowForModel(builtinRuntimeModel, getSdkBetas());
-  const builtinCurrentUsage = getCurrentUsage(messagesRef.current);
+  const builtinDisplayUsage = getContextDisplayUsage(messagesRef.current);
+  const builtinCurrentUsage = builtinDisplayUsage.usage;
   const builtinUsedTokens = builtinCurrentUsage
     ? builtinCurrentUsage.input_tokens +
       builtinCurrentUsage.cache_creation_input_tokens +
@@ -471,6 +477,7 @@ function StatusLineInner({ messagesRef, lastAssistantMessageId, vimMode }: Props
             ultracodeActive={ultracodeActive}
             contextUsedPct={builtinContextPct}
             usedTokens={builtinUsedTokens}
+            contextEstimated={builtinDisplayUsage.estimated}
             contextWindowSize={builtinContextWindowSize}
             totalInputTokens={getTotalInputTokens()}
             totalOutputTokens={getTotalOutputTokens()}

@@ -201,6 +201,13 @@ export function listWebSessionSummariesByOwnerUuid(
 
 export function updateSessionTitle(sessionId: string, title: string) {
   storeUpdateSession(sessionId, { title })
+  getAllEventBuses().get(sessionId)?.publish({
+    id: randomUUID(),
+    sessionId,
+    type: 'session_title',
+    payload: { title },
+    direction: 'inbound',
+  })
 }
 
 export function updateSessionStatus(sessionId: string, status: string) {

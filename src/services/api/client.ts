@@ -12,6 +12,7 @@ import {
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
+import { getServerProvider } from 'src/utils/model/serverProviders.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
@@ -94,6 +95,24 @@ export async function getAnthropicClient({
   fetchOverride?: ClientOptions['fetch']
   source?: string
 }): Promise<Anthropic> {
+  const remote = getServerProvider()
+  if (remote) {
+    if (remote.protocol !== 'anthropic') throw new Error('不匹配的供应商协议')
+    return new Anthropic({
+      ...(remote.authMode === 'bearer'
+        ? { apiKey: null, authToken: remote.apiKey }
+        : { apiKey: remote.apiKey }),
+      baseURL: remote.baseUrl,
+      maxRetries,
+      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      dangerouslyAllowBrowser: true,
+      fetchOptions: getProxyFetchOptions({
+        forAnthropicAPI: false,
+        url: remote.baseUrl,
+      }) as ClientOptions['fetchOptions'],
+      ...(fetchOverride && { fetch: fetchOverride }),
+    })
+  }
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP

@@ -152,7 +152,10 @@ export function toSDKMessages(messages: Message[]): SDKMessage[] {
             parent_tool_use_id: null,
             uuid: message.uuid,
             timestamp: message.timestamp,
-            isSynthetic: message.isMeta || message.isVisibleInTranscriptOnly,
+            isSynthetic:
+              message.isMeta ||
+              message.isVisibleInTranscriptOnly ||
+              message.isSynthetic === true,
             // Structured tool output (not the string content sent to the
             // model — the full Output object). Rides the protobuf catchall
             // so web viewers can read things like BriefTool's file_uuid

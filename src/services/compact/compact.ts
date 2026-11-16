@@ -39,6 +39,7 @@ import {
   getAgentListingDeltaAttachment,
   getDeferredToolsDeltaAttachment,
   getMcpInstructionsDeltaAttachment,
+  getPostCompactTaskHandoff,
   type Attachment,
 } from '../../utils/attachments.js'
 import { getMemoryPath } from '../../utils/config.js'
@@ -334,12 +335,28 @@ export type RecompactionInfo = {
  * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {
-  return ([result.boundaryMarker] as Message[]).concat(
+  const messages = ([result.boundaryMarker] as Message[]).concat(
     result.summaryMessages,
     stripToolUseResults(result.messagesToKeep),
     result.attachments,
     result.hookResults,
   )
+  // Preserved assistant messages contain usage from before compaction. Record
+  // their identities so the status line won't mistake that usage for a new
+  // API response. The estimate covers the compacted messages, not system/tools.
+  messages[0] = {
+    ...result.boundaryMarker,
+    compactMetadata: {
+      ...(result.boundaryMarker.compactMetadata as Record<string, unknown>),
+      estimatedPostTokens: roughTokenCountEstimationForMessages(
+        messages as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+      ),
+      preservedUsageIds: (result.messagesToKeep ?? [])
+        .filter(message => message.type === 'assistant')
+        .map(message => message.uuid),
+    },
+  }
+  return messages
 }
 
 /** Release large tool result payloads from kept messages after compaction.
@@ -569,6 +586,9 @@ export async function compactConversation(
       ...fileAttachments,
       ...asyncAgentAttachments,
     ]
+    for (const attachment of await getPostCompactTaskHandoff(context)) {
+      postCompactFileAttachments.push(createAttachmentMessage(attachment))
+    }
     const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
     if (planAttachment) {
       postCompactFileAttachments.push(planAttachment)
@@ -968,6 +988,9 @@ export async function partialCompactConversation(
       ...fileAttachments,
       ...asyncAgentAttachments,
     ]
+    for (const attachment of await getPostCompactTaskHandoff(context)) {
+      postCompactFileAttachments.push(createAttachmentMessage(attachment))
+    }
     const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
     if (planAttachment) {
       postCompactFileAttachments.push(planAttachment)

@@ -13,6 +13,7 @@ import {
   type ModelKey,
 } from './configs.js'
 import { type APIProvider, getAPIProvider } from './providers.js'
+import { getServerProvider } from './serverProviders.js'
 
 /**
  * Maps each model version to its provider-specific model ID string.
@@ -134,6 +135,8 @@ function initModelStrings(): void {
 }
 
 export function getModelStrings(): ModelStrings {
+  // A server profile must not reuse or overwrite the local provider's cache.
+  if (getServerProvider()) return getBuiltinModelStrings(getAPIProvider())
   const ms = getModelStringsState()
   if (ms === null) {
     initModelStrings()
@@ -150,6 +153,7 @@ export function getModelStrings(): ModelStrings {
  * Call this before generating model options to ensure correct region strings.
  */
 export async function ensureModelStringsInitialized(): Promise<void> {
+  if (getServerProvider()) return
   const ms = getModelStringsState()
   if (ms !== null) {
     return

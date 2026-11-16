@@ -302,7 +302,7 @@ export default function App() {
     setWorkspace({});
   }, []);
 
-  const navigateSession = useCallback((deviceId: string, localSessionId?: string) => {
+  const navigateSession = useCallback((deviceId: string, localSessionId?: string, options?: { replace?: boolean }) => {
     haptic('light');
     const path = localSessionId
       ? `/code/d/${encodeURIComponent(deviceId)}/s/${encodeURIComponent(localSessionId)}`
@@ -319,8 +319,9 @@ export default function App() {
       window.history.back();
       return;
     }
-    pushedSessionPathRef.current = localSessionId ? path : null;
-    window.history.pushState(null, '', path);
+    pushedSessionPathRef.current = localSessionId && !options?.replace ? path : null;
+    if (options?.replace) window.history.replaceState(null, '', path);
+    else window.history.pushState(null, '', path);
     setBridgeSessionId(null);
     setWorkspace(localSessionId ? { deviceId, localSessionId } : { deviceId });
   }, []);

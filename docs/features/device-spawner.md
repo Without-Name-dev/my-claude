@@ -73,7 +73,13 @@ UI 规则：
 - 启动前用登记文件 + PID 存活 + 命令行（`--resume <id>` 或 `cli.js`）核对归属，仅凭 PID 不算；
 - 已有进程且带 Bridge → 直接复用；已有进程无 Bridge → 返回 `already_running_without_bridge`。
 
-## Windows 可见终端
+## Windows 托盘与可见终端
+
+设备连接器以右下角托盘图标运行，右键可查看进程状态、打开日志、重启或退出连接器。进程运行状态不等同于服务器连接状态；服务器在线状态以网页显示为准。退出连接器不会关闭已经启动的 Claude Code 终端。下次登录 Windows 时连接器会自动启动。
+
+运行 `powershell -ExecutionPolicy Bypass -File scripts\install-device-spawner.ps1` 注册每用户登录启动项并立即启动托盘。托盘进程使用单实例锁，静默启动并监视原有 Spawner；第一次切换时只重启经过身份核实的旧 Spawner。运行同一脚本加 `-Uninstall` 移除登录启动项。
+
+由网页请求打开的 Claude Code 会话仍然使用前台终端：
 
 Spawner 写一个临时 `.cmd` 启动器，再由 `cmd.exe /c` 执行 `start "" "<bun>" "<cli.js>" --resume <id> --remote-control`。`start` 保证控制台程序获得新的可见窗口；不把带引号的 `start` 命令直接塞进 Node 的 spawn 参数（libcmd 的转义会让 cmd 卡住）。
 

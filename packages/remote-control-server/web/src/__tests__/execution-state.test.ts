@@ -2,12 +2,77 @@ import { expect, spyOn, test } from 'bun:test'
 import {
   applyAgentProgress,
   parseTaskSnapshot,
+  parseBackgroundAgents,
   parseWorkflowSnapshot,
+  splitWorkflowRuns,
 } from '../lib/execution-state'
 import { RCSChatAdapter } from '../lib/rcs-chat-adapter'
-import type { ExecutionTask, WorkflowRun } from '../lib/execution-state'
+import type {
+  BackgroundAgent,
+  ExecutionTask,
+  WorkflowRun,
+} from '../lib/execution-state'
 import type { ThreadEntry } from '../lib/types'
 import type { SetStateAction } from 'react'
+
+test('background agent snapshots update and clear independently of task list', () => {
+  let agents: BackgroundAgent[] = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onBackgroundAgents: next => {
+      agents = next
+    },
+  })
+  adapter.handleEvent({
+    type: 'task_state',
+    payload: {
+      raw: {
+        tasks: [],
+        agents: [
+          {
+            id: 'a',
+            name: 'verification',
+            description: '验证修复',
+            status: 'running',
+            startTime: 100,
+            tokenCount: 12,
+            queuedCount: 1,
+          },
+        ],
+      },
+    },
+  })
+  expect(
+    agents.map(a => [
+      a.name,
+      a.description,
+      a.status,
+      a.tokenCount,
+      a.queuedCount,
+    ]),
+  ).toEqual([['verification', '验证修复', 'running', 12, 1]])
+  expect(parseBackgroundAgents({ raw: { tasks: [] } })).toBeUndefined()
+  adapter.handleEvent({
+    type: 'task_state',
+    payload: { raw: { tasks: [], agents: [] } },
+  })
+  expect(agents).toEqual([])
+})
+
+test('completed and stopped workflows remain history instead of active work', () => {
+  const runs = parseWorkflowSnapshot({
+    runs: [
+      { runId: '1', workflowName: 'one', status: 'completed' },
+      { runId: '2', workflowName: 'two', status: 'completed' },
+      { runId: '3', workflowName: 'three', status: 'killed' },
+    ],
+  })!
+  expect(splitWorkflowRuns(runs).active).toEqual([])
+  expect(splitWorkflowRuns(runs).history).toHaveLength(3)
+  const running = parseWorkflowSnapshot({
+    runs: [{ runId: '4', workflowName: 'new', status: 'running' }],
+  })![0]!
+  expect(splitWorkflowRuns([...runs, running]).active).toEqual([running])
+})
 
 test('task snapshots retain terminal status, owner and blockers; empty snapshot clears the list', () => {
   let tasks: ExecutionTask[] = []
@@ -116,6 +181,16 @@ test('device view restores the latest task snapshot from bridge history on open'
                   blockedBy: [],
                 },
               ],
+              agents: [
+                {
+                  id: 'agent',
+                  name: 'verification',
+                  description: '检查修复',
+                  status: 'running',
+                  startTime: 100,
+                  queuedCount: 0,
+                },
+              ],
             },
           },
         },
@@ -123,14 +198,19 @@ test('device view restores the latest task snapshot from bridge history on open'
     })) as unknown as typeof fetch)
   try {
     let tasks: ExecutionTask[] = []
+    let agents: BackgroundAgent[] = []
     const adapter = new RCSChatAdapter('session', () => {}, {
       historyMode: 'metadata',
       onTasks: value => {
         tasks = value
       },
+      onBackgroundAgents: value => {
+        agents = value
+      },
     })
     await adapter.loadHistory()
     expect(tasks[0]).toMatchObject({ subject: '核对', status: 'completed' })
+    expect(agents[0]).toMatchObject({ name: 'verification', status: 'running' })
   } finally {
     fetchSpy.mockRestore()
     if (storage) Object.defineProperty(globalThis, 'localStorage', storage)

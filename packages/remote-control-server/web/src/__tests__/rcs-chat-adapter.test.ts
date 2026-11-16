@@ -4,6 +4,210 @@ import { RCSChatAdapter } from '../lib/rcs-chat-adapter'
 import type { SessionUsage } from '../lib/rcs-chat-adapter'
 import type { ThreadEntry } from '../lib/types'
 
+test('terminal restore removes only the original prompt, even if old echo arrives late', () => {
+  let entries: ThreadEntry[] = []
+  const adapter = new RCSChatAdapter('session', action => {
+    entries = typeof action === 'function' ? action(entries) : action
+  })
+  const user = (uuid: string) => ({
+    type: 'user',
+    direction: 'inbound' as const,
+    payload: { uuid, content: 'same text' },
+  })
+  adapter.handleEvent(user('old-id'))
+  adapter.handleEvent({
+    type: 'user_message_retracted',
+    direction: 'inbound',
+    payload: { raw: { message_uuid: 'old-id' } },
+  })
+  adapter.handleEvent(user('new-id'))
+  adapter.handleEvent(user('old-id'))
+  expect(
+    entries
+      .filter(entry => entry.type === 'user_message')
+      .map(entry => entry.id),
+  ).toEqual(['user-new-id'])
+  adapter.handleEvent(user('another-id'))
+  expect(entries.filter(entry => entry.type === 'user_message')).toHaveLength(2)
+})
+
+test('history replay does not revive a terminal-retracted prompt', async () => {
+  const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+    Response.json({
+      events: [
+        {
+          type: 'user',
+          direction: 'outbound',
+          payload: { uuid: 'old', content: 'hello' },
+        },
+        {
+          type: 'user',
+          direction: 'inbound',
+          payload: { uuid: 'old', content: 'hello' },
+        },
+        {
+          type: 'user_message_retracted',
+          direction: 'inbound',
+          payload: { raw: { message_uuid: 'old' } },
+        },
+        {
+          type: 'user',
+          direction: 'inbound',
+          payload: { uuid: 'new', content: 'hello' },
+        },
+      ],
+    })) as unknown as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await adapter.loadHistory()
+    expect(
+      entries
+        .filter(entry => entry.type === 'user_message')
+        .map(entry => entry.id),
+    ).toEqual(['user-new'])
+  } finally {
+    fetchSpy.mockRestore()
+    if (storage) Object.defineProperty(globalThis, 'localStorage', storage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('reconnect replay removes an already displayed prompt after a missed retraction', async () => {
+  const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+    Response.json({
+      events: [
+        {
+          type: 'user_message_retracted',
+          direction: 'inbound',
+          payload: { raw: { message_uuid: 'old' } },
+        },
+      ],
+    })) as unknown as typeof fetch)
+  try {
+    for (const historyMode of ['full', 'metadata'] as const) {
+      let entries: ThreadEntry[] = [
+        { type: 'user_message', id: 'user-old', content: 'hello' },
+      ]
+      const adapter = new RCSChatAdapter(
+        'session',
+        action => {
+          entries = typeof action === 'function' ? action(entries) : action
+        },
+        { historyMode },
+      )
+      await adapter.loadHistory()
+      expect(entries).toEqual([])
+    }
+  } finally {
+    fetchSpy.mockRestore()
+    if (storage) Object.defineProperty(globalThis, 'localStorage', storage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('history keeps queued identical sends after the confirmed prompt and reply', async () => {
+  const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => 'test', setItem: () => {} },
+  })
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+    Response.json({
+      events: [
+        {
+          type: 'user',
+          direction: 'outbound',
+          payload: { uuid: 'first', content: 'hello' },
+        },
+        {
+          type: 'user',
+          direction: 'outbound',
+          payload: { uuid: 'second', content: 'hello' },
+        },
+        {
+          type: 'user',
+          direction: 'inbound',
+          payload: { uuid: 'first', content: 'hello' },
+        },
+        {
+          type: 'assistant',
+          direction: 'inbound',
+          payload: { uuid: 'answer', content: 'working' },
+        },
+      ],
+    })) as unknown as typeof fetch)
+  try {
+    let entries: ThreadEntry[] = []
+    const adapter = new RCSChatAdapter('session', action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    })
+    await adapter.loadHistory()
+    expect(entries.map(entry => entry.id)).toEqual([
+      'user-first',
+      'assistant-answer',
+      'user-second',
+    ])
+  } finally {
+    fetchSpy.mockRestore()
+    if (storage) Object.defineProperty(globalThis, 'localStorage', storage)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
+})
+
+test('propagates a terminal session rename to the current view', () => {
+  const titles: string[] = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onSessionTitle: title => titles.push(title),
+  })
+  adapter.handleEvent({
+    type: 'session_title',
+    direction: 'inbound',
+    payload: { title: 'New title' } as never,
+  })
+  expect(titles).toEqual(['New title'])
+})
+
+test('compaction status confirms the command without clearing other queued messages', () => {
+  let entries: ThreadEntry[] = [
+    { type: 'user_message', id: 'compact', content: '/compact', pending: true },
+    { type: 'user_message', id: 'later', content: 'follow up', pending: true },
+  ]
+  const states: boolean[] = []
+  const adapter = new RCSChatAdapter(
+    'session',
+    action => {
+      entries = typeof action === 'function' ? action(entries) : action
+    },
+    { onCompaction: active => states.push(active) },
+  )
+  adapter.handleEvent({
+    type: 'system',
+    direction: 'inbound',
+    payload: { subtype: 'status', status: 'compacting' },
+  })
+  expect(entries[0]).toMatchObject({ pending: false })
+  expect(entries[1]).toMatchObject({ pending: true })
+  adapter.handleEvent({
+    type: 'system',
+    direction: 'inbound',
+    payload: { subtype: 'status', raw: { status: null } },
+  })
+  expect(states).toEqual([true, false])
+})
+
 test('retries an interrupted send using the same message UUID', async () => {
   const originalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -14,13 +218,14 @@ test('retries an interrupted send using the same message UUID', async () => {
     value: { getItem: () => 'test-identity', setItem: () => {} },
   })
   const ids: string[] = []
-  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
-    async (_input, init) => {
-      ids.push((JSON.parse(String(init?.body)) as { uuid: string }).uuid)
-      if (ids.length === 1) throw new TypeError('connection lost')
-      return Response.json({ status: 'ok' })
-    },
-  )
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    _input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ) => {
+    ids.push((JSON.parse(String(init?.body)) as { uuid: string }).uuid)
+    if (ids.length === 1) throw new TypeError('connection lost')
+    return Response.json({ status: 'ok' })
+  }) as unknown as typeof fetch)
   try {
     let entries: ThreadEntry[] = []
     const adapter = new RCSChatAdapter('session', action => {
@@ -49,9 +254,9 @@ test('keeps an uncertain send visible when both responses are lost', async () =>
     configurable: true,
     value: { getItem: () => 'test-identity', setItem: () => {} },
   })
-  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new TypeError('offline')
-  })
+  }) as unknown as typeof fetch)
   try {
     let entries: ThreadEntry[] = []
     const adapter = new RCSChatAdapter('session', action => {
@@ -453,6 +658,38 @@ test('uses session totals reported by the terminal instead of a partial history'
   expect(seen).toHaveLength(1)
 })
 
+test('marks compacted context usage as estimated until the terminal reports actual usage', () => {
+  const seen: SessionUsage[] = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onUsage: usage => seen.push(usage),
+  })
+  const raw = {
+    current: {
+      input_tokens: 17600,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    total_input_tokens: 100,
+    total_output_tokens: 20,
+    total_cache_creation_input_tokens: 30,
+    total_cache_read_input_tokens: 70,
+  }
+  adapter.handleEvent({
+    type: 'usage_state',
+    direction: 'inbound',
+    payload: { raw: { ...raw, current_estimated: true } },
+  })
+  expect(seen.at(-1)?.contextEstimated).toBe(true)
+  expect(seen.at(-1)?.current?.input).toBe(17600)
+  adapter.handleEvent({
+    type: 'usage_state',
+    direction: 'inbound',
+    payload: { raw: { ...raw, current_estimated: false } },
+  })
+  expect(seen.at(-1)?.contextEstimated).toBeUndefined()
+})
+
 test('older history pages never replace the current live usage', () => {
   let entries: ThreadEntry[] = []
   const seen: SessionUsage[] = []
@@ -539,13 +776,14 @@ test('registers a control request before sending it, so a fast response is match
     },
   })
   let registered = ''
-  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
-    async (_input, init) => {
-      const sent = JSON.parse(String(init?.body)) as { request_id: string }
-      expect(registered).toBe(sent.request_id)
-      return Response.json({ status: 'ok' })
-    },
-  )
+  const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (
+    _input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ) => {
+    const sent = JSON.parse(String(init?.body)) as { request_id: string }
+    expect(registered).toBe(sent.request_id)
+    return Response.json({ status: 'ok' })
+  }) as unknown as typeof fetch)
   try {
     const adapter = new RCSChatAdapter('session', () => {})
     const id = await adapter.setUltracode(true, requestId => {
@@ -673,7 +911,7 @@ async function replayHistory(
     value: { getItem: () => 'test-identity', setItem: () => {} },
   })
   const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () =>
-    Response.json({ events })) as typeof fetch)
+    Response.json({ events })) as unknown as typeof fetch)
   try {
     const adapter = new RCSChatAdapter('session', () => {}, options)
     await adapter.loadHistory()

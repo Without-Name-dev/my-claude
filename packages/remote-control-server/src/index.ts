@@ -26,6 +26,8 @@ import webSessions from './routes/web/sessions'
 import webControl from './routes/web/control'
 import webEnvironments from './routes/web/environments'
 import webDevices from './routes/web/devices'
+import webProviders from './routes/web/providers'
+import webClientLogs from './routes/web/client-logs'
 import desktop from './routes/desktop'
 import { closeAllDeviceConnections } from './device/hub'
 import { flushState, loadState } from './device/state'
@@ -132,6 +134,8 @@ app.route('/web', webSessions)
 app.route('/web', webControl)
 app.route('/web', webEnvironments)
 app.route('/web', webDevices)
+app.route('/web', webProviders)
+app.route('/web', webClientLogs)
 app.route('/desktop', desktop)
 
 const port = config.port

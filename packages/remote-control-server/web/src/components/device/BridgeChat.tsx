@@ -10,11 +10,19 @@ import {
 } from 'react';
 import { RCSChatAdapter } from '../../lib/rcs-chat-adapter';
 import type { BridgeSessionInfo, SessionUsage } from '../../lib/rcs-chat-adapter';
+import { formatContextUsage } from '../../lib/context-usage';
+import { composerModelLabel } from '../../lib/composer-model-label';
+import { OfflineSessionSettings } from './OfflineSessionSettings';
 import { mergeThreadEntries } from '../../lib/device-history';
 import type { PendingPermission, ThreadEntry } from '../../lib/types';
 import type { ChatInputMessage } from '../../lib/types';
-import { apiFetchSession, apiSendControl } from '../../api/client';
-import type { TranscriptUsage } from '../../api/devices';
+import { apiFetchProviderQuota, apiFetchProviders, apiFetchSession, apiSendControl } from '../../api/client';
+import {
+  updateSessionSettings,
+  type TranscriptUsage,
+  type SessionSettings,
+  type SessionSettingsValues,
+} from '../../api/devices';
 import { ChatView } from '../../../components/chat/ChatView';
 import { ChatInput } from '../../../components/chat/ChatInput';
 import { ComposerSettings } from './ComposerSettings';
@@ -23,6 +31,7 @@ import {
   agentProgressParentId,
   applyAgentProgress,
   type ExecutionTask,
+  type BackgroundAgent,
   type TerminalQueueSnapshot,
   type WorkflowRun,
 } from '../../lib/execution-state';
@@ -57,15 +66,26 @@ export function BridgeChat({
   onTerminalUnavailable,
   onBridgeDisconnected,
   onBridgeReady,
+  onSessionTitle,
   toolbarExtraLeft,
   onCloseTerminal,
   deviceId,
+  localSessionId,
+  savedSettings,
+  onSavedSettingsChange,
   cwd,
   hasOlder,
   loadingOlder,
   onLoadOlder,
   usageSeed,
   draftKey: draftKeyProp,
+  onOfflineSubmit,
+  offlineDisabled,
+  offlineLoading,
+  offlineHistoryLoading,
+  offlinePlaceholder,
+  offlineContent,
+  onOfflinePermissionRespond,
 }: {
   sessionId: string;
   onBack?: () => void;
@@ -82,12 +102,16 @@ export function BridgeChat({
   onBridgeDisconnected?: () => void;
   /** The SSE stream is open; catch up on anything produced before it. */
   onBridgeReady?: () => void;
+  onSessionTitle?: (title: string) => void;
   /** Extra controls at the far left of the composer (e.g. close-terminal). */
   toolbarExtraLeft?: ReactNode;
   /** Close the PC terminal; offered inside the settings sheet. */
   onCloseTerminal?: () => void;
   /** Enables attaching files from this phone or from the PC. */
   deviceId?: string;
+  localSessionId?: string;
+  savedSettings?: SessionSettings | null;
+  onSavedSettingsChange?: (settings: SessionSettings) => void;
   /** The terminal's working directory; attachments land inside it. */
   cwd?: string;
   /** Older server-cache pages; the device view owns the cursor. */
@@ -106,13 +130,25 @@ export function BridgeChat({
    * keeps the legacy bridge-scoped key for standalone mounts.
    */
   draftKey?: string;
+  onOfflineSubmit?: (message: ChatInputMessage) => Promise<void>;
+  offlineDisabled?: boolean;
+  offlineLoading?: boolean;
+  offlineHistoryLoading?: boolean;
+  offlinePlaceholder?: string;
+  offlineContent?: ReactNode;
+  onOfflinePermissionRespond?: (requestId: string, optionId: string | null, optionKind: string | null) => void;
 }) {
   const [internalEntries, setInternalEntries] = useState<ThreadEntry[]>(() => initialEntries ?? []);
   const entries = controlledEntries ?? internalEntries;
   const setEntries = onEntriesChange ?? setInternalEntries;
   const controlled = controlledEntries !== undefined;
   const [isLoading, setIsLoading] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
   const [tasks, setTasks] = useState<ExecutionTask[]>([]);
+  const [backgroundAgents, setBackgroundAgents] = useState<BackgroundAgent[]>([]);
+  useEffect(() => {
+    setBackgroundAgents([]);
+  }, [sessionId]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   /** Prompts typed at the terminal, waiting for the running turn to finish. */
   const [terminalQueue, setTerminalQueue] = useState<TerminalQueueSnapshot | null>(null);
@@ -157,13 +193,67 @@ export function BridgeChat({
   const [effort, setEffort] = useState('');
   const [ultracode, setUltracode] = useState(false);
   const [ultracodeUsable, setUltracodeUsable] = useState<boolean | null>(null);
-  const [usage, setUsage] = useState<SessionUsage | null>(null);
+  const [usageState, setUsageState] = useState<{ sessionId: string; usage: SessionUsage } | null>(null);
+  const usage = usageState?.sessionId === sessionId ? usageState.usage : null;
   const [controlError, setControlError] = useState('');
   /** False until the bridge handshake (init) returns; sending is held until then. */
   const [ready, setReady] = useState(false);
   const [streamConnected, setStreamConnected] = useState(false);
   const [controlPending, setControlPending] = useState(false);
+  const savingSettings = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providersLoading, setProvidersLoading] = useState(false);
+  const [providersError, setProvidersError] = useState(false);
+  const [serverModels, setServerModels] = useState<
+    {
+      id: string;
+      name: string;
+      displayName: string;
+      quota?: { label: string; remaining: number; resetAt?: number }[];
+    }[]
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    setProvidersLoading(true);
+    setProvidersError(false);
+    void apiFetchProviders()
+      .then(async ({ providers }) => {
+        if (cancelled) return;
+        setServerModels(
+          providers.flatMap(provider =>
+            provider.models.map(model => ({
+              id: `rcs-provider:${provider.id}:${encodeURIComponent(model)}`,
+              name: `${provider.name} / ${provider.modelDetails?.find(detail => detail.model === model)?.displayName ?? model}`,
+              displayName: provider.modelDetails?.find(detail => detail.model === model)?.displayName ?? model,
+            })),
+          ),
+        );
+        await Promise.all(
+          providers.map(async provider => {
+            try {
+              const { windows } = await apiFetchProviderQuota(provider.id);
+              if (!cancelled && windows.length)
+                setServerModels(previous =>
+                  previous.map(model =>
+                    model.id.startsWith(`rcs-provider:${provider.id}:`) ? { ...model, quota: windows } : model,
+                  ),
+                );
+            } catch {
+              /* Quota is optional and must not affect model selection. */
+            }
+          }),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setProvidersError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setProvidersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsOpen]);
   /** Single-flight for the actual send; duplicate taps must not run a prompt twice. */
   const sendInFlight = useRef(false);
   const [connected, setConnected] = useState(true);
@@ -179,6 +269,10 @@ export function BridgeChat({
   useEffect(() => {
     onBridgeReadyRef.current = onBridgeReady;
   }, [onBridgeReady]);
+  const onSessionTitleRef = useRef(onSessionTitle);
+  useEffect(() => {
+    onSessionTitleRef.current = onSessionTitle;
+  }, [onSessionTitle]);
   const userChangedModel = useRef(false);
   const userChangedMode = useRef(false);
   /**
@@ -241,8 +335,8 @@ export function BridgeChat({
       userChangedModel.current = false;
       userChangedMode.current = false;
       for (const rollback of rollbacks) rollback();
-      if (rollbacks.length > 0) setControlError('切换超时，已保持原来的设置');
-    }, 8000);
+      if (rollbacks.length > 0) setControlError('切换超时，请重新确认终端当前设置');
+    }, 12000);
   }, []);
 
   useEffect(() => {
@@ -255,6 +349,7 @@ export function BridgeChat({
     () =>
       new RCSChatAdapter(sessionId, setEntries, {
         onTasks: setTasks,
+        onBackgroundAgents: setBackgroundAgents,
         onWorkflows: setWorkflows,
         // Mirrored from the CLI: prompts typed at the terminal while a turn
         // runs. Without this the phone sees nothing until the turn ends.
@@ -288,7 +383,7 @@ export function BridgeChat({
         onSessionInfo: info => {
           setSessionInfo(info);
           // A replayed system/init must not undo a model the user just chose.
-          if (info.model && !userChangedModel.current) setModelId(info.model);
+          if (info.model && !userChangedModel.current) setModelId(info.modelSelection ?? info.model);
           if (info.permissionMode && !userChangedMode.current) setPermissionMode(info.permissionMode);
           // Effort/ultracode are republished by the CLI whenever they change —
           // including changes made in the terminal — so these are authoritative.
@@ -320,6 +415,7 @@ export function BridgeChat({
           // accumulate into one.
           if (!next) turnStartedAt.current = 0;
           if (!next) setIsLoading(false);
+          if (!next) setIsCompacting(false);
           if (next) {
             // A bridge_state false→true flap mid-turn cleared the running row
             // above; the session_status snapshot that restores it only rides a
@@ -350,7 +446,9 @@ export function BridgeChat({
           if (startedAt) turnFinished(Date.now() - startedAt);
           setIsLoading(false);
         },
-        onUsage: next => setUsage(next),
+        onCompaction: setIsCompacting,
+        onSessionTitle: title => onSessionTitleRef.current?.(title),
+        onUsage: next => setUsageState({ sessionId, usage: next }),
         // The CLI reports the authoritative turn state. Without this, a turn
         // started in the terminal looked idle in the browser, and the first
         // streamed assistant chunk cleared the spinner prematurely.
@@ -389,23 +487,43 @@ export function BridgeChat({
   }, [adapter, usageSeed]);
 
   useEffect(() => {
+    if (!sessionId) {
+      setReady(false);
+      setConnected(false);
+      setStreamConnected(false);
+      setIsLoading(false);
+      setIsCompacting(false);
+      setPermissions([]);
+      setTasks([]);
+      setWorkflows([]);
+      setTerminalQueue(null);
+      setError('');
+      setSettingsOpen(false);
+      return;
+    }
     adapterRef.current = adapter;
+    let cancelled = false;
     setReady(false);
     void adapter
       .init()
       .catch(err => {
-        setError(err instanceof Error ? err.message : '无法连接会话');
+        if (!cancelled) setError(err instanceof Error ? err.message : '无法连接会话');
       })
       .finally(() => {
         // The banner above tells the user what went wrong; the composer stays
         // usable either way so typing is never silently swallowed.
-        setReady(true);
+        if (!cancelled) setReady(true);
       });
     return () => {
+      cancelled = true;
+      if (disconnectTimer.current) {
+        clearTimeout(disconnectTimer.current);
+        disconnectTimer.current = null;
+      }
       adapter.disconnect();
-      adapterRef.current = null;
+      if (adapterRef.current === adapter) adapterRef.current = null;
     };
-  }, [adapter]);
+  }, [adapter, sessionId]);
 
   const appendCommandOutput = useCallback(
     (text: string) => {
@@ -424,6 +542,10 @@ export function BridgeChat({
       // bubble, no error, nothing.
       if (!text && !hasImages) return;
       setError('');
+      if (!sessionId && onOfflineSubmit) {
+        await onOfflineSubmit(message);
+        return;
+      }
       if (!streamConnected) {
         throw new Error('消息连接已断开，正在重连，请稍候再发送');
       }
@@ -506,7 +628,16 @@ export function BridgeChat({
         sendInFlight.current = false;
       }
     },
-    [adapter, appendCommandOutput, connected, onTerminalUnavailable, ready, streamConnected],
+    [
+      adapter,
+      appendCommandOutput,
+      connected,
+      onTerminalUnavailable,
+      ready,
+      streamConnected,
+      sessionId,
+      onOfflineSubmit,
+    ],
   );
 
   /** Send a control request and remember how to undo its optimistic value. */
@@ -533,18 +664,54 @@ export function BridgeChat({
     [armControlTimeout],
   );
 
+  const saveDeviceSetting = useCallback(
+    async (patch: SessionSettingsValues, rollback: () => void) => {
+      if (!deviceId || !localSessionId || savingSettings.current) return;
+      savingSettings.current = true;
+      setControlPending(true);
+      setControlError('');
+      try {
+        const result = await updateSessionSettings(deviceId, localSessionId, patch);
+        onSavedSettingsChange?.(result.settings);
+        if (result.settings.error) setControlError(`设置已保存，但终端未能应用：${result.settings.error}`);
+      } catch (cause) {
+        rollback();
+        setControlError(cause instanceof Error ? cause.message : '保存设置失败');
+      } finally {
+        savingSettings.current = false;
+        setControlPending(false);
+      }
+    },
+    [deviceId, localSessionId, onSavedSettingsChange],
+  );
+
+  useEffect(() => {
+    if (!savedSettings || savingSettings.current) return;
+    const values = savedSettings.values;
+    if (values.model !== undefined) setModelId(values.model);
+    if (values.effort !== undefined) setEffort(values.effort);
+    if (values.permissionMode !== undefined) setPermissionMode(values.permissionMode);
+    if (values.ultracode !== undefined) setUltracode(values.ultracode);
+    if (savedSettings.error) setControlError(`设置尚未生效：${savedSettings.error}`);
+  }, [savedSettings]);
+
   const changeModel = useCallback(
     async (id: string) => {
       const previous = modelId;
       userChangedModel.current = true;
       setModelId(id);
+      if (deviceId && localSessionId) {
+        await saveDeviceSetting({ model: id }, () => setModelId(previous));
+        userChangedModel.current = false;
+        return;
+      }
       await runControl(
         register => adapter.setModel(id, register),
         () => setModelId(previous),
         '切换模型失败，已保持原模型',
       );
     },
-    [adapter, modelId, runControl],
+    [adapter, modelId, runControl, deviceId, localSessionId, saveDeviceSetting],
   );
 
   const changePermissionMode = useCallback(
@@ -552,37 +719,50 @@ export function BridgeChat({
       const previous = permissionMode;
       userChangedMode.current = true;
       setPermissionMode(mode);
+      if (deviceId && localSessionId) {
+        await saveDeviceSetting({ permissionMode: mode }, () => setPermissionMode(previous));
+        userChangedMode.current = false;
+        return;
+      }
       await runControl(
         register => adapter.setPermissionMode(mode, register),
         () => setPermissionMode(previous),
         '切换权限模式失败，已保持原模式',
       );
     },
-    [adapter, permissionMode, runControl],
+    [adapter, permissionMode, runControl, deviceId, localSessionId, saveDeviceSetting],
   );
 
   const changeEffort = useCallback(
     async (value: string) => {
       const previous = effort;
       setEffort(value);
+      if (deviceId && localSessionId) {
+        await saveDeviceSetting({ effort: value }, () => setEffort(previous));
+        return;
+      }
       await runControl(
         register => adapter.setEffort(value, register),
         () => setEffort(previous),
         '切换思考等级失败，已保持原等级',
       );
     },
-    [adapter, effort, runControl],
+    [adapter, effort, runControl, deviceId, localSessionId, saveDeviceSetting],
   );
 
   const toggleUltracode = useCallback(async () => {
     const next = !ultracode;
     setUltracode(next);
+    if (deviceId && localSessionId) {
+      await saveDeviceSetting({ ultracode: next }, () => setUltracode(!next));
+      return;
+    }
     await runControl(
       register => adapter.setUltracode(next, register),
       () => setUltracode(!next),
       '切换 Ultracode 失败',
     );
-  }, [adapter, runControl, ultracode]);
+  }, [adapter, runControl, ultracode, deviceId, localSessionId, saveDeviceSetting]);
 
   const interrupt = useCallback(async () => {
     try {
@@ -698,23 +878,20 @@ export function BridgeChat({
     name: command.name,
     description: command.description || '命令',
   }));
-  const reportedModels = sessionInfo?.models ?? [];
-  const models =
-    modelId && !reportedModels.some(model => model.id === modelId)
-      ? [{ id: modelId, name: modelId }, ...reportedModels]
-      : reportedModels;
+  const models = serverModels;
   const permissionOptions = PERMISSION_MODES.some(option => option.id === permissionMode)
     ? PERMISSION_MODES
     : permissionMode
       ? [...PERMISSION_MODES, { id: permissionMode, label: permissionMode }]
       : PERMISSION_MODES;
-  const activeModelName = shortModelName(models.find(model => model.id === modelId)?.name ?? '');
+  const activeModelName =
+    serverModels.find(model => model.id === modelId)?.displayName ?? composerModelLabel(modelId, sessionInfo?.model);
 
   return (
     <TooltipProvider>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
         {header}
-        {!streamConnected && (
+        {sessionId && !streamConnected && (
           <div
             role="status"
             className="border-b border-warning-border/30 bg-warning-border/10 px-4 py-2 text-sm text-warning-text"
@@ -756,15 +933,17 @@ export function BridgeChat({
         )}
         <ChatView
           entries={entries}
-          isLoading={isLoading}
-          onPermissionRespond={respondFromCard}
+          isLoading={Boolean(sessionId) && isLoading}
+          isHistoryLoading={!sessionId && offlineHistoryLoading}
+          onPermissionRespond={sessionId ? respondFromCard : onOfflinePermissionRespond}
           hasOlder={hasOlder}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlder}
-          emptyTitle="开始对话"
-          emptyDescription="输入消息继续这个会话"
+          emptyTitle={!sessionId && offlineHistoryLoading ? '正在加载会话…' : '开始对话'}
+          emptyDescription={!sessionId && offlineHistoryLoading ? '' : '输入消息继续这个会话'}
         />
-        {permissions.length > 0 && (
+        {!sessionId && offlineContent}
+        {sessionId && permissions.length > 0 && (
           /* A long AskUserQuestion/plan card used to squeeze the transcript and
              could push the composer off a phone screen; scroll it instead. */
           <div className="max-h-[40%] overflow-y-auto overscroll-contain border-t bg-surface-1 px-4 py-3 sm:max-h-[50%]">
@@ -790,31 +969,30 @@ export function BridgeChat({
             </div>
           </div>
         )}
-        {isLoading && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="mx-auto flex w-full max-w-[56rem] items-center px-4 pb-1.5 sm:px-8"
-          >
-            <span className="flex items-center gap-1.5 rounded-full border border-border/60 bg-surface-1/70 px-2.5 py-1 text-[11px] leading-4 text-text-secondary">
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-brand" />
-              </span>
-              <span>
-                Claude 正在执行
-                {turnStartedAt.current ? ` · 已进行 ${formatElapsed(statusNow - turnStartedAt.current)}` : ''}
-              </span>
+        {/* Keep the expandable task details above the compact status row. */}
+        {sessionId && (
+          <ExecutionPanel
+            tasks={tasks}
+            workflows={workflows}
+            agents={backgroundAgents.filter(
+              agent => !entries.some(entry => entry.type === 'tool_call' && entry.toolCall.agentId === agent.id),
+            )}
+            connected={connected}
+            compact={permissions.length > 0}
+          />
+        )}
+        {sessionId && (isLoading || isCompacting) && (
+          <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-0.5 px-4 pb-1 text-[11px] leading-5 text-text-secondary sm:px-8">
+            <span role="status" aria-live="polite" className="inline-flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+              {isCompacting ? '压缩中' : '执行中'}
+              {turnStartedAt.current ? ` · ${formatElapsed(statusNow - turnStartedAt.current)}` : ''}
             </span>
           </div>
         )}
-        {usage && <ContextStats usage={usage} contextWindow={sessionInfo?.contextWindow} />}
-        {/* Status strip sits below the transcript, right above the composer:
-            collapsed by default so it never pushes messages off-screen. */}
-        <ExecutionPanel tasks={tasks} workflows={workflows} compact={permissions.length > 0} />
-        {terminalQueue && terminalQueue.count > 0 && (
+        {sessionId && terminalQueue && terminalQueue.count > 0 && (
           <div role="status" aria-label="终端排队消息" className="shrink-0 px-4 pb-1.5 sm:px-8">
-            <div className="mx-auto flex max-w-[56rem] items-center gap-2 rounded-xl border border-border/60 bg-surface-1/60 px-3 py-2 text-[12px] leading-5 text-text-secondary">
+            <div className="mx-auto flex w-full items-center gap-2 rounded-xl border border-border/60 bg-surface-1/60 px-3 py-2 text-[12px] leading-5 text-text-secondary">
               <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-text-muted" />
               <span className="shrink-0 font-medium text-text-primary">
                 终端排队中{terminalQueue.count > 1 ? `（${terminalQueue.count} 条）` : ''}
@@ -826,43 +1004,49 @@ export function BridgeChat({
           </div>
         )}
         <ChatInput
-          key={sessionId}
+          key={draftKeyProp ?? sessionId}
           draftKey={draftKeyProp ?? `bridge:${sessionId}`}
           onSubmit={submit}
-          isLoading={isLoading}
-          onInterrupt={interrupt}
-          placeholder="和 Claude 一起工作"
+          isLoading={sessionId ? isLoading : offlineLoading}
+          onInterrupt={sessionId ? interrupt : undefined}
+          disabled={!sessionId && offlineDisabled}
+          placeholder={sessionId ? '和 Claude 一起工作' : (offlinePlaceholder ?? '和 Claude 一起工作')}
           supportsImages
           deviceId={deviceId}
           cwd={cwd}
-          commands={commands}
+          commands={sessionId ? commands : []}
+          toolbarAfterAttachments={<ContextStats usage={usage} contextWindow={sessionInfo?.contextWindow} />}
           toolbarLeft={
             <>
               {toolbarExtraLeft}
-              {/* One settings entry point: the thinking level, Ultracode,
-                  permission mode and model live in the settings sheet so the
-                  composer row stays readable on a phone. */}
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(true)}
-                disabled={controlPending || !streamConnected}
-                aria-label="会话设置"
-                className="flex h-8 min-w-0 shrink items-center gap-1 rounded-full px-1.5 text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-60 sm:h-9 sm:px-2"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
-                <span
-                  className={cn(
-                    'min-w-0 truncate text-[11px] sm:text-xs',
-                    ultracode || (effort && effort !== 'auto')
-                      ? 'text-brand-dark dark:text-brand'
-                      : 'text-text-secondary',
-                  )}
+              {!sessionId && deviceId && localSessionId && onSavedSettingsChange ? (
+                <OfflineSessionSettings
+                  deviceId={deviceId}
+                  sessionId={localSessionId}
+                  settings={savedSettings}
+                  onChange={onSavedSettingsChange}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  disabled={controlPending || !streamConnected}
+                  aria-label="会话设置"
+                  className="flex h-8 min-w-0 shrink items-center gap-1 rounded-full px-1.5 text-text-secondary transition-colors hover:bg-surface-1 hover:text-text-primary disabled:opacity-60 sm:h-9 sm:px-2"
                 >
-                  {effort || '设置'}
-                  {ultracode ? ' · Ultra' : ''}
-                  {activeModelName && <span>{` · ${activeModelName}`}</span>}
-                </span>
-              </button>
+                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" />
+                  <span
+                    className={cn(
+                      'min-w-0 truncate text-[11px] sm:text-xs',
+                      ultracode || (effort && effort !== 'auto')
+                        ? 'text-brand-dark dark:text-brand'
+                        : 'text-text-secondary',
+                    )}
+                  >
+                    {activeModelName}
+                  </span>
+                </button>
+              )}
             </>
           }
         />
@@ -877,10 +1061,16 @@ export function BridgeChat({
           permissionMode={permissionMode}
           permissionOptions={permissionOptions}
           modelId={modelId}
+          currentModelName={activeModelName}
+          currentModelIsLocal={Boolean(modelId) && !modelId.startsWith('rcs-provider:')}
+          providerSwitchAvailable={sessionInfo?.serverProviderSwitch === true}
+          providersLoading={providersLoading}
+          providersError={providersError}
           models={models.map(model => ({
             id: model.id,
-            label: shortModelName(model.name),
+            label: model.name,
             title: model.name,
+            quota: model.quota,
           }))}
           onCloseTerminal={onCloseTerminal}
           onChangeEffort={changeEffort}
@@ -894,11 +1084,6 @@ export function BridgeChat({
 }
 
 /** "deepseek/deepseek-flash[1m]" -> "deepseek-flash[1m]" for narrow pickers. */
-function shortModelName(name: string): string {
-  const tail = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
-  return tail || name;
-}
-
 /** 65s -> "1分05秒"; 6s -> "6秒". */
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -907,48 +1092,30 @@ function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}分${String(seconds).padStart(2, '0')}秒` : `${seconds}秒`;
 }
 
-/** 1234567 -> "1.2M"; 45600 -> "45.6K". */
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(value);
-}
-
-/**
- * One-line session stats above the composer, mirroring the terminal's status
- * line: context fill, accumulated tokens and cache hit rate. Shown from the
- * moment the session opens — zeros are honest, an empty row that fills in
- * after the first reply reads as a missing feature.
- */
+/** Latest context use and configured limit, as reported by the terminal. */
 function ContextStats({ usage, contextWindow }: { usage: SessionUsage | null; contextWindow?: number }) {
-  const current = usage?.current ?? { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
-  const totals = usage?.totals ?? { input: 0, output: 0 };
-  const contextTokens = current.input + current.cacheCreation + current.cacheRead;
-  const pct =
-    usage?.current && contextWindow && contextWindow > 0
-      ? Math.min(100, Math.round((contextTokens / contextWindow) * 100))
-      : null;
-  // 10 cells, matching the terminal's ███░░░░░░░ bar.
-  const filled = pct === null ? 0 : Math.round(pct / 10);
-  // Conversation average (cumulative cache reads / all prompt tokens), the
-  // same definition the terminal status line uses.
-  const cache = usage && usage.cacheHitRate !== null ? `${Math.round(usage.cacheHitRate * 100)}%` : null;
+  const text = formatContextUsage(usage, contextWindow);
+  if (!text) return null;
   return (
-    <div
+    <span
       role="status"
-      className="mx-auto flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-1 text-xs leading-5 text-text-secondary"
+      aria-label={`上下文 ${text}`}
+      title={
+        usage?.estimated
+          ? '上下文和缓存命中率根据会话记录估算'
+          : usage?.contextEstimated
+            ? '压缩后上下文为估算值，缓存命中率为会话实际值'
+            : '当前上下文使用量 / 上限及会话缓存命中率'
+      }
+      className="min-w-0 truncate px-1 text-[11px] text-text-muted sm:text-xs"
     >
-      {pct !== null && (
-        <span className="font-mono tracking-tight" title={`上下文 ${contextWindow?.toLocaleString()} tokens`}>
-          <span className="text-text-secondary">{'█'.repeat(filled)}</span>
-          {'░'.repeat(10 - filled)} {pct}%
-        </span>
-      )}
-      <span title={usage?.estimated ? '根据已加载的部分历史估算；终端更新后显示实时总量' : '与终端会话统计一致'}>
-        {usage?.estimated ? '约 ' : ''}Tokens {formatTokenCount(totals.input + totals.output)}
-        {cache !== null ? ` (cache ${cache})` : ''}
+      <span aria-hidden="true" className="sm:hidden">
+        {text.replace(' / ', '/').replace(' · ', ' ')}
       </span>
-    </div>
+      <span aria-hidden="true" className="hidden sm:inline">
+        {text}
+      </span>
+    </span>
   );
 }
 

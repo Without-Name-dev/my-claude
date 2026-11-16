@@ -10,6 +10,18 @@ export type ExecutionTask = {
   blockedBy: string[]
 }
 
+export type BackgroundAgent = {
+  id: string
+  name?: string
+  description: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'killed'
+  startTime: number
+  endTime?: number
+  totalPausedMs?: number
+  tokenCount?: number
+  queuedCount: number
+}
+
 export type WorkflowAgent = {
   id: number
   label?: string
@@ -30,6 +42,20 @@ export type WorkflowRun = {
   declaredPhases: string[]
   phases: Array<{ title: string; status: 'running' | 'done' }>
   agents: WorkflowAgent[]
+}
+
+/** Old completed/stopped runs are history, not current work. */
+export function splitWorkflowRuns(runs: readonly WorkflowRun[]): {
+  active: WorkflowRun[]
+  history: WorkflowRun[]
+} {
+  const active: WorkflowRun[] = []
+  const history: WorkflowRun[] = []
+  for (const run of runs) {
+    if (run.status === 'running') active.push(run)
+    else history.push(run)
+  }
+  return { active, history }
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -81,6 +107,50 @@ export function parseTaskSnapshot(
         activeForm: str(task?.activeForm),
         description: str(task?.description),
         blockedBy: strings(task?.blockedBy),
+      },
+    ]
+  })
+}
+
+/** The agent list is absent on older CLIs; an empty array clears old rows. */
+export function parseBackgroundAgents(
+  payload: unknown,
+): BackgroundAgent[] | undefined {
+  const root = payloadRecord(payload)
+  if (!Array.isArray(root?.agents)) return undefined
+  return root.agents.flatMap(value => {
+    const agent = record(value)
+    const id = str(agent?.id)
+    const description = str(agent?.description)
+    const status = agent?.status
+    if (
+      !id ||
+      description === undefined ||
+      (status !== 'pending' &&
+        status !== 'running' &&
+        status !== 'completed' &&
+        status !== 'failed' &&
+        status !== 'killed') ||
+      typeof agent?.startTime !== 'number' ||
+      !Number.isFinite(agent.startTime)
+    )
+      return []
+    const optionalNumber = (v: unknown) =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined
+    return [
+      {
+        id,
+        description,
+        status,
+        startTime: agent.startTime,
+        name: str(agent.name),
+        endTime: optionalNumber(agent.endTime),
+        totalPausedMs: optionalNumber(agent.totalPausedMs),
+        tokenCount: optionalNumber(agent.tokenCount),
+        queuedCount: Math.max(
+          0,
+          Math.floor(optionalNumber(agent.queuedCount) ?? 0),
+        ),
       },
     ]
   })

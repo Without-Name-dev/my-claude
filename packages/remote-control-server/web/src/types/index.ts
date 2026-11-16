@@ -45,6 +45,9 @@ export interface EventPayload {
   }
   request_id?: string
   request?: PermissionRequest
+  response?: unknown
+  approved?: boolean
+  tool_call_id?: string
   tool_name?: string
   tool_input?: unknown
   input?: unknown
@@ -63,6 +66,7 @@ export interface ContentBlock {
 export interface PermissionRequest {
   subtype?: string
   tool_name?: string
+  tool_use_id?: string
   input?: unknown
   tool_input?: unknown
   description?: string

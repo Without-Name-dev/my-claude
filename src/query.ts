@@ -131,6 +131,10 @@ import {
 } from './services/langfuse/index.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
+  getServerProvider,
+  runWithServerProvider,
+} from './utils/model/serverProviders.js'
+import {
   createCacheWarningMessage,
   getCacheThreshold,
   isCacheWarningEnabled,
@@ -273,7 +277,21 @@ type State = {
   transition: Continue | undefined
 }
 
-export async function* query(
+export function query(params: QueryParams): ReturnType<typeof queryImpl> {
+  const provider = getServerProvider()
+  const inner = queryImpl(params)
+  const wrapper: ReturnType<typeof queryImpl> = {
+    next: value => runWithServerProvider(provider, () => inner.next(value)),
+    return: value => runWithServerProvider(provider, () => inner.return(value)),
+    throw: error => runWithServerProvider(provider, () => inner.throw(error)),
+    [Symbol.asyncIterator]: () => wrapper,
+    [Symbol.asyncDispose]: () =>
+      runWithServerProvider(provider, () => inner[Symbol.asyncDispose]()),
+  }
+  return wrapper
+}
+
+async function* queryImpl(
   params: QueryParams,
 ): AsyncGenerator<
   | StreamEvent

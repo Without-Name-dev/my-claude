@@ -12,8 +12,14 @@
  */
 
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { resolveSessionFilePath } from '../../../src/utils/sessionStoragePortable'
 import type {
@@ -23,6 +29,10 @@ import type {
 } from '../../remote-control-server/src/device/protocol'
 import { isBridgeSessionId } from '../../remote-control-server/src/device/protocol'
 import { logDir, type SpawnerConfig } from './config'
+import {
+  withDirectBridgeHost,
+  withInteractiveTerminalColors,
+} from './bridge-env'
 import { log } from './log'
 import { underAllowedRoot } from './path-policy'
 import {
@@ -111,46 +121,52 @@ function failure(
 }
 
 function escapeCmd(value: string): string {
-  if (value.includes('"')) {
-    throw new Error('路径包含非法字符（"）')
-  }
-  // % would be expanded by cmd inside a batch file.
+  if (value.includes('"')) throw new Error('路径包含非法字符（"）')
   return value.replace(/%/g, '%%')
 }
 
 /**
- * Write a tiny batch launcher and run it. Passing a quoted `start` command
- * directly through Node's spawn is unreliable on Windows (libuv escapes the
- * quotes for the CRT, not for cmd), which leaves cmd waiting on a malformed
- * command line. A batch file is unambiguous and `start` guarantees a new
- * visible console for the CLI.
+ * A batch file avoids cmd.exe argument escaping issues while opening a new
+ * visible console for the interactive CLI.
  */
 function writeLauncher(
   config: SpawnerConfig,
   cwd: string,
   localSessionId: string,
-): string {
+): { launcher: string; runner: string; exitFile: string } {
   const dir = join(logDir(), 'launchers')
   mkdirSync(dir, { recursive: true })
-  const path = join(dir, `${localSessionId}-${Date.now()}.cmd`)
-  const lines = [
+  const prefix = join(dir, `${localSessionId}-${Date.now()}`)
+  const launcher = `${prefix}.cmd`
+  const runner = `${prefix}-runner.cmd`
+  const exitFile = `${prefix}.exit`
+  const runnerLines = [
     '@echo off',
-    // Batch files are parsed in the OEM code page; switch to UTF-8 so
-    // non-ASCII runtime/CLI paths survive.
     'chcp 65001 >nul',
-    `cd /d "${escapeCmd(cwd)}"`,
-    `start "" "${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --resume ${localSessionId} --remote-control`,
+    `"${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --resume ${localSessionId} --remote-control`,
+    'set "_ccb_exit=%errorlevel%"',
+    `> "${escapeCmd(exitFile)}" echo %_ccb_exit%`,
+    'exit /b %_ccb_exit%',
     '',
   ]
-  writeFileSync(path, lines.join('\r\n'), 'utf8')
-  return path
+  const lines = [
+    '@echo off',
+    'chcp 65001 >nul',
+    `cd /d "${escapeCmd(cwd)}"`,
+    `start "" cmd.exe /d /c ""${escapeCmd(runner)}""`,
+    '',
+  ]
+  writeFileSync(runner, runnerLines.join('\r\n'), 'utf8')
+  writeFileSync(launcher, lines.join('\r\n'), 'utf8')
+  return { launcher, runner, exitFile }
 }
 
 function launchSession(
   config: SpawnerConfig,
   cwd: string,
   localSessionId: string,
-): void {
+  onFailure: (detail: string) => void,
+): string {
   // Collect the CLI's own debug log (bridge lifecycle, ingress messages)
   // under CCRemote/logs/cli so failures in spawned terminals are diagnosable
   // without touching the user's real ~/.claude. Note: the CLI treats
@@ -159,17 +175,20 @@ function launchSession(
   const cliLogDir = join(logDir(), 'logs', 'cli')
   mkdirSync(cliLogDir, { recursive: true })
   const cliLogFile = join(cliLogDir, `${localSessionId}-${Date.now()}.txt`)
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    CLAUDE_BRIDGE_BASE_URL: config.serverUrl,
-    CLAUDE_BRIDGE_OAUTH_TOKEN: config.enrollKey,
-    CLAUDE_CONFIG_DIR: config.claudeConfigDir,
-    DEBUG: '1',
-    CLAUDE_CODE_DEBUG_LOGS_DIR: cliLogFile,
-    // Debug logging is on for diagnostics, but the banner is noise in a
-    // terminal the user opened from their phone.
-    CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
-  }
+  const env: NodeJS.ProcessEnv = withDirectBridgeHost(
+    withInteractiveTerminalColors({
+      ...process.env,
+      CLAUDE_BRIDGE_BASE_URL: config.serverUrl,
+      CLAUDE_BRIDGE_OAUTH_TOKEN: config.enrollKey,
+      CLAUDE_CONFIG_DIR: config.claudeConfigDir,
+      DEBUG: '1',
+      CLAUDE_CODE_DEBUG_LOGS_DIR: cliLogFile,
+      // Debug logging is on for diagnostics, but the banner is noise in a
+      // terminal the user opened from their phone.
+      CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
+    }),
+    config.serverUrl,
+  )
   // Never inherit a stale remote-execution marker from whatever launched the
   // Spawner; this child is a normal interactive CLI.
   delete env.CLAUDE_CODE_REMOTE
@@ -177,25 +196,71 @@ function launchSession(
   if (!existsSync(cwd)) {
     throw new Error(`工作目录不存在：${cwd}`)
   }
+  if (isAbsolute(config.bunPath) && !existsSync(config.bunPath)) {
+    throw new Error(`找不到 Bun 程序：${config.bunPath}`)
+  }
+  if (isAbsolute(config.cliPath) && !existsSync(config.cliPath)) {
+    throw new Error(`找不到 CCB 程序：${config.cliPath}`)
+  }
   const launcher = writeLauncher(config, cwd, localSessionId)
-  const child = spawn('cmd.exe', ['/d', '/s', '/c', launcher], {
+  const child = spawn('cmd.exe', ['/d', '/s', '/c', launcher.launcher], {
     cwd,
     env,
     detached: true,
     windowsHide: false,
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
+  let launcherOutput = ''
+  const captureOutput = (chunk: Buffer | string) => {
+    launcherOutput = (launcherOutput + chunk.toString()).slice(-2048)
+  }
+  child.stdout?.on('data', captureOutput)
+  child.stderr?.on('data', captureOutput)
   child.on('error', error => {
     log(`[spawner] launcher failed for ${localSessionId}: ${error.message}`)
+    onFailure(`无法启动终端：${error.message}`)
+  })
+  child.on('exit', code => {
+    if (code !== null && code !== 0) {
+      log(
+        `[spawner] launcher exited for ${localSessionId}: code=${code} ${launcherOutput.trim()}`,
+      )
+      onFailure(`终端启动器退出（代码 ${code}），请查看本机日志。`)
+    } else if (launcherOutput.trim()) {
+      log(
+        `[spawner] launcher output for ${localSessionId}: ${launcherOutput.trim()}`,
+      )
+    }
   })
   child.unref()
   setTimeout(() => {
     try {
-      unlinkSync(launcher)
+      unlinkSync(launcher.launcher)
     } catch {
-      // Already removed.
+      /* Already removed. */
     }
   }, 30_000).unref?.()
+  // cmd reads batch files as it executes them, so the runner must remain
+  // available for the entire interactive session, however long it lasts.
+  const cleanup = setInterval(() => {
+    if (!existsSync(launcher.exitFile)) return
+    clearInterval(cleanup)
+    setTimeout(() => {
+      for (const file of [launcher.runner, launcher.exitFile]) {
+        try {
+          unlinkSync(file)
+        } catch {
+          /* Already removed. */
+        }
+      }
+    }, 120_000).unref?.()
+  }, 10_000)
+  cleanup.unref?.()
+  // Closing the whole terminal window can kill cmd before it writes the
+  // marker. Do not retain a timer forever in that case; keep the tiny runner
+  // on disk because the terminal could still be active.
+  setTimeout(() => clearInterval(cleanup), 15 * 60_000).unref?.()
+  return launcher.exitFile
 }
 
 function findEntry(
@@ -219,6 +284,14 @@ export async function openSession(
   request: OpenRequest,
   out: OperationEmitter,
 ): Promise<void> {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      request.localSessionId,
+    )
+  ) {
+    failure(out, request, 'session_not_found', '会话 ID 格式无效')
+    return
+  }
   if (inFlight.has(request.localSessionId)) {
     failure(out, request, 'busy', '该会话已经有一个启动请求在进行中')
     return
@@ -318,8 +391,17 @@ export async function openSession(
 
     emit(out, request, 'starting', { detail: '正在打开终端' })
     const spawnedAt = Date.now()
+    let launcherFailure: string | undefined
+    let exitFile: string
     try {
-      launchSession(config, request.cwd, request.localSessionId)
+      exitFile = launchSession(
+        config,
+        request.cwd,
+        request.localSessionId,
+        detail => {
+          launcherFailure = detail
+        },
+      )
     } catch (error) {
       failure(out, request, 'spawn_failed', (error as Error).message)
       return
@@ -332,6 +414,25 @@ export async function openSession(
     const deadline = spawnedAt + 90_000
 
     while (Date.now() < deadline) {
+      if (existsSync(exitFile)) {
+        let code = '未知'
+        try {
+          code = readFileSync(exitFile, 'utf8').trim().slice(0, 24) || code
+        } catch {
+          /* Report the exit without a code. */
+        }
+        failure(
+          out,
+          request,
+          'process_exited',
+          `终端启动后退出（代码 ${code}），请查看本机 CLI 日志。`,
+        )
+        return
+      }
+      if (launcherFailure) {
+        failure(out, request, 'spawn_failed', launcherFailure)
+        return
+      }
       const elapsed = Date.now() - spawnedAt
 
       // `cmd /c start` does not expose the child PID. Find the process by its

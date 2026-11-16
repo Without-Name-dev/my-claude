@@ -14,6 +14,7 @@ import { UserTextMessage } from './UserTextMessage.js';
 import { DiagnosticsDisplay } from '../DiagnosticsDisplay.js';
 import { getContentText } from 'src/utils/messages.js';
 import type { Theme } from 'src/utils/theme.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { UserImageMessage } from './UserImageMessage.js';
 
 import { jsonParse } from '../../utils/slowOperations.js';
@@ -38,6 +39,14 @@ type Props = {
 
 export function AttachmentMessage({ attachment, addMargin, verbose, isTranscriptMode }: Props): React.ReactNode {
   const bg = useSelectedMessageBg();
+  // queued_command renders via UserPromptMessage, whose full-width
+  // userMessageBackground band only paints when an ancestor Box has an
+  // explicit width — OffscreenFreeze's plain <Box> defaults to
+  // flexDirection="row", so without one the band shrink-wraps to the text
+  // ("chip" style). Real user messages get width={columns} from Message.tsx
+  // case 'user'; mirror that here so mid-turn-drained queue messages match
+  // idle-consumed ones.
+  const { columns } = useTerminalSize();
   // Hoisted to mount-time — per-message component, re-renders on every scroll.
   const isDemoEnvRaw = useMemo(() => isEnvTruthy(process.env.IS_DEMO), []);
   const isDemoEnv = feature('EXPERIMENTAL_SKILL_SEARCH') ? isDemoEnvRaw : false;
@@ -287,7 +296,7 @@ export function AttachmentMessage({ attachment, addMargin, verbose, isTranscript
       const text = typeof attachment.prompt === 'string' ? attachment.prompt : getContentText(attachment.prompt) || '';
       const hasImages = attachment.imagePasteIds && attachment.imagePasteIds.length > 0;
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" width={columns}>
           <UserTextMessage
             addMargin={addMargin}
             param={{ text, type: 'text' }}

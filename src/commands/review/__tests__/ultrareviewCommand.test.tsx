@@ -32,6 +32,12 @@ const _realReactMod = (await import('react')) as Record<string, unknown> & {
   default?: Record<string, unknown>;
 };
 const _realInkMod = (await import('@anthropic/ink')) as Record<string, unknown>;
+// The namespaces above are LIVE: mock.module patches their bindings in place,
+// so they would read back the stubs by the time afterAll runs. Spread
+// snapshots copy the pristine references into plain objects that later
+// patches cannot reach.
+const _realReactSnapshot: Record<string, unknown> = { ..._realReactMod };
+const _realInkSnapshot: Record<string, unknown> = { ..._realInkMod };
 let _useStubReactForUltrareview = true;
 let _useStubInkForUltrareview = true;
 afterAll(() => {
@@ -41,6 +47,12 @@ afterAll(() => {
   // closure). Flip useStubs off so the spread-real fall-through kicks in for
   // any test file that runs after this one in the same process.
   _ultrareviewAxiosHandle.useStubs = false;
+  // Bun patches mocked bindings in place and does not re-run this file's
+  // factories for imports by later test files — the flag flips alone leave
+  // the stubs installed process-wide. Re-register the pristine snapshots so
+  // later files really do see real components.
+  mock.module('react', () => _realReactSnapshot);
+  mock.module('@anthropic/ink', () => _realInkSnapshot);
 });
 
 // Mock dependency chain before any subject import

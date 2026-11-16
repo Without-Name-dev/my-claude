@@ -192,6 +192,7 @@ function getEnvelopeTagNames(text: string): string[] | null {
  */
 export function shouldReportRunningForMessage(message: Message): boolean {
   if (message.type !== 'user') return false
+  if (message.isSynthetic === true) return false
   if (message.isVisibleInTranscriptOnly) return false
   if (message.toolUseResult !== undefined) return true
   if (!message.isMeta) return true
@@ -328,7 +329,7 @@ export type ServerControlRequestHandlers = {
    */
   outboundOnly?: boolean
   onInterrupt?: () => void
-  onSetModel?: (model: string | undefined) => void
+  onSetModel?: (model: string | undefined) => void | Promise<void>
   onSetMaxThinkingTokens?: (maxTokens: number | null) => void
   onSetPermissionMode?: (
     mode: PermissionMode,
@@ -430,6 +431,71 @@ export function handleServerControlRequest(
       break
 
     case 'set_model':
+      if (!onSetModel) {
+        response = {
+          type: 'control_response',
+          response: {
+            subtype: 'error',
+            request_id: request.request_id,
+            error: '当前终端不支持切换模型',
+          },
+        }
+        break
+      }
+      if (req.model?.startsWith('rcs-provider:')) {
+        if (!onSetModel) {
+          response = {
+            type: 'control_response',
+            response: {
+              subtype: 'error',
+              request_id: request.request_id,
+              error: '当前终端不支持服务器供应商',
+            },
+          }
+          break
+        }
+        try {
+          const result = onSetModel(req.model)
+          void Promise.resolve(result)
+            .then(
+              () => {
+                const event = {
+                  type: 'control_response' as const,
+                  session_id: sessionId,
+                  response: {
+                    subtype: 'success' as const,
+                    request_id: request.request_id,
+                  },
+                }
+                return transport.write(event)
+              },
+              () => {
+                const event = {
+                  type: 'control_response' as const,
+                  session_id: sessionId,
+                  response: {
+                    subtype: 'error' as const,
+                    request_id: request.request_id,
+                    error: '获取供应商配置失败，当前模型未更改',
+                  },
+                }
+                return transport.write(event)
+              },
+            )
+            .catch(() => {})
+        } catch {
+          response = {
+            type: 'control_response',
+            response: {
+              subtype: 'error',
+              request_id: request.request_id,
+              error: '获取供应商配置失败，当前模型未更改',
+            },
+          }
+          break
+        }
+        return
+      }
       onSetModel?.(req.model)
       response = {
         type: 'control_response',

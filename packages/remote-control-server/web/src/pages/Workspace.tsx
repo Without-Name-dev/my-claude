@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Folder, Plus, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Folder, Plus, RefreshCw, Search, Settings2, Sparkles, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { formatRelativeTime } from '../lib/device-history';
-import { mergeSessionCatalog } from '../lib/session-catalog';
+import { mergeSessionCatalog, rankRecentSessions, type RecentSession } from '../lib/session-catalog';
 import {
   fetchDevices,
   fetchOperation,
@@ -17,10 +17,13 @@ import {
 import { DirectoryPicker } from '../components/device/DirectoryPicker';
 import { DebugButton } from '../components/DebugPanel';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { ProviderManager } from '../components/device/ProviderManager';
 
 const DeviceSessionChat = lazy(() =>
   import('../components/device/DeviceSessionChat').then(module => ({ default: module.DeviceSessionChat })),
 );
+const MOBILE_LAYOUT =
+  '(max-width: 767px), (hover: none) and (pointer: coarse) and (max-width: 1000px) and (max-height: 500px)';
 
 /**
  * Chat-first workspace: devices → projects → local sessions on the left,
@@ -34,9 +37,10 @@ export function Workspace({
 }: {
   initialDeviceId?: string;
   initialLocalSessionId?: string;
-  onNavigate: (deviceId: string, localSessionId?: string) => void;
+  onNavigate: (deviceId: string, localSessionId?: string, options?: { replace?: boolean }) => void;
 }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [devicesError, setDevicesError] = useState('');
   const [loadingDevices, setLoadingDevices] = useState(true);
   const [refreshingDevices, setRefreshingDevices] = useState(false);
@@ -67,7 +71,24 @@ export function Workspace({
   }
   useEffect(() => setLoadingMoreSessions(false), [activeDeviceId]);
   const [selectedLocalSessionId, setSelectedLocalSessionId] = useState(initialLocalSessionId || '');
+  // Browsing a different device in the drawer must not rebind the chat that
+  // remains visible underneath it.
+  const chatDeviceId = initialLocalSessionId ? initialDeviceId || activeDeviceId : activeDeviceId;
   const [mobileChat, setMobileChat] = useState(Boolean(initialLocalSessionId));
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [findingRecent, setFindingRecent] = useState(false);
+  // Decide before the first paint. The recent-session scan starts in an
+  // effect, so deriving this from `findingRecent` exposes the list for a frame.
+  const [startupPending, setStartupPending] = useState(
+    () =>
+      !initialDeviceId &&
+      !initialLocalSessionId &&
+      typeof window !== 'undefined' &&
+      window.matchMedia(MOBILE_LAYOUT).matches,
+  );
+  const startupAttempted = useRef(Boolean(initialDeviceId || initialLocalSessionId));
+  const recentScanKey = useRef('');
+  const userNavigated = useRef(false);
   const [search, setSearch] = useState('');
 
   // The list is display:none while a chat is open on a phone, which also
@@ -164,13 +185,87 @@ export function Workspace({
     };
   }, [refreshDevices]);
 
+  // On a fresh phone launch, look across devices rather than choosing the
+  // first online machine. Never override a deep link or a user's navigation.
+  const deviceIds = devices
+    .map(device => device.id)
+    .sort()
+    .join('\u0000');
+  useEffect(() => {
+    if (initialDeviceId || initialLocalSessionId) setStartupPending(false);
+  }, [initialDeviceId, initialLocalSessionId]);
+  useEffect(() => {
+    if (!loadingDevices && devices.length === 0) setStartupPending(false);
+  }, [loadingDevices, devices.length]);
+  useEffect(() => {
+    if (loadingDevices || devices.length === 0 || recentScanKey.current === deviceIds) return;
+    if (!window.matchMedia(MOBILE_LAYOUT).matches) {
+      setStartupPending(false);
+      return;
+    }
+    recentScanKey.current = deviceIds;
+    const shouldOpenLatest = !startupAttempted.current;
+    startupAttempted.current = true;
+    if (shouldOpenLatest) setFindingRecent(true);
+    let cancelled = false;
+    let finished = false;
+    let remaining = devices.length;
+    const found: RecentSession[] = [];
+    const finish = () => {
+      if (cancelled || finished) return;
+      finished = true;
+      setFindingRecent(false);
+      setStartupPending(false);
+      // A newly opened terminal without a first message is not a chat yet.
+      const latest = rankRecentSessions(
+        found.filter(session => session.fileSize !== 0 || Boolean(session.summary?.trim())),
+      )[0];
+      if (!shouldOpenLatest || !latest || userNavigated.current || !/^\/code\/?$/.test(window.location.pathname))
+        return;
+      setActiveDeviceId(latest.deviceId);
+      setSelectedLocalSessionId(latest.localSessionId);
+      setMobileChat(true);
+      onNavigate(latest.deviceId, latest.localSessionId, { replace: true });
+    };
+    for (const device of devices) {
+      void fetchSessions(device.id, undefined, 30)
+        .then(result => {
+          if (cancelled) return;
+          const entries = result.sessions.map(session => ({
+            ...session,
+            deviceId: device.id,
+            deviceName: device.name,
+          }));
+          found.push(...entries);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (--remaining === 0) {
+            finish();
+          }
+        });
+    }
+    return () => {
+      cancelled = true;
+      setFindingRecent(false);
+      if (!finished) {
+        recentScanKey.current = '';
+        if (shouldOpenLatest) startupAttempted.current = false;
+      }
+    };
+    // The stable device-id key avoids restarting the scan on every poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingDevices, deviceIds, onNavigate]);
+
   // The URL (via these props) is authoritative: back/forward and the header
   // home button must move the visible selection with it.
+  const appliedRoute = useRef('');
   useEffect(() => {
     if (!initialDeviceId) {
       // The URL points at the workspace home: do not keep a stale selection.
       setSelectedLocalSessionId('');
       setMobileChat(false);
+      appliedRoute.current = '';
       return;
     }
     if (devices.length === 0) return;
@@ -179,6 +274,9 @@ export function Workspace({
       setMobileChat(false);
       return;
     }
+    const routeKey = `${initialDeviceId}:${initialLocalSessionId || ''}`;
+    if (appliedRoute.current === routeKey) return;
+    appliedRoute.current = routeKey;
     setActiveDeviceId(initialDeviceId);
     setSelectedLocalSessionId(initialLocalSessionId || '');
     setMobileChat(Boolean(initialLocalSessionId));
@@ -364,25 +462,45 @@ export function Workspace({
   const selectSession = useCallback(
     (localSessionId: string) => {
       captureListScroll();
+      if (activeDeviceId === chatDeviceId && localSessionId === selectedLocalSessionId) {
+        setMobileDrawerOpen(false);
+        return;
+      }
       playNav('push');
+      setMobileDrawerOpen(false);
       setSelectedLocalSessionId(localSessionId);
       setMobileChat(true);
       onNavigate(activeDeviceId, localSessionId);
     },
-    [activeDeviceId, captureListScroll, onNavigate, playNav],
+    [activeDeviceId, captureListScroll, chatDeviceId, onNavigate, playNav, selectedLocalSessionId],
   );
 
-  // Closing the chat: the header button plays the list fade-in, the gesture
-  // has already slid the panel away and must not animate again.
-  const closeChat = useCallback(
-    (withAnimation = true) => {
-      if (withAnimation) playNav('pop');
-      setMobileChat(false);
-      setSelectedLocalSessionId('');
-      onNavigate(activeDeviceId);
-    },
-    [activeDeviceId, onNavigate, playNav],
-  );
+  const lastDrawerRefresh = useRef(0);
+  const openChatDrawer = useCallback(() => {
+    setMobileDrawerOpen(true);
+    if (Date.now() - lastDrawerRefresh.current < 30_000) return;
+    lastDrawerRefresh.current = Date.now();
+    refreshCatalog();
+  }, [refreshCatalog]);
+  const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
+  const drawerTouch = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_LAYOUT);
+    const onChange = () => {
+      if (!media.matches) setMobileDrawerOpen(false);
+    };
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+    drawerCloseRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileDrawerOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mobileDrawerOpen]);
 
   // Edge-swipe back with the finger: the panel follows the thumb, then either
   // finishes off-screen or springs back. Replaces the system snapshot gesture,
@@ -390,23 +508,11 @@ export function Workspace({
   const chatPanelRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const panel = chatPanelRef.current;
-    if (!panel || !mobileChat) return;
+    if (!panel || !mobileChat || mobileDrawerOpen) return;
     let tracking = false;
     let horizontal = false;
-    let dx = 0;
     let startX = 0;
     let startY = 0;
-    let startedAt = 0;
-
-    const settle = (to: number, then?: () => void) => {
-      panel.style.transition = 'transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1)';
-      panel.style.transform = `translate3d(${to}px, 0, 0)`;
-      window.setTimeout(() => {
-        panel.style.transition = '';
-        panel.style.transform = '';
-        then?.();
-      }, 220);
-    };
 
     const onStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
@@ -414,10 +520,8 @@ export function Workspace({
       if (touch.clientX > 28) return;
       tracking = true;
       horizontal = false;
-      dx = 0;
       startX = touch.clientX;
       startY = touch.clientY;
-      startedAt = performance.now();
     };
 
     const onMove = (event: TouchEvent) => {
@@ -432,40 +536,36 @@ export function Workspace({
           return;
         }
         horizontal = true;
-        panel.style.transition = 'none';
       }
-      dx = Math.max(0, moveX);
-      event.preventDefault();
-      panel.style.transform = `translate3d(${dx}px, 0, 0)`;
+      if (moveX > 24) {
+        event.preventDefault();
+        tracking = false;
+        openChatDrawer();
+      }
     };
 
     const onEnd = () => {
       if (!tracking) return;
       tracking = false;
-      if (!horizontal) return;
-      const fast = dx / Math.max(performance.now() - startedAt, 1) > 0.5;
-      if (dx > panel.offsetWidth * 0.28 || fast) {
-        settle(panel.offsetWidth, () => closeChat(false));
-      } else {
-        settle(0);
-      }
+    };
+    const onCancel = () => {
+      tracking = false;
     };
 
     panel.addEventListener('touchstart', onStart, { passive: true });
     panel.addEventListener('touchmove', onMove, { passive: false });
     panel.addEventListener('touchend', onEnd);
-    panel.addEventListener('touchcancel', onEnd);
+    panel.addEventListener('touchcancel', onCancel);
     return () => {
       panel.removeEventListener('touchstart', onStart);
       panel.removeEventListener('touchmove', onMove);
       panel.removeEventListener('touchend', onEnd);
-      panel.removeEventListener('touchcancel', onEnd);
+      panel.removeEventListener('touchcancel', onCancel);
     };
-  }, [mobileChat, closeChat]);
+  }, [mobileChat, mobileDrawerOpen, openChatDrawer]);
 
   const activeDevice = devices.find(device => device.id === activeDeviceId);
   const query = search.trim().toLowerCase();
-
   // One new-terminal operation at a time. The directory was picked in the
   // folder browser, so progress lives next to the single "新会话" button.
   const [newSessionOpen, setNewSessionOpen] = useState(false);
@@ -589,22 +689,107 @@ export function Workspace({
   );
 
   return (
-    <div className="rcs-page-enter relative flex min-h-0 flex-1 overflow-hidden">
+    <div
+      className="rcs-page-enter relative flex min-h-0 flex-1 overflow-hidden"
+      onPointerDownCapture={() => {
+        if (!startupPending) userNavigated.current = true;
+      }}
+      onKeyDownCapture={() => {
+        if (!startupPending) userNavigated.current = true;
+      }}
+    >
+      {startupPending && (
+        <div className="absolute inset-0 z-50 flex flex-col bg-surface-0">
+          <div className="flex h-12 items-center border-b border-border/70 px-4 text-[15px] font-medium">My Claude</div>
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+          >
+            <RefreshCw className="h-5 w-5 animate-spin text-brand" aria-hidden="true" />
+            <span className="text-sm text-text-secondary">正在打开最近的会话…</span>
+            <button
+              type="button"
+              onClick={() => {
+                userNavigated.current = true;
+                setStartupPending(false);
+              }}
+              className="min-h-11 rounded-lg px-3 text-sm text-brand-dark active:bg-surface-1 dark:text-brand"
+            >
+              选择其他会话
+            </button>
+          </div>
+        </div>
+      )}
+      <ProviderManager open={providersOpen} onClose={() => setProvidersOpen(false)} />
+      {mobileChat && mobileDrawerOpen && (
+        <button
+          type="button"
+          aria-label="关闭会话列表"
+          onClick={() => setMobileDrawerOpen(false)}
+          className="workspace-drawer-backdrop absolute inset-0 z-20 bg-black/40 md:hidden"
+        />
+      )}
       <aside
         data-chat-open={mobileChat}
+        data-drawer-open={mobileDrawerOpen}
+        inert={startupPending || (mobileChat && !mobileDrawerOpen && window.matchMedia(MOBILE_LAYOUT).matches)}
+        role={mobileChat && mobileDrawerOpen ? 'dialog' : undefined}
+        aria-modal={mobileChat && mobileDrawerOpen ? true : undefined}
+        aria-label={mobileChat && mobileDrawerOpen ? '会话列表' : undefined}
+        onTouchStart={event => {
+          if (
+            !mobileDrawerOpen ||
+            event.touches.length !== 1 ||
+            (event.target as Element).closest('[data-drawer-horizontal]')
+          )
+            return;
+          drawerTouch.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+        }}
+        onTouchEnd={event => {
+          const start = drawerTouch.current;
+          drawerTouch.current = null;
+          if (!start || !event.changedTouches.length) return;
+          const dx = event.changedTouches[0].clientX - start.x;
+          const dy = event.changedTouches[0].clientY - start.y;
+          if (dx < -70 && Math.abs(dx) > Math.abs(dy) * 1.3) setMobileDrawerOpen(false);
+        }}
+        onTouchCancel={() => {
+          drawerTouch.current = null;
+        }}
         className={cn(
           'workspace-sidebar w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
-          navDir === 'pop' && 'rcs-nav-pop',
-          // The chat panel covers the list on phones; leaving the list in the
-          // accessibility tree let VoiceOver swipe into invisible rows.
-          mobileChat && 'max-md:hidden',
+          navDir === 'pop' && !mobileChat && 'rcs-nav-pop',
+          mobileChat &&
+            'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(88vw,22rem)] max-md:shadow-2xl max-md:transition-transform max-md:duration-200 max-md:ease-out',
+          mobileChat && (mobileDrawerOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'),
         )}
       >
         <div className="border-b border-border/70 px-3 pb-2.5 pt-1.5">
           <div className="flex items-center justify-between pb-1.5">
             <h1 className="px-1 text-[20px] font-semibold tracking-[-0.01em] text-text-primary">会话</h1>
             <div className="flex items-center">
+              {mobileChat && mobileDrawerOpen && (
+                <button
+                  ref={drawerCloseRef}
+                  type="button"
+                  onClick={() => setMobileDrawerOpen(false)}
+                  aria-label="关闭会话列表"
+                  className="workspace-drawer-close flex h-11 w-11 items-center justify-center rounded-full text-text-secondary md:hidden"
+                >
+                  <X size={19} />
+                </button>
+              )}
               <DebugButton />
+              <button
+                type="button"
+                onClick={() => setProvidersOpen(true)}
+                aria-label="供应商管理"
+                title="供应商管理"
+                className="flex h-11 w-11 items-center justify-center rounded-full text-text-secondary hover:bg-surface-1"
+              >
+                <Settings2 size={18} />
+              </button>
               <ThemeToggle />
               <button
                 type="button"
@@ -631,7 +816,7 @@ export function Workspace({
             />
           </div>
           {devices.length > 0 && (
-            <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
+            <div data-drawer-horizontal className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
               {devices.map(device => (
                 <button
                   key={device.id}
@@ -640,8 +825,10 @@ export function Workspace({
                   aria-label={`${device.name}，${device.online ? '设备在线' : '设备离线'}`}
                   onClick={() => {
                     setActiveDeviceId(device.id);
+                    if (mobileChat && mobileDrawerOpen) return;
                     setSelectedLocalSessionId('');
                     setMobileChat(false);
+                    setMobileDrawerOpen(false);
                     onNavigate(device.id);
                   }}
                   className={cn(
@@ -718,6 +905,11 @@ export function Workspace({
             </div>
           )}
           <div className="list-safe pb-[calc(1rem+env(safe-area-inset-bottom))]">
+            {findingRecent && (
+              <p role="status" className="px-4 py-3 text-xs text-text-muted md:hidden">
+                正在查找最近会话，也可以直接选择下方的会话。
+              </p>
+            )}
             {filteredProjects.map(project => {
               const expanded = query
                 ? !collapsedSearchProjects.has(project.projectId)
@@ -757,7 +949,7 @@ export function Workspace({
                           onClick={() => selectSession(session.localSessionId)}
                           className={cn(
                             'flex min-h-12 w-full items-center gap-2 pl-10 pr-3 text-left transition-colors',
-                            selectedLocalSessionId === session.localSessionId
+                            chatDeviceId === activeDeviceId && selectedLocalSessionId === session.localSessionId
                               ? 'bg-surface-1 text-text-primary'
                               : 'text-text-secondary hover:bg-surface-1',
                           )}
@@ -841,6 +1033,7 @@ export function Workspace({
       <main
         ref={chatPanelRef}
         data-chat-open={mobileChat}
+        inert={startupPending || mobileDrawerOpen}
         className={cn(
           'workspace-chat min-h-0 min-w-0 flex-1 flex-col bg-surface-0 max-md:absolute max-md:inset-0 max-md:z-10',
           mobileChat ? 'flex' : 'hidden md:flex',
@@ -848,18 +1041,26 @@ export function Workspace({
           navDir === 'push' && 'rcs-nav-push',
         )}
       >
-        {selectedLocalSessionId && activeDeviceId ? (
+        {selectedLocalSessionId && chatDeviceId ? (
           <Suspense
             fallback={
               <div className="flex flex-1 items-center justify-center text-sm text-text-muted">正在加载会话…</div>
             }
           >
             <DeviceSessionChat
-              key={`${activeDeviceId}:${selectedLocalSessionId}`}
-              deviceId={activeDeviceId}
+              key={`${chatDeviceId}:${selectedLocalSessionId}`}
+              deviceId={chatDeviceId}
               localSessionId={selectedLocalSessionId}
-              deviceName={activeDevice?.name}
-              onBack={() => closeChat(true)}
+              deviceName={devices.find(device => device.id === chatDeviceId)?.name}
+              onSessionTitle={title => {
+                if (chatDeviceId === activeDeviceId)
+                  setAllSessions(previous =>
+                    previous.map(session =>
+                      session.localSessionId === selectedLocalSessionId ? { ...session, title } : session,
+                    ),
+                  );
+              }}
+              onBack={openChatDrawer}
             />
           </Suspense>
         ) : (

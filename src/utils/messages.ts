@@ -82,6 +82,7 @@ import {
   memoryHeader,
 } from './attachments.js'
 import { quote } from './bash/shellQuote.js'
+import { formatTaskHandoff } from './taskHandoff.js'
 import { formatNumber, formatTokens } from './format.js'
 import { getPewterLedgerVariant } from './planModeV2.js'
 import { jsonStringify } from './slowOperations.js'
@@ -552,14 +553,17 @@ export function createUserInterruptionMessage({
 }): UserMessage {
   const content = toolUse ? INTERRUPT_MESSAGE_FOR_TOOL_USE : INTERRUPT_MESSAGE
 
-  return createUserMessage({
-    content: [
-      {
-        type: 'text',
-        text: content,
-      },
-    ],
-  })
+  return {
+    ...createUserMessage({
+      content: [
+        {
+          type: 'text',
+          text: content,
+        },
+      ],
+    }),
+    isSynthetic: true,
+  }
 }
 
 /**
@@ -4112,6 +4116,17 @@ Read the team config to discover your teammates' names. Check the task list peri
     case 'task_reminder': {
       if (!isTodoV2Enabled()) {
         return []
+      }
+      if (attachment.reason === 'handoff') {
+        return wrapMessagesInSystemReminder([
+          createUserMessage({
+            content: formatTaskHandoff(
+              attachment.content,
+              attachment.itemCount,
+            ),
+            isMeta: true,
+          }),
+        ])
       }
       const taskItems = attachment.content
         .map(task => `#${task.id}. [${task.status}] ${task.subject}`)

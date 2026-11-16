@@ -32,6 +32,7 @@ import {
   triggerFastModeCooldown,
 } from '../../utils/fastMode.js'
 import { isNonCustomOpusModel } from '../../utils/model/model.js'
+import { getServerProvider } from '../../utils/model/serverProviders.js'
 import { disableKeepAlive } from '../../utils/proxy.js'
 import { sleep } from '../../utils/sleep.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
@@ -218,10 +219,11 @@ export async function* withRetry<T>(
       const isStaleConnection = isStaleConnectionError(lastError)
       if (
         isStaleConnection &&
-        getFeatureValue_CACHED_MAY_BE_STALE(
-          'tengu_disable_keepalive_on_econnreset',
-          false,
-        )
+        (getServerProvider() !== null ||
+          getFeatureValue_CACHED_MAY_BE_STALE(
+            'tengu_disable_keepalive_on_econnreset',
+            false,
+          ))
       ) {
         logForDebugging(
           'Stale connection (ECONNRESET/EPIPE) — disabling keep-alive for retry',
@@ -253,8 +255,16 @@ export async function* withRetry<T>(
       return await operation(client, attempt, retryContext)
     } catch (error) {
       lastError = error
+      const connectionCode =
+        error instanceof APIConnectionError
+          ? extractConnectionErrorDetails(error)?.code
+          : undefined
+      const safeCode =
+        connectionCode && /^[A-Z0-9_]{1,64}$/.test(connectionCode)
+          ? ` [${connectionCode}]`
+          : ''
       logForDebugging(
-        `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
+        `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}${safeCode}`,
         { level: 'error' },
       )
 

@@ -75,12 +75,28 @@ export type RuntimeCacheEntry = {
   reportedAt: number
 }
 
+export type SessionSettingsValues = {
+  model?: string
+  effort?: string
+  permissionMode?: string
+  ultracode?: boolean
+}
+export type SessionSettings = {
+  values: SessionSettingsValues
+  /** Fields edited on the web but not yet confirmed by the terminal. */
+  pending: (keyof SessionSettingsValues)[]
+  revision: number
+  updatedAt: number
+  error?: string
+}
+
 type PersistedState = {
   version: number
   devices: Record<string, DeviceRecord>
   mappings: Record<string, SessionMapping>
   catalogs: Record<string, CatalogCache>
   outbox: OutboxEntry[]
+  sessionSettings: Record<string, SessionSettings>
 }
 
 let state: PersistedState = emptyState()
@@ -98,6 +114,7 @@ export function emptyState(): PersistedState {
     mappings: {},
     catalogs: {},
     outbox: [],
+    sessionSettings: {},
   }
 }
 
@@ -135,6 +152,7 @@ export async function loadState(): Promise<void> {
       mappings: parsed.mappings ?? {},
       catalogs: parsed.catalogs ?? {},
       outbox: Array.isArray(parsed.outbox) ? parsed.outbox : [],
+      sessionSettings: parsed.sessionSettings ?? {},
     }
     // The old event bus is gone, but a bridge could have received the event
     // just before the restart and before its state was saved. The on-disk
@@ -239,6 +257,47 @@ export function setMapping(mapping: SessionMapping): void {
     }
   }
   state.mappings[key] = mapping
+  scheduleSave()
+  for (const listener of mappingListeners) listener(mapping)
+}
+
+const mappingListeners = new Set<(mapping: SessionMapping) => void>()
+export function onSessionMapping(
+  listener: (mapping: SessionMapping) => void,
+): () => void {
+  mappingListeners.add(listener)
+  return () => mappingListeners.delete(listener)
+}
+
+export function getSessionSettings(
+  deviceId: string,
+  localSessionId: string,
+): SessionSettings | undefined {
+  return state.sessionSettings[mappingKey(deviceId, localSessionId)]
+}
+
+/** Bootstrap the preference for installations predating provider preferences. */
+export function lastKnownProviderSelections(): string[] {
+  return Object.values(state.sessionSettings)
+    .filter(settings => settings.values.model?.startsWith('rcs-provider:'))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(settings => settings.values.model!)
+}
+
+export function putSessionSettings(
+  deviceId: string,
+  localSessionId: string,
+  settings: SessionSettings,
+): void {
+  state.sessionSettings[mappingKey(deviceId, localSessionId)] = settings
+  scheduleSave()
+}
+
+export function removeSessionSettings(
+  deviceId: string,
+  localSessionId: string,
+): void {
+  delete state.sessionSettings[mappingKey(deviceId, localSessionId)]
   scheduleSave()
 }
 

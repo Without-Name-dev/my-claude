@@ -60,6 +60,9 @@ import webControl from '../routes/web/control'
 import webEnvironments from '../routes/web/environments'
 import webDevices from '../routes/web/devices'
 import {
+  enqueueOutbox,
+  findOutboxEntry,
+  getDevice,
   listOutbox,
   loadState,
   resetStateForTest,
@@ -68,6 +71,7 @@ import {
   setRuntime,
   upsertDevice,
 } from '../device/state'
+import { attachDevice, detachDevice } from '../device/hub'
 import {
   listStoredMessages,
   resetConversationStoreForTest,
@@ -2000,6 +2004,77 @@ describe('Web device message route (photo pipeline)', () => {
     )
   }
 
+  test('explicit retry requeues a failed message without forcing a terminal restart', async () => {
+    const deviceSocket = {
+      readyState: 1,
+      send() {},
+      close() {},
+    } as unknown as Parameters<typeof attachDevice>[0]
+    const device = attachDevice(deviceSocket, getDevice(deviceId)!)
+    expect(device.ok).toBe(true)
+    if (!device.ok) throw new Error('device failed to attach')
+    setMapping({
+      deviceId,
+      localSessionId,
+      bridgeSessionId: bridgeId,
+      cwd: 'C:\\proj',
+      updatedAt: Date.now(),
+    })
+    setRuntime(deviceId, localSessionId, {
+      localSessionId,
+      cwd: 'C:\\proj',
+      processAlive: true,
+      bridgeSessionId: bridgeId,
+      verifiedAt: Date.now(),
+      source: 'managed',
+    })
+    const sent: string[] = []
+    const bridgeSocket = {
+      readyState: 1,
+      send: (value: string) => sent.push(value),
+      close() {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(bridgeSocket, bridgeId)
+    enqueueOutbox({
+      id: 'failed-message',
+      deviceId,
+      localSessionId,
+      payload: { type: 'user', uuid: 'failed-message', content: 'hello' },
+      state: 'failed',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      attempts: 0,
+    })
+    try {
+      const res = await app.request(
+        `/web/devices/${deviceId}/sessions/${localSessionId}/open`,
+        {
+          method: 'POST',
+          headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ retryFailed: true }),
+        },
+      )
+      expect(res.status).toBe(200)
+      expect((await resJson(res)).state).toBe('ready')
+      for (
+        let i = 0;
+        i < 100 && !sent.some(value => value.includes('failed-message'));
+        i++
+      )
+        await new Promise(resolve => setTimeout(resolve, 20))
+      expect(
+        sent.filter(value => value.includes('failed-message')),
+      ).toHaveLength(1)
+      expect(
+        findOutboxEntry(deviceId, localSessionId, 'failed-message')?.state,
+      ).toBe('unconfirmed')
+    } finally {
+      handleWebSocketClose(bridgeSocket, bridgeId, 1000, '', token)
+      detachDevice(deviceId, device.token)
+      removeEventBus(bridgeId)
+    }
+  })
+
   test('rejects more than 8 images with 400', async () => {
     const res = await postMessage({
       text: 'hi',
@@ -2073,6 +2148,23 @@ describe('Web device message route (photo pipeline)', () => {
     expect((entry?.payload as { content: unknown }).content).toBe('你好')
   })
 
+  test('retries of an offline send reuse the same message id and reject conflicting content', async () => {
+    const uuid = '20d922c9-9822-447e-800c-2a4bfd762e55'
+    const [first, retry] = await Promise.all([
+      postMessage({ text: 'hello', messageId: uuid }),
+      postMessage({ text: 'hello', messageId: uuid }),
+    ])
+    expect(first.status).toBe(200)
+    expect(retry.status).toBe(200)
+    expect((await resJson(first)).messageId).toBe(uuid)
+    expect((await resJson(retry)).messageId).toBe(uuid)
+    expect(
+      listOutbox(deviceId, localSessionId).filter(row => row.id === uuid),
+    ).toHaveLength(1)
+    const conflict = await postMessage({ text: 'different', messageId: uuid })
+    expect(conflict.status).toBe(409)
+  })
+
   test('delivers a pure image message through a live bridge as content blocks', async () => {
     setMapping({
       deviceId,
@@ -2103,7 +2195,7 @@ describe('Web device message route (photo pipeline)', () => {
       })
       expect(res.status).toBe(200)
       const body = await resJson(res)
-      expect(body.state).toBe('sent')
+      expect(body.state).toBe('unconfirmed')
       expect(body.bridgeSessionId).toBe(bridgeId)
 
       // The frame the CLI receives must carry the image block array.

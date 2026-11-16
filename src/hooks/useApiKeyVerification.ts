@@ -1,4 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useSyncExternalStore } from 'react'
+import {
+  getServerProvider,
+  subscribeServerProvider,
+} from '../utils/model/serverProviders.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { verifyApiKey } from '../services/api/claude.js'
 import {
@@ -22,6 +26,11 @@ export type ApiKeyVerificationResult = {
 }
 
 export function useApiKeyVerification(): ApiKeyVerificationResult {
+  const provider = useSyncExternalStore(
+    subscribeServerProvider,
+    getServerProvider,
+    getServerProvider,
+  )
   const [status, setStatus] = useState<VerificationStatus>(() => {
     if (!isAnthropicAuthEnabled() || isClaudeAISubscriber()) {
       return 'valid'
@@ -77,7 +86,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
   }, [])
 
   return {
-    status,
+    status: provider ? 'valid' : status,
     reverify: verify,
     error,
   }

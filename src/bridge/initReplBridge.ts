@@ -78,7 +78,7 @@ export type InitBridgeOptions = {
   onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
-  onSetModel?: (model: string | undefined) => void
+  onSetModel?: (model: string | undefined) => void | Promise<void>
   onSetMaxThinkingTokens?: (maxTokens: number | null) => void
   onSetPermissionMode?: (
     mode: PermissionMode,

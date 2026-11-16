@@ -9,6 +9,7 @@
 import { getAccessKey, getActiveApiToken, getUuid } from './client'
 import { debugLog } from '../lib/debug-log'
 import type { UserMessageImage } from '../lib/types'
+import { generateMessageUuid } from '../lib/utils'
 
 export type DeviceInfo = {
   id: string
@@ -142,6 +143,21 @@ export type DeviceSessionDetail = {
   operation: OpenOperation | null
   /** Messages that might have been delivered before an RCS restart. */
   deliveryReviewRequired?: number
+  settings?: SessionSettings | null
+}
+
+export type SessionSettingsValues = {
+  model?: string
+  effort?: string
+  permissionMode?: string
+  ultracode?: boolean
+}
+export type SessionSettings = {
+  values: SessionSettingsValues
+  pending: (keyof SessionSettingsValues)[]
+  revision: number
+  updatedAt: number
+  error?: string
 }
 
 export class DeviceApiError extends Error {
@@ -196,7 +212,12 @@ async function request<T>(
   } finally {
     clearTimeout(timer)
   }
-  const text = await res.text().catch(() => '')
+  let text: string
+  try {
+    text = await res.text()
+  } catch {
+    throw new DeviceApiError(0, 'network_error', '网络异常，请检查连接')
+  }
   let data: unknown = null
   try {
     data = text ? JSON.parse(text) : null
@@ -365,6 +386,18 @@ export function fetchSession(
   )
 }
 
+export function updateSessionSettings(
+  deviceId: string,
+  localSessionId: string,
+  patch: SessionSettingsValues,
+): Promise<{ settings: SessionSettings }> {
+  return request(
+    'PATCH',
+    `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/settings`,
+    patch,
+  )
+}
+
 export function fetchHistory(
   deviceId: string,
   localSessionId: string,
@@ -390,6 +423,7 @@ export function openSession(
   deviceId: string,
   localSessionId: string,
   force = false,
+  retryFailed = false,
 ): Promise<{
   state: string
   operationId: string | null
@@ -399,7 +433,10 @@ export function openSession(
   return request(
     'POST',
     `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/open`,
-    force ? { force: true } : {},
+    {
+      ...(force ? { force: true } : {}),
+      ...(retryFailed ? { retryFailed: true } : {}),
+    },
   )
 }
 
@@ -435,11 +472,12 @@ export function fetchOperation(operationId: string): Promise<OpenOperation> {
   return request('GET', `/web/operations/${encodeURIComponent(operationId)}`)
 }
 
-export function sendDeviceMessage(
+export async function sendDeviceMessage(
   deviceId: string,
   localSessionId: string,
   text: string,
   images?: UserMessageImage[],
+  messageId = generateMessageUuid(),
 ): Promise<{
   state: 'sent' | 'unconfirmed' | 'queued'
   messageId: string
@@ -447,9 +485,41 @@ export function sendDeviceMessage(
   operationId?: string | null
   detail?: string
 }> {
-  return request(
-    'POST',
-    `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/messages`,
-    { text, ...(images && images.length > 0 ? { images } : {}) },
-  )
+  const path = `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(localSessionId)}/messages`
+  const body = {
+    text,
+    messageId,
+    ...(images && images.length > 0 ? { images } : {}),
+  }
+  const send = async () => {
+    const result = await request<{
+      state: 'sent' | 'unconfirmed' | 'queued'
+      messageId: string
+      bridgeSessionId?: string
+      operationId?: string | null
+      detail?: string
+    }>('POST', path, body)
+    if (
+      !result ||
+      typeof result.messageId !== 'string' ||
+      !['sent', 'unconfirmed', 'queued'].includes(result.state)
+    ) {
+      throw new DeviceApiError(0, 'invalid_response', '无法确认消息是否送达')
+    }
+    return result
+  }
+  try {
+    return await send()
+  } catch (error) {
+    if (!(error instanceof DeviceApiError) || error.status !== 0) throw error
+    try {
+      return await send()
+    } catch {
+      throw new DeviceApiError(
+        0,
+        'delivery_unknown',
+        '网络中断，消息是否送达暂时无法确认，请先检查终端再重试',
+      )
+    }
+  }
 }

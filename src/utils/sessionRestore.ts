@@ -42,6 +42,10 @@ import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
+import {
+  restoreSessionProvider,
+  serverProviderRuntimeModel,
+} from './model/serverProviders.js'
 import { getPlansDirectory } from './plans.js'
 import { setCwd } from './Shell.js'
 import {
@@ -544,6 +548,14 @@ export async function processResumedConversation(
     context.agentDefinitions,
   )
 
+  // Restore the selected provider before the REPL/Bridge accepts queued input.
+  // A missing/deleted provider must not silently send the prompt elsewhere.
+  const restoredProvider = await restoreSessionProvider(getSessionId())
+  const restoredModel = restoredProvider
+    ? serverProviderRuntimeModel(restoredProvider)
+    : undefined
+  if (restoredModel) setMainLoopModelOverride(restoredModel)
+
   return {
     messages: result.messages,
     fileHistorySnapshots: result.fileHistorySnapshots,
@@ -555,6 +567,10 @@ export async function processResumedConversation(
     restoredAgentDef: restoredAgent,
     initialState: {
       ...context.initialState,
+      ...(restoredModel && {
+        mainLoopModel: restoredModel,
+        mainLoopModelForSession: null,
+      }),
       ...(resumedAgentType && { agent: resumedAgentType }),
       ...(restoredAttribution && { attribution: restoredAttribution }),
       ...(standaloneAgentContext && { standaloneAgentContext }),

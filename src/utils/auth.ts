@@ -63,6 +63,7 @@ import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
 import { memoizeWithTTLAsync } from './memoize.js'
 import { getSecureStorage } from './secureStorage/index.js'
+import { getServerProvider } from './model/serverProviders.js'
 import {
   clearLegacyApiKeyPrefetch,
   getLegacyApiKeyPrefetchResult,
@@ -101,6 +102,7 @@ function isManagedOAuthContext(): boolean {
 /** Whether we are supporting direct 1P auth. */
 // this code is closely related to getAuthTokenSource
 export function isAnthropicAuthEnabled(): boolean {
+  if (getServerProvider()) return false
   // --bare: API-key-only, never OAuth.
   if (isBareMode()) return false
 

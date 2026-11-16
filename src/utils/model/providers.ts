@@ -3,6 +3,7 @@ import { getInitialSettings } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
 import { isEnvTruthy } from '../envUtils.js'
 import type { APIProvider } from './providerClassification.js'
+import { getServerProvider } from './serverProviders.js'
 
 export {
   type APIProvider,
@@ -12,6 +13,9 @@ export {
 export function getAPIProvider(
   settings: Pick<SettingsJson, 'modelType'> = getInitialSettings(),
 ): APIProvider {
+  const remote = getServerProvider()
+  if (remote)
+    return remote.protocol === 'anthropic' ? 'firstParty' : remote.protocol
   const modelType = settings.modelType
   if (modelType === 'openai') return 'openai'
   if (modelType === 'gemini') return 'gemini'
@@ -38,7 +42,8 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
  * (or api-staging.anthropic.com for ant users).
  */
 export function isFirstPartyAnthropicBaseUrl(): boolean {
-  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  const remote = getServerProvider()
+  const baseUrl = remote ? remote.baseUrl : process.env.ANTHROPIC_BASE_URL
   // TODO: 这里会有问题, 只配置了 openai 协议的用户, 按理说会为 true 导致问题
   if (!baseUrl) {
     return true

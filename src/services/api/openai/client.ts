@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import { openaiAdapter } from 'src/services/providerUsage/adapters/openai.js'
 import { updateProviderBuckets } from 'src/services/providerUsage/store.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import { getServerProvider } from 'src/utils/model/serverProviders.js'
 
 /**
  * Environment variables:
@@ -41,6 +42,22 @@ export function getOpenAIClient(options?: {
   fetchOverride?: typeof fetch
   source?: string
 }): OpenAI {
+  const remote = getServerProvider()
+  if (remote) {
+    if (remote.protocol !== 'openai') throw new Error('不匹配的供应商协议')
+    return new OpenAI({
+      apiKey: remote.apiKey,
+      baseURL: remote.baseUrl,
+      maxRetries: options?.maxRetries ?? 0,
+      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      dangerouslyAllowBrowser: true,
+      fetchOptions: getProxyFetchOptions({
+        forAnthropicAPI: false,
+        url: remote.baseUrl,
+      }),
+      fetch: wrapFetchForUsage(options?.fetchOverride ?? globalThis.fetch),
+    })
+  }
   if (cachedClient) return cachedClient
 
   const apiKey = process.env.OPENAI_API_KEY || ''

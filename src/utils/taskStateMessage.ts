@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { SDKMessage } from 'src/entrypoints/agentSdkTypes.js'
 import type { Task } from './tasks.js'
+import type { AgentStateItem } from './agentStateMessage.js'
 
 export type TaskStateItem = Pick<
   Task,
@@ -19,9 +20,13 @@ export type TaskStateMessage = SDKMessage & {
   uuid: string
   task_list_id: string
   tasks: TaskStateItem[]
+  agents?: AgentStateItem[]
 }
 
-export type TaskStateSnapshot = Pick<TaskStateMessage, 'task_list_id' | 'tasks'>
+export type TaskStateSnapshot = Pick<
+  TaskStateMessage,
+  'task_list_id' | 'tasks' | 'agents'
+>
 
 function toTaskStateItem(task: Task): TaskStateItem {
   return {
@@ -43,6 +48,7 @@ function compareTaskStateItems(a: TaskStateItem, b: TaskStateItem): number {
 export function buildTaskStateSnapshot(
   taskListId: string,
   tasks: Task[],
+  agents?: AgentStateItem[],
 ): TaskStateSnapshot {
   return {
     task_list_id: taskListId,
@@ -50,21 +56,24 @@ export function buildTaskStateSnapshot(
       .filter(task => !task.metadata?._internal)
       .map(toTaskStateItem)
       .sort(compareTaskStateItems),
+    ...(agents ? { agents } : {}),
   }
 }
 
 export function getTaskStateSnapshotKey(
   taskListId: string,
   tasks: Task[],
+  agents?: AgentStateItem[],
 ): string {
-  return JSON.stringify(buildTaskStateSnapshot(taskListId, tasks))
+  return JSON.stringify(buildTaskStateSnapshot(taskListId, tasks, agents))
 }
 
 export function buildTaskStateMessage(
   taskListId: string,
   tasks: Task[],
+  agents?: AgentStateItem[],
 ): TaskStateMessage {
-  const snapshot = buildTaskStateSnapshot(taskListId, tasks)
+  const snapshot = buildTaskStateSnapshot(taskListId, tasks, agents)
   return {
     type: 'task_state',
     uuid: randomUUID(),

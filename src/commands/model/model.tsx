@@ -1,4 +1,6 @@
 import chalk from 'chalk';
+import { getSessionId, setMainLoopModelOverride } from '../../bootstrap/state.js';
+import { saveSessionProvider } from '../../utils/model/serverProviderSession.js';
 import * as React from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { ModelPicker } from '../../components/ModelPicker.js';
@@ -26,6 +28,17 @@ import {
 } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
+import {
+  fetchServerProviders,
+  getServerProvider,
+  selectServerProvider,
+  rememberServerProvider,
+  serverProviderSelection,
+  serverProviderRuntimeModel,
+  serverProvidersAvailable,
+  setServerProvider,
+} from '../../utils/model/serverProviders.js';
+import type { ModelOption } from '../../utils/model/modelOptions.js';
 
 function ModelPickerWrapper({
   onDone,
@@ -36,6 +49,31 @@ function ModelPickerWrapper({
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession);
   const isFastMode = useAppState(s => s.fastMode);
   const setAppState = useSetAppState();
+  const [serverOptions, setServerOptions] = React.useState<ModelOption[]>([]);
+  const [serverLoadFailed, setServerLoadFailed] = React.useState(false);
+  React.useEffect(() => {
+    if (!serverProvidersAvailable()) return;
+    let cancelled = false;
+    void fetchServerProviders()
+      .then(providers => {
+        if (cancelled) return;
+        setServerOptions(
+          providers.flatMap(provider =>
+            provider.models.map(model => ({
+              value: `rcs-provider:${provider.id}:${encodeURIComponent(model)}`,
+              label: `${provider.name} / ${provider.modelDetails?.find(detail => detail.model === model)?.displayName ?? model}`,
+              description: '服务器供应商 · 本机直连',
+            })),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setServerLoadFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function handleCancel(): void {
     logEvent('tengu_model_command_menu', {
@@ -47,7 +85,40 @@ function ModelPickerWrapper({
     });
   }
 
-  function handleSelect(model: string | null, effort: EffortLevel | undefined): void {
+  async function handleSelect(model: string | null, effort: EffortLevel | undefined): Promise<void> {
+    if (model?.startsWith('rcs-provider:')) {
+      const match = /^rcs-provider:([^:]+):(.+)$/.exec(model);
+      if (!match) {
+        onDone('供应商选择无效', { display: 'system' });
+        return;
+      }
+      try {
+        const modelName = decodeURIComponent(match[2]!);
+        if (!isModelAllowed(modelName)) throw new Error('模型不在允许列表中');
+        const provider = await selectServerProvider(match[1]!, modelName, getSessionId());
+        setMainLoopModelOverride(serverProviderRuntimeModel(provider));
+        setAppState(prev => ({
+          ...prev,
+          mainLoopModel: serverProviderRuntimeModel(provider),
+          mainLoopModelForSession: null,
+        }));
+        const saved = await rememberServerProvider(provider).then(
+          () => true,
+          () => false,
+        );
+        onDone(`已切换到 ${provider.name} / ${modelName}${saved ? '' : '；未能保存为新会话的最近选择'}`, {
+          display: 'system',
+        });
+      } catch (error) {
+        onDone(`切换失败，保留当前模型：${error instanceof Error ? error.message : '无法获取配置'}`, {
+          display: 'system',
+        });
+      }
+      return;
+    }
+    saveSessionProvider(getSessionId(), null);
+    setServerProvider(null);
+    setMainLoopModelOverride(model);
     logEvent('tengu_model_command_menu', {
       action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -95,7 +166,9 @@ function ModelPickerWrapper({
 
   return (
     <ModelPicker
-      initial={mainLoopModel}
+      initial={getServerProvider() ? serverProviderSelection(getServerProvider()!) : mainLoopModel}
+      additionalOptions={serverOptions}
+      headerText={serverLoadFailed ? '服务器供应商读取失败，本地模型仍可使用；请检查连接后重试。' : undefined}
       sessionModel={mainLoopModelForSession}
       onSelect={handleSelect}
       onCancel={handleCancel}
@@ -127,6 +200,28 @@ function SetModelAndClose({
         return;
       }
 
+      const currentProvider = getServerProvider();
+      if (currentProvider && model) {
+        try {
+          const provider = await selectServerProvider(currentProvider.id, model, getSessionId());
+          const runtimeModel = serverProviderRuntimeModel(provider);
+          setMainLoopModelOverride(runtimeModel);
+          setAppState(prev => ({ ...prev, mainLoopModel: runtimeModel, mainLoopModelForSession: null }));
+          const saved = await rememberServerProvider(provider).then(
+            () => true,
+            () => false,
+          );
+          onDone(`已切换到 ${provider.name} / ${model}${saved ? '' : '；未能保存为新会话的最近选择'}`, {
+            display: 'system',
+          });
+        } catch (error) {
+          onDone(`切换失败，保留当前模型：${error instanceof Error ? error.message : '无法获取配置'}`, {
+            display: 'system',
+          });
+        }
+        return;
+      }
+
       // @[MODEL LAUNCH]: Update check for 1M access.
       if (model && isOpus1mUnavailable(model)) {
         onDone(
@@ -146,6 +241,8 @@ function SetModelAndClose({
 
       // Skip validation for default model
       if (!model) {
+        saveSessionProvider(getSessionId(), null);
+        setServerProvider(null);
         setModel(null);
         return;
       }
@@ -177,6 +274,7 @@ function SetModelAndClose({
     }
 
     function setModel(modelValue: string | null): void {
+      setMainLoopModelOverride(modelValue);
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,
@@ -238,7 +336,8 @@ function ShowModelAndClose({ onDone }: { onDone: (result?: string) => void }): R
   const mainLoopModel = useAppState(s => s.mainLoopModel);
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession);
   const effortValue = useAppState(s => s.effortValue);
-  const displayModel = renderModelLabel(mainLoopModel);
+  const provider = getServerProvider();
+  const displayModel = provider ? `${provider.name} / ${provider.model}` : renderModelLabel(mainLoopModel);
   const effortInfo = effortValue !== undefined ? ` (effort: ${effortValue})` : '';
 
   if (mainLoopModelForSession) {

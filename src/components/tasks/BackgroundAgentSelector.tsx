@@ -27,9 +27,9 @@ function AgentRow({ task, selected }: { task: LocalAgentTaskState; selected: boo
 }
 
 function getHint(pillFocused: boolean, viewedTask: LocalAgentTaskState | null): string {
-  if (pillFocused) return '↑/↓ to select · Enter to view';
-  if (!viewedTask) return 'shift+↓ to manage background agents';
-  return viewedTask.status === 'running' ? 'shift+↓ to manage · x to stop' : 'shift+↓ to manage · x to clear';
+  if (pillFocused) return '↑/↓ to select · Enter to view · Esc to exit';
+  if (!viewedTask) return 'shift+↓ to manage agents';
+  return 'shift+↓ to manage · Esc for main';
 }
 
 export function BackgroundAgentSelector(): React.ReactNode {

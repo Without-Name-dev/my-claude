@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { DeviceSessionSummary } from '../api/devices'
-import { mergeSessionCatalog } from '../lib/session-catalog'
+import { mergeSessionCatalog, rankRecentSessions } from '../lib/session-catalog'
 
 function session(id: string): DeviceSessionSummary {
   return {
@@ -33,4 +33,25 @@ describe('refreshing the session catalog', () => {
       ),
     ).toEqual([session('new'), session('one'), session('older')])
   })
+})
+
+test('recent sessions are ordered across devices by activity without mutating input', () => {
+  const older = {
+    ...session('older'),
+    deviceId: 'device-a',
+    deviceName: '电脑 A',
+    updatedAt: 100,
+  }
+  const newer = {
+    ...session('newer'),
+    deviceId: 'device-b',
+    deviceName: '电脑 B',
+    updatedAt: 200,
+  }
+  const source = [older, newer]
+  expect(rankRecentSessions(source).map(item => item.localSessionId)).toEqual([
+    'newer',
+    'older',
+  ])
+  expect(source).toEqual([older, newer])
 })

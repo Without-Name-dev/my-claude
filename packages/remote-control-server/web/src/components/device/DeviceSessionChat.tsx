@@ -1,11 +1,8 @@
-import { ChevronLeft } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatInput } from '../../../components/chat/ChatInput';
-import { ChatView } from '../../../components/chat/ChatView';
-import { TooltipProvider } from '../../../components/ui/tooltip';
 import type { ChatInputMessage, ThreadEntry } from '../../lib/types';
 import { mergeHistoryPage, transcriptToEntries } from '../../lib/device-history';
-import { cn } from '../../lib/utils';
+import { cn, generateMessageUuid } from '../../lib/utils';
 import { createSerialQueue } from '../../lib/serial-queue';
 import {
   closeSession,
@@ -15,6 +12,7 @@ import {
   openSession,
   reviewUnconfirmedDelivery,
   sendDeviceMessage,
+  DeviceApiError,
   type DeviceSessionDetail,
   type OpenOperation,
   type TranscriptUsage,
@@ -89,13 +87,16 @@ export function DeviceSessionChat({
   localSessionId,
   deviceName,
   onBack,
+  onSessionTitle,
 }: {
   deviceId: string;
   localSessionId: string;
   deviceName?: string;
   onBack: () => void;
+  onSessionTitle?: (title: string) => void;
 }) {
   const [detail, setDetail] = useState<DeviceSessionDetail | null>(null);
+  const [liveTitle, setLiveTitle] = useState('');
   const [entries, setEntries] = useState<ThreadEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | undefined>();
   const [historyHasMore, setHistoryHasMore] = useState(false);
@@ -111,9 +112,11 @@ export function DeviceSessionChat({
   const [blockedSession, setBlockedSession] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [canRetryOpen, setCanRetryOpen] = useState(false);
   const [confirmTerminalAction, setConfirmTerminalAction] = useState<'restart' | 'close' | null>(null);
   const [terminalActionPending, setTerminalActionPending] = useState(false);
   const terminalActionInFlight = useRef(false);
+  const retryInFlight = useRef(false);
   /** Assistant history rows with billed usage; seeds the live token ledger. */
   const [usageSeed, setUsageSeed] = useState<{ id: string; timestamp?: string; usage: TranscriptUsage }[]>([]);
   const loadedKey = useRef('');
@@ -121,6 +124,7 @@ export function DeviceSessionChat({
   // state read made the poll decide "no operation" forever and flip the
   // blocked card while a terminal was legitimately being opened.
   const operationIdRef = useRef<string | null>(null);
+  const ignoredOperationRef = useRef<string | null>(null);
   // Suppresses the poll's mount-time tick while the initial detail+history
   // load is still on the wire (it duplicated both requests).
   const initialLoadDoneRef = useRef(false);
@@ -135,7 +139,12 @@ export function DeviceSessionChat({
     const next = await fetchSession(deviceId, localSessionId);
     setDetail(next);
     if (isBridgeFresh(next)) setForcedBridgeId(next.bridgeSessionId);
-    if (next.operation && next.operation.state !== 'ready' && next.operation.state !== 'failed') {
+    if (
+      next.operation &&
+      next.operation.id !== ignoredOperationRef.current &&
+      next.operation.state !== 'ready' &&
+      next.operation.state !== 'failed'
+    ) {
       // Includes waiting_for_user: the terminal is open on the PC and the
       // user needs to see its instruction, not a generic spinner.
       setOperation(next.operation);
@@ -255,6 +264,7 @@ export function DeviceSessionChat({
 
   const reload = useCallback(async () => {
     setError('');
+    setCanRetryOpen(false);
     setHistoryError('');
     setNotice('');
     setLoadingDetail(true);
@@ -287,10 +297,12 @@ export function DeviceSessionChat({
     setHistoryError('');
     setOperation(null);
     setOperationId(null);
+    ignoredOperationRef.current = null;
     setForcedBridgeId(null);
     setBlockedSession(false);
     setNotice('');
     setError('');
+    setCanRetryOpen(false);
     setLoadingDetail(true);
     setHistoryLoading(true);
 
@@ -300,7 +312,7 @@ export function DeviceSessionChat({
           const next = await loadDetail();
           // The poll's mount-time tick used to detect this; it is skipped
           // while the initial load runs, so evaluate it here instead.
-          if (!next.operation && next.runtime?.processAlive && !next.bridgeSessionId) {
+          if (!next.operation && next.runtime?.processAlive && !next.runtime.bridgeSessionId && !next.bridgeConnected) {
             setBlockedSession(true);
           }
         } catch (err) {
@@ -329,7 +341,7 @@ export function DeviceSessionChat({
     // (restart, dropped SSE, spawner offline) the spinner used to spin
     // forever. Give the client its own deadline and tell the user they can
     // retry.
-    let startedAt = Date.now();
+    const startedAt = Date.now();
     const tick = async () => {
       // A slow request used to overlap the next tick; one hung request also
       // ended the loop for good. Serialise ticks and give up only after a
@@ -337,8 +349,12 @@ export function DeviceSessionChat({
       if (running) return;
       running = true;
       try {
-        if (Date.now() - startedAt > 100_000) {
+        if (Date.now() - startedAt > 130_000) {
+          ignoredOperationRef.current = operationId;
           setOperationId(null);
+          setOperation(null);
+          setNotice('');
+          setCanRetryOpen(true);
           setError('等待终端就绪超时。可以点“重试”再打开一次，或检查电脑上的终端是否停在确认提示。');
           return;
         }
@@ -347,7 +363,11 @@ export function DeviceSessionChat({
         if (cancelled) return;
         setOperation(next);
         if (next.state === 'ready') {
+          ignoredOperationRef.current = operationId;
           setOperationId(null);
+          setOperation(null);
+          setNotice('');
+          setCanRetryOpen(false);
           setBlockedSession(false);
           if (next.bridgeSessionId) {
             setForcedBridgeId(next.bridgeSessionId);
@@ -355,7 +375,10 @@ export function DeviceSessionChat({
           }
           await loadDetail();
         } else if (next.state === 'failed') {
+          ignoredOperationRef.current = operationId;
           setOperationId(null);
+          setOperation(null);
+          setNotice('');
           // A terminal that is running without `/remote-control` cannot be
           // reused. That is a known state with its own inline explanation and
           // restart action — surfacing it as a red error banner too showed the
@@ -364,21 +387,23 @@ export function DeviceSessionChat({
             setBlockedSession(true);
             setError('');
           } else {
+            setCanRetryOpen(true);
             setError(next.detail || FAILURE_TEXT[next.failureCode ?? ''] || '终端启动失败');
           }
         } else if (next.state === 'waiting_for_user') {
-          // Keep polling, but surface the actionable instruction instead of a
-          // generic spinner (the terminal is waiting on the PC). A human
-          // staring at a confirmation prompt is not a stuck spawner: restart
-          // the deadline so the 100s budget only measures actual progress.
-          startedAt = Date.now();
+          // Continue polling, but do not reset the overall deadline on every
+          // identical response: a lost failure event would otherwise spin forever.
           setOperation(next);
         }
       } catch (err) {
         if (cancelled) return;
         failures += 1;
         if (failures < 5) return;
+        ignoredOperationRef.current = operationId;
         setOperationId(null);
+        setOperation(null);
+        setNotice('');
+        setCanRetryOpen(true);
         setError(err instanceof Error ? err.message : '无法读取启动进度');
       } finally {
         running = false;
@@ -418,10 +443,12 @@ export function DeviceSessionChat({
 
   const forceRestart = useCallback(async () => {
     setError('');
+    setCanRetryOpen(false);
     setNotice('正在重启终端并启用远程控制…');
     try {
       const result = await openSession(deviceId, localSessionId, true);
       if (result.operationId) {
+        ignoredOperationRef.current = null;
         setBlockedSession(false);
         setOperationId(result.operationId);
       } else if (result.bridgeSessionId) {
@@ -438,6 +465,39 @@ export function DeviceSessionChat({
     }
   }, [deviceId, localSessionId, loadDetail]);
 
+  const retryOpen = useCallback(async () => {
+    if (retryInFlight.current) return;
+    retryInFlight.current = true;
+    setError('');
+    setCanRetryOpen(false);
+    setNotice('正在重新打开终端…');
+    try {
+      const result = await openSession(deviceId, localSessionId, false, true);
+      if (result.operationId) {
+        ignoredOperationRef.current = null;
+        setOperationId(result.operationId);
+      } else if (result.bridgeSessionId) {
+        setForcedBridgeId(result.bridgeSessionId);
+        setNotice('');
+        await loadDetail();
+      } else {
+        setNotice('');
+        setCanRetryOpen(true);
+        setError(result.detail || '无法启动终端，请重试');
+      }
+    } catch (err) {
+      setNotice('');
+      if (err instanceof DeviceApiError && err.code === 'already_running_without_bridge') {
+        setBlockedSession(true);
+        return;
+      }
+      setCanRetryOpen(true);
+      setError(err instanceof Error ? err.message : '启动终端失败');
+    } finally {
+      retryInFlight.current = false;
+    }
+  }, [deviceId, localSessionId, loadDetail]);
+
   const send = useCallback(
     async (message: ChatInputMessage, transitionalNotice?: string) => {
       const text = message.text.trim();
@@ -446,11 +506,13 @@ export function DeviceSessionChat({
       return sendQueue.current(async () => {
         setSending(true);
         setError('');
+        setCanRetryOpen(false);
         // React batches the caller's setNotice with this one; only clobber the
         // notice when no transitional message was handed in, or the
         // "正在重新打开…" hint could never paint.
         setNotice(transitionalNotice ?? '');
-        const pendingId = `pending-${Date.now()}`;
+        const messageId = generateMessageUuid();
+        const pendingId = `user-${messageId}`;
         // pending: the muted bubble + 排队中 label — a queued/offline send must
         // not look delivered. The history echo adopts this row by content match.
         setEntries(previous => [
@@ -472,6 +534,7 @@ export function DeviceSessionChat({
             localSessionId,
             text,
             images && images.length > 0 ? images : undefined,
+            messageId,
           );
           if (result.bridgeSessionId) {
             setForcedBridgeId(result.bridgeSessionId);
@@ -484,6 +547,7 @@ export function DeviceSessionChat({
               setNotice('消息已提交，正在重新同步终端状态。');
             }
           } else if (result.operationId) {
+            ignoredOperationRef.current = null;
             setOperationId(result.operationId);
           }
           if (result.state === 'unconfirmed') {
@@ -492,6 +556,10 @@ export function DeviceSessionChat({
             setNotice(result.detail || '终端尚未就绪，消息会在连接后发送。');
           }
         } catch (err) {
+          if (err instanceof DeviceApiError && err.code === 'delivery_unknown') {
+            setNotice(err.message);
+            return;
+          }
           setEntries(previous => previous.filter(entry => !(entry.type === 'user_message' && entry.id === pendingId)));
           setError(err instanceof Error ? err.message : '发送失败');
           // The composer puts the text back, so a failed send is never silent.
@@ -534,6 +602,13 @@ export function DeviceSessionChat({
           // The user ran /remote-control in the terminal — the blocked card
           // and disabled composer must go away on their own.
           setBlockedSession(false);
+          if (operationIdRef.current) {
+            ignoredOperationRef.current = operationIdRef.current;
+            setOperationId(null);
+            setOperation(null);
+            setNotice('');
+            setCanRetryOpen(false);
+          }
           if (forcedBridgeId !== next.bridgeSessionId) {
             // Entering the live view after a reconnect: catch up on anything
             // produced while the SSE was down before switching.
@@ -549,7 +624,12 @@ export function DeviceSessionChat({
         // void and only then explaining why. Read the ref, not the closure:
         // this effect is not re-created when an operation starts, and a stale
         // null showed the blocked card while a terminal was being opened.
-        if (!operationIdRef.current && next.runtime?.processAlive && !next.bridgeSessionId) {
+        if (
+          !operationIdRef.current &&
+          next.runtime?.processAlive &&
+          !next.runtime.bridgeSessionId &&
+          !next.bridgeConnected
+        ) {
           setBlockedSession(true);
         } else if (next.runtime && next.runtime.processAlive === false) {
           // The terminal exited; a send will open a fresh bridged one.
@@ -685,175 +765,139 @@ export function DeviceSessionChat({
     </ModalSheet>
   );
 
-  if (bridgeId) {
-    return (
-      <>
-        <BridgeChat
-          key={bridgeId}
-          sessionId={bridgeId}
-          entries={entries}
-          onEntriesChange={setEntries}
-          onBridgeReady={() => void syncHistory()}
-          onBridgeDisconnected={() => leaveBridge('终端已关闭，发送消息会重新打开终端。')}
-          onTerminalUnavailable={async text => {
-            await send({ text }, '终端已关闭，正在重新打开…');
-            setForcedBridgeId(current => (current === bridgeId ? null : current));
-          }}
-          onCloseTerminal={detail?.bridgeConnected ? () => setConfirmTerminalAction('close') : undefined}
-          deviceId={deviceId}
-          cwd={detail?.session.cwd}
-          hasOlder={historyHasMore}
-          loadingOlder={loadingEarlier}
-          onLoadOlder={() => void loadEarlier()}
-          usageSeed={usageSeed}
-          draftKey={`device:${deviceId}:${localSessionId}`}
-          onBack={onBack}
-          header={
-            <>
-              <MobileChatHeader
-                title={detail?.session.title || localSessionId}
-                subtitle={detail?.session.cwd}
-                deviceName={deviceName}
-                online={detail?.online}
-                terminalStatus={terminalStatus}
-                onBack={onBack}
-              />
-              <DeliveryReviewNotice
-                count={detail?.deliveryReviewRequired ?? 0}
-                deviceId={deviceId}
-                localSessionId={localSessionId}
-                onReviewed={() => setDetail(current => (current ? { ...current, deliveryReviewRequired: 0 } : current))}
-              />
-            </>
-          }
-        />
-        {terminalConfirm}
-      </>
-    );
-  }
-
   const starting = Boolean(operationId);
   const statusText = starting
     ? operation?.state === 'waiting_for_user'
       ? operation.detail || '终端已打开，等待你在电脑上确认（信任目录、权限或模型配置）。'
-      : '正在电脑上打开终端…'
-    : historyError || notice;
+      : operation?.detail || '正在电脑上打开终端…'
+    : detail?.settings?.error
+      ? `会话设置尚未生效：${detail.settings.error}，消息会继续等待。`
+      : historyError || notice;
+
+  const offlineContent = (
+    <>
+      {blockedSession && (
+        <div className="mx-auto w-full px-4 pt-2">
+          <div className="rounded-xl border border-border bg-surface-1 p-3">
+            <p className="text-[13px] font-medium text-text-primary">
+              这个会话正在电脑的终端里运行，但没有开启远程控制
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+              在电脑那个终端里输入{' '}
+              <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[11px]">/remote-control</code>，
+              或选择重启终端并自动开启；重启会中断正在运行的任务。
+            </p>
+            <button
+              type="button"
+              onClick={() => setConfirmTerminalAction('restart')}
+              className="mt-2 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
+            >
+              重启终端并启用
+            </button>
+          </div>
+        </div>
+      )}
+      {statusText && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mx-auto w-full px-4 pt-1 text-[13px] leading-snug text-text-secondary"
+        >
+          {statusText}
+        </div>
+      )}
+    </>
+  );
 
   return (
-    <TooltipProvider>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rcs-page-enter">
-        <MobileChatHeader
-          title={detail?.session.title || localSessionId}
-          subtitle={detail?.session.cwd}
-          deviceName={deviceName}
-          online={detail?.online}
-          terminalStatus={terminalStatus}
-          onBack={onBack}
-        />
-        <DeliveryReviewNotice
-          count={detail?.deliveryReviewRequired ?? 0}
-          deviceId={deviceId}
-          localSessionId={localSessionId}
-          onReviewed={() => setDetail(current => (current ? { ...current, deliveryReviewRequired: 0 } : current))}
-        />
-        {error && (
-          <div className="mx-auto w-full px-4 pt-2">
-            <div
-              role="alert"
-              className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive"
-            >
-              <span className="min-w-0 flex-1 leading-relaxed">{error}</span>
-              <button
-                type="button"
-                onClick={() => void reload()}
-                className="shrink-0 text-xs font-medium text-brand-dark hover:underline dark:text-brand"
-              >
-                刷新状态
-              </button>
-              <button
-                type="button"
-                onClick={() => setError('')}
-                aria-label="关闭提示"
-                className="-mr-1 -mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
-              >
-                ×
-              </button>
-            </div>
-          </div>
-        )}
-        {/* "Starting the terminal" is not Claude typing: the dots made it look
-            like a reply was already streaming. The status row explains it. */}
-        <ChatView
-          entries={entries}
-          onPermissionRespond={respondToolPermission}
-          isHistoryLoading={historyLoading}
-          hasOlder={historyHasMore}
-          loadingOlder={loadingEarlier}
-          onLoadOlder={() => void loadEarlier()}
-          emptyTitle={loadingDetail || historyLoading ? '正在加载会话…' : '暂无消息'}
-          emptyDescription={
-            loadingDetail || historyLoading
-              ? ''
+    <>
+      <BridgeChat
+        sessionId={bridgeId ?? ''}
+        entries={entries}
+        onEntriesChange={setEntries}
+        onBridgeReady={() => void syncHistory()}
+        onSessionTitle={title => {
+          setLiveTitle(title);
+          onSessionTitle?.(title);
+        }}
+        onBridgeDisconnected={() => leaveBridge('终端已关闭，发送消息会重新打开终端。')}
+        onTerminalUnavailable={async text => {
+          await send({ text }, '终端已关闭，正在重新打开…');
+          setForcedBridgeId(current => (current === bridgeId ? null : current));
+        }}
+        onCloseTerminal={detail?.bridgeConnected ? () => setConfirmTerminalAction('close') : undefined}
+        deviceId={deviceId}
+        localSessionId={localSessionId}
+        savedSettings={detail?.settings}
+        onSavedSettingsChange={settings => setDetail(current => (current ? { ...current, settings } : current))}
+        cwd={detail?.session.cwd}
+        hasOlder={historyHasMore}
+        loadingOlder={loadingEarlier}
+        onLoadOlder={() => void loadEarlier()}
+        usageSeed={usageSeed}
+        draftKey={`device:${deviceId}:${localSessionId}`}
+        onBack={onBack}
+        onOfflineSubmit={send}
+        offlineDisabled={loadingDetail || blockedSession}
+        offlineLoading={sending}
+        offlineHistoryLoading={historyLoading}
+        offlinePlaceholder={
+          loadingDetail
+            ? '正在加载…'
+            : blockedSession
+              ? '终端未开启远程控制，暂时无法发送'
               : detail?.online
-                ? '发送消息后会自动打开终端'
-                : '设备离线，发送的消息会在上线后发出'
-          }
-        />
-        {blockedSession && (
-          <div className="mx-auto w-full px-4 pt-2">
-            <div className="rounded-xl border border-border bg-surface-1 p-3">
-              <p className="text-[13px] font-medium text-text-primary">
-                这个会话正在电脑的终端里运行，但没有开启远程控制
-              </p>
-              <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
-                在电脑那个终端里输入{' '}
-                <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[11px]">/remote-control</code>{' '}
-                就能把这里连上（推荐，不打断它）；或者让这里重启终端并自动开启，终端里正在跑的任务会中断。
-              </p>
-              <div className="mt-2 flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setConfirmTerminalAction('restart')}
-                  className="rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white active:scale-[0.98]"
+                ? '输入消息，发送后连接终端…'
+                : '设备离线，消息会在上线后发送'
+        }
+        offlineContent={offlineContent}
+        onOfflinePermissionRespond={respondToolPermission}
+        header={
+          <>
+            <MobileChatHeader
+              title={liveTitle || detail?.session.title || localSessionId}
+              subtitle={detail?.session.cwd}
+              deviceName={deviceName}
+              online={detail?.online}
+              terminalStatus={terminalStatus}
+              onBack={onBack}
+            />
+            <DeliveryReviewNotice
+              count={detail?.deliveryReviewRequired ?? 0}
+              deviceId={deviceId}
+              localSessionId={localSessionId}
+              onReviewed={() => setDetail(current => (current ? { ...current, deliveryReviewRequired: 0 } : current))}
+            />
+            {error && (
+              <div className="mx-auto w-full px-4 pt-2">
+                <div
+                  role="alert"
+                  className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive"
                 >
-                  重启终端并启用
-                </button>
-                <span className="text-[11px] text-text-muted">在终端执行后，这里会自动连上</span>
+                  <span className="min-w-0 flex-1 leading-relaxed">{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => void (canRetryOpen ? retryOpen() : reload())}
+                    className="shrink-0 font-medium text-brand-dark active:opacity-70 dark:text-brand"
+                  >
+                    {canRetryOpen ? '重试启动' : '刷新状态'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setError('')}
+                    aria-label="关闭提示"
+                    className="-mr-1 -mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-destructive/70 active:bg-destructive/10"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
-            </div>
-          </div>
-        )}
-        {statusText && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="mx-auto w-full px-4 pt-1 text-[13px] leading-snug text-text-secondary"
-          >
-            {statusText}
-          </div>
-        )}
-        <ChatInput
-          key={localSessionId}
-          draftKey={`device:${deviceId}:${localSessionId}`}
-          onSubmit={send}
-          isLoading={sending}
-          disabled={loadingDetail || blockedSession}
-          supportsImages
-          deviceId={deviceId}
-          cwd={detail?.session.cwd}
-          placeholder={
-            loadingDetail
-              ? '正在加载…'
-              : blockedSession
-                ? '终端未开启远程控制，暂时无法发送'
-                : detail?.online
-                  ? '输入消息，发送后连接终端…'
-                  : '设备离线，消息会在上线后发送'
-          }
-        />
-        {terminalConfirm}
-      </div>
-    </TooltipProvider>
+            )}
+          </>
+        }
+      />
+      {terminalConfirm}
+    </>
   );
 }
 
@@ -919,9 +963,9 @@ function MobileChatHeader({
         type="button"
         onClick={onBack}
         className="session-back flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-surface-1 md:hidden"
-        aria-label="返回列表"
+        aria-label="打开会话列表"
       >
-        <ChevronLeft className="h-5 w-5" />
+        <Menu className="h-5 w-5" />
       </button>
       <div className="min-w-0 flex-1">
         <h2 className="truncate text-[15px] font-medium leading-tight text-text-primary">{title}</h2>

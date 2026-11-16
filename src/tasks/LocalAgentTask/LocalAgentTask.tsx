@@ -219,6 +219,16 @@ export function appendMessageToLocalAgent(
   }));
 }
 
+/** Mirror live output only while the user is viewing this agent. */
+export function appendRetainedAgentMessage(taskId: string, message: Message, setAppState: SetAppState): void {
+  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
+    if (!task.retain) return task;
+    const messages = task.messages ?? [];
+    if (message.uuid && messages.some(existing => existing.uuid === message.uuid)) return task;
+    return { ...task, messages: [...messages, message] };
+  });
+}
+
 export function drainPendingMessages(
   taskId: string,
   getAppState: () => AppState,
@@ -715,7 +725,11 @@ export function backgroundAgentTask(taskId: string, getAppState: () => AppState,
 /**
  * Unregister a foreground agent task when the agent completes without being backgrounded.
  */
-export function unregisterAgentForeground(taskId: string, setAppState: SetAppState): void {
+export function unregisterAgentForeground(
+  taskId: string,
+  setAppState: SetAppState,
+  outcome: 'completed' | 'failed' | 'killed' = 'completed',
+): void {
   // Clean up the background signal resolver
   backgroundSignalResolvers.delete(taskId);
 
@@ -730,6 +744,24 @@ export function unregisterAgentForeground(taskId: string, setAppState: SetAppSta
 
     // Capture cleanup function to call outside of updater
     cleanupFn = task.unregisterCleanup;
+
+    // Keep the transcript open when the user is viewing it. The usual
+    // release path schedules eviction after the user returns to main.
+    if (task.retain) {
+      return {
+        ...prev,
+        tasks: {
+          ...prev.tasks,
+          [taskId]: {
+            ...task,
+            status: outcome,
+            endTime: Date.now(),
+            abortController: undefined,
+            unregisterCleanup: undefined,
+          },
+        },
+      };
+    }
 
     const { [taskId]: removed, ...rest } = prev.tasks;
     return { ...prev, tasks: rest };

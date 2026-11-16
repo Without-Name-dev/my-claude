@@ -47,7 +47,7 @@ export const ConversationContent = ({ className, scrollClassName, ...props }: Co
       // `justify-end` keeps a short transcript hugging the composer instead of
       // leaving a dead half-screen of blank space between the last message and
       // the status strip. Overflowing transcripts are unaffected.
-      'mx-auto flex min-h-full w-full max-w-[56rem] flex-col justify-end gap-1.5 px-4 py-5 sm:px-8 sm:py-8 min-w-0',
+      'mx-auto flex min-h-full w-full flex-col justify-end gap-1.5 px-4 py-5 sm:px-8 sm:py-8 min-w-0',
       className,
     )}
     // Stops a drag at the end of the transcript from chaining to the page;

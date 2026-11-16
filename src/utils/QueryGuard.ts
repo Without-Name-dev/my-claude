@@ -104,6 +104,11 @@ export class QueryGuard {
     return this._generation
   }
 
+  /** True only while a force-ended query has no successor or reservation. */
+  wasForceEnded(generation: number): boolean {
+    return this._status === 'idle' && this._generation === generation + 1
+  }
+
   // --
   // useSyncExternalStore interface
 

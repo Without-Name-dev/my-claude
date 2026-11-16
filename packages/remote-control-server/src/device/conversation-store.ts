@@ -126,6 +126,19 @@ function ensureDb(): Database {
       completed_at INTEGER NOT NULL,
       PRIMARY KEY (device_id, local_session_id)
     );
+    CREATE TABLE IF NOT EXISTS retracted_user_messages (
+      device_id TEXT NOT NULL,
+      local_session_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      PRIMARY KEY (device_id, local_session_id, message_id)
+    );
+    CREATE TRIGGER IF NOT EXISTS ignore_retracted_user_message
+    BEFORE INSERT ON conversation_messages
+    WHEN NEW.role = 'user' AND EXISTS (
+      SELECT 1 FROM retracted_user_messages
+      WHERE device_id = NEW.device_id AND local_session_id = NEW.local_session_id
+        AND message_id = NEW.message_id
+    ) BEGIN SELECT RAISE(IGNORE); END;
   `)
   // Databases created before the usage column: add it in place. A nullable
   // column with no default keeps existing rows valid without a rebuild.
@@ -244,6 +257,30 @@ export function initConversationStore(): void {
     log(`[conversation] SQLite ready at ${join(dataDir(), CONVERSATION_DB)}`)
   } catch (error) {
     log(`[conversation] SQLite unavailable: ${(error as Error).message}`)
+  }
+}
+
+/** A terminal-restored prompt must not reappear when a transcript is read again. */
+export function retractUserMessage(
+  deviceId: string,
+  localSessionId: string,
+  id: string,
+): void {
+  const database = ensureDb()
+  database.exec('BEGIN')
+  try {
+    database
+      .query(`INSERT OR IGNORE INTO retracted_user_messages
+      (device_id, local_session_id, message_id) VALUES (?, ?, ?)`)
+      .run(deviceId, localSessionId, id)
+    database
+      .query(`DELETE FROM conversation_messages
+      WHERE device_id = ? AND local_session_id = ? AND message_id = ? AND role = 'user'`)
+      .run(deviceId, localSessionId, id)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
   }
 }
 

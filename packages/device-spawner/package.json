@@ -6,6 +6,6 @@
   "description": "Resident connector that lets the Remote Control Server browse local Claude sessions and open a visible terminal for one.",
   "scripts": {
     "start": "bun run src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit -p ../../tsconfig.json"
   }
 }

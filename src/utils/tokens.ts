@@ -5,7 +5,12 @@ import type {
   ContentItem,
   Message,
 } from '../types/message.js'
-import { SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './messages.js'
+import {
+  findLastCompactBoundaryIndex,
+  isCompactBoundaryMessage,
+  SYNTHETIC_MESSAGES,
+  SYNTHETIC_MODEL,
+} from './messages.js'
 import { jsonStringify } from './slowOperations.js'
 
 export function getTokenUsage(message: Message): Usage | undefined {
@@ -153,8 +158,17 @@ export function getCurrentUsage(messages: Message[]): {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
 } | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
+  const boundaryIndex = findLastCompactBoundaryIndex(messages)
+  const boundary = boundaryIndex >= 0 ? messages[boundaryIndex] : undefined
+  const preserved =
+    boundary &&
+    isCompactBoundaryMessage(boundary) &&
+    Array.isArray(boundary.compactMetadata.preservedUsageIds)
+      ? new Set(boundary.compactMetadata.preservedUsageIds)
+      : null
+  for (let i = messages.length - 1; i > boundaryIndex; i--) {
     const message = messages[i]
+    if (message && preserved?.has(message.uuid)) continue
     const usage = message ? getTokenUsage(message) : undefined
     if (usage) {
       const inputTokens =
@@ -174,6 +188,36 @@ export function getCurrentUsage(messages: Message[]): {
     }
   }
   return null
+}
+
+/** Display a compacted-message estimate until the next actual model response. */
+export function getContextDisplayUsage(messages: Message[]): {
+  usage: ReturnType<typeof getCurrentUsage>
+  estimated: boolean
+} {
+  const usage = getCurrentUsage(messages)
+  if (usage) return { usage, estimated: false }
+  const index = findLastCompactBoundaryIndex(messages)
+  const boundary = index >= 0 ? messages[index] : undefined
+  if (!boundary || !isCompactBoundaryMessage(boundary))
+    return { usage: null, estimated: false }
+  const estimate = boundary.compactMetadata.estimatedPostTokens
+  if (
+    typeof estimate !== 'number' ||
+    !Number.isFinite(estimate) ||
+    estimate < 0
+  ) {
+    return { usage: null, estimated: false }
+  }
+  return {
+    usage: {
+      input_tokens: estimate,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+    estimated: true,
+  }
 }
 
 export function doesMostRecentAssistantMessageExceed200k(

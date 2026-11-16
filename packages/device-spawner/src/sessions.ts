@@ -353,6 +353,7 @@ function normalizeEntry(
   // history the web reloads. Without this they arrived as multi-KB bubbles.
   if (
     entry.isSidechain === true ||
+    entry.isSynthetic === true ||
     entry.isMeta === true ||
     entry.isVisibleInTranscriptOnly === true
   )

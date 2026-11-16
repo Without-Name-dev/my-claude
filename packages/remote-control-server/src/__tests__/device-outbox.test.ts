@@ -31,6 +31,7 @@ import {
 const deviceId = 'dev_test1'
 const localSessionId = 'db094c06-6f2d-470d-aef1-dcce041193b7'
 let dataDir = ''
+const dataDirs: string[] = []
 
 function entry(id: string, state: OutboxEntry['state']): OutboxEntry {
   return {
@@ -46,10 +47,10 @@ function entry(id: string, state: OutboxEntry['state']): OutboxEntry {
 }
 
 beforeEach(async () => {
-  if (!dataDir) {
-    dataDir = await mkdtemp(join(tmpdir(), 'rcs-outbox-'))
-    process.env.RCS_DATA_DIR = dataDir
-  }
+  resetConversationStoreForTest()
+  dataDir = await mkdtemp(join(tmpdir(), 'rcs-outbox-'))
+  dataDirs.push(dataDir)
+  process.env.RCS_DATA_DIR = dataDir
   resetStateForTest()
   await loadState()
 })
@@ -59,10 +60,40 @@ afterAll(async () => {
   // The outbox recovery path opens the conversation store in this data dir;
   // SQLite holds the file open until the connection is closed.
   resetConversationStoreForTest()
-  if (dataDir) await rm(dataDir, { recursive: true, force: true })
+  for (const dir of dataDirs) await rm(dir, { recursive: true, force: true })
 })
 
 describe('outbox failure handling', () => {
+  test('a socket write without CLI echo remains uncertain after server restart', async () => {
+    const bridgeId = `unacknowledged-${crypto.randomUUID()}`
+    const ws = {
+      readyState: 1,
+      send() {},
+      close() {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridgeId)
+    try {
+      const delivery = await deliverNow(
+        bridgeId,
+        deviceId,
+        localSessionId,
+        'hello',
+        crypto.randomUUID(),
+      )
+      expect(delivery.state).toBe('unconfirmed')
+      await flushState({ throwOnError: true })
+      resetStateForTest()
+      await loadState()
+      const restored = listOutbox(deviceId, localSessionId).find(
+        row => row.id === delivery.entry.id,
+      )
+      expect(restored?.state).toBe('unconfirmed')
+      expect(restored?.requiresReview).toBe(true)
+    } finally {
+      handleWebSocketClose(ws, bridgeId, 1000, '', token)
+      removeEventBus(bridgeId)
+    }
+  })
   test('concurrent retries with the same client UUID publish once', async () => {
     const bridgeId = `durable-retry-${crypto.randomUUID()}`
     const testSession = crypto.randomUUID()
@@ -180,7 +211,7 @@ describe('outbox failure handling', () => {
       expect(received).toHaveLength(1)
       expect(received[0]).toContain('replay two')
       markUnconfirmedSent(deviceId, localSessionId, bridgeId)
-      expect(listOutbox(deviceId, localSessionId)).toHaveLength(0)
+      expect(listOutbox(deviceId, localSessionId)).toHaveLength(2)
       await flushState()
     } finally {
       handleWebSocketClose(working, bridgeId, 1000, '', token)
@@ -221,8 +252,8 @@ describe('outbox failure handling', () => {
       expect(received[0]).toContain('first')
       expect(received[1]).toContain('second')
       markUnconfirmedSent(deviceId, localSessionId, bridgeId)
-      // Sent entries are removed from the pending outbox.
-      expect(listOutbox(deviceId, localSessionId)).toHaveLength(0)
+      // Socket writes alone do not prove that the terminal received them.
+      expect(listOutbox(deviceId, localSessionId)).toHaveLength(2)
       await flushState()
     } finally {
       handleWebSocketClose(working, bridgeId, 1000, '', newToken)
@@ -325,7 +356,7 @@ describe('outbox failure handling', () => {
       await flushOutbox(deviceId, localSessionId, bridgeId)
       expect(
         listOutbox(deviceId, localSessionId).some(row => row.id === queued.id),
-      ).toBe(false)
+      ).toBe(true)
       expect(sent.some(frame => frame.includes(queued.id))).toBe(true)
     } finally {
       handleWebSocketClose(ws, bridgeId, 1000, '', token)
@@ -338,7 +369,9 @@ describe('outbox failure handling', () => {
     enqueueOutbox(entry('preparing', 'queued'))
     const flush = flushOutbox(deviceId, localSessionId, bridgeId)
     markUnconfirmedSent(deviceId, localSessionId, bridgeId)
-    expect(listOutbox(deviceId, localSessionId)[0]?.state).toBe('unconfirmed')
+    expect(['queued', 'unconfirmed']).toContain(
+      listOutbox(deviceId, localSessionId)[0]?.state,
+    )
     await flush
     // No bridge was attached; publishing to the in-memory bus is not receipt.
     expect(listOutbox(deviceId, localSessionId)[0]?.state).toBe('unconfirmed')
@@ -356,6 +389,7 @@ describe('image content blocks through the outbox', () => {
   // persisted outbox rows through loadState and pollutes listOutbox.
   const dirs: string[] = []
   beforeEach(async () => {
+    resetConversationStoreForTest()
     const dir = await mkdtemp(join(tmpdir(), 'rcs-outbox-img-'))
     dirs.push(dir)
     process.env.RCS_DATA_DIR = dir
@@ -363,6 +397,7 @@ describe('image content blocks through the outbox', () => {
     await loadState()
   })
   afterAll(async () => {
+    resetConversationStoreForTest()
     for (const dir of dirs) await rm(dir, { recursive: true, force: true })
   })
 
@@ -427,7 +462,7 @@ describe('image content blocks through the outbox', () => {
         localSessionId,
         imageBlocks,
       )
-      expect(delivered.state).toBe('sent')
+      expect(delivered.state).toBe('unconfirmed')
       // The bridge WS frame is the SDK shape: message.content must still be
       // the block array, not a flattened string.
       const frame = sent
@@ -436,14 +471,13 @@ describe('image content blocks through the outbox', () => {
         message: { content: unknown }
       }
       expect(frame.message.content).toEqual(imageBlocks)
-      expect(delivered.entry.state).toBe('sent')
-      // Delivered rows leave the pending view (listOutbox only returns
-      // queued/unconfirmed), so the image turn is fully handed off.
+      expect(delivered.entry.state).toBe('unconfirmed')
+      // A socket write alone cannot confirm that the terminal received it.
       expect(
         listOutbox(deviceId, localSessionId).some(
           entry => entry.id === delivered.entry.id,
         ),
-      ).toBe(false)
+      ).toBe(true)
     } finally {
       handleWebSocketClose(ws, bridgeId, 1000, '', token)
       removeEventBus(bridgeId)

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { cn } from '../../src/lib/utils';
+import { getComposerAction } from '../../src/lib/composer-action';
 import { ArrowUp, Square, Plus, Loader2 } from 'lucide-react';
 import type { ChatInputMessage, UserMessageImage } from '../../src/lib/types';
 import type { AvailableCommand } from '../../src/acp/types';
@@ -46,7 +47,7 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 interface ChatInputProps {
   onSubmit: (message: ChatInputMessage) => void | Promise<void>;
   isLoading?: boolean;
-  onInterrupt?: () => void;
+  onInterrupt?: () => void | Promise<void>;
   disabled?: boolean;
   placeholder?: string;
   /** 是否支持图片上传 */
@@ -61,6 +62,8 @@ interface ChatInputProps {
   commands?: AvailableCommand[];
   /** Controls rendered inside the composer footer, left of the attachments. */
   toolbarLeft?: ReactNode;
+  /** Compact information rendered after the attachment button. */
+  toolbarAfterAttachments?: ReactNode;
   /** Controls rendered inside the composer footer, right of the textarea. */
   toolbarRight?: ReactNode;
   /**
@@ -86,6 +89,7 @@ export function ChatInput({
   draftKey,
   commands,
   toolbarLeft,
+  toolbarAfterAttachments,
   toolbarRight,
   deviceId,
   cwd,
@@ -115,6 +119,8 @@ export function ChatInput({
   // State alone is not enough: two taps in the same tick both read the old
   // closure and sent the prompt twice. The ref closes that window.
   const sendingRef = useRef(false);
+  const [stopping, setStopping] = useState(false);
+  const stoppingRef = useRef(false);
   const [notice, setNotice] = useState('');
   // Every notice self-clears: error/limit texts used to sit above the composer
   // forever, contradicting state the user had long since changed.
@@ -135,6 +141,27 @@ export function ChatInput({
   const [attachOpen, setAttachOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'file' | 'directory' | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [preparingAttachments, setPreparingAttachments] = useState(0);
+  const preparingAttachmentsRef = useRef(0);
+  const beginAttachment = useCallback(() => {
+    preparingAttachmentsRef.current++;
+    setPreparingAttachments(preparingAttachmentsRef.current);
+  }, []);
+  const endAttachment = useCallback(() => {
+    preparingAttachmentsRef.current = Math.max(0, preparingAttachmentsRef.current - 1);
+    setPreparingAttachments(preparingAttachmentsRef.current);
+  }, []);
+  const prepareImages = useCallback(
+    async (files: File[]) => {
+      beginAttachment();
+      try {
+        return await processImageFiles(files);
+      } finally {
+        endAttachment();
+      }
+    },
+    [beginAttachment, endAttachment],
+  );
 
   // Keep the draft across a session switch and an iOS web-view reclaim. Images
   // are deliberately not persisted: base64 attachments blow past the
@@ -163,7 +190,7 @@ export function ChatInput({
       return;
     }
     if (!trimmed && images.length === 0) return;
-    if (sendingRef.current) return;
+    if (sendingRef.current || stoppingRef.current || preparingAttachmentsRef.current > 0) return;
     const sentText = text;
     const sentImages = images;
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -245,7 +272,7 @@ export function ChatInput({
         // Enter inserts a line break there; the send button submits. Hardware
         // keyboards keep the desktop behaviour. An empty composer must never
         // interrupt a running turn from the keyboard: stopping is the explicit
-        // two-tap control's job.
+        // stop button's job.
         if (coarsePointer) return;
         e.preventDefault();
         if (text.trim() || images.length > 0) {
@@ -302,7 +329,7 @@ export function ChatInput({
         showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
         return;
       }
-      const { images: newImages, failed } = await processImageFiles(files);
+      const { images: newImages, failed } = await prepareImages(files);
       const accepted = newImages.slice(0, room);
       setImages(prev => [...prev, ...accepted].slice(0, MAX_IMAGES));
       if (failed > 0) {
@@ -311,7 +338,7 @@ export function ChatInput({
         showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
       }
     },
-    [deviceReady, images.length, showNotice, supportsImages],
+    [deviceReady, images.length, prepareImages, showNotice, supportsImages],
   );
 
   // 选择文件
@@ -353,7 +380,7 @@ export function ChatInput({
       fileInputRef.current.value = '';
       return;
     }
-    const { images: newImages, failed } = await processImageFiles(accepted);
+    const { images: newImages, failed } = await prepareImages(accepted);
     const kept = newImages.slice(0, room);
     setImages(prev => [...prev, ...kept].slice(0, MAX_IMAGES));
     if (failed > 0) {
@@ -363,7 +390,7 @@ export function ChatInput({
     }
     // 清空 input 以便重复选择
     fileInputRef.current.value = '';
-  }, [deviceReady, images.length, showNotice, supportsImages]);
+  }, [deviceReady, images.length, prepareImages, showNotice, supportsImages]);
 
   const removeImage = useCallback((index: number) => {
     setImages(prev => prev.filter((_, i) => i !== index));
@@ -404,6 +431,7 @@ export function ChatInput({
         return;
       }
 
+      beginAttachment();
       setUploading(true);
       showNotice(`正在上传 ${accepted.length} 个文件到会话目录…`, 0);
       const uploadedPaths: string[] = [];
@@ -463,9 +491,10 @@ export function ChatInput({
         }
       } finally {
         setUploading(false);
+        endAttachment();
       }
     },
-    [cwd, deviceId, insertReferences, showNotice],
+    [beginAttachment, cwd, deviceId, endAttachment, insertReferences, showNotice],
   );
 
   // handleFileSelect may need the upload path defined above.
@@ -477,6 +506,7 @@ export function ChatInput({
   const addDevicePaths = useCallback(
     async (paths: string[]) => {
       if (!deviceId || !cwd || paths.length === 0) return;
+      beginAttachment();
       setUploading(true);
       showNotice(paths.length > 1 ? `正在添加到会话目录（${paths.length} 项）…` : '正在添加到会话目录…', 0);
       try {
@@ -488,9 +518,10 @@ export function ChatInput({
         showNotice(error instanceof Error ? error.message : '添加失败，请重试');
       } finally {
         setUploading(false);
+        endAttachment();
       }
     },
-    [cwd, deviceId, insertReferences, showNotice],
+    [beginAttachment, cwd, deviceId, endAttachment, insertReferences, showNotice],
   );
 
   const handleLocalFiles = useCallback(
@@ -509,7 +540,7 @@ export function ChatInput({
           showNotice(`最多只能添加 ${MAX_IMAGES} 张图片`);
           return;
         }
-        const { images: newImages, failed } = await processImageFiles(files.slice(0, room));
+        const { images: newImages, failed } = await prepareImages(files.slice(0, room));
         setImages(previous => [...previous, ...newImages].slice(0, MAX_IMAGES));
         if (failed > 0) showNotice(`${failed} 张图片无法读取，已跳过`);
         // Mirrors the picker path: never drop photos past the cap in silence.
@@ -518,7 +549,7 @@ export function ChatInput({
       }
       await uploadLocalFiles(files, asFolder);
     },
-    [images.length, showNotice, supportsImages, uploadLocalFiles],
+    [images.length, prepareImages, showNotice, supportsImages, uploadLocalFiles],
   );
 
   const handleAttachChoice = useCallback(async (choice: AttachmentChoice) => {
@@ -566,35 +597,46 @@ export function ChatInput({
   }, [text]);
 
   const hasDraft = Boolean(text.trim() || images.length > 0);
-  const canSend = hasDraft && !disabled;
-  // A stop button with no handler is a lie: only show it when interrupting is
-  // actually wired up (e.g. the device-open flow cannot interrupt).
-  const canInterrupt = isLoading && Boolean(onInterrupt);
-  // While a draft exists the stop control steps aside: the row is already tight
-  // with two selects, and the user is about to send, not interrupt.
-  const showStop = canInterrupt && !hasDraft;
-  // Interrupting is destructive, so it gets its own control and a deliberate
-  // second tap. The send slot must stay "send": while a turn runs, the user
-  // can still type and send a follow-up, and that tap used to stop the turn.
-  const [confirmStop, setConfirmStop] = useState(false);
-  useEffect(() => {
-    if (!showStop) setConfirmStop(false);
-  }, [showStop]);
-  const handleStop = () => {
-    if (!confirmStop) {
-      setConfirmStop(true);
-      haptic('warning');
-      window.setTimeout(() => setConfirmStop(false), 2500);
-      return;
+  const action = getComposerAction({
+    hasDraft,
+    disabled,
+    isLoading,
+    canInterrupt: Boolean(onInterrupt),
+    sending,
+    stopping,
+    preparing: preparingAttachments > 0,
+  });
+  // Drafts switch the button back to send; interruption remains single-flight.
+  const handleStop = async () => {
+    if (sendingRef.current || stoppingRef.current || preparingAttachmentsRef.current > 0 || !onInterrupt) return;
+    stoppingRef.current = true;
+    setStopping(true);
+    haptic('warning');
+    try {
+      await onInterrupt();
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '停止失败，请重试');
+    } finally {
+      stoppingRef.current = false;
+      setStopping(false);
     }
-    setConfirmStop(false);
-    onInterrupt?.();
   };
+  const actionBusy = action === 'sending' || action === 'stopping' || action === 'preparing';
+  const actionLabel =
+    action === 'stop'
+      ? '停止生成'
+      : action === 'sending'
+        ? '正在发送'
+        : action === 'stopping'
+          ? '正在停止'
+          : action === 'preparing'
+            ? '正在处理附件'
+            : '发送消息';
 
   return (
     <div
       className={cn(
-        'composer-safe w-full max-w-[56rem] mx-auto px-4 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
+        'composer-safe w-full mx-auto px-4 sm:px-8 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2',
         className,
       )}
     >
@@ -671,7 +713,7 @@ export function ChatInput({
               on the right. Wraps on narrow screens (iPhone) instead of
               crushing or overflowing the controls. */}
           <div className="flex flex-wrap items-center gap-1 gap-y-1 px-1.5 pb-1.5 pt-1">
-            <div className="flex min-w-0 items-center gap-0.5">
+            <div className="flex min-w-0 flex-1 items-center gap-0.5">
               {toolbarLeft}
               {canAttach && (
                 <button
@@ -692,6 +734,7 @@ export function ChatInput({
                   )}
                 </button>
               )}
+              {toolbarAfterAttachments}
               {canAttach && (
                 <input
                   ref={fileInputRef}
@@ -728,35 +771,23 @@ export function ChatInput({
 
             <div className="ml-auto flex min-w-0 items-center gap-0.5">
               {toolbarRight}
-              {showStop && (
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  aria-label={confirmStop ? '再点一次停止生成' : '停止生成'}
-                  className={cn(
-                    'ml-1 flex h-8 shrink-0 items-center justify-center rounded-full transition-all',
-                    confirmStop
-                      ? 'gap-1 bg-destructive/15 px-2.5 text-status-error'
-                      : 'w-8 bg-surface-3 text-text-primary active:scale-95',
-                  )}
-                >
-                  <Square className="h-2.5 w-2.5" fill="currentColor" strokeWidth={0} />
-                  {confirmStop && <span className="text-xs font-medium">确认停止</span>}
-                </button>
-              )}
               <button
                 type="button"
-                onClick={() => void handleSubmit()}
-                disabled={!canSend || sending}
-                aria-label="发送消息"
+                onClick={() => void (action === 'stop' ? handleStop() : handleSubmit())}
+                disabled={action !== 'send' && action !== 'stop'}
+                aria-label={actionLabel}
                 className={cn(
-                  'ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all',
-                  canSend ? 'bg-brand text-white active:scale-95' : 'bg-surface-1 text-text-muted',
-                  sending && 'opacity-70',
+                  'ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-all',
+                  action === 'send' && 'bg-brand text-white active:scale-95',
+                  action === 'stop' && 'bg-surface-3 text-text-primary active:scale-95',
+                  action !== 'send' && action !== 'stop' && 'bg-surface-1 text-text-muted',
+                  actionBusy && 'opacity-70',
                 )}
               >
-                {sending ? (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                {actionBusy ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/30 border-t-current" />
+                ) : action === 'stop' ? (
+                  <Square className="h-3 w-3" fill="currentColor" strokeWidth={0} />
                 ) : (
                   <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
                 )}

@@ -15,10 +15,12 @@ import { appendLiveEntry, mergeHistoryPage } from './device-history'
 import { debugLog } from './debug-log'
 import {
   applyAgentProgress,
+  parseBackgroundAgents,
   parseTaskSnapshot,
   parseTerminalQueueSnapshot,
   parseWorkflowSnapshot,
   type ExecutionTask,
+  type BackgroundAgent,
   type TerminalQueueSnapshot,
   type WorkflowRun,
 } from './execution-state'
@@ -598,6 +600,8 @@ export type SessionUsage = {
   cacheHitRate: number | null
   /** Older terminals only provide partial history, not session totals. */
   estimated?: boolean
+  /** Context is estimated after compaction; session totals are still measured. */
+  contextEstimated?: boolean
 }
 
 export type BridgeControlResponse = {
@@ -626,10 +630,13 @@ export class RCSChatAdapter {
   private onControlResponse?: (response: BridgeControlResponse) => void
   private onBridgeState?: (connected: boolean) => void
   private onTurnComplete?: () => void
+  private onCompaction?: (active: boolean) => void
+  private onSessionTitle?: (title: string) => void
   private onUsage?: (usage: SessionUsage) => void
   private onStreamOpen?: () => void
   private onStreamState?: (connected: boolean) => void
   private onTasks?: (tasks: ExecutionTask[]) => void
+  private onBackgroundAgents?: (agents: BackgroundAgent[]) => void
   private onWorkflows?: (runs: WorkflowRun[]) => void
   private onAgentProgress?: (payload: unknown) => void
   /** Terminal prompts waiting in the local queue; undefined = none. */
@@ -651,6 +658,7 @@ export class RCSChatAdapter {
   // Direct handleEvent() calls (and tests) work without init(); init() flips
   // this off while the history snapshot is being merged.
   private historyReady = true
+  private retractedUserIds = new Set<string>()
   private bufferedEvents: SessionEvent[] = []
 
   constructor(
@@ -668,12 +676,15 @@ export class RCSChatAdapter {
       onControlResponse?: (response: BridgeControlResponse) => void
       onBridgeState?: (connected: boolean) => void
       onTurnComplete?: () => void
+      onCompaction?: (active: boolean) => void
+      onSessionTitle?: (title: string) => void
       /** Live token usage, after each assistant chunk that carries it. */
       onUsage?: (usage: SessionUsage) => void
       /** Fired once the live SSE stream is actually open. */
       onStreamOpen?: () => void
       onStreamState?: (connected: boolean) => void
       onTasks?: (tasks: ExecutionTask[]) => void
+      onBackgroundAgents?: (agents: BackgroundAgent[]) => void
       onWorkflows?: (runs: WorkflowRun[]) => void
       onAgentProgress?: (payload: unknown) => void
       /** Terminal prompts waiting in the local queue; undefined = none. */
@@ -696,10 +707,13 @@ export class RCSChatAdapter {
     this.onControlResponse = options?.onControlResponse
     this.onBridgeState = options?.onBridgeState
     this.onTurnComplete = options?.onTurnComplete
+    this.onCompaction = options?.onCompaction
+    this.onSessionTitle = options?.onSessionTitle
     this.onUsage = options?.onUsage
     this.onStreamOpen = options?.onStreamOpen
     this.onStreamState = options?.onStreamState
     this.onTasks = options?.onTasks
+    this.onBackgroundAgents = options?.onBackgroundAgents
     this.onWorkflows = options?.onWorkflows
     this.onAgentProgress = options?.onAgentProgress
     this.onTerminalQueue = options?.onTerminalQueue
@@ -857,6 +871,7 @@ export class RCSChatAdapter {
     if (!events || events.length === 0) return
 
     const historyEntries: ThreadEntry[] = []
+    const queuedHistoryEntries: ThreadEntry[] = []
     const agentProgress: unknown[] = []
     /**
      * Tool results seen in the replay. They are applied to the LIVE transcript
@@ -889,16 +904,48 @@ export class RCSChatAdapter {
     // transcript entirely. Count the echoes by text so a replay can keep at
     // most as many outbound rows as were never echoed.
     const inboundUserTexts = new Map<string, number>()
+    const outboundUserTexts = new Map<string, number>()
+    const inboundUserIds = new Set<string>()
+    const outboundUserIds = new Set<string>()
     // The same user turn can appear twice in the rolling bus (a bridge retry
     // plus its echo). Both carry the same uuid; emitting both would render
     // one prompt twice on reload.
     const emittedUserIds = new Set<string>()
     for (const event of events) {
+      if (event.type !== 'user_message_retracted') continue
+      const raw = event.payload?.raw as Record<string, unknown> | undefined
+      if (typeof raw?.message_uuid === 'string')
+        this.retractedUserIds.add(raw.message_uuid)
+    }
+    for (const event of events) {
+      if (
+        event.type === 'user' &&
+        event.direction === 'outbound' &&
+        event.payload?.uuid &&
+        !this.retractedUserIds.has(event.payload.uuid)
+      )
+        outboundUserIds.add(event.payload.uuid)
+    }
+    for (const event of events) {
       if (event.type !== 'user' || event.direction === 'outbound') continue
+      if (event.payload?.uuid && this.retractedUserIds.has(event.payload.uuid))
+        continue
+      if (event.payload?.uuid) inboundUserIds.add(event.payload.uuid)
+    }
+    for (const event of events) {
+      if (event.type !== 'user') continue
+      if (event.payload?.uuid && this.retractedUserIds.has(event.payload.uuid))
+        continue
       const text = extractEventText(
         event.payload || ({} as EventPayload),
       ).trim()
-      inboundUserTexts.set(text, (inboundUserTexts.get(text) ?? 0) + 1)
+      const id = event.payload?.uuid
+      if (event.direction === 'outbound') {
+        if (!id || !inboundUserIds.has(id))
+          outboundUserTexts.set(text, (outboundUserTexts.get(text) ?? 0) + 1)
+      } else if (!id || !outboundUserIds.has(id)) {
+        inboundUserTexts.set(text, (inboundUserTexts.get(text) ?? 0) + 1)
+      }
     }
 
     const flushAssistant = () => {
@@ -912,13 +959,14 @@ export class RCSChatAdapter {
       const payload = event.payload || ({} as EventPayload)
 
       if (event.type === 'user') {
+        if (payload.uuid && this.retractedUserIds.has(payload.uuid)) continue
         if (event.direction === 'outbound') {
-          // Pair this outbound send with an inbound echo of the same text.
-          // Matching by uuid too would miss a restart replay that rewrote
-          // ids; text counting preserves repeated identical sends.
+          if (payload.uuid && inboundUserIds.has(payload.uuid)) continue
+          // Legacy rewritten ids can only be paired when the text is unique
+          // on both sides. Ambiguous equal-text sends must never be discarded.
           const text = extractEventText(payload).trim()
           const echoes = inboundUserTexts.get(text) ?? 0
-          if (echoes > 0) {
+          if (echoes === 1 && outboundUserTexts.get(text) === 1) {
             inboundUserTexts.set(text, echoes - 1)
             continue
           }
@@ -963,12 +1011,15 @@ export class RCSChatAdapter {
               text: classified.text,
             })
           } else {
-            historyEntries.push({
+            const entry: ThreadEntry = {
               type: 'user_message',
               id,
               content: classified.text,
               ...(images.length ? { images } : {}),
-            })
+              ...(event.direction === 'outbound' ? { pending: true } : {}),
+            }
+            if (event.direction === 'outbound') queuedHistoryEntries.push(entry)
+            else historyEntries.push(entry)
           }
         }
       } else if (event.type === 'assistant') {
@@ -1118,6 +1169,7 @@ export class RCSChatAdapter {
     }
 
     flushAssistant()
+    historyEntries.push(...queuedHistoryEntries)
     // Apply after the loop: the trailing snapshot is the current queue state,
     // and any later bridge_state disconnect already cleared it via
     // emitBridgeState during the replay.
@@ -1135,11 +1187,22 @@ export class RCSChatAdapter {
       // replayed history entries are not merged here. Tool completions still
       // must be: the page may not have the tool_result yet, and discarding it
       // left bash/tool cards spinning after every reconnect.
-      if (agentProgress.length === 0 && toolResultPayloads.length === 0) return
+      if (
+        agentProgress.length === 0 &&
+        toolResultPayloads.length === 0 &&
+        this.retractedUserIds.size === 0
+      )
+        return
       this.setEntries(prev => {
+        const visible = prev.filter(
+          entry =>
+            entry.type !== 'user_message' ||
+            !entry.id.startsWith('user-') ||
+            !this.retractedUserIds.has(entry.id.slice(5)),
+        )
         const withResults = toolResultPayloads.reduce<ThreadEntry[]>(
           (items, result) => applyToolResult(items, result),
-          prev,
+          visible,
         )
         return agentProgress.reduce<ThreadEntry[]>(
           (items, event) => applyAgentProgress(items, event),
@@ -1159,7 +1222,13 @@ export class RCSChatAdapter {
       // and inverted whole turns after every resync.
       // Snapshot the id set: the merge drains what it adopts and the updater
       // may run twice (StrictMode / concurrent replay).
-      const merged = mergeHistoryPage(prev, historyEntries, {
+      const visible = prev.filter(
+        entry =>
+          entry.type !== 'user_message' ||
+          !entry.id.startsWith('user-') ||
+          !this.retractedUserIds.has(entry.id.slice(5)),
+      )
+      const merged = mergeHistoryPage(visible, historyEntries, {
         pagePosition: 'newer',
         adoptableIds: new Set(this.optimisticUserIds),
       })
@@ -1357,6 +1426,7 @@ export class RCSChatAdapter {
       totals: { input, output },
       cacheHitRate: totalPrompt > 0 ? read / totalPrompt : null,
       estimated: false,
+      ...(record.current_estimated === true ? { contextEstimated: true } : {}),
     })
   }
 
@@ -1509,6 +1579,8 @@ export class RCSChatAdapter {
     if (type === 'task_state') {
       const tasks = parseTaskSnapshot(payload)
       if (tasks) this.onTasks?.(tasks)
+      const agents = parseBackgroundAgents(payload)
+      if (agents) this.onBackgroundAgents?.(agents)
     } else if (type === 'workflow_state') {
       const runs = parseWorkflowSnapshot(payload)
       if (runs) this.onWorkflows?.(runs)
@@ -1529,11 +1601,27 @@ export class RCSChatAdapter {
     if (/Remote Control connecting/i.test(eventText(payload))) return
 
     switch (type) {
+      case 'user_message_retracted': {
+        if (event.direction === 'outbound') break
+        const raw = payload.raw as Record<string, unknown> | undefined
+        const uuid = raw?.message_uuid
+        if (typeof uuid !== 'string' || !uuid) break
+        this.retractedUserIds.add(uuid)
+        this.optimisticUserIds.delete(`user-${uuid}`)
+        this.setEntries(prev =>
+          prev.filter(
+            entry =>
+              entry.type !== 'user_message' || entry.id !== `user-${uuid}`,
+          ),
+        )
+        break
+      }
       // Messages entered in the terminal also need to appear in the browser.
       // The bridge echoes browser messages with the original UUID, so avoid
       // adding those a second time.
       case 'user': {
         if (event.direction === 'outbound') break
+        if (payload.uuid && this.retractedUserIds.has(payload.uuid)) break
         // The SDK delivers tool results as user turns; they carry no text and
         // used to be dropped, leaving every tool card spinning forever.
         const asRecord = payload as Record<string, unknown>
@@ -1933,6 +2021,12 @@ export class RCSChatAdapter {
       }
 
       // ---- 会话状态 ----
+      case 'session_title': {
+        const title = (payload as Record<string, unknown>).title
+        if (typeof title === 'string' && title.trim())
+          this.onSessionTitle?.(title)
+        break
+      }
       case 'session_status': {
         if (typeof payload.status === 'string') {
           this.onStatusChange?.(
@@ -1958,6 +2052,7 @@ export class RCSChatAdapter {
       // message arrived without a trailing tool result.
       case 'result':
       case 'result_success': {
+        this.onCompaction?.(false)
         this.clearStalePending()
         this.onTurnComplete?.()
         break
@@ -1968,6 +2063,35 @@ export class RCSChatAdapter {
         // replies) arrive as system/local_command. They used to be dropped,
         // so a command looked like it did nothing.
         const record = payload as Record<string, unknown>
+        if (record.subtype === 'status') {
+          const raw =
+            record.raw && typeof record.raw === 'object'
+              ? (record.raw as Record<string, unknown>)
+              : record
+          const active = (record.status ?? raw.status) === 'compacting'
+          this.onCompaction?.(active)
+          if (active)
+            this.setEntries(previous => {
+              let index = -1
+              for (let i = previous.length - 1; i >= 0; i--) {
+                const entry = previous[i]
+                if (
+                  entry?.type === 'user_message' &&
+                  entry.pending === true &&
+                  /^\/compact(?:\s|$)/.test(entry.content)
+                ) {
+                  index = i
+                  break
+                }
+              }
+              if (index < 0) return previous
+              return previous.map((entry, i) =>
+                i === index && entry.type === 'user_message'
+                  ? { ...entry, pending: false }
+                  : entry,
+              )
+            })
+        }
         if (record.subtype === 'local_command') {
           // A local command is executed without any user echo; without this
           // its optimistic bubble would show 排队中 forever.

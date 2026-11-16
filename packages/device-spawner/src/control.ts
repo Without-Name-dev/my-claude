@@ -13,6 +13,7 @@ import { execFile, spawn } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -26,6 +27,10 @@ import type {
 } from '../../remote-control-server/src/device/protocol'
 import { isBridgeSessionId } from '../../remote-control-server/src/device/protocol'
 import { logDir, type SpawnerConfig } from './config'
+import {
+  withDirectBridgeHost,
+  withInteractiveTerminalColors,
+} from './bridge-env'
 import { log } from './log'
 import { underAllowedRoot } from './path-policy'
 import {
@@ -67,6 +72,16 @@ export function findNewSession(
           entry.startedAt >= spawnedAt - 10_000),
     )
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
+}
+
+export function newSessionWaitDetail(
+  elapsedMs: number,
+  terminalDetected: boolean,
+): string | undefined {
+  if (elapsedMs < 20_000) return undefined
+  return terminalDetected
+    ? '终端已打开，正在等待 Bridge。请检查本机是否需要确认信任、权限或模型配置。'
+    : '尚未检测到终端连接。请检查电脑上的终端是否需要确认信任、权限或模型配置。'
 }
 
 async function stopProcess(pid: number): Promise<void> {
@@ -192,6 +207,14 @@ export async function openNewSession(
     fail('config_dir_mismatch', invalid)
     return
   }
+  if (isAbsolute(config.bunPath) && !existsSync(config.bunPath)) {
+    fail('spawn_failed', `找不到 Bun 程序：${config.bunPath}`)
+    return
+  }
+  if (isAbsolute(config.cliPath) && !existsSync(config.cliPath)) {
+    fail('spawn_failed', `找不到 CCB 程序：${config.cliPath}`)
+    return
+  }
 
   emit('starting', pending, { detail: '正在打开新终端' })
   const spawnedAt = Date.now()
@@ -201,32 +224,48 @@ export async function openNewSession(
   mkdirSync(dir, { recursive: true })
   const newSessionId = randomUUID()
   const launcherPath = join(dir, `new-${newSessionId}.cmd`)
+  const runnerPath = join(dir, `new-${newSessionId}-runner.cmd`)
+  const exitFile = join(dir, `new-${newSessionId}.exit`)
+  const runnerLines = [
+    '@echo off',
+    'chcp 65001 >nul',
+    `"${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --session-id ${newSessionId} --remote-control`,
+    'set "_ccb_exit=%errorlevel%"',
+    `> "${escapeCmd(exitFile)}" echo %_ccb_exit%`,
+    'exit /b %_ccb_exit%',
+    '',
+  ]
   const lines = [
     '@echo off',
     'chcp 65001 >nul',
     `cd /d "${escapeCmd(request.cwd)}"`,
-    `start "" "${escapeCmd(config.bunPath)}" "${escapeCmd(config.cliPath)}" --session-id ${newSessionId} --remote-control`,
+    `start "" cmd.exe /d /c ""${escapeCmd(runnerPath)}""`,
     '',
   ]
+  writeFileSync(runnerPath, runnerLines.join('\r\n'), 'utf8')
   writeFileSync(launcherPath, lines.join('\r\n'), 'utf8')
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    CLAUDE_BRIDGE_BASE_URL: config.serverUrl,
-    CLAUDE_BRIDGE_OAUTH_TOKEN: config.enrollKey,
-    CLAUDE_CONFIG_DIR: config.claudeConfigDir,
-    DEBUG: '1',
-    CLAUDE_CODE_DEBUG_LOGS_DIR: join(
-      logDir(),
-      'logs',
-      'cli',
-      `new-${Date.now()}.txt`,
-    ),
-    // Keep diagnostics, hide the "Debug mode enabled" banner: this terminal
-    // was opened from the phone, not started for debugging.
-    CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
-  }
+  const env: NodeJS.ProcessEnv = withDirectBridgeHost(
+    withInteractiveTerminalColors({
+      ...process.env,
+      CLAUDE_BRIDGE_BASE_URL: config.serverUrl,
+      CLAUDE_BRIDGE_OAUTH_TOKEN: config.enrollKey,
+      CLAUDE_CONFIG_DIR: config.claudeConfigDir,
+      DEBUG: '1',
+      CLAUDE_CODE_DEBUG_LOGS_DIR: join(
+        logDir(),
+        'logs',
+        'cli',
+        `new-${Date.now()}.txt`,
+      ),
+      // Keep diagnostics, hide the "Debug mode enabled" banner: this terminal
+      // was opened from the phone, not started for debugging.
+      CLAUDE_CODE_HIDE_DEBUG_NOTICE: '1',
+    }),
+    config.serverUrl,
+  )
   delete env.CLAUDE_CODE_REMOTE
+  let launcherFailure: string | undefined
   const child = spawn('cmd.exe', ['/d', '/s', '/c', launcherPath], {
     cwd: request.cwd,
     env,
@@ -236,6 +275,11 @@ export async function openNewSession(
   })
   child.on('error', error => {
     log(`[spawner] new-session launcher failed: ${error.message}`)
+    launcherFailure = `无法启动终端：${error.message}`
+  })
+  child.on('exit', code => {
+    if (code !== null && code !== 0)
+      launcherFailure = `终端启动器退出（代码 ${code}）`
   })
   child.unref()
   setTimeout(() => {
@@ -245,12 +289,45 @@ export async function openNewSession(
       // Already removed.
     }
   }, 30_000).unref?.()
+  const cleanup = setInterval(() => {
+    if (!existsSync(exitFile)) return
+    clearInterval(cleanup)
+    setTimeout(() => {
+      for (const file of [runnerPath, exitFile]) {
+        try {
+          unlinkSync(file)
+        } catch {
+          /* Already removed. */
+        }
+      }
+    }, 120_000).unref?.()
+  }, 10_000)
+  cleanup.unref?.()
+  setTimeout(() => clearInterval(cleanup), 15 * 60_000).unref?.()
 
   // Match the UUID supplied to the CLI, not another process in the same cwd.
   let localSessionId: string | undefined
   let pid: number | undefined
+  let waitingReported = false
   const deadline = spawnedAt + 90_000
   while (Date.now() < deadline) {
+    if (existsSync(exitFile)) {
+      let code = '未知'
+      try {
+        code = readFileSync(exitFile, 'utf8').trim().slice(0, 24) || code
+      } catch {
+        /* Report the exit without a code. */
+      }
+      fail(
+        'process_exited',
+        `终端启动后退出（代码 ${code}），请查看本机 CLI 日志。`,
+      )
+      return
+    }
+    if (launcherFailure) {
+      fail('spawn_failed', launcherFailure)
+      return
+    }
     const entries = await readRegistryWithReal(config.claudeConfigDir)
     const entry = findNewSession(entries, newSessionId, request.cwd, spawnedAt)
     if (entry) {
@@ -273,6 +350,19 @@ export async function openNewSession(
     } else if (pid !== undefined && !isProcessAlive(pid)) {
       fail('process_exited', '终端在连接 Bridge 前退出了')
       return
+    }
+    if (!waitingReported) {
+      const detail = newSessionWaitDetail(
+        Date.now() - spawnedAt,
+        pid !== undefined,
+      )
+      if (detail) {
+        waitingReported = true
+        emit('waiting_for_user', localSessionId ?? pending, {
+          detail,
+          ...(pid !== undefined && { pid }),
+        })
+      }
     }
     await new Promise(done => setTimeout(done, 300))
   }

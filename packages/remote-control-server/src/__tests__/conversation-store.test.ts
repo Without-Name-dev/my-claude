@@ -11,9 +11,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TranscriptMessage } from '../device/protocol'
+import { setMapping, resetStateForTest } from '../device/state'
+import { ingestBridgeMessage } from '../transport/ws-handler'
+import { getEventBus, removeEventBus } from '../transport/event-bus'
 import {
   listStoredMessages,
   recordBridgeEvent,
+  retractUserMessage,
   resetConversationStoreForTest,
   saveTranscript,
   saveWebUserMessage,
@@ -60,6 +64,59 @@ function transcript(
 }
 
 describe('conversation store', () => {
+  test('retracted user prompt stays removed on replay while identical resends remain', () => {
+    saveWebUserMessage(deviceId, localSessionId, 'old-id', 'same text')
+    retractUserMessage(deviceId, localSessionId, 'old-id')
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'old-id',
+      message: { content: 'same text' },
+    })
+    saveTranscript(deviceId, localSessionId, [
+      { id: 'old-id', role: 'user', text: 'same text', blocks: [] },
+    ])
+    recordBridgeEvent(deviceId, localSessionId, 'user', {
+      uuid: 'new-id',
+      message: { content: 'same text' },
+    })
+    expect(
+      listStoredMessages(deviceId, localSessionId, 10).messages.map(m => m.id),
+    ).toEqual(['new-id'])
+    expect(
+      listStoredMessages('another-device', localSessionId, 10).messages,
+    ).toEqual([])
+  })
+
+  test('bridge retraction reaches subscribers and persisted conversation', () => {
+    const bridge = 'bridge-retraction-test'
+    resetStateForTest()
+    setMapping({
+      deviceId,
+      localSessionId,
+      bridgeSessionId: bridge,
+      cwd: 'C:\\work',
+      updatedAt: Date.now(),
+    })
+    const events: string[] = []
+    const unsubscribe = getEventBus(bridge).subscribe(event =>
+      events.push(event.type),
+    )
+    try {
+      saveWebUserMessage(deviceId, localSessionId, 'old-id', 'hello')
+      ingestBridgeMessage(bridge, {
+        type: 'user_message_retracted',
+        uuid: 'event-id',
+        message_uuid: 'old-id',
+      })
+      expect(listStoredMessages(deviceId, localSessionId, 10).messages).toEqual(
+        [],
+      )
+      expect(events).toContain('user_message_retracted')
+    } finally {
+      unsubscribe()
+      removeEventBus(bridge)
+      resetStateForTest()
+    }
+  })
   test('replayed bridge messages do not move behind newer messages', () => {
     const now = spyOn(Date, 'now')
     try {

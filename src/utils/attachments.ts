@@ -35,6 +35,7 @@ import {
   getTaskListId,
   isTodoV2Enabled,
 } from './tasks.js'
+import { buildTaskHandoff } from './taskHandoff.js'
 import { getPlanFilePath, getPlan } from './plans.js'
 import { getConnectedIdeName } from './ide.js'
 import {
@@ -491,6 +492,7 @@ export type Attachment =
       type: 'task_reminder'
       content: Task[]
       itemCount: number
+      reason?: 'handoff'
     }
   | {
       type: 'nested_memory'
@@ -955,7 +957,12 @@ export async function getAttachments(
       : []),
     maybe('todo_reminders', () =>
       isTodoV2Enabled()
-        ? getTaskReminderAttachments(messages, toolUseContext)
+        ? getTaskReminderAttachments(messages, toolUseContext, {
+            handoff:
+              isMainThread &&
+              (input !== null ||
+                queuedCommands.some(command => command.mode === 'prompt')),
+          })
         : getTodoReminderAttachments(messages, toolUseContext),
     ),
     ...(isAgentSwarmsEnabled()
@@ -3567,9 +3574,10 @@ function getTaskReminderTurnCounts(messages: Message[]): {
   }
 }
 
-async function getTaskReminderAttachments(
+export async function getTaskReminderAttachments(
   messages: Message[] | undefined,
   toolUseContext: ToolUseContext,
+  options?: { handoff?: boolean },
 ): Promise<Attachment[]> {
   if (!isTodoV2Enabled()) {
     return []
@@ -3600,6 +3608,13 @@ async function getTaskReminderAttachments(
     return []
   }
 
+  if (options?.handoff) {
+    const handoff = buildTaskHandoff(await listTasks(getTaskListId()))
+    return handoff
+      ? [{ type: 'task_reminder', ...handoff, reason: 'handoff' }]
+      : []
+  }
+
   // Skip if no messages provided
   if (!messages || messages.length === 0) {
     return []
@@ -3624,6 +3639,27 @@ async function getTaskReminderAttachments(
   }
 
   return []
+}
+
+/** Restore the actual task list after compaction, independently of the summary. */
+export async function getPostCompactTaskHandoff(
+  context: ToolUseContext,
+): Promise<Attachment[]> {
+  if (
+    context.agentId ||
+    !isTodoV2Enabled() ||
+    isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) ||
+    !context.options.tools.some(tool =>
+      toolMatchesName(tool, TASK_UPDATE_TOOL_NAME),
+    )
+  ) {
+    return []
+  }
+  const handoff = buildTaskHandoff(await listTasks(getTaskListId()))
+  return handoff
+    ? [{ type: 'task_reminder', ...handoff, reason: 'handoff' }]
+    : []
 }
 
 /**

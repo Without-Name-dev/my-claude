@@ -89,7 +89,7 @@ export const UserBubble = memo(function UserBubble({ entry }: UserBubbleProps) {
             )}
           </div>
         )}
-        {entry.pending && <div className="mt-1 pr-1 text-right text-[11px] text-text-muted">排队中 · 等待终端处理</div>}
+        {entry.pending && <div className="mt-1 pr-1 text-right text-[11px] text-text-muted">等待终端确认</div>}
       </div>
     </div>
   );

@@ -32,7 +32,8 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
-import { getModelOptions } from '../utils/model/modelOptions.js';
+import { getModelOptions, type ModelOption } from '../utils/model/modelOptions.js';
+import { runWithServerProvider } from '../utils/model/serverProviders.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
@@ -41,6 +42,7 @@ import { effortLevelToSymbol } from './EffortIndicator.js';
 
 export type Props = {
   initial: string | null;
+  additionalOptions?: ModelOption[];
   sessionModel?: ModelSetting;
   onSelect: (model: string | null, effort: EffortLevel | undefined) => void;
   onCancel?: () => void;
@@ -61,6 +63,7 @@ const NO_PREFERENCE = '__NO_PREFERENCE__';
 
 export function ModelPicker({
   initial,
+  additionalOptions,
   sessionModel,
   onSelect,
   onCancel,
@@ -106,7 +109,10 @@ export function ModelPicker({
   );
 
   // Memoize all derived values to prevent re-renders
-  const modelOptions = useMemo(() => getModelOptions(isFastMode ?? false), [isFastMode]);
+  const modelOptions = useMemo(
+    () => [...runWithServerProvider(null, () => getModelOptions(isFastMode ?? false)), ...(additionalOptions ?? [])],
+    [isFastMode, additionalOptions],
+  );
 
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
@@ -193,6 +199,12 @@ export function ModelPicker({
   );
 
   function handleSelect(value: string): void {
+    // A remote profile is resolved asynchronously by the caller; do not
+    // persist effort or mutate session settings before it succeeds.
+    if (value.startsWith('rcs-provider:')) {
+      onSelect(value, undefined);
+      return;
+    }
     logEvent('tengu_model_command_menu_effort', {
       effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     });

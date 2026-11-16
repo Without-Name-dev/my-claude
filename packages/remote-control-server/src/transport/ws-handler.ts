@@ -7,8 +7,16 @@ import { updateSessionStatus } from '../services/session'
 import { log, debug, error as logError } from '../logger'
 import { toClientPayload } from './client-payload'
 import { config } from '../config'
-import { recordBridgeEvent } from '../device/conversation-store'
-import { findMappingByBridgeId } from '../device/state'
+import {
+  hasTerminalReceivedMessage,
+  recordBridgeEvent,
+  retractUserMessage,
+} from '../device/conversation-store'
+import {
+  findMappingByBridgeId,
+  findOutboxEntry,
+  updateOutbox,
+} from '../device/state'
 import { touchSession } from '../services/session'
 
 // Per-connection cleanup, keyed by sessionId (only one WS per session)
@@ -396,6 +404,24 @@ export function ingestBridgeMessage(
   // web can still read it after the terminal (and the in-memory event bus)
   // are gone. `--resume` may write new transcript messages under a different
   // local id, but the mapping keeps the stable device-session key.
+  if (
+    eventType === 'user_message_retracted' &&
+    typeof msg.message_uuid === 'string' &&
+    msg.message_uuid.length <= 128
+  ) {
+    const mapping = findMappingByBridgeId(sessionId)
+    if (mapping) {
+      try {
+        retractUserMessage(
+          mapping.deviceId,
+          mapping.localSessionId,
+          msg.message_uuid,
+        )
+      } catch (error) {
+        logError('[conversation] could not retract message', error)
+      }
+    }
+  }
   if (eventType === 'user' || eventType === 'assistant') {
     const mapping = findMappingByBridgeId(sessionId)
     if (mapping && payload && typeof payload === 'object') {
@@ -406,6 +432,18 @@ export function ingestBridgeMessage(
           eventType,
           payload as Record<string, unknown>,
         )
+        if (
+          eventType === 'user' &&
+          typeof msg.uuid === 'string' &&
+          findOutboxEntry(mapping.deviceId, mapping.localSessionId, msg.uuid) &&
+          hasTerminalReceivedMessage(
+            mapping.deviceId,
+            mapping.localSessionId,
+            msg.uuid,
+          )
+        ) {
+          updateOutbox(msg.uuid, { state: 'sent', detail: undefined })
+        }
       } catch {
         // Conversation persistence must never break live delivery.
       }

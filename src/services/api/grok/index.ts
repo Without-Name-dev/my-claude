@@ -16,6 +16,10 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
 import { getGrokClient } from './client.js'
+import {
+  getServerProvider,
+  resolveServerModel,
+} from '../../../utils/model/serverProviders.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
@@ -59,7 +63,9 @@ export async function* queryModelGrok(
   void
 > {
   try {
-    const grokModel = resolveGrokModel(options.model)
+    const grokModel = getServerProvider()
+      ? resolveServerModel(options.model)
+      : resolveGrokModel(options.model)
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(
