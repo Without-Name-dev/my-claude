@@ -348,6 +348,7 @@ class SSEBus {
 
     es.onopen = () => {
       if (this.eventSource !== es) return
+      debugLog('sse', `SSE 已连接: ${sessionId} (cursor=${this.lastSeqNum})`)
       this.onConnectionChange?.(true)
       // The server has subscribed to the bus before answering, so anything
       // produced earlier is only in the durable store. Let the view catch up.
@@ -359,6 +360,7 @@ class SSEBus {
     // should reconnect. Probe the session before deciding which this is.
     es.onerror = () => {
       if (this.eventSource !== es) return
+      debugLog('sse', `SSE 连接错误: ${sessionId} (cursor=${this.lastSeqNum})`)
       this.onConnectionChange?.(false)
       const now = Date.now()
       if (now - this.lastProbe < 2000) return
@@ -567,6 +569,8 @@ function findToolCallIndex(entries: ThreadEntry[], toolCallId: string): number {
 
 export type BridgeSessionInfo = {
   model?: string
+  modelSelection?: string
+  serverProviderSwitch?: boolean
   permissionMode?: string
   /** Current session effort ('auto' when the user has not pinned a level). */
   effort?: string
@@ -786,6 +790,11 @@ export class RCSChatAdapter {
 
     this.onSessionInfo?.({
       model: typeof record.model === 'string' ? record.model : undefined,
+      modelSelection:
+        typeof record.model_selection === 'string'
+          ? record.model_selection
+          : undefined,
+      serverProviderSwitch: record.server_provider_switch === true,
       permissionMode:
         typeof record.permissionMode === 'string'
           ? record.permissionMode
@@ -1574,6 +1583,14 @@ export class RCSChatAdapter {
         const id = payload.uuid
           ? `user-${payload.uuid}`
           : event.id || `user-${generateMessageUuid()}`
+        // Send→echo latency for the user's own messages is the number the
+        // "queued messages feel slow" diagnosis hinges on.
+        if (this.optimisticUserIds.has(id)) {
+          debugLog(
+            'send',
+            `消息回显（终端已接收）: ${id} @${new Date().toISOString()}`,
+          )
+        }
         // Snapshot the id set: the updater may run twice under StrictMode, and
         // draining the live set inside invocation 1 made invocation 2 take the
         // append branch — nondeterministic output, duplicate bubble.
@@ -2167,6 +2184,10 @@ export class RCSChatAdapter {
         : text
     // Send to backend; a failed POST must not leave a phantom message that
     // never reached the terminal.
+    debugLog(
+      'send',
+      `发送消息 ${uuid}: ${text.trim().slice(0, 50)}${images && images.length > 0 ? ` (+${images.length} 张图片)` : ''}`,
+    )
     let hadAmbiguousSend = false
     try {
       const payload = {
@@ -2179,10 +2200,12 @@ export class RCSChatAdapter {
       } catch (error) {
         if (!(error instanceof ApiConnectionError)) throw error
         hadAmbiguousSend = true
+        debugLog('send', `发送结果不明，重试相同 uuid ${uuid}`)
         // A failed response can follow a successful server write. Retry the
         // exact same UUID so the durable outbox recognizes the same send.
         await apiSendEvent(this.sessionId, payload)
       }
+      debugLog('send', `消息已送达 ${uuid}`)
     } catch (error) {
       if (hadAmbiguousSend || error instanceof ApiConnectionError) {
         // It may have arrived despite both responses failing; retain the
@@ -2208,6 +2231,7 @@ export class RCSChatAdapter {
     approved: boolean,
     extra?: Record<string, unknown>,
   ): Promise<void> {
+    debugLog('control', `权限响应 ${approved ? '允许' : '拒绝'}: ${requestId}`)
     await apiSendControl(this.sessionId, {
       type: 'permission_response',
       approved,
@@ -2259,6 +2283,7 @@ export class RCSChatAdapter {
 
   /** 中断当前操作 */
   async interrupt(): Promise<void> {
+    debugLog('control', `请求中断: ${this.sessionId}`)
     await apiInterrupt(this.sessionId)
 
     // Mark running tools as canceled — only after the interrupt really

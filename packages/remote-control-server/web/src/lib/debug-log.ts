@@ -1,13 +1,15 @@
 /**
- * Client-side debug log for diagnosing the web end.
+ * Client-side debug log for diagnosing the web/iOS end.
  *
  * Captures console.error, unhandled rejections, and tagged app events (SSE
- * failures, control responses, API errors) into a ring buffer. Hidden by
- * default; open with ?debug=1 (kept for the session) — a small log button
- * then appears in the header.
+ * lifecycle, API calls, message queue, visibility) into a ring buffer.
+ * Hidden by default; open with ?debug=1 (kept for the session) — a small log
+ * button then appears in the header. Entries carry a monotonic `seq` so the
+ * uploader (client-log-upload.ts) can ship exactly the unseen ones.
  */
 
 export type DebugEntry = {
+  seq: number
   at: number
   tag: string
   message: string
@@ -18,6 +20,7 @@ const entries: DebugEntry[] = []
 const listeners = new Set<() => void>()
 
 let installed = false
+let nextSeq = 1
 
 export function isDebugEnabled(): boolean {
   if (typeof window === 'undefined') return false
@@ -42,7 +45,7 @@ function notify(): void {
 }
 
 export function debugLog(tag: string, message: string): void {
-  entries.push({ at: Date.now(), tag, message })
+  entries.push({ seq: nextSeq++, at: Date.now(), tag, message })
   if (entries.length > MAX_ENTRIES)
     entries.splice(0, entries.length - MAX_ENTRIES)
   notify()
@@ -50,6 +53,11 @@ export function debugLog(tag: string, message: string): void {
 
 export function getDebugEntries(): DebugEntry[] {
   return entries
+}
+
+/** Entries strictly after `seq` — the uploader's shipping window. */
+export function getDebugEntriesSince(seq: number): DebugEntry[] {
+  return entries.filter(entry => entry.seq > seq)
 }
 
 export function installDebugCapture(): void {

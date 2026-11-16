@@ -173,6 +173,7 @@ async function request<T>(
   // terminal poll, the history load, and send all share this path).
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const startedAt = Date.now()
   let res: Response
   try {
     res = await fetch(`${path}${sep}uuid=${encodeURIComponent(uuid)}`, {
@@ -185,7 +186,7 @@ async function request<T>(
     const aborted = err instanceof Error && err.name === 'AbortError'
     debugLog(
       'api',
-      `${method} ${path} → ${aborted ? 'timeout' : 'network error'}`,
+      `${method} ${path} → ${aborted ? 'timeout' : 'network error'} (${Date.now() - startedAt}ms)`,
     )
     throw new DeviceApiError(
       0,
@@ -226,9 +227,16 @@ async function request<T>(
           : res.status === 404
             ? '找不到这个会话或设备'
             : res.statusText || '请求失败'
-    debugLog('api', `${method} ${path} → ${res.status} ${code}: ${message}`)
+    debugLog(
+      'api',
+      `${method} ${path} → ${res.status} ${code} (${Date.now() - startedAt}ms): ${message}`,
+    )
     throw new DeviceApiError(res.status, code, message)
   }
+  debugLog(
+    'api',
+    `${method} ${path} → ${res.status} (${Date.now() - startedAt}ms)`,
+  )
   return data as T
 }
 

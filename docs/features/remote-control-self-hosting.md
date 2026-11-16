@@ -107,6 +107,17 @@ docker compose up -d
 | `RCS_DISCONNECT_TIMEOUT`    | 否     | `300`                   | 断线判定超时（秒）                                                        |
 | `RCS_WS_IDLE_TIMEOUT`       | 否     | `30`                    | WebSocket 空闲超时（秒），Bun 发送协议级 ping                             |
 | `RCS_WS_KEEPALIVE_INTERVAL` | 否     | `20`                    | 服务端→客户端 keep_alive 帧间隔（秒），防止反向代理关闭空闲连接           |
+| `RCS_WEB_ACCESS_KEY`        | 否     | _(空)_                  | Web 面板访问密钥。设置后 `/web/*` 路由要求 Bearer 或 cookie 携带此密钥    |
+| `RCS_CLIENT_LOG_UPLOAD`     | 否     | `1`                     | 客户端日志上报开关。设为 `0` 关闭 Web/iOS 端诊断日志的接收与查询          |
+
+### 客户端日志上报
+
+Web/iOS 端会把本机诊断日志（消息收发时延、SSE 连接状态、API 调用耗时、前后台切换、报错）定期批量上传到服务器：
+
+- **服务器开关**：`RCS_CLIENT_LOG_UPLOAD=0` 全局拒绝上报（`GET /web/client-logs/config` 返回 `enabled: false`）。
+- **客户端开关**：设置 → 供应商管理 → 诊断日志，一键开/关；关闭后仅保留本机缓冲（`?debug=1` 面板仍可查看）。
+- **查看方式**：`journalctl -u cc-rcs -f` 过滤 `[client-log]` 实时查看，或 `GET /web/client-logs?uuid=<设备uuid>` 拉取某设备的缓冲。
+- 上报按设备限流（每分钟 20 次、单批最多 200 条、每设备内存保留最近 1000 条），重启服务器后清空。
 
 ### 客户端（Claude Code CLI）
 

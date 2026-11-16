@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Bug, X } from 'lucide-react';
 import { debugLog, enableDebug, getDebugEntries, isDebugEnabled, subscribeDebug } from '../lib/debug-log';
+import { flushClientLogs, getUploadState, setUploadOverride, subscribeUploadSetting } from '../lib/client-log-upload';
 
 /**
  * Header log button + slide-up panel. Hidden unless ?debug=1 (or the button
@@ -29,6 +30,7 @@ export function DebugButton() {
 export function DebugPanel() {
   const [open, setOpen] = useState(false);
   const [tick, setTick] = useState(0);
+  const [upload, setUpload] = useState(getUploadState());
 
   useEffect(() => {
     const toggle = () => setOpen(previous => !previous);
@@ -37,6 +39,7 @@ export function DebugPanel() {
   }, []);
 
   useEffect(() => subscribeDebug(() => setTick(value => value + 1)), []);
+  useEffect(() => subscribeUploadSetting(() => setUpload(getUploadState())), []);
 
   if (!open || !isDebugEnabled()) return null;
   const entries = getDebugEntries();
@@ -46,6 +49,22 @@ export function DebugPanel() {
       <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-xs text-text-secondary">
         <span className="font-medium">客户端日志（最近 {entries.length} 条）</span>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="text-brand-text hover:underline"
+            onClick={() => setUploadOverride(!upload.enabled ? null : false)}
+          >
+            上报 {upload.enabled ? '开' : '关'}
+          </button>
+          {upload.enabled && (
+            <button
+              type="button"
+              className="text-brand-text hover:underline"
+              onClick={() => void flushClientLogs('manual')}
+            >
+              立即上报
+            </button>
+          )}
           <button
             type="button"
             className="text-brand-text hover:underline"
