@@ -78,11 +78,17 @@ describe('task handoff integration', () => {
     expect(JSON.stringify(apiMessages)).toContain(
       'Do not mark unfinished work completed',
     )
-    expect((await listTasks(listId)).map(task => task.status)).toEqual([
-      'in_progress',
-      'pending',
-      'completed',
-    ])
+    // Directory enumeration order differs across filesystems. Assert each
+    // task's status by identity rather than depending on its directory order.
+    expect(
+      Object.fromEntries(
+        (await listTasks(listId)).map(task => [task.subject, task.status]),
+      ),
+    ).toEqual({
+      'old audit': 'in_progress',
+      'old verification': 'pending',
+      'new work': 'completed',
+    })
   })
 
   test('restores the same tasks after compaction without injecting into a subagent', async () => {
