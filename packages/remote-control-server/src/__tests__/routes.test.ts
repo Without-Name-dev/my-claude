@@ -70,11 +70,13 @@ import {
   setMapping,
   setRuntime,
   upsertDevice,
+  updateOutbox,
 } from '../device/state'
 import { attachDevice, detachDevice } from '../device/hub'
 import {
   listStoredMessages,
   resetConversationStoreForTest,
+  saveWebUserMessage,
 } from '../device/conversation-store'
 import {
   handleWebSocketClose,
@@ -2003,6 +2005,66 @@ describe('Web device message route (photo pipeline)', () => {
       },
     )
   }
+
+  test('saved settings can be read without an online device or transcript scan', async () => {
+    const url = `/web/devices/${deviceId}/sessions/${localSessionId}/settings`
+    const patched = await app.request(url, {
+      method: 'PATCH',
+      headers: { ...AUTH_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'test-model',
+        effort: 'xhigh',
+        ultracode: true,
+      }),
+    })
+    expect(patched.status).toBe(200)
+    const read = await app.request(url, { headers: AUTH_HEADERS })
+    expect(read.status).toBe(200)
+    expect((await resJson(read)).settings.values).toMatchObject({
+      model: 'test-model',
+      effort: 'xhigh',
+      ultracode: true,
+    })
+    expect((await app.request(url)).status).toBe(401)
+    expect(
+      (
+        await app.request(
+          `/web/devices/${deviceId}/sessions/not-a-uuid/settings`,
+          { headers: AUTH_HEADERS },
+        )
+      ).status,
+    ).toBe(400)
+  })
+
+  test('history keeps each message waiting until that exact UUID is confirmed', async () => {
+    for (const id of ['first', 'second']) {
+      enqueueOutbox({
+        id,
+        deviceId,
+        localSessionId,
+        payload: { type: 'user', uuid: id, content: 'same' },
+        state: 'unconfirmed',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        attempts: 1,
+      })
+      saveWebUserMessage(deviceId, localSessionId, id, 'same')
+    }
+    const url = `/web/devices/${deviceId}/sessions/${localSessionId}/history`
+    const first = await resJson(
+      await app.request(url, { headers: AUTH_HEADERS }),
+    )
+    expect(
+      first.messages.map((item: { pending?: boolean }) => item.pending),
+    ).toEqual([true, true])
+    updateOutbox('first', { state: 'sent' })
+    const next = await resJson(
+      await app.request(url, { headers: AUTH_HEADERS }),
+    )
+    expect(
+      next.messages.map((item: { pending?: boolean }) => item.pending ?? false),
+    ).toEqual([false, true])
+  })
 
   test('explicit retry requeues a failed message without forcing a terminal restart', async () => {
     const deviceSocket = {

@@ -1,8 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
   saveSessionProvider,
   readSessionProvider,
+  readRecentSessionProviders,
 } from './serverProviderSession.js'
 
 export type ServerProvider = {
@@ -78,6 +81,72 @@ export function serverProvidersAvailable(): boolean {
   return Boolean(serverSettings())
 }
 
+export type ServerSessionSettingsValues = {
+  model?: string
+  effort?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  ultracode?: boolean
+}
+
+/** Read this device's settings before /resume switches the running REPL. */
+export async function loadServerSessionSettings(
+  sessionId: string,
+): Promise<ServerSessionSettingsValues | null> {
+  const config = serverSettings()
+  if (!config) return null
+  let deviceId = process.env.CLAUDE_BRIDGE_DEVICE_ID
+  if (!deviceId && process.env.LOCALAPPDATA) {
+    try {
+      const local = JSON.parse(
+        readFileSync(
+          join(process.env.LOCALAPPDATA, 'CCRemote', 'spawner.json'),
+          'utf8',
+        ),
+      ) as Record<string, unknown>
+      if (
+        typeof local.serverUrl === 'string' &&
+        local.serverUrl.replace(/\/+$/, '') === config.base &&
+        typeof local.deviceId === 'string'
+      )
+        deviceId = local.deviceId
+    } catch {
+      /* A CLI without the connector can still restore its local selection. */
+    }
+  }
+  if (!deviceId) return null
+  let result: { settings: { values?: unknown } | null }
+  try {
+    result = await serverRequest(
+      `/web/devices/${encodeURIComponent(deviceId)}/sessions/${encodeURIComponent(sessionId)}/settings`,
+    )
+  } catch (error) {
+    if (error instanceof ServerRequestError && error.status === 404) return null // older server
+    throw error
+  }
+  if (!result.settings) return null
+  const values = result.settings.values
+  if (!values || typeof values !== 'object' || Array.isArray(values))
+    throw new Error('会话设置无效')
+  const row = values as Record<string, unknown>
+  if (row.model !== undefined && typeof row.model !== 'string')
+    throw new Error('会话模型无效')
+  if (
+    row.effort !== undefined &&
+    !['auto', 'low', 'medium', 'high', 'xhigh', 'max'].includes(
+      String(row.effort),
+    )
+  )
+    throw new Error('会话思考强度无效')
+  if (row.ultracode !== undefined && typeof row.ultracode !== 'boolean')
+    throw new Error('会话 Ultracode 设置无效')
+  return row as ServerSessionSettingsValues
+}
+
+class ServerRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`获取供应商配置失败（${status}）`)
+  }
+}
+
 async function serverRequest<T>(path: string, body?: unknown): Promise<T> {
   const config = serverSettings()
   if (!config) throw new Error('未配置远程服务地址或设备凭据')
@@ -111,7 +180,7 @@ async function serverRequest<T>(path: string, body?: unknown): Promise<T> {
   ) {
     response = await request(true)
   }
-  if (!response.ok) throw new Error(`获取供应商配置失败（${response.status}）`)
+  if (!response.ok) throw new ServerRequestError(response.status)
   return (await response.json()) as T
 }
 
@@ -129,9 +198,32 @@ export async function rememberServerProvider(
 export async function initializeNewSessionProvider(
   sessionId: string,
 ): Promise<ServerProvider | null> {
-  const result = await serverRequest<{
-    selection: { id: string; model: string } | null
-  }>('/web/provider-preference')
+  let result: { selection: { id: string; model: string } | null }
+  try {
+    result = await serverRequest('/web/provider-preference')
+  } catch (error) {
+    // The preference endpoint was introduced after provider management. Older
+    // servers still supply credentials; recover the last locally selected
+    // identity only after verifying it exists on this particular server.
+    if (!(error instanceof ServerRequestError) || error.status !== 404)
+      throw error
+    const providers = await fetchServerProviders()
+    const selected = readRecentSessionProviders().find(item =>
+      providers.some(
+        provider =>
+          provider.id === item.id && provider.models.includes(item.model),
+      ),
+    )
+    const choices = providers.flatMap(provider =>
+      provider.models.map(model => ({ id: provider.id, model })),
+    )
+    if (!selected && choices.length > 1) {
+      throw new Error(
+        '服务器版本较旧，请先在已有会话中选择供应商模型，或更新服务器',
+      )
+    }
+    result = { selection: selected ?? choices[0] ?? null }
+  }
   if (!result.selection) return null
   if (
     typeof result.selection.id !== 'string' ||

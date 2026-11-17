@@ -29,6 +29,11 @@ import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
 
+const WorkflowFooter = feature('WORKFLOW_SCRIPTS')
+  ? (require('../../workflow/panel/WorkflowFooter.js') as typeof import('../../workflow/panel/WorkflowFooter.js'))
+      .WorkflowFooter
+  : null;
+
 type Props = {
   apiKeyStatus: VerificationStatus;
   debug: boolean;
@@ -212,6 +217,7 @@ function PromptInputFooter({
         </Box>
       </Box>
       {process.env.USER_TYPE === 'ant' && <CoordinatorTaskPanel />}
+      {WorkflowFooter && mode === 'prompt' && <WorkflowFooter />}
     </>
   );
 }

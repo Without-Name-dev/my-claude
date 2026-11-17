@@ -8,6 +8,7 @@ const PREVIEW_CHARS = 80
 export type TerminalQueueSnapshot = {
   count: number
   previews: string[]
+  queuedMessageIds: string[]
 }
 
 function previewText(value: string | Array<ContentBlockParam>): string {
@@ -28,31 +29,33 @@ function previewText(value: string | Array<ContentBlockParam>): string {
  * in the local command queue until the turn ends, so a phone watching the
  * session sees nothing happening. The snapshot makes them visible remotely.
  *
- * Remote (bridge) prompts are excluded — the sending client already renders
- * its own pending bubble — as is system-injected input (meta/origin/agent
- * notifications): only human keyboard input is meaningfully "queued" to a
- * remote observer.
+ * Remote prompts are reported by UUID so their existing web bubbles can stay
+ * queued without adding a second terminal-queue row. System input is omitted.
  */
 export function buildTerminalQueueSnapshot(
   commands: readonly QueuedCommand[],
 ): TerminalQueueSnapshot {
   const previews: string[] = []
+  const queuedMessageIds: string[] = []
   for (const command of commands) {
     if (command.mode !== 'prompt') continue
-    if (command.bridgeOrigin === true) continue
     if (command.isMeta) continue
     if (command.agentId !== undefined) continue
     if (command.origin !== undefined) continue
+    if (command.bridgeOrigin === true) {
+      if (command.uuid) queuedMessageIds.push(command.uuid)
+      continue
+    }
     previews.push(previewText(command.value))
   }
-  return { count: previews.length, previews }
+  return { count: previews.length, previews, queuedMessageIds }
 }
 
 /** Dedup key: two snapshots with equal previews publish identical state. */
 export function terminalQueueSnapshotKey(
   snapshot: TerminalQueueSnapshot,
 ): string {
-  return JSON.stringify(snapshot.previews)
+  return JSON.stringify([snapshot.previews, snapshot.queuedMessageIds])
 }
 
 export function buildTerminalQueueMessage(
@@ -63,5 +66,6 @@ export function buildTerminalQueueMessage(
     uuid: randomUUID(),
     count: snapshot.count,
     previews: snapshot.previews,
+    queuedMessageIds: snapshot.queuedMessageIds,
   } as unknown as SDKMessage
 }

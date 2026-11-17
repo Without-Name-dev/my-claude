@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle';
 import { type FSWatcher, watch } from 'fs';
 import React, { useCallback, useEffect, useRef } from 'react';
-import { getSdkBetas, getSessionId, setMainLoopModelOverride } from '../bootstrap/state.js';
+import { getSdkBetas, getSessionId, onSessionSwitch, setMainLoopModelOverride } from '../bootstrap/state.js';
 import { saveSessionProvider } from '../utils/model/serverProviderSession.js';
 import { getContextWindowForModel } from '../utils/context.js';
 import {
@@ -576,6 +576,10 @@ export function useReplBridge(
                 return selectServerProvider(match[1]!, modelName, getSessionId()).then(provider => {
                   const runtimeModel = serverProviderRuntimeModel(provider);
                   setMainLoopModelOverride(runtimeModel);
+                  // The next control can arrive before React renders. In
+                  // particular Ultracode availability must use the newly
+                  // confirmed model, not the previous render's ref.
+                  mainLoopModelRef.current = runtimeModel;
                   setAppState(prev => ({ ...prev, mainLoopModel: runtimeModel, mainLoopModelForSession: null }));
                 });
               }
@@ -1185,6 +1189,25 @@ export function useReplBridge(
     [replBridgeSessionActive],
   );
 
+  // /resume keeps this bridge alive while changing its local conversation.
+  // Tell the server immediately instead of waiting for the spawner heartbeat.
+  useEffect(
+    () =>
+      onSessionSwitch(localSessionId => {
+        queueMicrotask(() => {
+          handleRef.current?.writeSdkMessages([
+            {
+              type: 'local_session_changed',
+              uuid: randomUUID(),
+              local_session_id: localSessionId,
+            } as unknown as SDKMessage,
+          ]);
+          sendSystemInitRef.current();
+        });
+      }),
+    [],
+  );
+
   // Publish the same session totals used by the terminal status line. The web
   // cannot reconstruct these from a paged transcript or replay buffer.
   const usageCompactBoundaryId = messages[findLastCompactBoundaryIndex(messages)]?.uuid ?? null;
@@ -1232,7 +1255,7 @@ export function useReplBridge(
         if (key === lastKey) return;
         // An unpublishable initial empty snapshot is noise; a forced publish
         // after reconnect must overwrite a stale retained server snapshot.
-        if (!forced && snapshot.count === 0 && lastKey === null) return;
+        if (!forced && snapshot.count === 0 && snapshot.queuedMessageIds.length === 0 && lastKey === null) return;
         lastKey = key;
         handle.writeSdkMessages([buildTerminalQueueMessage(snapshot)]);
       };

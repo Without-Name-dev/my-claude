@@ -33,6 +33,7 @@ import {
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
 import { getModelOptions, type ModelOption } from '../utils/model/modelOptions.js';
+import { composePickerOptions } from '../utils/model/pickerOptions.js';
 import { runWithServerProvider } from '../utils/model/serverProviders.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
@@ -43,6 +44,8 @@ import { effortLevelToSymbol } from './EffortIndicator.js';
 export type Props = {
   initial: string | null;
   additionalOptions?: ModelOption[];
+  /** The server catalogue is authoritative for this session. */
+  serverOnly?: boolean;
   sessionModel?: ModelSetting;
   onSelect: (model: string | null, effort: EffortLevel | undefined) => void;
   onCancel?: () => void;
@@ -64,6 +67,7 @@ const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker({
   initial,
   additionalOptions,
+  serverOnly = false,
   sessionModel,
   onSelect,
   onCancel,
@@ -86,7 +90,7 @@ export function ModelPicker({
   );
 
   const handleToggle1M = useCallback(() => {
-    if (!focusedValue || focusedValue === NO_PREFERENCE) return;
+    if (!focusedValue || focusedValue === NO_PREFERENCE || focusedValue.startsWith('rcs-provider:')) return;
     // Key on the base value so lookups in handleSelect / is1MMarked match the
     // initializer — predefined 1M options arrive with a `[1m]` suffix in
     // `focusedValue`, which would diverge from the base-value key set.
@@ -110,15 +114,24 @@ export function ModelPicker({
 
   // Memoize all derived values to prevent re-renders
   const modelOptions = useMemo(
-    () => [...runWithServerProvider(null, () => getModelOptions(isFastMode ?? false)), ...(additionalOptions ?? [])],
-    [isFastMode, additionalOptions],
+    () =>
+      composePickerOptions(
+        serverOnly ? [] : runWithServerProvider(null, () => getModelOptions(isFastMode ?? false)),
+        additionalOptions ?? [],
+        serverOnly,
+      ),
+    [isFastMode, additionalOptions, serverOnly],
   );
 
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
   // is not in the base options but should still be selectable and shown as selected
   const optionsWithInitial = useMemo(() => {
-    if (initial !== null && !modelOptions.some(opt => opt.value === initial)) {
+    if (
+      initial !== null &&
+      (!serverOnly || initial.startsWith('rcs-provider:')) &&
+      !modelOptions.some(opt => opt.value === initial)
+    ) {
       return [
         ...modelOptions,
         {
@@ -129,7 +142,7 @@ export function ModelPicker({
       ];
     }
     return modelOptions;
-  }, [modelOptions, initial]);
+  }, [modelOptions, initial, serverOnly]);
 
   const selectOptions = useMemo(
     () =>
@@ -202,7 +215,7 @@ export function ModelPicker({
     // A remote profile is resolved asynchronously by the caller; do not
     // persist effort or mutate session settings before it succeeds.
     if (value.startsWith('rcs-provider:')) {
-      onSelect(value, undefined);
+      onSelect(value, hasToggledEffort && focusedSupportsEffort ? effort : undefined);
       return;
     }
     logEvent('tengu_model_command_menu_effort', {
@@ -252,7 +265,9 @@ export function ModelPicker({
           </Text>
           <Text dimColor>
             {headerText ??
-              'Choose a model for this and future sessions. Use ← → to adjust effort, Space to toggle 1M context.'}
+              (serverOnly
+                ? '选择服务器供应商模型；使用 ← → 调整思考强度。1M 上下文在供应商设置中配置。'
+                : 'Choose a model for this and future sessions. Use ← → to adjust effort, Space to toggle 1M context.')}
           </Text>
           {sessionModel && (
             <Text dimColor>
@@ -293,7 +308,9 @@ export function ModelPicker({
               {focusedModelName ? ` for ${focusedModelName}` : ''}
             </Text>
           )}
-          {is1MMarked ? (
+          {focusedValue?.startsWith('rcs-provider:') ? (
+            <Text color="subtle">1M context follows the server provider configuration.</Text>
+          ) : is1MMarked ? (
             <Text dimColor>
               <EffortLevelIndicator effort={'high'} /> 1M context on
               <Text color="subtle"> · Space to toggle</Text>
@@ -307,7 +324,7 @@ export function ModelPicker({
           )}
         </Box>
 
-        {isFastModeEnabled() ? (
+        {!serverOnly && isFastModeEnabled() ? (
           showFastModeNotice ? (
             <Box marginBottom={1}>
               <Text dimColor>
@@ -349,6 +366,14 @@ export function ModelPicker({
 
 function resolveOptionModel(value?: string): string | undefined {
   if (!value) return undefined;
+  if (value.startsWith('rcs-provider:')) {
+    const match = /^rcs-provider:[^:]+:(.+)$/.exec(value);
+    try {
+      return match ? decodeURIComponent(match[1]!) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   return value === NO_PREFERENCE ? getDefaultMainLoopModel() : parseUserSpecifiedModel(value);
 }
 

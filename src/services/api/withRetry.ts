@@ -706,6 +706,13 @@ function shouldRetry(error: APIError): boolean {
     return false
   }
 
+  // A server-managed provider uses a fixed credential, not the refreshable
+  // Claude OAuth token. Repeating a rejected key cannot repair it and kept the
+  // terminal and web in a misleading retry loop.
+  if (getServerProvider() && (error.status === 401 || error.status === 403)) {
+    return false
+  }
+
   // Persistent mode: 429/529 always retryable, bypass subscriber gates and
   // x-should-retry header.
   if (isPersistentRetryEnabled() && isTransientCapacityError(error)) {

@@ -71,6 +71,8 @@ export type TranscriptMessage = {
   timestamp?: string
   blocks: TranscriptBlock[]
   isMeta?: boolean
+  /** Server has not observed this exact message being consumed yet. */
+  pending?: boolean
   usage?: TranscriptUsage
 }
 

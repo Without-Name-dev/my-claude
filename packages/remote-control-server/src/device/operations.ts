@@ -22,6 +22,7 @@ import { hasTerminalReceivedMessage } from './conversation-store'
 import {
   ensureSessionSettings,
   onSessionSettingsReady,
+  sessionSettingsConfirmed,
 } from './session-settings'
 import { requestDevice } from './hub'
 import {
@@ -441,10 +442,7 @@ export async function flushOutbox(
     )
     return
   }
-  if (
-    getMapping(deviceId, localSessionId)?.bridgeSessionId !== bridgeSessionId &&
-    getMapping(deviceId, localSessionId)
-  )
+  if (getMapping(deviceId, localSessionId)?.bridgeSessionId !== bridgeSessionId)
     return
   // Only `queued` entries were never published. `unconfirmed` entries were
   // already published to the event bus, and the bridge's attach replay in
@@ -476,6 +474,28 @@ export async function flushOutbox(
       })
     }
     log(`[device] outbox persistence failed: ${(error as Error).message}`)
+    return
+  }
+  try {
+    // Settings or the bridge mapping can change while durable state is saved.
+    await ensureSessionSettings(deviceId, localSessionId, bridgeSessionId)
+    if (!sessionSettingsConfirmed(deviceId, localSessionId, bridgeSessionId))
+      throw new Error('设置或终端连接已更改，请重试')
+  } catch (error) {
+    for (const entry of entries) {
+      publishingOutboxIds.delete(entry.id)
+      updateOutbox(entry.id, {
+        state: 'queued',
+        detail: '设置或终端连接已更改，等待重新确认',
+      })
+    }
+    try {
+      await flushState({ throwOnError: true })
+    } catch (error) {
+      log(
+        `[device] failed to persist deferred messages: ${(error as Error).message}`,
+      )
+    }
     return
   }
   const connected = isBridgeConnected(bridgeSessionId)
@@ -733,7 +753,7 @@ async function deliverNowOnce(
 ): Promise<DeliveryResult> {
   await ensureSessionSettings(deviceId, localSessionId, bridgeSessionId)
   const currentMapping = getMapping(deviceId, localSessionId)
-  if (currentMapping && currentMapping.bridgeSessionId !== bridgeSessionId)
+  if (currentMapping?.bridgeSessionId !== bridgeSessionId)
     throw new Error('终端连接已切换，请重试')
   const existing = messageId
     ? findOutboxEntry(deviceId, localSessionId, messageId)
@@ -764,6 +784,19 @@ async function deliverNowOnce(
       state: 'failed',
       detail: '保存消息状态失败，尚未发送',
     })
+    throw error
+  }
+  try {
+    await ensureSessionSettings(deviceId, localSessionId, bridgeSessionId)
+    if (!sessionSettingsConfirmed(deviceId, localSessionId, bridgeSessionId))
+      throw new Error('设置或终端连接已更改，请重试')
+  } catch (error) {
+    publishingOutboxIds.delete(entry.id)
+    updateOutbox(entry.id, {
+      state: 'queued',
+      detail: '设置或终端连接已更改，等待重新确认',
+    })
+    await flushState({ throwOnError: true })
     throw error
   }
   // A web SSE subscriber is not delivery evidence; only an attached bridge

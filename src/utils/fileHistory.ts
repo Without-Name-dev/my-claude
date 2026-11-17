@@ -921,7 +921,10 @@ export function fileHistoryRestoreStateFromLog(
 /**
  * Copy file history snapshots for a given log option.
  */
-export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
+export async function copyFileHistoryForResume(
+  log: LogOption,
+  destinationSessionId?: string,
+): Promise<void> {
   if (!fileHistoryEnabled()) {
     return
   }
@@ -941,7 +944,7 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
     return
   }
 
-  const sessionId = getSessionId()
+  const sessionId = destinationSessionId ?? getSessionId()
   if (previousSessionId === sessionId) {
     logForDebugging(
       `FileHistory: No need to copy file history for resuming with same session id: ${sessionId}`,

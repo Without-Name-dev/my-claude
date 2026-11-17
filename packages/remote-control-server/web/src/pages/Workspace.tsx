@@ -18,6 +18,7 @@ import { DirectoryPicker } from '../components/device/DirectoryPicker';
 import { DebugButton } from '../components/DebugPanel';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { ProviderManager } from '../components/device/ProviderManager';
+import { drawerGestureDirection, shouldCommitDrawerGesture } from '../lib/mobile-drawer-gesture';
 
 const DeviceSessionChat = lazy(() =>
   import('../components/device/DeviceSessionChat').then(module => ({ default: module.DeviceSessionChat })),
@@ -483,7 +484,7 @@ export function Workspace({
     refreshCatalog();
   }, [refreshCatalog]);
   const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
-  const drawerTouch = useRef<{ x: number; y: number } | null>(null);
+  const drawerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const media = window.matchMedia(MOBILE_LAYOUT);
     const onChange = () => {
@@ -494,7 +495,7 @@ export function Workspace({
   }, []);
   useEffect(() => {
     if (!mobileDrawerOpen) return;
-    drawerCloseRef.current?.focus();
+    drawerCloseRef.current?.focus({ preventScroll: true });
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setMobileDrawerOpen(false);
     };
@@ -502,55 +503,90 @@ export function Workspace({
     return () => document.removeEventListener('keydown', onKey);
   }, [mobileDrawerOpen]);
 
-  // Edge-swipe back with the finger: the panel follows the thumb, then either
-  // finishes off-screen or springs back. Replaces the system snapshot gesture,
-  // which flashed inside the WKWebView.
+  // The drawer follows the finger without rerendering the transcript on every
+  // touchmove. Only commit navigation when the gesture actually ends.
   const chatPanelRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    const panel = chatPanelRef.current;
-    if (!panel || !mobileChat || mobileDrawerOpen) return;
+    const drawer = drawerRef.current;
+    const panel = mobileDrawerOpen ? drawer : chatPanelRef.current;
+    if (!drawer || !panel || !mobileChat || !window.matchMedia(MOBILE_LAYOUT).matches) return;
+    const opening = !mobileDrawerOpen;
     let tracking = false;
-    let horizontal = false;
+    let dragging = false;
     let startX = 0;
     let startY = 0;
+    let startTime = 0;
+    let distance = 0;
+    let dragSign = 0;
 
     const onStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) return;
       const touch = event.touches[0];
-      if (touch.clientX > 28) return;
+      const target = event.target as Element;
+      if (target.closest('[data-drawer-horizontal], input, textarea, select, [contenteditable="true"], pre')) return;
+      // Do not take a left swipe away from a horizontally scrollable message,
+      // such as a wide table. Vertical transcript/list scrolling still works.
+      for (let node: Element | null = target; node && node !== panel; node = node.parentElement) {
+        const overflow = window.getComputedStyle(node).overflowX;
+        if ((overflow === 'auto' || overflow === 'scroll') && node.scrollWidth > node.clientWidth + 1) return;
+      }
       tracking = true;
-      horizontal = false;
+      dragging = false;
       startX = touch.clientX;
       startY = touch.clientY;
+      startTime = Date.now();
+      distance = 0;
+      dragSign = 0;
     };
 
     const onMove = (event: TouchEvent) => {
-      if (!tracking) return;
+      if (!tracking || event.touches.length !== 1) return;
       const touch = event.touches[0];
       const moveX = touch.clientX - startX;
       const moveY = touch.clientY - startY;
-      if (!horizontal) {
-        if (Math.abs(moveX) < 6 && Math.abs(moveY) < 6) return;
-        if (Math.abs(moveX) <= Math.abs(moveY)) {
+      if (!dragging) {
+        // A left swipe anywhere in the chat opens the drawer; a right swipe
+        // opens it only from the left edge, preserving normal content gestures.
+        const positive = opening && moveX > 0;
+        const direction = drawerGestureDirection(moveX, moveY, positive);
+        if (direction === 'wait') return;
+        if (direction === 'ignore' || (positive && startX > 32)) {
           tracking = false;
           return;
         }
-        horizontal = true;
+        dragging = true;
+        dragSign = positive ? 1 : -1;
+        drawer.style.transition = 'none';
+        drawer.style.willChange = 'transform';
       }
-      if (moveX > 24) {
-        event.preventDefault();
-        tracking = false;
-        openChatDrawer();
-      }
+      if (event.cancelable) event.preventDefault();
+      const width = drawer.getBoundingClientRect().width;
+      distance = Math.max(0, Math.min(width, dragSign * moveX));
+      drawer.style.transform = `translate3d(${opening ? distance - width : -distance}px, 0, 0)`;
     };
 
-    const onEnd = () => {
-      if (!tracking) return;
+    const finish = (cancelled: boolean) => {
+      if (!tracking || !dragging) {
+        tracking = false;
+        return;
+      }
       tracking = false;
+      const commit =
+        !cancelled && shouldCommitDrawerGesture(distance, drawer.getBoundingClientRect().width, Date.now() - startTime);
+      // Keep the current transform for the commit; removing it on the next
+      // frame lets the existing CSS transition animate to the chosen state.
+      drawer.style.removeProperty('transition');
+      if (commit) {
+        if (opening) openChatDrawer();
+        else setMobileDrawerOpen(false);
+      }
+      requestAnimationFrame(() => {
+        drawer.style.removeProperty('transform');
+        drawer.style.removeProperty('will-change');
+      });
     };
-    const onCancel = () => {
-      tracking = false;
-    };
+    const onEnd = () => finish(false);
+    const onCancel = () => finish(true);
 
     panel.addEventListener('touchstart', onStart, { passive: true });
     panel.addEventListener('touchmove', onMove, { passive: false });
@@ -561,6 +597,12 @@ export function Workspace({
       panel.removeEventListener('touchmove', onMove);
       panel.removeEventListener('touchend', onEnd);
       panel.removeEventListener('touchcancel', onCancel);
+      if (tracking && dragging) {
+        drawer.style.removeProperty('transition');
+        drawer.style.removeProperty('transform');
+        drawer.style.removeProperty('will-change');
+      }
+      // A pending frame still clears the inline transform after a state change.
     };
   }, [mobileChat, mobileDrawerOpen, openChatDrawer]);
 
@@ -731,38 +773,18 @@ export function Workspace({
         />
       )}
       <aside
+        ref={drawerRef}
         data-chat-open={mobileChat}
         data-drawer-open={mobileDrawerOpen}
         inert={startupPending || (mobileChat && !mobileDrawerOpen && window.matchMedia(MOBILE_LAYOUT).matches)}
         role={mobileChat && mobileDrawerOpen ? 'dialog' : undefined}
         aria-modal={mobileChat && mobileDrawerOpen ? true : undefined}
         aria-label={mobileChat && mobileDrawerOpen ? '会话列表' : undefined}
-        onTouchStart={event => {
-          if (
-            !mobileDrawerOpen ||
-            event.touches.length !== 1 ||
-            (event.target as Element).closest('[data-drawer-horizontal]')
-          )
-            return;
-          drawerTouch.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-        }}
-        onTouchEnd={event => {
-          const start = drawerTouch.current;
-          drawerTouch.current = null;
-          if (!start || !event.changedTouches.length) return;
-          const dx = event.changedTouches[0].clientX - start.x;
-          const dy = event.changedTouches[0].clientY - start.y;
-          if (dx < -70 && Math.abs(dx) > Math.abs(dy) * 1.3) setMobileDrawerOpen(false);
-        }}
-        onTouchCancel={() => {
-          drawerTouch.current = null;
-        }}
         className={cn(
           'workspace-sidebar w-full shrink-0 flex-col border-r border-border/70 bg-surface-0 md:flex md:w-[21rem] flex',
           navDir === 'pop' && !mobileChat && 'rcs-nav-pop',
           mobileChat &&
-            'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(88vw,22rem)] max-md:shadow-2xl max-md:transition-transform max-md:duration-200 max-md:ease-out',
-          mobileChat && (mobileDrawerOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full'),
+            'max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(88vw,22rem)] max-md:shadow-2xl',
         )}
       >
         <div className="border-b border-border/70 px-3 pb-2.5 pt-1.5">
@@ -775,7 +797,7 @@ export function Workspace({
                   type="button"
                   onClick={() => setMobileDrawerOpen(false)}
                   aria-label="关闭会话列表"
-                  className="workspace-drawer-close flex h-11 w-11 items-center justify-center rounded-full text-text-secondary md:hidden"
+                  className="workspace-drawer-close flex h-11 w-11 items-center justify-center rounded-full text-text-secondary outline-none focus-visible:ring-2 focus-visible:ring-brand md:hidden"
                 >
                   <X size={19} />
                 </button>
@@ -812,7 +834,7 @@ export function Workspace({
               onChange={event => setSearch(event.target.value)}
               placeholder="搜索项目或会话"
               aria-label="搜索项目或会话"
-              className="h-10 w-full rounded-xl border border-transparent bg-surface-1 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand/40 focus:outline-none sm:text-[15px]"
+              className="h-11 w-full rounded-xl border border-transparent bg-surface-1 pl-9 pr-3 text-base text-text-primary placeholder:text-text-muted focus:border-brand/40 focus:outline-none sm:h-10 sm:text-[15px]"
             />
           </div>
           {devices.length > 0 && (
@@ -865,7 +887,7 @@ export function Workspace({
             onClick={() => setNewSessionOpen(true)}
             disabled={!activeDevice || !activeDevice.online || Boolean(newSessionCwd)}
             className={cn(
-              'mt-2 flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium transition-colors disabled:opacity-50',
+              'mt-2 flex h-11 w-full items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium transition-colors disabled:opacity-50 sm:h-10',
               'border-brand/35 bg-brand/10 text-brand-dark active:bg-brand/15 dark:text-brand',
             )}
           >
@@ -891,7 +913,7 @@ export function Workspace({
           )}
         </div>
 
-        <div ref={listScrollRef} className="flex-1 overflow-y-auto">
+        <div ref={listScrollRef} className="rcs-scroller min-h-0 flex-1 overflow-y-auto">
           {projectsError && (
             <div className="mx-3 mb-1 flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-status-error">
               <span className="min-w-0 flex-1">{projectsError}</span>
@@ -947,6 +969,11 @@ export function Workspace({
                           key={session.localSessionId}
                           type="button"
                           onClick={() => selectSession(session.localSessionId)}
+                          aria-current={
+                            chatDeviceId === activeDeviceId && selectedLocalSessionId === session.localSessionId
+                              ? 'page'
+                              : undefined
+                          }
                           className={cn(
                             'flex min-h-12 w-full items-center gap-2 pl-10 pr-3 text-left transition-colors',
                             chatDeviceId === activeDeviceId && selectedLocalSessionId === session.localSessionId

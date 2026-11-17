@@ -73,11 +73,14 @@ test('server-managed provider is selected and receives a direct streaming reques
       )
     },
   })
+  let legacyServer = false
   const rcs = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
     fetch(request) {
       const url = new URL(request.url)
+      if (legacyServer && url.pathname === '/web/provider-preference')
+        return new Response(null, { status: 404 })
       if (!url.pathname.startsWith('/web/'))
         return new Response(null, { status: 404 })
       url.pathname = url.pathname.slice(4)
@@ -141,6 +144,13 @@ test('server-managed provider is selected and receives a direct streaming reques
     expect((await initializeNewSessionProvider('new-session-c'))?.model).toBe(
       'model-b',
     )
+    // A CLI must also start against a server that predates preferences.
+    legacyServer = true
+    setServerProvider(null)
+    expect(
+      (await initializeNewSessionProvider('legacy-new-session'))?.model,
+    ).toBe('model-b')
+    legacyServer = false
     setServerProvider(null)
     expect((await restoreSessionProvider('session-a'))?.id).toBe(
       created.provider.id,

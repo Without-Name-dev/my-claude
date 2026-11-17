@@ -24,9 +24,12 @@ describe('buildTerminalQueueSnapshot', () => {
     expect(snapshot.previews).toEqual(['first message', 'second message'])
   })
 
-  test('excludes remote, system-injected, and agent-scoped commands', () => {
+  test('keeps remote UUIDs separate from local previews and excludes system input', () => {
     const snapshot = buildTerminalQueueSnapshot([
-      prompt('from phone', { bridgeOrigin: true }),
+      prompt('from phone', {
+        bridgeOrigin: true,
+        uuid: '12345678-1234-1234-1234-123456789abc',
+      }),
       prompt('proactive tick', { isMeta: true }),
       prompt('channel xml', { origin: { kind: 'channel' } as never }),
       prompt('agent note', { agentId: 'agent-1' as never }),
@@ -35,6 +38,9 @@ describe('buildTerminalQueueSnapshot', () => {
     ])
     expect(snapshot.previews).toEqual(['kept'])
     expect(snapshot.count).toBe(1)
+    expect(snapshot.queuedMessageIds).toEqual([
+      '12345678-1234-1234-1234-123456789abc',
+    ])
   })
 
   test('truncates long previews and flattens whitespace', () => {
@@ -58,7 +64,11 @@ describe('buildTerminalQueueSnapshot', () => {
   })
 
   test('empty queue yields an empty snapshot', () => {
-    expect(buildTerminalQueueSnapshot([])).toEqual({ count: 0, previews: [] })
+    expect(buildTerminalQueueSnapshot([])).toEqual({
+      count: 0,
+      previews: [],
+      queuedMessageIds: [],
+    })
   })
 })
 

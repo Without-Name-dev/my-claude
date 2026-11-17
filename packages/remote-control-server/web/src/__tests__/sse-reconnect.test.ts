@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
-import { sseBus } from '../lib/rcs-chat-adapter'
+import { RCSChatAdapter, sseBus } from '../lib/rcs-chat-adapter'
 
 class FakeEventSource {
+  static CLOSED = 2
   static instances: FakeEventSource[] = []
+  readyState = 0
   listeners = new Map<string, (event: { data: string }) => void>()
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
@@ -15,6 +17,7 @@ class FakeEventSource {
   }
   close() {
     this.closed = true
+    this.readyState = FakeEventSource.CLOSED
   }
   message(seqNum: number, generation?: string) {
     this.listeners.get('message')?.({
@@ -72,6 +75,88 @@ afterEach(() => {
 })
 
 describe('SSE reconnection', () => {
+  test('binds a session before opening its message stream', async () => {
+    let finishBind!: (response: Response) => void
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      if (String(input).includes('/web/bind'))
+        return new Promise<Response>(resolve => {
+          finishBind = resolve
+        })
+      return Promise.resolve(Response.json({ events: [] }))
+    }) as unknown as typeof fetch
+    const adapter = new RCSChatAdapter('bind-first', () => {})
+    const initialized = adapter.init()
+    expect(FakeEventSource.instances).toHaveLength(0)
+    finishBind(Response.json({ ok: true }))
+    await initialized
+    expect(FakeEventSource.instances).toHaveLength(1)
+    adapter.disconnect()
+  })
+
+  test('recreates a browser-closed source and preserves ownership', async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({ status: 'active' }),
+      )) as unknown as typeof fetch
+    let replacement: EventSource | null = null
+    const original = sseBus.connect(
+      'closed-retry',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      source => {
+        replacement = source
+      },
+    )
+    const first = FakeEventSource.instances[0]!
+    first.readyState = FakeEventSource.CLOSED
+    first.onerror?.()
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    expect(FakeEventSource.instances).toHaveLength(2)
+    expect(sseBus.owns(original)).toBe(false)
+    expect(sseBus.owns(replacement)).toBe(true)
+  })
+
+  test('ignores a stale closed-session probe after the stream reconnects', async () => {
+    let resolveProbe!: (value: Response) => void
+    globalThis.fetch = (() =>
+      new Promise<Response>(resolve => {
+        resolveProbe = resolve
+      })) as unknown as typeof fetch
+    let terminalErrors = 0
+    sseBus.connect('stale-probe', () => {
+      terminalErrors += 1
+    })
+    const source = FakeEventSource.instances[0]!
+    source.onopen?.()
+    source.onerror?.()
+    source.onopen?.()
+    resolveProbe(new Response(null, { status: 404 }))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(source.closed).toBe(false)
+    expect(terminalErrors).toBe(0)
+  })
+
+  test('a current closed-session probe still ends retries', async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(null, { status: 409 }),
+      )) as unknown as typeof fetch
+    let terminalErrors = 0
+    sseBus.connect('closed-probe', () => {
+      terminalErrors += 1
+    })
+    const source = FakeEventSource.instances[0]!
+    source.onopen?.()
+    source.onerror?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(source.closed).toBe(true)
+    expect(terminalErrors).toBe(1)
+  })
+
   test('keeps retrying through a long network outage and resumes on open', async () => {
     globalThis.fetch = (() =>
       Promise.reject(new Error('offline'))) as unknown as typeof fetch

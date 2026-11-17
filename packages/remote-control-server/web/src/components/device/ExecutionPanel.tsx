@@ -30,12 +30,15 @@ export const ExecutionPanel = memo(function ExecutionPanel({
     return () => window.clearInterval(timer);
   }, [anyRunning]);
   const { active, history } = splitWorkflowRuns(workflows);
-  if (tasks.length === 0 && active.length === 0 && agents.length === 0) return null;
+  // Completed task records persist on disk for history and must not keep the
+  // current-work panel open forever. Never discard unresolved tasks.
+  const visibleTasks = tasks.some(task => task.status !== 'completed') ? tasks : [];
+  if (visibleTasks.length === 0 && active.length === 0 && agents.length === 0) return null;
   const done = tasks.filter(task => task.status === 'completed').length;
   const running = active.length;
   const unresolved = new Set(tasks.filter(task => task.status !== 'completed').map(task => task.id));
   const summary = [
-    tasks.length > 0 ? `${done}/${tasks.length} 任务` : null,
+    visibleTasks.length > 0 ? `${done}/${tasks.length} 任务` : null,
     running > 0 ? `${running} 个工作流运行中` : null,
   ]
     .filter(Boolean)
@@ -86,7 +89,7 @@ export const ExecutionPanel = memo(function ExecutionPanel({
           })}
         </div>
       )}
-      {(tasks.length > 0 || active.length > 0) && (
+      {(visibleTasks.length > 0 || active.length > 0) && (
         <div className="mx-auto w-full overflow-hidden rounded-xl border border-border/60 bg-surface-1/60">
           <button
             type="button"
@@ -107,7 +110,7 @@ export const ExecutionPanel = memo(function ExecutionPanel({
                 compact ? 'max-h-[min(16vh,7rem)] sm:max-h-[min(38vh,20rem)]' : 'max-h-[min(30vh,16rem)]',
               )}
             >
-              {tasks.length > 0 && (
+              {visibleTasks.length > 0 && (
                 <div aria-label="任务列表" className="space-y-1">
                   {tasks.map(task => {
                     const blocked = task.blockedBy.filter(id => unresolved.has(id));

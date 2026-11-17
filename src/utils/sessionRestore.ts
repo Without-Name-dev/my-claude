@@ -42,10 +42,17 @@ import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createSystemMessage } from './messages.js'
 import { parseUserSpecifiedModel } from './model/model.js'
+import { isModelAllowed } from './model/modelAllowlist.js'
 import {
+  fetchServerProvider,
+  loadServerSessionSettings,
   restoreSessionProvider,
+  runWithServerProvider,
+  setServerProvider,
   serverProviderRuntimeModel,
 } from './model/serverProviders.js'
+import { getEffortEnvOverride } from './effort.js'
+import { isUltracodeAvailable } from './ultracode.js'
 import { getPlansDirectory } from './plans.js'
 import { setCwd } from './Shell.js'
 import {
@@ -550,10 +557,49 @@ export async function processResumedConversation(
 
   // Restore the selected provider before the REPL/Bridge accepts queued input.
   // A missing/deleted provider must not silently send the prompt elsewhere.
-  const restoredProvider = await restoreSessionProvider(getSessionId())
+  const savedSettings = opts.forkSession
+    ? null
+    : await loadServerSessionSettings(getSessionId())
+  const savedSelection = savedSettings?.model?.startsWith('rcs-provider:')
+    ? /^rcs-provider:([^:]+):(.+)$/.exec(savedSettings.model)
+    : null
+  if (savedSettings?.model?.startsWith('rcs-provider:') && !savedSelection) {
+    throw new Error('会话供应商配置无效')
+  }
+  const restoredProvider = savedSelection
+    ? await fetchServerProvider(
+        savedSelection[1]!,
+        decodeURIComponent(savedSelection[2]!),
+      )
+    : savedSettings?.model
+      ? null
+      : await restoreSessionProvider(getSessionId())
+  if (restoredProvider && !isModelAllowed(restoredProvider.model))
+    throw new Error('会话模型不在允许列表中')
+  if (savedSettings?.model) setServerProvider(restoredProvider)
   const restoredModel = restoredProvider
     ? serverProviderRuntimeModel(restoredProvider)
-    : undefined
+    : savedSettings?.model
+  const forcedEffort = getEffortEnvOverride()
+  if (
+    savedSettings?.effort !== undefined &&
+    forcedEffort !== undefined &&
+    (forcedEffort === null
+      ? savedSettings.effort !== 'auto'
+      : forcedEffort !== savedSettings.effort)
+  ) {
+    throw new Error('会话思考强度与终端环境变量冲突')
+  }
+  if (
+    savedSettings?.ultracode &&
+    !runWithServerProvider(restoredProvider, () =>
+      isUltracodeAvailable(
+        restoredModel ?? context.initialState.mainLoopModel ?? undefined,
+      ),
+    )
+  ) {
+    throw new Error('会话模型不支持 Ultracode')
+  }
   if (restoredModel) setMainLoopModelOverride(restoredModel)
 
   return {
@@ -570,6 +616,13 @@ export async function processResumedConversation(
       ...(restoredModel && {
         mainLoopModel: restoredModel,
         mainLoopModelForSession: null,
+      }),
+      ...(savedSettings?.effort !== undefined && {
+        effortValue:
+          savedSettings.effort === 'auto' ? undefined : savedSettings.effort,
+      }),
+      ...(savedSettings?.ultracode !== undefined && {
+        ultracodeActive: savedSettings.ultracode,
       }),
       ...(resumedAgentType && { agent: resumedAgentType }),
       ...(restoredAttribution && { attribution: restoredAttribution }),

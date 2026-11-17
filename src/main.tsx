@@ -3695,7 +3695,9 @@ async function run(): Promise<CommanderCommand> {
           const { clearSessionCaches } = await import('./commands/clear/caches.js');
           clearSessionCaches();
 
-          const result = await loadConversationForResume(undefined /* sessionId */, undefined /* sourceFile */);
+          const result = await loadConversationForResume(undefined /* sessionId */, undefined /* sourceFile */, {
+            forkSession: options.forkSession,
+          });
           if (!result) {
             logEvent('tengu_continue', {
               success: false,
@@ -4268,7 +4270,9 @@ async function run(): Promise<CommanderCommand> {
                 // ENOENT: not a file path — fall through to session-ID handling
               }
               if (logOption) {
-                const result = await loadConversationForResume(logOption, undefined /* sourceFile */);
+                const result = await loadConversationForResume(logOption, undefined /* sourceFile */, {
+                  forkSession: options.forkSession,
+                });
                 if (result) {
                   processedResume = await processResumedConversation(
                     result,
@@ -4314,7 +4318,9 @@ async function run(): Promise<CommanderCommand> {
             const resumeStart = performance.now();
             // Use matchedLog if available (for cross-worktree resume by custom title)
             // Otherwise fall back to sessionId string (for direct UUID resume)
-            const result = await loadConversationForResume(matchedLog ?? sessionId, undefined);
+            const result = await loadConversationForResume(matchedLog ?? sessionId, undefined, {
+              forkSession: options.forkSession,
+            });
 
             if (!result) {
               logEvent('tengu_session_resumed', {

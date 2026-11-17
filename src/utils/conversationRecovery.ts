@@ -485,6 +485,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
 export async function loadConversationForResume(
   source: string | LogOption | undefined,
   sourceJsonlFile: string | undefined,
+  options?: { forkSession?: boolean },
 ): Promise<{
   messages: Message[]
   turnInterruptionState: TurnInterruptionState
@@ -578,7 +579,10 @@ export async function loadConversationForResume(
       }
 
       // Copy file history for resume
-      void copyFileHistoryForResume(log)
+      void copyFileHistoryForResume(
+        log,
+        options?.forkSession ? undefined : sessionId,
+      )
 
       messages = log.messages
       checkResumeConsistency(messages)

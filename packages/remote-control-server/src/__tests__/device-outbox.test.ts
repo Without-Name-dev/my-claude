@@ -10,6 +10,7 @@ import {
   requeueFailedOutbox,
   reviewUnconfirmedOutbox,
   resetStateForTest,
+  setMapping,
   type OutboxEntry,
 } from '../device/state'
 import {
@@ -32,6 +33,16 @@ const deviceId = 'dev_test1'
 const localSessionId = 'db094c06-6f2d-470d-aef1-dcce041193b7'
 let dataDir = ''
 const dataDirs: string[] = []
+
+function mapBridge(bridgeSessionId: string, sessionId = localSessionId) {
+  setMapping({
+    deviceId,
+    localSessionId: sessionId,
+    bridgeSessionId,
+    cwd: 'C:\\test',
+    updatedAt: Date.now(),
+  })
+}
 
 function entry(id: string, state: OutboxEntry['state']): OutboxEntry {
   return {
@@ -64,8 +75,31 @@ afterAll(async () => {
 })
 
 describe('outbox failure handling', () => {
+  test('never publishes to a bridge after it has moved to another conversation', async () => {
+    const bridgeId = `moved-${crypto.randomUUID()}`
+    mapBridge(bridgeId)
+    const queued = queueMessage(deviceId, localSessionId, 'must stay queued')
+    mapBridge(bridgeId, crypto.randomUUID())
+    await flushOutbox(deviceId, localSessionId, bridgeId)
+    expect(
+      listOutbox(deviceId, localSessionId).find(row => row.id === queued.id)
+        ?.state,
+    ).toBe('queued')
+    expect(getEventBus(bridgeId).getEventsSince(0)).toHaveLength(0)
+    await expect(
+      deliverNow(
+        bridgeId,
+        deviceId,
+        localSessionId,
+        'must stay queued',
+        queued.id,
+      ),
+    ).rejects.toThrow()
+    removeEventBus(bridgeId)
+  })
   test('a socket write without CLI echo remains uncertain after server restart', async () => {
     const bridgeId = `unacknowledged-${crypto.randomUUID()}`
+    mapBridge(bridgeId)
     const ws = {
       readyState: 1,
       send() {},
@@ -97,6 +131,7 @@ describe('outbox failure handling', () => {
   test('concurrent retries with the same client UUID publish once', async () => {
     const bridgeId = `durable-retry-${crypto.randomUUID()}`
     const testSession = crypto.randomUUID()
+    mapBridge(bridgeId, testSession)
     try {
       const [first, retry] = await Promise.all([
         deliverNow(bridgeId, deviceId, testSession, 'hello', 'client-uuid'),
@@ -121,6 +156,7 @@ describe('outbox failure handling', () => {
   test('a direct web send survives restart without blindly replaying uncertain delivery', async () => {
     const bridgeId = `durable-restart-${crypto.randomUUID()}`
     const testSession = crypto.randomUUID()
+    mapBridge(bridgeId, testSession)
     await deliverNow(
       bridgeId,
       deviceId,
@@ -187,6 +223,7 @@ describe('outbox failure handling', () => {
 
   test('a failed replay does not skip the failed message on the next connection', async () => {
     const bridgeId = 'session_1234567890abcdef'
+    mapBridge(bridgeId)
     await deliverNow(bridgeId, deviceId, localSessionId, 'replay one')
     await deliverNow(bridgeId, deviceId, localSessionId, 'replay two')
     let writes = 0
@@ -221,6 +258,7 @@ describe('outbox failure handling', () => {
 
   test('failed bridge writes remain unconfirmed and replay in order', async () => {
     const bridgeId = 'session_1234567890abcdef'
+    mapBridge(bridgeId)
     const failing = {
       readyState: 1,
       send() {
@@ -323,6 +361,7 @@ describe('outbox failure handling', () => {
 
   test('an unconfirmed prompt whose bus event was evicted is re-queued, not stranded', async () => {
     const bridgeId = 'session_feedfacecafebeef'
+    mapBridge(bridgeId)
     const queued = queueMessage(deviceId, localSessionId, 'survive eviction')
     // No transport attached: the prompt was published and stays unconfirmed.
     await flushOutbox(deviceId, localSessionId, bridgeId)
@@ -366,6 +405,7 @@ describe('outbox failure handling', () => {
 
   test('a bridge attach cannot confirm a message before it was published', async () => {
     const bridgeId = 'session_0123456789abcdef'
+    mapBridge(bridgeId)
     enqueueOutbox(entry('preparing', 'queued'))
     const flush = flushOutbox(deviceId, localSessionId, bridgeId)
     markUnconfirmedSent(deviceId, localSessionId, bridgeId)
@@ -431,6 +471,7 @@ describe('image content blocks through the outbox', () => {
 
   test('flushOutbox republishes array content untouched on retry', async () => {
     const bridgeId = 'session_feedface0badcafe'
+    mapBridge(bridgeId)
     const queued = queueMessage(deviceId, localSessionId, imageBlocks)
     // No bridge transport is attached: the entry is published to the bus but
     // stays unconfirmed — exactly the retry path a reconnect replays.
@@ -448,6 +489,7 @@ describe('image content blocks through the outbox', () => {
 
   test('deliverNow forwards the image array to a live bridge transport', async () => {
     const bridgeId = 'session_00c0ffee01234567'
+    mapBridge(bridgeId)
     const sent: string[] = []
     const ws = {
       readyState: 1,

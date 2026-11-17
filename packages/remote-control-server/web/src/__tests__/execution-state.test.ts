@@ -5,6 +5,7 @@ import {
   parseBackgroundAgents,
   parseWorkflowSnapshot,
   splitWorkflowRuns,
+  markTerminalQueuedMessages,
 } from '../lib/execution-state'
 import { RCSChatAdapter } from '../lib/rcs-chat-adapter'
 import type {
@@ -14,6 +15,22 @@ import type {
 } from '../lib/execution-state'
 import type { ThreadEntry } from '../lib/types'
 import type { SetStateAction } from 'react'
+
+test('terminal queue marks only the exact remote message until the queue clears', () => {
+  const entries: ThreadEntry[] = [
+    { type: 'user_message', id: 'user-one', content: 'same text' },
+    { type: 'user_message', id: 'user-two', content: 'same text' },
+  ]
+  const queued = markTerminalQueuedMessages(entries, {
+    count: 0,
+    previews: [],
+    queuedMessageIds: ['two'],
+  })
+  expect(queued[0]).not.toHaveProperty('pending')
+  expect(queued[1]).toMatchObject({ pending: true })
+  expect(markTerminalQueuedMessages(entries, null)).toEqual(entries)
+  expect(entries[1]).not.toHaveProperty('pending')
+})
 
 test('background agent snapshots update and clear independently of task list', () => {
   let agents: BackgroundAgent[] = []

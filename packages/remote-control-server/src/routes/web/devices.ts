@@ -317,6 +317,17 @@ app.get('/devices/:deviceId/sessions/:localSessionId', uuidAuth, async c => {
   })
 })
 
+// Read the durable settings without waking the PC or scanning its transcript.
+app.get('/devices/:deviceId/sessions/:localSessionId/settings', uuidAuth, c => {
+  const device = deviceFromParam(c)
+  const sessionId = c.req.param('localSessionId')
+  if (!device || !sessionId || !isLocalSessionId(sessionId))
+    return errorJson(c, 400, 'bad_request', '无效的设备或会话 ID')
+  if (!getDevice(device.id))
+    return errorJson(c, 404, 'device_not_found', '设备不存在')
+  return c.json({ settings: getSessionSettings(device.id, sessionId) ?? null })
+})
+
 app.patch(
   '/devices/:deviceId/sessions/:localSessionId/settings',
   uuidAuth,
@@ -607,8 +618,17 @@ app.get(
     if (page.total === 0 && !online && !warning) {
       warning = '设备离线，这个会话还没有缓存的消息'
     }
+    // A web row is persisted before the terminal consumes it. Its presence in
+    // history alone is not a receipt; the durable outbox tracks each UUID.
+    const waitingIds = new Set(
+      listOutbox(device.id, localSessionId).map(entry => entry.id),
+    )
     return c.json({
-      messages: page.messages,
+      messages: page.messages.map(message =>
+        message.role === 'user' && waitingIds.has(message.id)
+          ? { ...message, pending: true }
+          : message,
+      ),
       ...(page.before ? { before: page.before } : {}),
       hasMore: page.hasMore,
       total: page.total,

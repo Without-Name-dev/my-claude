@@ -160,6 +160,23 @@ export function parseBackgroundAgents(
 export type TerminalQueueSnapshot = {
   count: number
   previews: string[]
+  /** Absent when connected to a CLI predating remote queue tracking. */
+  queuedMessageIds?: string[]
+}
+
+/** The CLI queue is authoritative while it still contains a web message. */
+export function markTerminalQueuedMessages(
+  entries: ThreadEntry[],
+  snapshot: TerminalQueueSnapshot | null,
+): ThreadEntry[] {
+  if (!snapshot?.queuedMessageIds?.length) return entries
+  const ids = new Set(snapshot.queuedMessageIds.map(id => `user-${id}`))
+  return entries.map(entry =>
+    entry.type === 'user_message' &&
+    (ids.has(entry.id) || (entry.clientId && ids.has(entry.clientId)))
+      ? { ...entry, pending: true }
+      : entry,
+  )
 }
 
 export function parseTerminalQueueSnapshot(
@@ -169,7 +186,13 @@ export function parseTerminalQueueSnapshot(
   if (!root || typeof root.count !== 'number') return undefined
   if (!Array.isArray(root.previews)) return undefined
   const previews = strings(root.previews)
-  return { count: Math.max(0, Math.floor(root.count)), previews }
+  return {
+    count: Math.max(0, Math.floor(root.count)),
+    previews,
+    ...(Array.isArray(root.queuedMessageIds)
+      ? { queuedMessageIds: strings(root.queuedMessageIds) }
+      : {}),
+  }
 }
 
 export function parseWorkflowSnapshot(

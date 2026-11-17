@@ -5150,6 +5150,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         undefined /* sessionId */,
         undefined /* file path */,
+        { forkSession: options.forkSession },
       )
       if (result) {
         // Match coordinator mode to the resumed session's mode
@@ -5313,6 +5314,7 @@ async function loadInitialMessages(
       const result = await loadConversationForResume(
         parsedSessionId.sessionId,
         parsedSessionId.jsonlFile || undefined,
+        { forkSession: options.forkSession },
       )
 
       // hydrateFromCCRv2InternalEvents writes an empty transcript file for

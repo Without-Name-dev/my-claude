@@ -180,6 +180,7 @@ function launchSession(
       ...process.env,
       CLAUDE_BRIDGE_BASE_URL: config.serverUrl,
       CLAUDE_BRIDGE_OAUTH_TOKEN: config.enrollKey,
+      CLAUDE_BRIDGE_DEVICE_ID: config.deviceId,
       CLAUDE_CONFIG_DIR: config.claudeConfigDir,
       DEBUG: '1',
       CLAUDE_CODE_DEBUG_LOGS_DIR: cliLogFile,

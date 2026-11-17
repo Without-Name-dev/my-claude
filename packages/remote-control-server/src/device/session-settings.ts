@@ -16,11 +16,36 @@ import {
 
 type Field = keyof SessionSettingsValues
 const fields: Field[] = ['model', 'permissionMode', 'effort', 'ultracode']
-const applied = new Map<string, number>()
+const applied = new Map<
+  string,
+  { deviceId: string; sessionId: string; revision: number }
+>()
 const applying = new Map<string, Promise<void>>()
+const applyingOwner = new Map<string, { deviceId: string; sessionId: string }>()
 const applyingFields = new Map<string, Set<Field>>()
 const watched = new WeakSet<object>()
 const observations = new Map<string, SessionSettingsValues>()
+function appliedTo(bridge: string, deviceId: string, sessionId: string) {
+  const value = applied.get(bridge)
+  return value?.deviceId === deviceId && value.sessionId === sessionId
+    ? value
+    : undefined
+}
+/** Recheck synchronously at publication, after all asynchronous persistence. */
+export function sessionSettingsConfirmed(
+  deviceId: string,
+  sessionId: string,
+  bridge: string,
+): boolean {
+  if (getMapping(deviceId, sessionId)?.bridgeSessionId !== bridge) return false
+  const settings = getSessionSettings(deviceId, sessionId)
+  if (!settings) return true
+  return (
+    isBridgeConnected(bridge) &&
+    settings.pending.length === 0 &&
+    appliedTo(bridge, deviceId, sessionId)?.revision === settings.revision
+  )
+}
 const readyListeners = new Set<
   (deviceId: string, sessionId: string, bridge: string) => void
 >()
@@ -115,6 +140,13 @@ function captureInit(bridge: string, event: SessionEvent): void {
   if (m.subtype !== 'init') return
   const mapping = findMappingByBridgeId(bridge)
   if (!mapping) return
+  // During /resume the terminal can publish its new init before the spawner's
+  // registry report retargets this bridge. Never save it into the old session.
+  if (
+    typeof m.session_id === 'string' &&
+    m.session_id !== mapping.localSessionId
+  )
+    return
   const old = getSessionSettings(mapping.deviceId, mapping.localSessionId)
   const observed: SessionSettingsValues = {}
   if (typeof m.model_selection === 'string') observed.model = m.model_selection
@@ -160,7 +192,8 @@ function captureInit(bridge: string, event: SessionEvent): void {
   }
   // A new bridge's startup snapshot may reflect defaults; restore the stored
   // values before accepting its snapshots as authoritative.
-  if (old && !applied.has(bridge)) return
+  if (old && !appliedTo(bridge, mapping.deviceId, mapping.localSessionId))
+    return
   const values = { ...old?.values }
   for (const key of fields) {
     if (
@@ -180,7 +213,12 @@ function captureInit(bridge: string, event: SessionEvent): void {
     error: old?.error,
   }
   putSessionSettings(mapping.deviceId, mapping.localSessionId, next)
-  if (!applying.has(bridge)) applied.set(bridge, next.revision)
+  if (!applying.has(bridge))
+    applied.set(bridge, {
+      deviceId: mapping.deviceId,
+      sessionId: mapping.localSessionId,
+      revision: next.revision,
+    })
 }
 
 function watch(bridge: string): void {
@@ -247,22 +285,34 @@ export function ensureSessionSettings(
 ): Promise<void> {
   watch(bridge)
   const existing = applying.get(bridge)
-  if (existing) return existing
+  if (existing) {
+    const owner = applyingOwner.get(bridge)
+    if (owner?.deviceId === deviceId && owner.sessionId === sessionId)
+      return existing
+    // A /resume can reuse the bridge while a previous session is still being
+    // confirmed. The old result never authorizes the new session's messages.
+    return existing
+      .catch(() => {})
+      .then(() => ensureSessionSettings(deviceId, sessionId, bridge))
+  }
+  applyingOwner.set(bridge, { deviceId, sessionId })
   const job = (async () => {
     // Keep the entire handshake below the web client's 30s request timeout.
     // Otherwise a timed-out send could still reach the terminal afterwards.
     const deadline = Date.now() + 20_000
     while (true) {
-      const settings = getSessionSettings(deviceId, sessionId)
-      if (!settings) {
-        if (isBridgeConnected(bridge)) applied.set(bridge, 0)
-        return
-      }
       if (getMapping(deviceId, sessionId)?.bridgeSessionId !== bridge)
         throw new Error('终端连接已切换，请重试')
+      const settings = getSessionSettings(deviceId, sessionId)
+      if (!settings) {
+        if (isBridgeConnected(bridge))
+          applied.set(bridge, { deviceId, sessionId, revision: 0 })
+        return
+      }
       if (!isBridgeConnected(bridge)) throw new Error('终端连接已断开')
       if (
-        applied.get(bridge) === settings.revision &&
+        appliedTo(bridge, deviceId, sessionId)?.revision ===
+          settings.revision &&
         settings.pending.length === 0
       )
         return
@@ -272,7 +322,7 @@ export function ensureSessionSettings(
       // bridge, apply only edited fields so a web effort change cannot undo a
       // simultaneous terminal model or permission change.
       const selected = new Set<Field>(
-        applied.has(bridge) ? settings.pending : fields,
+        appliedTo(bridge, deviceId, sessionId) ? settings.pending : fields,
       )
       if (selected.has('model') && values.ultracode !== undefined)
         selected.add('ultracode')
@@ -308,7 +358,7 @@ export function ensureSessionSettings(
         updatedAt: Date.now(),
       })
       await flushState({ throwOnError: true })
-      applied.set(bridge, revision)
+      applied.set(bridge, { deviceId, sessionId, revision })
       for (const listener of readyListeners) {
         try {
           listener(deviceId, sessionId, bridge)
@@ -333,6 +383,7 @@ export function ensureSessionSettings(
     })
     .finally(() => {
       applying.delete(bridge)
+      applyingOwner.delete(bridge)
       applyingFields.delete(bridge)
     })
   applying.set(bridge, job)
@@ -343,6 +394,27 @@ function connected(bridge: string): void {
   watch(bridge)
   const mapping = findMappingByBridgeId(bridge)
   if (mapping) {
+    const owner = applyingOwner.get(bridge)
+    const inFlight = applying.get(bridge)
+    if (
+      inFlight &&
+      owner &&
+      (owner.deviceId !== mapping.deviceId ||
+        owner.sessionId !== mapping.localSessionId)
+    ) {
+      void inFlight
+        .catch(() => {})
+        .then(() => {
+          const current = findMappingByBridgeId(bridge)
+          if (
+            current?.deviceId === mapping.deviceId &&
+            current.localSessionId === mapping.localSessionId &&
+            isBridgeConnected(bridge)
+          )
+            connected(bridge)
+        })
+      return
+    }
     for (const snapshot of getEventBus(bridge).getStateSnapshots())
       captureInit(bridge, snapshot)
     void ensureSessionSettings(

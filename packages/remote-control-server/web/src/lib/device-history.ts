@@ -89,6 +89,9 @@ function preferRicherEntry(
   incoming: ThreadEntry,
 ): ThreadEntry {
   if (incoming.type === 'user_message' && current.type === 'user_message') {
+    if (incoming.pending && !current.pending) {
+      return { ...current, pending: true }
+    }
     // A same-id non-optimistic copy is the terminal's confirmation of this
     // bubble. Swapping the whole entry (not just clearing `pending`) also
     // drops `optimistic`, so a confirmed bubble can never later claim another
@@ -508,6 +511,7 @@ export function transcriptToEntries(
             type: 'user_message',
             id: `user-${message.id}`,
             content: commandName[1].trim(),
+            ...(message.pending ? { pending: true } : {}),
           })
         } else if (
           !message.isMeta &&
@@ -522,6 +526,7 @@ export function transcriptToEntries(
             type: 'user_message',
             id: `user-${message.id}`,
             content: userText,
+            ...(message.pending ? { pending: true } : {}),
             ...(images.length > 0 ? { images } : {}),
           })
         }

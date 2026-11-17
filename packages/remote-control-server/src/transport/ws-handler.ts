@@ -15,8 +15,11 @@ import {
 import {
   findMappingByBridgeId,
   findOutboxEntry,
+  getMapping,
+  setMapping,
   updateOutbox,
 } from '../device/state'
+import { isLocalSessionId } from '../device/protocol'
 import { touchSession } from '../services/session'
 
 // Per-connection cleanup, keyed by sessionId (only one WS per session)
@@ -347,6 +350,33 @@ export function ingestBridgeMessage(
   touchSession(sessionId)
 
   const eventType = deriveEventType(msg)
+
+  // A /resume keeps the WebSocket but changes the local conversation. Retarget
+  // the authenticated device's bridge before accepting any new init snapshot.
+  if (eventType === 'local_session_changed') {
+    const next = msg.local_session_id
+    const current = findMappingByBridgeId(sessionId)
+    if (
+      current &&
+      typeof next === 'string' &&
+      isLocalSessionId(next) &&
+      current.localSessionId !== next
+    ) {
+      setMapping({
+        ...current,
+        localSessionId: next,
+        cwd: getMapping(current.deviceId, next)?.cwd ?? '',
+        updatedAt: Date.now(),
+      })
+      publishSessionEvent(
+        sessionId,
+        'local_session_changed',
+        { local_session_id: next },
+        'inbound',
+      )
+    }
+    return
+  }
 
   debug(
     `[RC-DEBUG] [WS] <- bridge (inbound): sessionId=${sessionId} type=${eventType}${msg.uuid ? ` uuid=${msg.uuid}` : ''}`,

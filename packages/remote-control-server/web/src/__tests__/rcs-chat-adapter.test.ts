@@ -4,6 +4,47 @@ import { RCSChatAdapter } from '../lib/rcs-chat-adapter'
 import type { SessionUsage } from '../lib/rcs-chat-adapter'
 import type { ThreadEntry } from '../lib/types'
 
+test('prior turn activity cannot confirm later queued prompts', () => {
+  let entries: ThreadEntry[] = [
+    { type: 'user_message', id: 'user-one', content: '继续', pending: true },
+    { type: 'user_message', id: 'user-two', content: '继续', pending: true },
+  ]
+  const adapter = new RCSChatAdapter('session', action => {
+    entries = typeof action === 'function' ? action(entries) : action
+  })
+  adapter.handleEvent({
+    type: 'assistant',
+    direction: 'inbound',
+    payload: { uuid: 'old-reply', content: 'working' },
+  })
+  adapter.handleEvent({
+    type: 'tool_use',
+    direction: 'inbound',
+    payload: { tool_call_id: 'tool-1', name: 'Read' },
+  })
+  adapter.handleEvent({
+    type: 'tool_result',
+    direction: 'inbound',
+    payload: { tool_use_id: 'tool-1' },
+  })
+  adapter.handleEvent({ type: 'result', direction: 'inbound', payload: {} })
+  expect(
+    entries
+      .filter(e => e.type === 'user_message')
+      .map(e => e.type === 'user_message' && e.pending),
+  ).toEqual([true, true])
+  adapter.handleEvent({
+    type: 'user',
+    direction: 'inbound',
+    payload: { uuid: 'one', content: '继续' },
+  })
+  expect(
+    entries
+      .filter(e => e.type === 'user_message')
+      .map(e => e.type === 'user_message' && e.pending),
+  ).toEqual([false, true])
+})
+
 test('terminal restore removes only the original prompt, even if old echo arrives late', () => {
   let entries: ThreadEntry[] = []
   const adapter = new RCSChatAdapter('session', action => {
@@ -464,7 +505,7 @@ test('shows the command name for a slash-command echo', () => {
   ])
 })
 
-test('adopts a rewritten-uuid echo even after pending state was cleared', async () => {
+test('keeps a pending prompt while the previous turn runs and adopts its echo', async () => {
   const originalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
     'localStorage',
@@ -482,8 +523,7 @@ test('adopts a rewritten-uuid echo even after pending state was cleared', async 
     }
     const adapter = new RCSChatAdapter('session', setEntries)
     await adapter.sendMessage('继续')
-    // An assistant chunk proves the queue was consumed: clearStalePending
-    // strips the optimistic bubble's pending flag before any echo lands.
+    // Output from the previous turn does not consume a later prompt.
     adapter.handleEvent({
       type: 'assistant',
       direction: 'inbound',
@@ -491,7 +531,7 @@ test('adopts a rewritten-uuid echo even after pending state was cleared', async 
     })
     expect(
       entries.some(entry => entry.type === 'user_message' && entry.pending),
-    ).toBe(false)
+    ).toBe(true)
     // A server restart rewrote the echo's uuid: adoption must still find the
     // optimistic bubble (via the adapter's own id set), not append a twin.
     adapter.handleEvent({
@@ -1474,6 +1514,42 @@ test('a terminal_queue snapshot reports queued terminal prompts', () => {
   expect(snapshots).toEqual([{ count: 2, previews: ['first', 'second'] }])
   // No transcript rows: the executed message mirrors normally later.
   expect(entries).toEqual([])
+})
+
+test('a remote-only terminal queue is retained without creating a duplicate row', () => {
+  const snapshots: Array<unknown | undefined> = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onTerminalQueue: snapshot => snapshots.push(snapshot),
+  })
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: {
+      raw: { count: 0, previews: [], queuedMessageIds: ['message-1'] },
+    },
+  })
+  expect(snapshots).toEqual([
+    { count: 0, previews: [], queuedMessageIds: ['message-1'] },
+  ])
+  adapter.handleEvent({
+    type: 'terminal_queue',
+    direction: 'inbound',
+    payload: { raw: { count: 0, previews: [], queuedMessageIds: [] } },
+  })
+  expect(snapshots.at(-1)).toBeUndefined()
+})
+
+test('reports a terminal resume so the old conversation can detach', () => {
+  const switched: string[] = []
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onLocalSessionChanged: id => switched.push(id),
+  })
+  adapter.handleEvent({
+    type: 'local_session_changed',
+    direction: 'inbound',
+    payload: { raw: { local_session_id: 'next-session' } },
+  })
+  expect(switched).toEqual(['next-session'])
 })
 
 test('an empty terminal_queue snapshot clears the state', () => {

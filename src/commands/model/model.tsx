@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { getSessionId, setMainLoopModelOverride } from '../../bootstrap/state.js';
 import { saveSessionProvider } from '../../utils/model/serverProviderSession.js';
 import * as React from 'react';
+import { Text } from '@anthropic/ink';
 import type { CommandResultDisplay } from '../../commands.js';
 import { ModelPicker } from '../../components/ModelPicker.js';
 import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
@@ -51,6 +52,7 @@ function ModelPickerWrapper({
   const setAppState = useSetAppState();
   const [serverOptions, setServerOptions] = React.useState<ModelOption[]>([]);
   const [serverLoadFailed, setServerLoadFailed] = React.useState(false);
+  const [serverLoading, setServerLoading] = React.useState(serverProvidersAvailable);
   React.useEffect(() => {
     if (!serverProvidersAvailable()) return;
     let cancelled = false;
@@ -69,6 +71,9 @@ function ModelPickerWrapper({
       })
       .catch(() => {
         if (!cancelled) setServerLoadFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setServerLoading(false);
       });
     return () => {
       cancelled = true;
@@ -101,6 +106,7 @@ function ModelPickerWrapper({
           ...prev,
           mainLoopModel: serverProviderRuntimeModel(provider),
           mainLoopModelForSession: null,
+          ...(effort !== undefined ? { effortValue: effort } : {}),
         }));
         const saved = await rememberServerProvider(provider).then(
           () => true,
@@ -164,11 +170,14 @@ function ModelPickerWrapper({
     onDone(message);
   }
 
+  if (serverLoading) return <Text dimColor>正在读取服务器模型…</Text>;
+
   return (
     <ModelPicker
       initial={getServerProvider() ? serverProviderSelection(getServerProvider()!) : mainLoopModel}
       additionalOptions={serverOptions}
-      headerText={serverLoadFailed ? '服务器供应商读取失败，本地模型仍可使用；请检查连接后重试。' : undefined}
+      serverOnly={serverOptions.length > 0 || Boolean(getServerProvider())}
+      headerText={serverLoadFailed ? '服务器供应商读取失败，请检查连接后重试。' : undefined}
       sessionModel={mainLoopModelForSession}
       onSelect={handleSelect}
       onCancel={handleCancel}

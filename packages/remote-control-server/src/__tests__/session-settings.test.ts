@@ -45,6 +45,138 @@ afterAll(async () => {
 const tick = () => new Promise(resolve => setTimeout(resolve, 20))
 
 describe('device session settings', () => {
+  test('a resumed session waits for its own settings before a queued message is sent', async () => {
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+    const bridge = `session_settings_race${++sequence}`
+    await updateSessionSettings(device, local, { model: 'model-a' })
+    await updateSessionSettings(device, other, { model: 'model-b' })
+    setMapping({
+      deviceId: device,
+      localSessionId: local,
+      bridgeSessionId: bridge,
+      cwd: 'C:\\work',
+      updatedAt: Date.now(),
+    })
+    const sent: Record<string, unknown>[] = []
+    const ws = {
+      readyState: 1,
+      send: (frame: string) => sent.push(JSON.parse(frame)),
+      close: () => {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridge)
+    try {
+      const oldSettings = ensureSessionSettings(device, local, bridge).catch(
+        () => {},
+      )
+      for (let i = 0; i < 100 && sent.length === 0; i++) await tick()
+      expect((sent[0]?.request as Record<string, unknown>)?.model).toBe(
+        'model-a',
+      )
+      ingestBridgeMessage(bridge, {
+        type: 'local_session_changed',
+        local_session_id: other,
+      })
+      const queued = queueMessage(device, other, 'new-session-message')
+      const flush = flushOutbox(device, other, bridge)
+      ingestBridgeMessage(bridge, {
+        type: 'control_response',
+        response: { subtype: 'success', request_id: sent[0]!.request_id },
+      })
+      await oldSettings
+      for (let i = 0; i < 100 && sent.length < 2; i++) await tick()
+      expect((sent[1]?.request as Record<string, unknown>)?.model).toBe(
+        'model-b',
+      )
+      expect(sent.some(row => row.type === 'user')).toBe(false)
+      ingestBridgeMessage(bridge, {
+        type: 'control_response',
+        response: { subtype: 'success', request_id: sent[1]!.request_id },
+      })
+      await flush
+      for (let i = 0; i < 100 && !sent.some(row => row.type === 'user'); i++)
+        await tick()
+      expect(sent.filter(row => row.type === 'user')).toHaveLength(1)
+      expect(findOutboxEntry(device, other, queued.id)?.state).toBe(
+        'unconfirmed',
+      )
+    } finally {
+      handleWebSocketClose(ws, bridge, 1000, '', token)
+      removeEventBus(bridge)
+    }
+  })
+  test('the same bridge restores a different resumed session even when revisions match', async () => {
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+    const bridge = `session_settings_resume${++sequence}`
+    await updateSessionSettings(device, local, {
+      model: 'model-a',
+      effort: 'low',
+      ultracode: false,
+    })
+    await updateSessionSettings(device, other, {
+      model: 'model-b',
+      effort: 'max',
+      ultracode: true,
+    })
+    setMapping({
+      deviceId: device,
+      localSessionId: local,
+      bridgeSessionId: bridge,
+      cwd: 'C:\\work',
+      updatedAt: Date.now(),
+    })
+    const requests: Array<Record<string, unknown>> = []
+    const ws = {
+      readyState: 1,
+      send: (frame: string) => {
+        const row = JSON.parse(frame) as Record<string, unknown>
+        if (row.type !== 'control_request') return
+        requests.push(row)
+        queueMicrotask(() =>
+          ingestBridgeMessage(bridge, {
+            type: 'control_response',
+            response: { subtype: 'success', request_id: row.request_id },
+          }),
+        )
+      },
+      close: () => {},
+    } as unknown as Parameters<typeof handleWebSocketOpen>[0]
+    const token = handleWebSocketOpen(ws, bridge)
+    try {
+      await ensureSessionSettings(device, local, bridge)
+      const previousCount = requests.length
+      // New-session init can race ahead of the device's mapping update.
+      ingestBridgeMessage(bridge, {
+        type: 'system',
+        subtype: 'init',
+        session_id: other,
+        model: 'stale',
+        effort: 'high',
+        ultracode_active: false,
+      })
+      expect(getSessionSettings(device, local)?.values.model).toBe('model-a')
+      ingestBridgeMessage(bridge, {
+        type: 'local_session_changed',
+        local_session_id: other,
+      })
+      await ensureSessionSettings(device, other, bridge)
+      const restored = requests
+        .slice(previousCount)
+        .map(row => row.request as Record<string, unknown>)
+      expect(restored).toEqual([
+        { subtype: 'set_model', model: 'model-b' },
+        { subtype: 'set_effort', effort: 'max' },
+        { subtype: 'set_ultracode', enabled: true },
+      ])
+      expect(getSessionSettings(device, other)?.values).toEqual({
+        model: 'model-b',
+        effort: 'max',
+        ultracode: true,
+      })
+    } finally {
+      handleWebSocketClose(ws, bridge, 1000, '', token)
+      removeEventBus(bridge)
+    }
+  })
   test('offline edits survive restart and are isolated by device and session', async () => {
     await updateSessionSettings(device, local, {
       model: 'model-one',

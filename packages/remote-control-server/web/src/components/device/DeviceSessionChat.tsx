@@ -691,6 +691,7 @@ export function DeviceSessionChat({
   const leaveBridge = useCallback(
     (message: string) => {
       setForcedBridgeId(null);
+      setDetail(previous => (previous ? { ...previous, bridgeSessionId: null, bridgeConnected: false } : previous));
       setNotice(message);
       // Keep the transcript that is already on screen; only the connection
       // state changed. Re-reading history here is what caused the visible

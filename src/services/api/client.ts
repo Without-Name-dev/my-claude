@@ -101,7 +101,7 @@ export async function getAnthropicClient({
     return new Anthropic({
       ...(remote.authMode === 'bearer'
         ? { apiKey: null, authToken: remote.apiKey }
-        : { apiKey: remote.apiKey }),
+        : { apiKey: remote.apiKey, authToken: null }),
       baseURL: remote.baseUrl,
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),

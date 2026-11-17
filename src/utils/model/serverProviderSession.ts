@@ -1,8 +1,10 @@
 import {
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -10,6 +12,32 @@ import { join } from 'node:path'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 
 export type SavedProviderSelection = { id: string; model: string }
+
+/** Legacy-server fallback: only identities are stored, and keys stay on RCS. */
+export function readRecentSessionProviders(): SavedProviderSelection[] {
+  const dir = join(getClaudeConfigHomeDir(), 'server-provider-sessions')
+  let files: string[]
+  try {
+    files = readdirSync(dir).filter(name => /^[a-zA-Z0-9_-]+\.json$/.test(name))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  return files
+    .flatMap(name => {
+      try {
+        const selection = readSessionProvider(name.slice(0, -5))
+        return selection
+          ? [{ selection, mtime: statSync(join(dir, name)).mtimeMs }]
+          : []
+      } catch {
+        // An unrelated damaged or concurrently removed session is not the new session.
+        return []
+      }
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+    .map(entry => entry.selection)
+}
 
 function selectionPath(sessionId: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error('Invalid session ID')

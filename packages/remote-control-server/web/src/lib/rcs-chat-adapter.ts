@@ -241,6 +241,8 @@ function storeGeneration(sessionId: string, generation: string): void {
 class SSEBus {
   private listeners: Set<SSEEventHandler> = new Set()
   private eventSource: EventSource | null = null
+  private closedRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private closedRetryAttempts = 0
   private onError: ((message: string) => void) | null = null
   private onOpen: (() => void) | null = null
   private lastProbe = 0
@@ -264,6 +266,7 @@ class SSEBus {
     onStreamOpen?: () => void,
     onResync?: () => void,
     onConnectionChange?: (connected: boolean) => void,
+    onSourceReplaced?: (source: EventSource) => void,
   ): EventSource {
     this.disconnect()
     this.onError = onSseError ?? null
@@ -285,6 +288,9 @@ class SSEBus {
     const url = `/web/sessions/${sessionId}/events?uuid=${encodeURIComponent(uuid)}${since}`
     const es = new EventSource(url)
     this.eventSource = es
+    // A probe belongs to the disconnected period in which it was started.
+    // Its response must not close a stream which has since reconnected.
+    let openGeneration = 0
 
     es.addEventListener('message', (e: MessageEvent) => {
       if (this.eventSource !== es) return
@@ -350,6 +356,10 @@ class SSEBus {
 
     es.onopen = () => {
       if (this.eventSource !== es) return
+      openGeneration += 1
+      this.closedRetryAttempts = 0
+      if (this.closedRetryTimer) clearTimeout(this.closedRetryTimer)
+      this.closedRetryTimer = null
       debugLog('sse', `SSE 已连接: ${sessionId} (cursor=${this.lastSeqNum})`)
       this.onConnectionChange?.(true)
       // The server has subscribed to the bus before answering, so anything
@@ -364,9 +374,32 @@ class SSEBus {
       if (this.eventSource !== es) return
       debugLog('sse', `SSE 连接错误: ${sessionId} (cursor=${this.lastSeqNum})`)
       this.onConnectionChange?.(false)
+      // EventSource automatically retries network errors, but a rejected HTTP
+      // response (such as a 403 before bind completes) leaves it CLOSED and
+      // it never reconnects. Recreate only that terminally closed source.
+      if (es.readyState === EventSource.CLOSED && !this.closedRetryTimer) {
+        const delay = Math.min(
+          30_000,
+          1000 * 2 ** Math.min(this.closedRetryAttempts++, 5),
+        )
+        this.closedRetryTimer = setTimeout(() => {
+          this.closedRetryTimer = null
+          if (this.eventSource !== es) return
+          const replacement = this.connect(
+            sessionId,
+            onSseError,
+            onStreamOpen,
+            onResync,
+            onConnectionChange,
+            onSourceReplaced,
+          )
+          onSourceReplaced?.(replacement)
+        }, delay)
+      }
       const now = Date.now()
       if (now - this.lastProbe < 2000) return
       this.lastProbe = now
+      const probeGeneration = openGeneration
       // A prolonged network outage says nothing about whether the terminal
       // closed. Let EventSource keep retrying until the server confirms it.
       void (async () => {
@@ -374,7 +407,8 @@ class SSEBus {
           const res = await fetch(
             `/web/sessions/${sessionId}?uuid=${encodeURIComponent(uuid)}`,
           )
-          if (this.eventSource !== es) return
+          if (this.eventSource !== es || probeGeneration !== openGeneration)
+            return
           if (res.status === 404 || res.status === 409) {
             this.fail(es, sessionId, '会话连接已断开，终端可能已关闭')
           }
@@ -401,6 +435,8 @@ class SSEBus {
   }
 
   disconnect(): void {
+    if (this.closedRetryTimer) clearTimeout(this.closedRetryTimer)
+    this.closedRetryTimer = null
     if (this.eventSource) {
       this.eventSource.close()
       this.eventSource = null
@@ -632,6 +668,7 @@ export class RCSChatAdapter {
   private onTurnComplete?: () => void
   private onCompaction?: (active: boolean) => void
   private onSessionTitle?: (title: string) => void
+  private onLocalSessionChanged?: (localSessionId: string) => void
   private onUsage?: (usage: SessionUsage) => void
   private onStreamOpen?: () => void
   private onStreamState?: (connected: boolean) => void
@@ -678,6 +715,7 @@ export class RCSChatAdapter {
       onTurnComplete?: () => void
       onCompaction?: (active: boolean) => void
       onSessionTitle?: (title: string) => void
+      onLocalSessionChanged?: (localSessionId: string) => void
       /** Live token usage, after each assistant chunk that carries it. */
       onUsage?: (usage: SessionUsage) => void
       /** Fired once the live SSE stream is actually open. */
@@ -709,6 +747,7 @@ export class RCSChatAdapter {
     this.onTurnComplete = options?.onTurnComplete
     this.onCompaction = options?.onCompaction
     this.onSessionTitle = options?.onSessionTitle
+    this.onLocalSessionChanged = options?.onLocalSessionChanged
     this.onUsage = options?.onUsage
     this.onStreamOpen = options?.onStreamOpen
     this.onStreamState = options?.onStreamState
@@ -745,7 +784,11 @@ export class RCSChatAdapter {
     }
     const snapshot = parseTerminalQueueSnapshot(payload)
     if (!snapshot) return
-    this.onTerminalQueue?.(snapshot.count > 0 ? snapshot : undefined)
+    this.onTerminalQueue?.(
+      snapshot.count > 0 || snapshot.queuedMessageIds?.length
+        ? snapshot
+        : undefined,
+    )
   }
 
   /**
@@ -832,7 +875,7 @@ export class RCSChatAdapter {
   }
 
   /**
-   * 初始化：先连 SSE（缓冲实时事件），再绑定/加载历史。
+   * 初始化：先绑定会话，再连接 SSE 并缓冲加载历史期间的事件。
    *
    * History is a snapshot; subscribing afterwards loses every event that
    * happens in between (notably a permission request, which blocks the
@@ -843,7 +886,6 @@ export class RCSChatAdapter {
     this.disposed = false
     this.historyReady = false
     this.bufferedEvents = []
-    this.connectSSE()
     try {
       // A stalled bind/history fetch used to leave historyReady false forever:
       // the live view stayed empty while bufferedEvents grew without bound.
@@ -852,6 +894,10 @@ export class RCSChatAdapter {
       // may already be bound, or offline — carry on with the live stream
     }
     if (this.disposed) return
+    // Bind first: an unbound session answers 403, permanently closing a
+    // browser EventSource. Subscribe before reading history so live events
+    // during that read are still buffered and replayed in order.
+    this.connectSSE()
     try {
       await withTimeout(this.loadHistory(), 12_000, '加载历史超时')
     } catch (error) {
@@ -1446,6 +1492,9 @@ export class RCSChatAdapter {
       },
       () => this.requestResync(),
       connected => this.onStreamState?.(connected),
+      source => {
+        this.es = source
+      },
     )
     this.unsub = sseBus.onEvent(event => this.handleEvent(event))
   }
@@ -1463,27 +1512,6 @@ export class RCSChatAdapter {
    * is what survives that pass.
    */
   private optimisticUserIds = new Set<string>()
-
-  /**
-   * Any sign that the CLI is consuming its queue — an assistant chunk, a tool
-   * call, a finished turn, a local command — proves earlier messages were
-   * delivered. Slash commands never echo as user events and a server restart
-   * wipes the echo entirely, so without this the "排队中" state could stick
-   * forever.
-   */
-  private clearStalePending(): void {
-    this.setEntries(prev => {
-      let changed = false
-      const next = prev.map(entry => {
-        if (entry.type === 'user_message' && entry.pending) {
-          changed = true
-          return { ...entry, pending: false }
-        }
-        return entry
-      })
-      return changed ? next : prev
-    })
-  }
 
   /**
    * The stream lost events that no replay can recover. Re-read the stored
@@ -1538,9 +1566,6 @@ export class RCSChatAdapter {
     void (async () => {
       try {
         await this.loadHistory()
-        // Anything still pending after the replay was never echoed (restart,
-        // uuid rewrite): stop claiming it is queued.
-        this.clearStalePending()
       } catch (error) {
         this.onError?.(
           error instanceof Error ? error.message : '重新加载历史失败',
@@ -1601,6 +1626,15 @@ export class RCSChatAdapter {
     if (/Remote Control connecting/i.test(eventText(payload))) return
 
     switch (type) {
+      case 'local_session_changed': {
+        const raw = payload.raw as Record<string, unknown> | undefined
+        const localSessionId =
+          raw?.local_session_id ??
+          (payload as Record<string, unknown>).local_session_id
+        if (typeof localSessionId === 'string')
+          this.onLocalSessionChanged?.(localSessionId)
+        break
+      }
       case 'user_message_retracted': {
         if (event.direction === 'outbound') break
         const raw = payload.raw as Record<string, unknown> | undefined
@@ -1626,10 +1660,6 @@ export class RCSChatAdapter {
         // used to be dropped, leaving every tool card spinning forever.
         const asRecord = payload as Record<string, unknown>
         if (toolResultBlocks(asRecord).length > 0) {
-          // Same proof of queue consumption as a tool_use event — and the only
-          // signal that still arrives when the page reattached mid-tool-run
-          // (the tool_use event already passed before the resubscribe).
-          this.clearStalePending()
           this.setEntries(prev => applyToolResult(prev, asRecord))
           break
         }
@@ -1776,7 +1806,6 @@ export class RCSChatAdapter {
 
       // ---- 助手消息 ----
       case 'assistant': {
-        this.clearStalePending()
         const content =
           typeof payload.content === 'string' ? payload.content : ''
         // Stable id: when the CLI streams one message in several events they
@@ -1916,7 +1945,6 @@ export class RCSChatAdapter {
 
       // ---- 工具调用 ----
       case 'tool_use': {
-        this.clearStalePending()
         const p = payload as Record<string, unknown>
         const toolCallId = (p.tool_call_id as string) || `call-${Date.now()}`
         const toolData: ToolCallData = {
@@ -1936,7 +1964,6 @@ export class RCSChatAdapter {
       // ---- 工具结果 ----
       case 'tool_result': {
         const p = payload as Record<string, unknown>
-        this.clearStalePending()
         // A completed call proves any permission prompt it was showing has
         // been resolved, even when the control_response was lost (interrupt,
         // transport-null window). Without this the card re-raised on reload.
@@ -2039,7 +2066,6 @@ export class RCSChatAdapter {
 
       // ---- 错误 ----
       case 'error': {
-        this.clearStalePending()
         const errorMsg = String(
           payload.message || payload.content || 'Unknown error',
         )
@@ -2053,7 +2079,6 @@ export class RCSChatAdapter {
       case 'result':
       case 'result_success': {
         this.onCompaction?.(false)
-        this.clearStalePending()
         this.onTurnComplete?.()
         break
       }
@@ -2093,9 +2118,6 @@ export class RCSChatAdapter {
             })
         }
         if (record.subtype === 'local_command') {
-          // A local command is executed without any user echo; without this
-          // its optimistic bubble would show 排队中 forever.
-          this.clearStalePending()
           const raw = typeof record.content === 'string' ? record.content : ''
           const text = raw.replace(/<\/?local-command-[^>]*>/g, '').trim()
           if (text) {

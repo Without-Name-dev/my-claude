@@ -9,7 +9,17 @@ import {
   getTotalInputTokens,
 } from '../bootstrap/state.js';
 import { parseTokenBudget } from '../utils/tokenBudget.js';
-import { loadSessionProvider, setServerProvider, serverProviderRuntimeModel } from '../utils/model/serverProviders.js';
+import {
+  fetchServerProvider,
+  loadServerSessionSettings,
+  loadSessionProvider,
+  runWithServerProvider,
+  setServerProvider,
+  serverProviderRuntimeModel,
+} from '../utils/model/serverProviders.js';
+import { isModelAllowed } from '../utils/model/modelAllowlist.js';
+import { getEffortEnvOverride } from '../utils/effort.js';
+import { isUltracodeAvailable } from '../utils/ultracode.js';
 import { setMainLoopModelOverride } from '../bootstrap/state.js';
 import { count } from '../utils/array.js';
 import { dirname, join } from 'path';
@@ -2114,7 +2124,35 @@ export function REPL({
       try {
         // Resolve before switching sessions, so a server failure cannot leave
         // the current conversation using a different session's credentials.
-        const restoredProvider = entrypoint === 'fork' ? null : await loadSessionProvider(sessionId);
+        const savedSettings = entrypoint === 'fork' ? null : await loadServerSessionSettings(sessionId);
+        const savedSelection = savedSettings?.model?.startsWith('rcs-provider:')
+          ? /^rcs-provider:([^:]+):(.+)$/.exec(savedSettings.model)
+          : null;
+        if (savedSettings?.model?.startsWith('rcs-provider:') && !savedSelection) throw new Error('会话供应商配置无效');
+        const restoredProvider =
+          entrypoint === 'fork'
+            ? null
+            : savedSelection
+              ? await fetchServerProvider(savedSelection[1]!, decodeURIComponent(savedSelection[2]!))
+              : savedSettings?.model
+                ? null
+                : await loadSessionProvider(sessionId);
+        const restoredModel = restoredProvider
+          ? serverProviderRuntimeModel(restoredProvider)
+          : (savedSettings?.model ?? null);
+        if (restoredProvider && !isModelAllowed(restoredProvider.model)) throw new Error('会话模型不在允许列表中');
+        const forcedEffort = getEffortEnvOverride();
+        if (
+          savedSettings?.effort !== undefined &&
+          forcedEffort !== undefined &&
+          (forcedEffort === null ? savedSettings.effort !== 'auto' : forcedEffort !== savedSettings.effort)
+        )
+          throw new Error('会话思考强度与终端环境变量冲突');
+        if (
+          savedSettings?.ultracode &&
+          !runWithServerProvider(restoredProvider, () => isUltracodeAvailable(restoredModel ?? mainLoopModel))
+        )
+          throw new Error('会话模型不支持 Ultracode');
         // Deserialize messages to properly clean up the conversation
         // This filters unresolved tool uses and adds a synthetic assistant message if needed
         const messages = deserializeMessages(log.messages);
@@ -2179,7 +2217,7 @@ export function REPL({
         // Restore file history and attribution state from the resumed conversation
         restoreSessionStateFromLog(log, setAppState);
         if (log.fileHistorySnapshots) {
-          void copyFileHistoryForResume(log);
+          void copyFileHistoryForResume(log, sessionId);
         }
 
         // Restore agent setting from the resumed conversation
@@ -2226,9 +2264,17 @@ export function REPL({
         switchSession(asSessionId(sessionId), log.fullPath ? dirname(log.fullPath) : null);
         if (entrypoint !== 'fork') {
           setServerProvider(restoredProvider);
-          const model = restoredProvider ? serverProviderRuntimeModel(restoredProvider) : null;
+          const model = restoredModel;
           setMainLoopModelOverride(model);
-          setAppState(prev => ({ ...prev, mainLoopModel: model, mainLoopModelForSession: null }));
+          setAppState(prev => ({
+            ...prev,
+            mainLoopModel: model,
+            mainLoopModelForSession: null,
+            ...(savedSettings?.effort !== undefined
+              ? { effortValue: savedSettings.effort === 'auto' ? undefined : savedSettings.effort }
+              : {}),
+            ...(savedSettings?.ultracode !== undefined ? { ultracodeActive: savedSettings.ultracode } : {}),
+          }));
         }
         // Rename asciicast recording to match the resumed session ID
         const { renameRecordingForSession } = await import('../utils/asciicast.js');

@@ -19,6 +19,7 @@ import type { ChatInputMessage } from '../../lib/types';
 import { apiFetchProviderQuota, apiFetchProviders, apiFetchSession, apiSendControl } from '../../api/client';
 import {
   updateSessionSettings,
+  fetchSession,
   type TranscriptUsage,
   type SessionSettings,
   type SessionSettingsValues,
@@ -30,6 +31,7 @@ import { ExecutionPanel } from './ExecutionPanel';
 import {
   agentProgressParentId,
   applyAgentProgress,
+  markTerminalQueuedMessages,
   type ExecutionTask,
   type BackgroundAgent,
   type TerminalQueueSnapshot,
@@ -152,6 +154,7 @@ export function BridgeChat({
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   /** Prompts typed at the terminal, waiting for the running turn to finish. */
   const [terminalQueue, setTerminalQueue] = useState<TerminalQueueSnapshot | null>(null);
+  const visibleEntries = useMemo(() => markTerminalQueuedMessages(entries, terminalQueue), [entries, terminalQueue]);
   const agentProgressEvents = useRef<unknown[]>([]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
@@ -448,6 +451,16 @@ export function BridgeChat({
         },
         onCompaction: setIsCompacting,
         onSessionTitle: title => onSessionTitleRef.current?.(title),
+        onLocalSessionChanged: next => {
+          if (!deviceId || !localSessionId || next === localSessionId) return;
+          // The event can be replayed after another resume; verify the current
+          // mapping before detaching this view from its bridge.
+          void fetchSession(deviceId, localSessionId)
+            .then(detail => {
+              if (detail.bridgeSessionId !== sessionId || !detail.bridgeConnected) onBridgeDisconnectedRef.current?.();
+            })
+            .catch(() => {});
+        },
         onUsage: next => setUsageState({ sessionId, usage: next }),
         // The CLI reports the authoritative turn state. Without this, a turn
         // started in the terminal looked idle in the browser, and the first
@@ -460,7 +473,7 @@ export function BridgeChat({
         // flash/reload on every connect; only its init metadata is needed.
         historyMode: controlled ? 'metadata' : 'full',
       }),
-    [sessionId, setEntries, controlled],
+    [sessionId, setEntries, controlled, deviceId, localSessionId],
   );
 
   useEffect(() => {
@@ -932,7 +945,7 @@ export function BridgeChat({
           </div>
         )}
         <ChatView
-          entries={entries}
+          entries={visibleEntries}
           isLoading={Boolean(sessionId) && isLoading}
           isHistoryLoading={!sessionId && offlineHistoryLoading}
           onPermissionRespond={sessionId ? respondFromCard : onOfflinePermissionRespond}

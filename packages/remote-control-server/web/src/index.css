@@ -197,6 +197,18 @@
   height: var(--app-height, 100dvh);
 }
 
+/* Use the same transform for the settled state and the interactive drag.
+   This also works in older WKWebViews without individual transform properties. */
+@media (max-width: 767px) {
+  .workspace-sidebar[data-chat-open="true"] {
+    transform: translateX(-100%);
+    transition: transform 200ms ease-out;
+  }
+  .workspace-sidebar[data-chat-open="true"][data-drawer-open="true"] {
+    transform: translateX(0);
+  }
+}
+
 /* A landscape phone is wide enough to cross the desktop breakpoint but too
    short for a permanent sidebar. Keep the single-panel phone navigation. */
 @media (hover: none) and (pointer: coarse) and (max-width: 1000px) and (
@@ -209,6 +221,7 @@
     width: min(88vw, 22rem);
     z-index: 30;
     transform: translateX(-100%);
+    transition: transform 200ms ease-out;
   }
   .workspace-sidebar[data-chat-open="true"][data-drawer-open="true"] {
     display: flex;
@@ -217,6 +230,7 @@
     width: min(88vw, 22rem);
     z-index: 30;
     transform: translateX(0);
+    transition: transform 200ms ease-out;
   }
   .workspace-drawer-backdrop,
   .workspace-drawer-close,
@@ -240,6 +254,12 @@
   .workspace-chat[data-chat-open="true"],
   .session-back {
     display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-sidebar[data-chat-open="true"] {
+    transition-duration: 0ms;
   }
 }
 

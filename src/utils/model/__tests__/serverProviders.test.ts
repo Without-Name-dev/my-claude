@@ -7,6 +7,7 @@ import { getAPIProvider } from '../providers.js'
 import {
   getServerProvider,
   fetchServerProviders,
+  loadServerSessionSettings,
   runWithServerProvider,
   selectServerProvider,
   serverProviderRuntimeModel,
@@ -26,6 +27,49 @@ const base: ServerProvider = {
   revision: 1,
 }
 afterEach(() => setServerProvider(null))
+
+test('loads this device and session settings before switching a conversation', async () => {
+  const previousBase = process.env.CLAUDE_BRIDGE_BASE_URL
+  const previousToken = process.env.CLAUDE_BRIDGE_OAUTH_TOKEN
+  const previousDevice = process.env.CLAUDE_BRIDGE_DEVICE_ID
+  const originalFetch = globalThis.fetch
+  let path = ''
+  process.env.CLAUDE_BRIDGE_BASE_URL = 'http://rcs.example'
+  process.env.CLAUDE_BRIDGE_OAUTH_TOKEN = 'fixture-token'
+  process.env.CLAUDE_BRIDGE_DEVICE_ID = 'dev-test'
+  globalThis.fetch = Object.assign(
+    async (input: RequestInfo | URL) => {
+      path = new URL(String(input)).pathname
+      return Response.json({
+        settings: {
+          values: {
+            model: 'rcs-provider:p:model',
+            effort: 'max',
+            ultracode: true,
+          },
+        },
+      })
+    },
+    { preconnect: originalFetch.preconnect },
+  ) as typeof fetch
+  try {
+    expect(await loadServerSessionSettings('session-a')).toEqual({
+      model: 'rcs-provider:p:model',
+      effort: 'max',
+      ultracode: true,
+    })
+    expect(path).toBe('/web/devices/dev-test/sessions/session-a/settings')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (previousBase === undefined) delete process.env.CLAUDE_BRIDGE_BASE_URL
+    else process.env.CLAUDE_BRIDGE_BASE_URL = previousBase
+    if (previousToken === undefined)
+      delete process.env.CLAUDE_BRIDGE_OAUTH_TOKEN
+    else process.env.CLAUDE_BRIDGE_OAUTH_TOKEN = previousToken
+    if (previousDevice === undefined) delete process.env.CLAUDE_BRIDGE_DEVICE_ID
+    else process.env.CLAUDE_BRIDGE_DEVICE_ID = previousDevice
+  }
+})
 
 test('1M model budget is local and the provider receives its configured model ID', () => {
   const provider: ServerProvider = {

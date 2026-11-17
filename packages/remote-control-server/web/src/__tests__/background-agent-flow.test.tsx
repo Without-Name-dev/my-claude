@@ -2,10 +2,12 @@ import { expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { buildTaskStateMessage } from '../../../../../src/utils/taskStateMessage';
+import { buildTerminalQueueMessage, buildTerminalQueueSnapshot } from '../../../../../src/bridge/terminalQueueMessage';
 import { EventBus } from '../../../src/transport/event-bus';
 import { normalizePayload } from '../../../src/services/transport';
 import { RCSChatAdapter } from '../lib/rcs-chat-adapter';
-import type { BackgroundAgent } from '../lib/execution-state';
+import { markTerminalQueuedMessages, type BackgroundAgent, type TerminalQueueSnapshot } from '../lib/execution-state';
+import type { ThreadEntry } from '../lib/types';
 import { ExecutionPanel } from '../components/device/ExecutionPanel';
 
 test('terminal agent snapshot survives server normalization and reconnect replay', () => {
@@ -43,4 +45,23 @@ test('terminal agent snapshot survives server normalization and reconnect replay
   const cleared = buildTaskStateMessage('list', [], []);
   adapter.handleEvent({ type: 'task_state', payload: normalizePayload('task_state', cleared) });
   expect(current).toEqual([]);
+});
+
+test('remote queue identity survives CLI, server and web without duplicating a message', () => {
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  const message = buildTerminalQueueMessage(
+    buildTerminalQueueSnapshot([{ mode: 'prompt', value: 'queued prompt', uuid, bridgeOrigin: true }]),
+  );
+  let queue: TerminalQueueSnapshot | undefined;
+  const adapter = new RCSChatAdapter('session', () => {}, {
+    onTerminalQueue: next => {
+      queue = next;
+    },
+  });
+  adapter.handleEvent({ type: 'terminal_queue', payload: normalizePayload('terminal_queue', message) });
+  const entries: ThreadEntry[] = [{ type: 'user_message', id: `user-${uuid}`, content: 'queued prompt' }];
+  expect(markTerminalQueuedMessages(entries, queue ?? null)).toEqual([{ ...entries[0], pending: true }]);
+  const empty = buildTerminalQueueMessage(buildTerminalQueueSnapshot([]));
+  adapter.handleEvent({ type: 'terminal_queue', payload: normalizePayload('terminal_queue', empty) });
+  expect(markTerminalQueuedMessages(entries, queue ?? null)).toEqual(entries);
 });

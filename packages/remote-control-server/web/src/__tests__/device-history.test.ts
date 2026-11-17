@@ -21,6 +21,34 @@ function message(
 }
 
 describe('transcriptToEntries', () => {
+  test('keeps the server outbox state until that exact message is confirmed', () => {
+    const waiting = {
+      ...message('queued', 'user', [{ type: 'text', text: '继续' }]),
+      pending: true,
+    }
+    const initial = transcriptToEntries([waiting])
+    expect(initial[0]).toMatchObject({ id: 'user-queued', pending: true })
+    const refreshed = mergeHistoryPage(
+      initial,
+      transcriptToEntries([waiting]),
+      { pagePosition: 'newer' },
+    )
+    expect(refreshed[0]).toMatchObject({ pending: true })
+    const confirmed = mergeHistoryPage(
+      refreshed,
+      transcriptToEntries([
+        message('queued', 'user', [{ type: 'text', text: '继续' }]),
+      ]),
+      { pagePosition: 'newer' },
+    )
+    expect(confirmed[0]).not.toHaveProperty('pending', true)
+    const restored = mergeHistoryPage(
+      confirmed,
+      transcriptToEntries([waiting]),
+      { pagePosition: 'newer' },
+    )
+    expect(restored[0]).toMatchObject({ pending: true })
+  })
   test('renders user and assistant text', () => {
     const entries = transcriptToEntries([
       message('u1', 'user', [{ type: 'text', text: 'hello' }]),
